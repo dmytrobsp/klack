@@ -125,7 +125,10 @@ no silent fallback.
 
 F6 → Huddles has the huddle sounds (at the notification sound volume; each can be turned off): a soft
 rising arpeggio when you join, and while you are in a huddle a short "pop" when someone joins and a
-falling pair when someone leaves.
+falling pair when someone leaves. A huddle invitation (someone starts one in a DM with you) rings — a
+soft trill every few seconds, with "📞 X invites you to a huddle" in the status bar — until you join (F3,
+from any conversation), decline (Shift+F3), the huddle ends, or it has rung for the set time (30 s); then,
+if "Then decline it on Slack" is on, it is declined for you.
 
 F6 → Audio also has the huddle volume, the notification sound volume, a microphone gain, a
 speaking threshold (quieter microphone input is sent as silence, held open 300 ms after you

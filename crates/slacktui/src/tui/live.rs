@@ -13,6 +13,10 @@ pub struct Effects {
     pub incoming: Option<(String, Message)>,
     /// Someone else started a huddle: (channel, user).
     pub huddle_started: Option<(String, String)>,
+    /// A huddle invitation (rings): (channel, room, who invites).
+    pub huddle_invite: Option<(String, String, String)>,
+    /// The invitation in this channel is over (the huddle ended, or it was answered).
+    pub invite_cancelled: Option<String>,
 }
 
 fn parse_message(v: &Value, channel: &str) -> Option<Message> {
@@ -176,6 +180,13 @@ pub fn apply(ws: &mut Workspace, ev: &Value, current: Option<&str>) -> Effects {
             }
         }
         "dnd_updated" => ws.dnd = super::state::Dnd::from_json(&ev["dnd_status"]),
+        "huddle_invite" => {
+            let s = |k: &str| ev[k].as_str().unwrap_or_default().to_string();
+            if !s("channel_id").is_empty() {
+                fx.huddle_invite = Some((s("channel_id"), s("call_id"), s("sender_user_id")));
+            }
+        }
+        "huddle_invite_cancel" => fx.invite_cancelled = ev["channel_id"].as_str().map(String::from),
         "pref_change" => {
             if let Some(name) = ev["name"].as_str() {
                 let mut prefs = serde_json::Map::new();
@@ -388,6 +399,16 @@ mod tests {
         assert_eq!(t.messages.len(), 1);
         assert_eq!(t.messages[0].reply_count, 1);
         assert_eq!(t.messages[0].latest_reply.as_deref(), Some("11.0"));
+    }
+
+    #[test]
+    fn huddle_invitations() {
+        let mut w = ws();
+        // Captured with `ctl listen` (the Chime credentials in `free_willy` left out).
+        let fx = apply(&mut w, &json!({"call_id":"R0CB0UP0BJL","channel_id":"D0CA2V8G8CE","event_ts":"1792357509.005400","is_guest":false,"sender_user_id":"U0CA4NBE06N","team_id":"T0CA6QW46KB","type":"huddle_invite"}), None);
+        assert_eq!(fx.huddle_invite, Some(("D0CA2V8G8CE".into(), "R0CB0UP0BJL".into(), "U0CA4NBE06N".into())));
+        let fx = apply(&mut w, &json!({"channel_id":"D0CA2V8G8CE","event_ts":"1792357516.005500","team_id":"T0CA6QW46KB","type":"huddle_invite_cancel"}), None);
+        assert_eq!(fx.invite_cancelled.as_deref(), Some("D0CA2V8G8CE"));
     }
 
     #[test]

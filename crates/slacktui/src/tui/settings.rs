@@ -24,11 +24,16 @@ pub struct Huddle {
     /// While you are in it: when someone else joins, and when someone leaves.
     pub someone_joined: String,
     pub someone_left: String,
+    /// A huddle invitation rings with this (from `sound::RING_SOUNDS`) until you answer,
+    /// for at most `ring_timeout_secs`; then, with `auto_decline`, it is declined on Slack.
+    pub ring_sound: String,
+    pub ring_timeout_secs: u32,
+    pub auto_decline: bool,
 }
 
 impl Default for Huddle {
     fn default() -> Self {
-        Huddle { join_sound: "rise".into(), someone_joined: "pop".into(), someone_left: "fall".into() }
+        Huddle { join_sound: "rise".into(), someone_joined: "pop".into(), someone_left: "fall".into(), ring_sound: "ring".into(), ring_timeout_secs: 30, auto_decline: false }
     }
 }
 

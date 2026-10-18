@@ -293,6 +293,7 @@ pub enum Action {
     HuddleView,
     Camera,
     ShareScreen,
+    DeclineHuddle,
     Unbind,
     Reset,
     Increase,
@@ -392,6 +393,7 @@ actions! {
         HuddleView "huddle_view" "show or hide the huddle view (in place of the messages)" ["f8"]
         Camera "camera" "switch your camera on or off in the huddle (chosen in F6)" ["f9"]
         ShareScreen "share_screen" "share your screen in the huddle, or stop (the desktop asks what to share)" ["f10"]
+        DeclineHuddle "decline_huddle" "decline the huddle invitation that is ringing (the huddle key joins it)" ["shift+f3"]
         Activity "activity" "mentions, reactions, threads" ["f5"]
         Preferences "preferences" "preferences" ["f6"]
         PrevConversation "previous_conversation" "previous conversation" ["alt+up"]

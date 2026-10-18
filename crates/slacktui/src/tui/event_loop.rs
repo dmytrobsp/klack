@@ -143,6 +143,8 @@ struct App {
     pending_hit: Option<super::search::Hit>,
     /// A message (channel, top-level ts) older than the loaded history, being paged back to.
     seeking: Option<(String, String)>,
+    /// A huddle invitation ringing now.
+    ringing: Option<Ring>,
     /// What was typed in conversations (by id) and threads (by thread key) you left.
     drafts: std::collections::HashMap<String, super::composer::Draft>,
     /// Open quick switcher (Ctrl+K).
@@ -1215,6 +1217,12 @@ impl App {
             self.status = "leaving the huddle…".into();
             return;
         }
+        // A ringing invitation is answered, wherever you are looking.
+        if let Some(ring) = self.ringing.take() {
+            self.jump_to(&ring.channel);
+            self.join_huddle(ring.channel, None);
+            return;
+        }
         if let Some(channel) = self.current.clone() {
             self.join_huddle(channel, None);
         }
@@ -1222,7 +1230,49 @@ impl App {
 
     /// Join or start the huddle of `channel`, or of the thread under message `thread`
     /// (`rooms.join` with `thread_ts`, as the web client's "Start huddle in thread").
+    /// Decline the ringing invitation on Slack (`rooms.inviteResponse`), or say there is none.
+    fn decline_huddle(&mut self, auto: bool) {
+        let Some(ring) = self.ringing.take() else {
+            self.status = "no huddle invitation is ringing".into();
+            return;
+        };
+        let who = self.ws.user_name(&ring.user);
+        self.status = if auto { format!("declined {who}'s huddle (no answer)") } else { format!("declined {who}'s huddle") };
+        let (client, tx) = (self.client.clone(), self.net.clone());
+        tokio::spawn(async move {
+            let params = [("response", "decline".to_string()), ("channel_id", ring.channel), ("room_id", ring.room)];
+            if let Err(e) = client.call_raw("rooms.inviteResponse", &params).await {
+                let _ = tx.send(Net::Error(format!("declining the huddle failed: {e}")));
+            }
+        });
+    }
+
+    /// Play the ring every few seconds while an invitation rings; when it has rung long
+    /// enough, stop (and decline it, if so set).
+    fn ring_tick(&mut self) {
+        let Some(ring) = self.ringing.as_mut() else { return };
+        let h = &self.ws.settings.huddle;
+        if ring.started.elapsed() >= std::time::Duration::from_secs(h.ring_timeout_secs as u64) {
+            if h.auto_decline {
+                self.decline_huddle(true);
+            } else {
+                let who = self.ws.user_name(&ring.user);
+                self.ringing = None;
+                self.status = format!("missed {who}'s huddle");
+            }
+            return;
+        }
+        if ring.last_ring.is_none_or(|t| t.elapsed() >= RING_EVERY) {
+            ring.last_ring = Some(std::time::Instant::now());
+            let s = &self.ws.settings;
+            super::sound::play(&s.huddle.ring_sound, super::settings::Settings::device(huddle::devices::OUTPUT_ENV, &s.audio.output), s.audio.sound_volume);
+        }
+    }
+
     fn join_huddle(&mut self, channel: String, thread: Option<String>) {
+        if self.ringing.as_ref().is_some_and(|r| r.channel == channel) {
+            self.ringing = None;
+        }
         self.status = "joining the huddle…".into();
         let (client, tx) = (self.client.clone(), self.net.clone());
         tokio::spawn(async move {
@@ -1817,6 +1867,18 @@ fn reply_title(broadcast: bool, key: &str, room: usize) -> String {
     fit_title(&[format!(" Reply · [{b}] also to channel ({key}) "), format!(" Reply · [{b}] also to channel "), format!(" Reply · [{b}] +channel "), format!(" [{b}] +channel ")], room)
 }
 
+/// A huddle invitation that rings until it is answered, cancelled or times out.
+struct Ring {
+    channel: String,
+    room: String,
+    user: String,
+    started: std::time::Instant,
+    last_ring: Option<std::time::Instant>,
+}
+
+/// How often the ring sound repeats.
+const RING_EVERY: Duration = Duration::from_millis(2500);
+
 /// Whether a message at `ts` lies before the oldest loaded one (`first`): Slack timestamps
 /// compare as numbers.
 fn seek_older(ts: &str, first: &str) -> bool {
@@ -1946,6 +2008,7 @@ async fn run_workspace(
         presence_subscribed: false,
         call: None,
         pending_hit: None,
+        ringing: None,
         seeking: None,
         drafts: Default::default(),
         player: None,
@@ -1990,6 +2053,7 @@ async fn run_workspace(
     let mut call_tick = tokio::time::interval(Duration::from_millis(100));
     loop {
         app.expire_status(std::time::Instant::now());
+        app.ring_tick();
         terminal.draw(|f| draw(f, &mut app))?;
         app.request_thumbs();
         app.request_activity_messages();
@@ -2281,6 +2345,7 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
         }
         Event::Key(k) if k.kind != KeyEventKind::Release && app.global(&k) == Some(Action::Details) => app.open_details(),
         Event::Key(k) if k.kind != KeyEventKind::Release && app.global(&k) == Some(Action::Huddle) => app.toggle_huddle(),
+        Event::Key(k) if k.kind != KeyEventKind::Release && app.global(&k) == Some(Action::DeclineHuddle) => app.decline_huddle(false),
         Event::Key(k) if k.kind != KeyEventKind::Release && app.global(&k) == Some(Action::HuddleThread) => app.open_huddle_thread(),
         Event::Key(k) if k.kind != KeyEventKind::Release && app.global(&k) == Some(Action::HuddleView) => app.toggle_huddle_view(),
         Event::Key(k) if k.kind != KeyEventKind::Release && app.global(&k) == Some(Action::ShareScreen) => app.toggle_share(),
@@ -2593,6 +2658,20 @@ fn handle_rtm(app: &mut App, ev: slack_core::rtm::RtmEvent) {
                         let target = super::notify::Target { channel: channel.clone(), ts: None, thread_ts: None };
                         super::notify::show(title, body, &app.ws.settings, Some(app.on_click(target)));
                     }
+                }
+            }
+            if let Some((channel, room, user)) = fx.huddle_invite {
+                // The same rules as the huddle notification: DMs, not muted, no DND, not ours.
+                let in_it = app.call.as_ref().is_some_and(|c| c.channel == channel);
+                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64();
+                if super::notify::huddle_notification(&app.ws, &channel, &user, in_it, now, "").is_some() && app.call.is_none() {
+                    tracing::debug!(channel, room, user, "huddle invitation rings");
+                    app.ringing = Some(Ring { channel, room, user, started: std::time::Instant::now(), last_ring: None });
+                }
+            }
+            if let Some(channel) = fx.invite_cancelled {
+                if app.ringing.as_ref().is_some_and(|r| r.channel == channel) {
+                    app.ringing = None;
                 }
             }
             if let Some((channel, m)) = fx.incoming {
@@ -2960,7 +3039,14 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     }
     let (unread, mentions) = app.ws.total_unread();
     let others = super::others::label(&app.others.lock().unwrap_or_else(|e| e.into_inner()), app.workspace);
-    let info = if app.status.is_empty() { format!("{unread} unread · {mentions} mentions{others}") } else { app.status.clone() };
+    let info = if let Some(ring) = &app.ringing {
+        let key = |a| app.keys.first_key(Context::Global, a).unwrap_or_default();
+        format!("📞 {} invites you to a huddle · {} join · {} decline", app.ws.user_name(&ring.user), key(Action::Huddle), key(Action::DeclineHuddle))
+    } else if app.status.is_empty() {
+        format!("{unread} unread · {mentions} mentions{others}")
+    } else {
+        app.status.clone()
+    };
     if let Some(sw) = &app.switcher {
         sw.draw(f, body, &app.ws);
     }

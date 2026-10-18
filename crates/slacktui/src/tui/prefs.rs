@@ -58,7 +58,13 @@ pub enum Field {
     JoinSound,
     SomeoneJoined,
     SomeoneLeft,
+    RingSound,
+    RingTimeout,
+    AutoDecline,
 }
+
+/// How long an invitation may ring, in seconds.
+const RING_TIMEOUTS: &[u32] = &[15, 30, 45, 60, 90, 120];
 
 /// Pause lengths offered, in minutes (0: not paused).
 pub const PAUSES: &[u64] = &[0, 30, 60, 120, 480];
@@ -70,7 +76,7 @@ pub const CATEGORIES: &[(&str, &[Field])] = &[
     ("Language & region", &[Field::Clock24, Field::DateFormat, Field::TimeZone, Field::Language]),
     ("Notifications", &[Field::Desktop, Field::Sound, Field::ConversationLevel, Field::ChannelDefault, Field::Keywords, Field::Vips]),
     ("Audio & video", &[Field::Input, Field::Output, Field::HuddleVolume, Field::SoundVolume, Field::MicGain, Field::SpeakingThreshold, Field::NoiseSuppression, Field::EchoCancellation, Field::Camera]),
-    ("Huddles", &[Field::JoinSound, Field::SomeoneJoined, Field::SomeoneLeft]),
+    ("Huddles", &[Field::JoinSound, Field::SomeoneJoined, Field::SomeoneLeft, Field::RingSound, Field::RingTimeout, Field::AutoDecline]),
 ];
 
 /// Volumes offered, in percent.
@@ -133,6 +139,9 @@ impl Field {
             Field::JoinSound => "Sound when you join",
             Field::SomeoneJoined => "Sound when someone joins",
             Field::SomeoneLeft => "Sound when someone leaves",
+            Field::RingSound => "An invitation rings with",
+            Field::RingTimeout => "Stop ringing after",
+            Field::AutoDecline => "Then decline it on Slack",
         }
     }
 
@@ -207,6 +216,9 @@ impl Field {
             Field::JoinSound => s.huddle.join_sound.clone(),
             Field::SomeoneJoined => s.huddle.someone_joined.clone(),
             Field::SomeoneLeft => s.huddle.someone_left.clone(),
+            Field::RingSound => s.huddle.ring_sound.clone(),
+            Field::RingTimeout => format!("{} s", s.huddle.ring_timeout_secs),
+            Field::AutoDecline => yes(s.huddle.auto_decline),
         }
     }
 
@@ -217,6 +229,7 @@ impl Field {
         match self {
             Field::HuddleVolume => a.huddle_volume = step(VOLUMES, a.huddle_volume, up, wrap),
             Field::SoundVolume => a.sound_volume = step(VOLUMES, a.sound_volume, up, wrap),
+            Field::RingTimeout => s.huddle.ring_timeout_secs = step(RING_TIMEOUTS, s.huddle.ring_timeout_secs, up, wrap),
             Field::MicGain => a.mic_gain = step(GAINS, a.mic_gain, up, wrap),
             Field::SpeakingThreshold => a.speaking_threshold_db = step(THRESHOLDS, a.speaking_threshold_db, up, wrap),
             _ => return false,
@@ -263,6 +276,15 @@ impl Field {
                 let name = slot.clone();
                 super::sound::play(&name, Settings::device(huddle::devices::OUTPUT_ENV, &s.audio.output), s.audio.sound_volume);
             }
+            Field::RingSound => {
+                let sounds = super::sound::RING_SOUNDS;
+                s.huddle.ring_sound = sounds[sounds.iter().position(|x| *x == s.huddle.ring_sound).map_or(0, |i| (i + 1) % sounds.len())].into();
+                super::sound::play(&s.huddle.ring_sound, Settings::device(huddle::devices::OUTPUT_ENV, &s.audio.output), s.audio.sound_volume);
+            }
+            Field::RingTimeout => {
+                self.adjust(s, true, true);
+            }
+            Field::AutoDecline => s.huddle.auto_decline ^= true,
             Field::Sound => {
                 let sounds = super::sound::SOUNDS;
                 let i = sounds.iter().position(|x| *x == s.notifications.sound).map_or(0, |i| (i + 1) % sounds.len());
@@ -322,7 +344,7 @@ pub fn translatable() -> Vec<String> {
     let all = [
         Field::Theme, Field::Compact, Field::InlineImages, Field::Avatars, Field::EmojiAsNames, Field::Clock24, Field::DateFormat, Field::TimeZone, Field::Language, Field::Desktop, Field::Sound,
         Field::ConversationLevel, Field::ChannelDefault, Field::Keywords, Field::Vips, Field::Status, Field::Away, Field::Pause, Field::Input, Field::Output,
-        Field::HuddleVolume, Field::SoundVolume, Field::MicGain, Field::SpeakingThreshold, Field::NoiseSuppression, Field::EchoCancellation, Field::Camera, Field::JoinSound, Field::SomeoneJoined, Field::SomeoneLeft,
+        Field::HuddleVolume, Field::SoundVolume, Field::MicGain, Field::SpeakingThreshold, Field::NoiseSuppression, Field::EchoCancellation, Field::Camera, Field::JoinSound, Field::SomeoneJoined, Field::SomeoneLeft, Field::RingSound, Field::RingTimeout, Field::AutoDecline,
     ];
     CATEGORIES.iter().map(|c| c.0).chain(["Keys", LEADER_LABEL]).chain(all.iter().map(|f| f.fixed_label())).map(String::from).collect()
 }
@@ -617,6 +639,15 @@ mod tests {
         assert_eq!(seen, ["rise", "pop", "fall", "chime", "ping", "knock", "off"]);
         let h = Settings::default().huddle;
         assert_eq!((h.someone_joined.as_str(), h.someone_left.as_str()), ("pop", "fall"));
+        assert_eq!((h.ring_sound.as_str(), h.ring_timeout_secs, h.auto_decline), ("ring", 30, false), "rings 30 s, no auto-decline by default");
+        let mut s = Settings::default();
+        assert!(Field::RingTimeout.adjust(&mut s, true, false));
+        assert_eq!(s.huddle.ring_timeout_secs, 45);
+        s.huddle.ring_timeout_secs = 120;
+        Field::RingTimeout.adjust(&mut s, true, true);
+        assert_eq!(s.huddle.ring_timeout_secs, 15, "Enter wraps around");
+        Field::AutoDecline.change(&mut s, &Default::default());
+        assert!(s.huddle.auto_decline);
         assert_eq!(next_sound("unknown"), "off", "a hand-edited name starts over");
     }
 

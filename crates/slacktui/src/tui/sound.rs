@@ -9,6 +9,9 @@ pub const SOUNDS: &[&str] = &["off", "chime", "ping", "knock", "system"];
 /// The choices for huddle events (no "system": the desktop has no such sounds).
 pub const HUDDLE_SOUNDS: &[&str] = &["off", "rise", "pop", "fall", "chime", "ping", "knock"];
 
+/// The choices for a ringing huddle invitation (played every few seconds).
+pub const RING_SOUNDS: &[&str] = &["off", "ring", "chime", "ping", "knock"];
+
 const RATE: f32 = huddle::session::SAMPLE_RATE as f32;
 
 /// A decaying sine burst of `ms` milliseconds.
@@ -39,6 +42,8 @@ pub fn samples(name: &str) -> Vec<i16> {
         // Someone joined: a short upward blip; someone left: a falling pair.
         "pop" => [tone(587.33, 60, 0.25), tone(880.0, 120, 0.25)].concat(),
         "fall" => [tone(698.46, 110, 0.25), tone(466.16, 220, 0.25)].concat(),
+        // A huddle invitation: a soft two-note trill.
+        "ring" => (0..6).flat_map(|i| tone(if i % 2 == 0 { 659.25 } else { 830.61 }, 60, 0.28)).collect(),
         _ => vec![],
     };
     f.into_iter().map(|s| (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16).collect()
@@ -85,7 +90,7 @@ mod tests {
         assert!(chime.iter().map(|s| s.unsigned_abs()).max().unwrap() > 5_000, "audible");
         assert!(chime.len() < huddle::session::SAMPLE_RATE as usize / 2, "fits the speaker's 0.5 s queue");
         assert!(samples("knock").len() < samples("chime").len());
-        for name in HUDDLE_SOUNDS.iter().filter(|n| **n != "off") {
+        for name in HUDDLE_SOUNDS.iter().chain(RING_SOUNDS).filter(|n| **n != "off") {
             let s = samples(name);
             assert!(!s.is_empty() && s.len() < huddle::session::SAMPLE_RATE as usize / 2, "{name}: audible and short");
         }
