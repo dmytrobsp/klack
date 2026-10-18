@@ -19,6 +19,23 @@ pub enum Ctl {
         #[arg(short, default_value_t = 10)]
         n: u32,
     },
+    /// Join (or start) the huddle of a conversation via `rooms.join`; prints the response
+    /// with secrets redacted.
+    HuddleJoin { channel: String },
+    /// Join a conversation's huddle and run Chime signaling (JOIN, frames for N seconds,
+    /// LEAVE), printing a summary of each frame without secrets.
+    HuddleSignal {
+        channel: String,
+        #[arg(default_value_t = 10)]
+        seconds: u64,
+    },
+    /// Leave a huddle via `rooms.leave`.
+    HuddleLeave { channel: String, call_id: String, attendee_id: String },
+    /// Call any Web API method with key=value arguments; prints the response with
+    /// secrets redacted (for research).
+    Api { method: String, args: Vec<String> },
+    /// Download a slack.com URL with the session (for research) into a file.
+    Get { url: String, out: std::path::PathBuf },
     /// Search messages and print the matches as raw JSON fields.
     Search { query: String },
     /// Print a thread (parent first).
@@ -97,6 +114,65 @@ pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
                 println!("{} {:<12} {}{}", m.ts, m.user.as_deref().or(m.username.as_deref()).unwrap_or("?"), m.text.replace('\n', " ⏎ "), reactions(m));
             }
         }
+        Ctl::HuddleJoin { channel } => {
+            let id = resolve_channel(&client, &channel).await?;
+            let v = client.call_raw("rooms.join", &[("channel_id", id)]).await?;
+            println!("{}", serde_json::to_string_pretty(&redact(v))?);
+        }
+        Ctl::HuddleSignal { channel, seconds } => {
+            use huddle::proto::sdk_signal_frame::Type;
+            let id = resolve_channel(&client, &channel).await?;
+            let creds = huddle::signaling::Credentials::from_rooms_join(&client.call_raw("rooms.join", &[("channel_id", id)]).await?)?;
+            println!("room {} meeting {} attendee {}", creds.room_id, creds.meeting.meeting_id, creds.attendee.attendee_id);
+            let mut sig = huddle::signaling::Signaling::connect(&creds).await?;
+            println!("signaling connected");
+            sig.send(&huddle::signaling::join_frame(std::process::id() as u64)).await?;
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(seconds);
+            let mut left = false;
+            loop {
+                let next = tokio::time::timeout_at(deadline, sig.next()).await;
+                let frame = match next {
+                    Ok(Some(f)) => f?,
+                    Ok(None) => break,
+                    Err(_) if !left => {
+                        sig.send(&huddle::signaling::frame(Type::Leave)).await?;
+                        println!("-> LEAVE");
+                        left = true;
+                        // Give the server a moment to acknowledge.
+                        match tokio::time::timeout(std::time::Duration::from_secs(5), sig.next()).await {
+                            Ok(Some(f)) => f?,
+                            _ => break,
+                        }
+                    }
+                    Err(_) => break,
+                };
+                println!("<- {}", describe_frame(&frame));
+                if frame.r#type == Type::LeaveAck as i32 {
+                    break;
+                }
+            }
+            sig.close().await;
+        }
+        Ctl::HuddleLeave { channel, call_id, attendee_id } => {
+            let id = resolve_channel(&client, &channel).await?;
+            let v = client.call_raw("rooms.leave", &[("channel_id", id), ("call_id", call_id), ("attendee_id", attendee_id), ("reason", "user_initiated".into())]).await?;
+            println!("{}", serde_json::to_string_pretty(&redact(v))?);
+        }
+        Ctl::Api { method, args } => {
+            let params: Vec<(&str, String)> = args.iter().filter_map(|a| a.split_once('=')).map(|(k, v)| (k, v.to_string())).collect();
+            let v = client.call_raw(&method, &params).await?;
+            println!("{}", serde_json::to_string_pretty(&redact(v))?);
+        }
+        Ctl::Get { url, out } => {
+            // The session (cookie + token) is only ever sent to Slack's own hosts.
+            let host = url.strip_prefix("https://").and_then(|r| r.split('/').next()).unwrap_or_default();
+            if !(host == "slack.com" || host.ends_with(".slack.com")) {
+                return Err(anyhow!("refusing to send the session to {host}"));
+            }
+            let bytes = client.download(&url).await?;
+            std::fs::write(&out, &bytes)?;
+            println!("{} bytes", bytes.len());
+        }
         Ctl::Search { query } => {
             let v = client.search_messages(&query, 20).await?;
             println!("total: {}", v["messages"]["total"]);
@@ -154,4 +230,45 @@ pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
 fn reactions(m: &slack_core::types::Message) -> String {
     let pinned = if m.pinned_to.is_empty() { "" } else { " [pinned]" };
     m.reactions.iter().map(|r| format!(" [:{}: by {}]", r.name, r.users.join(","))).collect::<String>() + pinned
+}
+
+/// Replace the values of secret-looking keys (tokens, passwords, credentials, signatures).
+fn redact(v: serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    match v {
+        Value::Object(map) => Value::Object(
+            map.into_iter()
+                .map(|(k, v)| {
+                    let secret = ["token", "password", "secret", "credential", "signature"].iter().any(|s| k.to_lowercase().contains(s));
+                    let v = if secret && !v.is_null() { Value::String("<redacted>".into()) } else { redact(v) };
+                    (k, v)
+                })
+                .collect(),
+        ),
+        Value::Array(a) => Value::Array(a.into_iter().map(redact).collect()),
+        other => other,
+    }
+}
+
+/// One-line summary of a signaling frame, without credentials.
+fn describe_frame(f: &huddle::proto::SdkSignalFrame) -> String {
+    use huddle::proto::sdk_signal_frame::Type;
+    let kind = Type::try_from(f.r#type).map(|t| format!("{t:?}")).unwrap_or_else(|_| format!("type {}", f.r#type));
+    let detail = if let Some(e) = &f.error {
+        format!("error {:?} {:?}", e.status, e.description)
+    } else if let Some(a) = &f.joinack {
+        let turn = a.turn_credentials.as_ref().map(|t| format!("{} TURN uris, ttl {:?}", t.uris.len(), t.ttl)).unwrap_or_else(|| "no TURN credentials".into());
+        format!("{turn}, video limit {:?}", a.video_subscription_limit)
+    } else if let Some(i) = &f.index {
+        format!("participants {:?}, {} sources", i.num_participants, i.sources.len())
+    } else if let Some(s) = &f.audio_stream_id_info {
+        s.streams.iter().map(|s| format!("[{:?} {:?} muted={:?} dropped={:?}]", s.audio_stream_id, s.external_user_id, s.muted, s.dropped)).collect::<Vec<_>>().join(" ")
+    } else if let Some(m) = &f.audio_metadata {
+        format!("{} attendee states", m.attendee_states.len())
+    } else if let Some(p) = &f.ping_pong {
+        format!("ping {}", p.ping_id)
+    } else {
+        String::new()
+    };
+    format!("{kind} {detail}")
 }
