@@ -990,7 +990,8 @@ impl App {
             self.completion = None;
             return;
         }
-        let items = super::autocomplete::suggestions(&self.ws, &trigger);
+        let conversation = if thread { self.thread.as_ref().map(|(c, _)| c.clone()) } else { self.current.clone() };
+        let items = super::autocomplete::suggestions(&self.ws, conversation.as_deref(), &trigger);
         if items.is_empty() {
             self.completion = None;
             return;

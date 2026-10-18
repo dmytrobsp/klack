@@ -56,7 +56,8 @@ pub fn rank(q: &str, fields: &[&str]) -> Option<u8> {
     }
 }
 
-pub fn suggestions(ws: &Workspace, trigger: &Trigger) -> Vec<Suggestion> {
+/// Suggestions for `trigger` in a composer that posts to `conversation`.
+pub fn suggestions(ws: &Workspace, conversation: Option<&str>, trigger: &Trigger) -> Vec<Suggestion> {
     match trigger {
         Trigger::User(q) => {
             let q = q.to_lowercase();
@@ -71,8 +72,10 @@ pub fn suggestions(ws: &Workspace, trigger: &Trigger) -> Vec<Suggestion> {
                     Some((r, Suggestion { label: ws.person_label(&u.id), detail, replacement: format!("@{}", u.display()), id: Some(u.id.clone()) }))
                 })
                 .collect();
+            // @here and friends mean nothing in a DM or group DM.
+            let in_dm = conversation.and_then(|c| ws.conversations.get(c)).is_some_and(|c| c.is_dm());
             for (name, detail) in [("here", "notify active members"), ("channel", "notify everyone in the channel"), ("everyone", "notify the whole workspace")] {
-                if name.starts_with(&q) {
+                if name.starts_with(&q) && !in_dm {
                     out.push((0, Suggestion { label: format!("@{name}"), detail: detail.into(), replacement: format!("@{name}"), id: Some(format!("!{name}")) }));
                 }
             }
@@ -148,7 +151,7 @@ mod tests {
     #[test]
     fn users_prefix_first_then_words_then_substring() {
         let w = ws();
-        let s = suggestions(&w, &Trigger::User("an".into()));
+        let s = suggestions(&w, Some("C1"), &Trigger::User("an".into()));
         let labels: Vec<&str> = s.iter().map(|s| s.label.as_str()).collect();
         assert_eq!(labels, vec!["Anna Bee", "Hannah"]);
         assert_eq!(s[0].replacement, "@Anna Bee");
@@ -158,11 +161,19 @@ mod tests {
     #[test]
     fn specials_and_channels_and_emoji() {
         let w = ws();
-        let here = suggestions(&w, &Trigger::User("he".into()));
+        let here = suggestions(&w, Some("C1"), &Trigger::User("he".into()));
         assert!(here.iter().any(|s| s.id.as_deref() == Some("!here")));
-        let chans: Vec<String> = suggestions(&w, &Trigger::Channel("gen".into())).into_iter().map(|s| s.label).collect();
+        let mut w2 = ws();
+        w2.conversations.insert("D1".into(), Conversation { id: "D1".into(), is_im: true, user: Some("U2".into()), ..Default::default() });
+        w2.conversations.insert("G1".into(), Conversation { id: "G1".into(), is_mpim: true, ..Default::default() });
+        for dm in ["D1", "G1"] {
+            let s = suggestions(&w2, Some(dm), &Trigger::User("".into()));
+            assert!(s.iter().all(|s| !s.id.as_deref().unwrap_or("").starts_with('!')), "no @here/@channel/@everyone in {dm}");
+        }
+        assert!(suggestions(&w2, Some("D1"), &Trigger::User("han".into())).iter().any(|s| s.label == "Hannah"), "people still offered");
+        let chans: Vec<String> = suggestions(&w, Some("C1"), &Trigger::Channel("gen".into())).into_iter().map(|s| s.label).collect();
         assert_eq!(chans, vec!["#gen-z", "#general"]);
-        let emoji = suggestions(&w, &Trigger::Emoji("tad".into()));
+        let emoji = suggestions(&w, Some("C1"), &Trigger::Emoji("tad".into()));
         assert_eq!(emoji[0].replacement, ":tada:");
         assert!(emoji[0].id.is_none());
     }
