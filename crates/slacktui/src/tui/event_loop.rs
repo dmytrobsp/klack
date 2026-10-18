@@ -1781,6 +1781,17 @@ fn spawn_boot(client: Client, tx: mpsc::UnboundedSender<Net>) {
     });
 }
 
+/// The first of `candidates` (longest first) that fits in `room` columns, else the last.
+fn fit_title(candidates: &[String], room: usize) -> String {
+    candidates.iter().find(|c| c.chars().count() <= room).or(candidates.last()).cloned().unwrap_or_default()
+}
+
+/// The reply box title: the "also to channel" box and its key, shortened to fit `room`.
+fn reply_title(broadcast: bool, key: &str, room: usize) -> String {
+    let b = if broadcast { "x" } else { " " };
+    fit_title(&[format!(" Reply · [{b}] also to channel ({key}) "), format!(" Reply · [{b}] also to channel "), format!(" Reply · [{b}] +channel "), format!(" [{b}] +channel ")], room)
+}
+
 /// Whether a message at `ts` lies before the oldest loaded one (`first`): Slack timestamps
 /// compare as numbers.
 fn seek_older(ts: &str, first: &str) -> bool {
@@ -2937,12 +2948,15 @@ fn draw_composer(f: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &App,
     } else {
         app.current.as_deref().map(|c| app.ws.typing_in(c)).unwrap_or_default()
     };
+    // Room for the title between the corners.
+    let room = area.width.saturating_sub(2) as usize;
     let title = if composer.editing.is_some() {
         let key = |a| app.keys.first_key(Context::Composer, a).unwrap_or_default();
-        format!(" Editing message · {} save · {} cancel ", key(Action::Send), key(Action::Leave))
+        let (save, cancel) = (key(Action::Send), key(Action::Leave));
+        fit_title(&[format!(" Editing message · {save} save · {cancel} cancel "), format!(" Editing · {save} save · {cancel} cancel "), " Editing message ".into()], room)
     } else if thread {
         let key = app.keys.first_key(Context::Composer, Action::AlsoToChannel).unwrap_or_default();
-        format!(" Reply · [{}] also to channel ({key}) ", if app.broadcast { "x" } else { " " })
+        reply_title(app.broadcast, &key, room)
     } else if app.current.as_deref().and_then(|c| app.ws.conversations.get(c)).is_some_and(|c| c.is_archived) {
         format!(" #{target} is archived ")
     } else if app.current.as_deref().is_some_and(|c| app.ws.is_outside(c)) {
@@ -2979,6 +2993,18 @@ fn draw_composer(f: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &App,
 #[cfg(test)]
 mod tests {
     use slack_core::session::WorkspaceSession;
+
+    #[test]
+    fn reply_titles_fit() {
+        use super::reply_title;
+        assert_eq!(reply_title(false, "Alt+A", 60), " Reply · [ ] also to channel (Alt+A) ");
+        assert_eq!(reply_title(true, "Alt+A", 36), " Reply · [x] also to channel ");
+        assert_eq!(reply_title(false, "Alt+A", 26), " Reply · [ ] +channel ");
+        assert_eq!(reply_title(false, "Alt+A", 10), " [ ] +channel ", "the checkbox stays even when nothing fits");
+        for room in 14..70 {
+            assert!(reply_title(true, "Alt+A", room).chars().count() <= room);
+        }
+    }
 
     #[test]
     fn seeking_older_messages() {
