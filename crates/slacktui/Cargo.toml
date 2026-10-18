@@ -30,3 +30,7 @@ rustls = { version = "0.23.46", features = ["ring"] }
 syntect = { version = "5.3.0", default-features = false, features = ["default-fancy"] }
 toml = "1.1.8"
 chrono-tz = "0.10.4"
+
+[target.'cfg(unix)'.dependencies]
+# Reading the terminal's device attributes with a timeout (pictures in sixel terminals).
+rustix = { version = "1.1.5", features = ["event", "stdio"] }

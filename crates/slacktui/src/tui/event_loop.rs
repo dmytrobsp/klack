@@ -1412,6 +1412,9 @@ impl App {
                 // The sidebar's gaps between sections follow it.
                 self.sidebar.rebuild(&self.ws);
             }
+            if field == Some(super::prefs::Field::Graphics) {
+                self.media.choose(&self.ws.settings.messages.graphics);
+            }
             self.audio_changed(field);
             return;
         }
@@ -1955,7 +1958,7 @@ pub async fn run(profile: slack_core::session::Profile, team: Option<&str>) -> R
     tokio::task::spawn_blocking(super::highlight::warm_up);
     let (_guard, mut terminal) = TerminalGuard::enter()?;
     // Query the terminal before the event stream starts reading stdin.
-    let mut media = super::media::Media::detect();
+    let mut media = super::media::Media::detect(&super::settings::load().0.messages.graphics);
     let mut clipboard = super::clipboard::Clipboard::default();
     let mut events = EventStream::new();
     loop {

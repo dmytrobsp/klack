@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use ratatui::layout::Size;
 use ratatui_image::FontSize;
-use ratatui_image::picker::Picker;
+use ratatui_image::picker::{Picker, ProtocolType};
 use ratatui_image::sliced::SlicedProtocol;
 use slack_core::types::File;
 
@@ -24,7 +24,15 @@ pub struct Media {
     pub thumbs: HashMap<String, Thumb>,
     /// Draw profile pictures next to author names (real graphics only; `SLACKTUI_AVATARS=0` turns them off).
     pub avatars: bool,
+    /// What the terminal said it can do (for "auto").
+    detected: ProtocolType,
 }
+
+/// The ways of drawing pictures to choose from ("auto": ask the terminal).
+pub const GRAPHICS: &[&str] = &["auto", "kitty", "sixel", "iterm2", "halfblocks"];
+
+/// Overrides the graphics setting.
+pub const GRAPHICS_ENV: &str = "SLACKTUI_GRAPHICS";
 
 /// An avatar is two cells wide and one tall (about square).
 pub const AVATAR_SIZE: (u16, u16) = (2, 1);
@@ -55,15 +63,44 @@ pub fn avatar_file_sized(user: &slack_core::types::User, large: bool) -> Option<
 
 impl Media {
     /// Ask the terminal for its graphics protocol and cell size (call after entering raw
-    /// mode, before reading events); falls back to half-block characters.
-    pub fn detect() -> Media {
-        let picker = Picker::from_query_stdio().unwrap_or_else(|e| {
+    /// mode, before reading events); falls back to half-block characters. `choice` is the
+    /// graphics setting (see [`GRAPHICS`]).
+    pub fn detect(choice: &str) -> Media {
+        let mut picker = Picker::from_query_stdio().unwrap_or_else(|e| {
             tracing::warn!("terminal graphics query failed, using half blocks: {e}");
             Picker::halfblocks()
         });
-        tracing::info!(protocol = ?picker.protocol_type(), font = ?picker.font_size(), "terminal graphics");
-        let avatars = picker.protocol_type() != ratatui_image::picker::ProtocolType::Halfblocks && std::env::var("SLACKTUI_AVATARS").map_or(true, |v| v != "0");
-        Media { picker, thumbs: HashMap::new(), avatars }
+        // A terminal that does not report its cell size (xterm by default) loses its sixel
+        // support in the query above; ask for it on its own and take the size from the
+        // window's pixel size.
+        if picker.protocol_type() == ProtocolType::Halfblocks && sixel_advertised() {
+            tracing::info!("the terminal advertises sixel but did not report its cell size: using sixel");
+            picker.set_protocol_type(ProtocolType::Sixel);
+        }
+        tracing::info!(protocol = ?picker.protocol_type(), font = ?picker.font_size(), capabilities = ?picker.capabilities(), "terminal graphics");
+        let detected = picker.protocol_type();
+        let mut media = Media { picker, thumbs: HashMap::new(), avatars: false, detected };
+        media.choose(choice);
+        media
+    }
+
+    /// Pictures drawn with `picker`, without profile pictures (for tests).
+    #[cfg(test)]
+    pub fn with(picker: Picker) -> Media {
+        let detected = picker.protocol_type();
+        Media { picker, thumbs: HashMap::new(), avatars: false, detected }
+    }
+
+    /// Draw pictures as `choice` says ("auto": as detected; `SLACKTUI_GRAPHICS` wins);
+    /// pictures made the other way are dropped.
+    pub fn choose(&mut self, choice: &str) {
+        let env = std::env::var(GRAPHICS_ENV).ok().filter(|v| !v.trim().is_empty());
+        let protocol = protocol_named(env.as_deref().unwrap_or(choice)).unwrap_or(self.detected);
+        if protocol != self.picker.protocol_type() {
+            self.thumbs.clear();
+        }
+        self.picker.set_protocol_type(protocol);
+        self.avatars = protocol != ProtocolType::Halfblocks && std::env::var("SLACKTUI_AVATARS").map_or(true, |v| v != "0");
     }
 
     /// Cells to reserve under an image file's line when at most `max_cols` wide, or None
@@ -71,6 +108,62 @@ impl Media {
     pub fn thumb_size(&self, file: &File, max_cols: u16) -> Option<(u16, u16)> {
         thumb_cells(file, self.picker.font_size(), MAX_COLS.min(max_cols), MAX_ROWS)
     }
+}
+
+/// The protocol a [`GRAPHICS`] name stands for (None for "auto" and unknown names).
+fn protocol_named(name: &str) -> Option<ProtocolType> {
+    match name.trim().to_ascii_lowercase().as_str() {
+        "kitty" => Some(ProtocolType::Kitty),
+        "sixel" => Some(ProtocolType::Sixel),
+        "iterm2" => Some(ProtocolType::Iterm2),
+        "halfblocks" | "half blocks" => Some(ProtocolType::Halfblocks),
+        _ => None,
+    }
+}
+
+/// Whether a primary device attributes reply (`ESC [ ? 63 ; 1 ; 2 ; 4 ; … c`) lists sixel (4).
+fn da1_has_sixel(reply: &[u8]) -> bool {
+    let Some(start) = reply.windows(3).position(|w| w == b"\x1b[?") else { return false };
+    let rest = &reply[start + 3..];
+    let Some(end) = rest.iter().position(|b| *b == b'c') else { return false };
+    rest[..end].split(|b| *b == b';').any(|p| p == b"4")
+}
+
+/// Ask the terminal for its device attributes (in raw mode) and see whether it lists sixel;
+/// gives up after a short wait.
+#[cfg(unix)]
+fn sixel_advertised() -> bool {
+    use rustix::event::{PollFd, PollFlags, Timespec, poll};
+    use std::io::Write;
+    let mut out = std::io::stdout();
+    if out.write_all(b"\x1b[c").and_then(|_| out.flush()).is_err() {
+        return false;
+    }
+    let stdin = rustix::stdio::stdin();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+    let mut reply = Vec::new();
+    while !reply.ends_with(b"c") || !reply.windows(3).any(|w| w == b"\x1b[?") {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            break;
+        }
+        let timeout = Timespec { tv_sec: left.as_secs() as _, tv_nsec: left.subsec_nanos() as _ };
+        let mut fds = [PollFd::new(&stdin, PollFlags::IN)];
+        if !matches!(poll(&mut fds, Some(&timeout)), Ok(n) if n > 0) {
+            break;
+        }
+        let mut buf = [0u8; 64];
+        match rustix::io::read(stdin, &mut buf) {
+            Ok(n) if n > 0 => reply.extend_from_slice(&buf[..n]),
+            _ => break,
+        }
+    }
+    da1_has_sixel(&reply)
+}
+
+#[cfg(not(unix))]
+fn sixel_advertised() -> bool {
+    false
 }
 
 /// Fit the image's pixel size (from the file metadata, 4:3 if unknown) into
@@ -200,6 +293,19 @@ mod tests {
         blank_picture_cell(&mut cell);
         assert_eq!(cell.symbol(), "\x1b_Gdata\x1b\\ ");
         assert!(is_continuation("\u{10EEEE}") && !is_continuation("\u{10EEEE}\u{305}") && !is_continuation("a"));
+    }
+
+    #[test]
+    fn graphics_choices() {
+        // xterm's real replies: as a VT340 (sixel) and by default.
+        assert!(da1_has_sixel(b"\x1b[?63;1;2;4;6;9;15;16;22;28c"));
+        assert!(!da1_has_sixel(b"\x1b[?64;1;2;6;9;15;16;17;18;21;22;28c"));
+        assert!(!da1_has_sixel(b"\x1b[?63;1;2;14c"), "14 is not 4");
+        assert!(!da1_has_sixel(b"\x1b[0n"), "no attributes");
+        assert!(!da1_has_sixel(b"\x1b[?63;1;4"), "cut short");
+        assert_eq!(protocol_named("Sixel"), Some(ProtocolType::Sixel));
+        assert_eq!(protocol_named("auto"), None);
+        assert!(GRAPHICS.iter().skip(1).all(|g| protocol_named(g).is_some()), "every choice but auto names a protocol");
     }
 
     #[test]

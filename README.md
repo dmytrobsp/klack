@@ -172,6 +172,7 @@ on Windows only from an SSH session, where `gdigrab` cannot capture (no desktop)
 | `SLACKTUI_LOG` | log filter, e.g. `slacktui=debug` (log file: `~/.cache/slacktui/<profile>/slacktui.log`) |
 | `SLACKTUI_DOWNLOAD_DIR` | where `s` saves attachments (default: your downloads folder) |
 | `SLACKTUI_AVATARS=0` | no profile pictures next to names (they are also off on terminals without real graphics) |
+| `SLACKTUI_GRAPHICS` | how pictures are drawn: `kitty`, `sixel`, `iterm2` or `halfblocks` (default: asked from the terminal; also F6 → Messages & media → Draw pictures with) |
 
 ### Themes
 

@@ -5048,6 +5048,7 @@ dependencies = [
  "notify-rust",
  "ratatui",
  "ratatui-image",
+ "rustix 1.1.5",
  "rustls",
  "serde",
  "serde_json",

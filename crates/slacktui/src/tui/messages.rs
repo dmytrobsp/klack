@@ -699,7 +699,7 @@ mod tests {
             }
             let newest = start.elapsed().as_secs_f64() * 1000.0 / runs as f64;
             // A frame of the pane itself, at the bottom and far up (anchored).
-            let media = Media { picker: ratatui_image::picker::Picker::halfblocks(), thumbs: Default::default(), avatars: false };
+            let media = Media::with(ratatui_image::picker::Picker::halfblocks());
             let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(104, 40)).unwrap();
             let mut pane = MessagePane::default();
             let mut frame = |pane: &mut MessagePane, runs: usize| {
@@ -731,7 +731,7 @@ mod tests {
             let at = 1_700_000_000.0 + (i as f64) * 900.0 * if i % 7 == 0 { 30.0 } else { 1.0 };
             t.upsert(msg(&format!("{at:.6}"), ["U1", "U2", "U3"][(i / 3) % 3], texts[i % 3]));
         }
-        let media = Media { picker: ratatui_image::picker::Picker::halfblocks(), thumbs: Default::default(), avatars: false };
+        let media = Media::with(ratatui_image::picker::Picker::halfblocks());
         let (w, h) = (60u16, 22u16);
         let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
         let mut pane = MessagePane::default();

@@ -72,11 +72,14 @@ pub struct Messages {
     pub avatars: bool,
     /// Show emoji as `:name:` instead of the character.
     pub emoji_as_names: bool,
+    /// How pictures are drawn: "auto" (asked from the terminal) or one of
+    /// [`super::media::GRAPHICS`]; `SLACKTUI_GRAPHICS` wins over it.
+    pub graphics: String,
 }
 
 impl Default for Messages {
     fn default() -> Self {
-        Messages { inline_images: true, avatars: true, emoji_as_names: false }
+        Messages { inline_images: true, avatars: true, emoji_as_names: false, graphics: "auto".into() }
     }
 }
 
