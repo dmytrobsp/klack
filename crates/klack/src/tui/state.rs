@@ -514,6 +514,9 @@ impl Workspace {
         for key in ["channels", "mpims", "ims"] {
             for c in counts[key].as_array().into_iter().flatten() {
                 let Some(id) = c["id"].as_str() else { continue };
+                if let (Some(conv), Some(ts)) = (self.conversations.get_mut(id), c["last_read"].as_str()) {
+                    conv.last_read = Some(ts.to_string());
+                }
                 self.unread.insert(
                     id.to_string(),
                     Unread { has_unreads: c["has_unreads"].as_bool().unwrap_or(false), mentions: c["mention_count"].as_u64().unwrap_or(0) },
@@ -695,5 +698,14 @@ mod tests {
         let own = Conversation { is_im: true, user: Some("UME".into()), ..Default::default() };
         assert_eq!(ws.conversation_label(&own), "alice (You)");
         assert_eq!(ws.person_label("U2"), "Bob B");
+    }
+
+    #[test]
+    fn counts_carry_last_read() {
+        let mut ws = Workspace::default();
+        ws.conversations.insert("D1".into(), Conversation { id: "D1".into(), is_im: true, ..Default::default() });
+        ws.apply_counts(&serde_json::json!({"ims": [{"id": "D1", "has_unreads": true, "mention_count": 0, "last_read": "1792357735.815229"}]}));
+        assert!(ws.unread["D1"].has_unreads);
+        assert_eq!(ws.conversations["D1"].last_read.as_deref(), Some("1792357735.815229"));
     }
 }

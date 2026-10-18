@@ -95,6 +95,9 @@ pub struct MessagePane {
     pub editing: Option<String>,
     /// Thumbnails that were on screen but not loaded at the last draw.
     pub wanted: Vec<(File, (u16, u16))>,
+    /// Read up to here when the conversation was opened with unreads: a "— new —" line stands
+    /// above the first newer message from someone else.
+    pub new_since: Option<String>,
 }
 
 impl MessagePane {
@@ -245,6 +248,18 @@ impl MessagePane {
                 }
             }
         }
+        if let (Some(t), Some(since)) = (timeline, self.new_since.as_deref().filter(|_| !self.thread)) {
+            let first_new = shown_messages(t, false).find(|m| ts_after(&m.ts, since) && m.user.as_deref() != Some(ws.self_id.as_str()));
+            if let Some(at) = first_new.and_then(|m| owners.iter().position(|o| o.as_deref() == Some(m.ts.as_str()))) {
+                let label = " new ";
+                let side = width.saturating_sub(label.len()) / 2;
+                lines.insert(at, Line::styled(format!("{}{label}{}", "─".repeat(side), "─".repeat(side)), Style::default().fg(super::theme::p().danger)));
+                owners.insert(at, None);
+                for slot in slots.iter_mut().filter(|s| s.line >= at) {
+                    slot.line += 1;
+                }
+            }
+        }
         if let Some(t) = timeline {
             let own: std::collections::HashSet<&str> = t.messages.iter().filter(|m| m.user.as_deref() == Some(ws.self_id.as_str()) && !is_system(m)).map(|m| m.ts.as_str()).collect();
             let system: std::collections::HashSet<&str> = t.messages.iter().filter(|m| is_system(m)).map(|m| m.ts.as_str()).collect();
@@ -311,11 +326,17 @@ impl MessagePane {
             rows = prow;
         }
         self.rows = rows;
-        f.render_widget(Paragraph::new(visible).block(block), area);
         // Where we are, counted in messages (only part of a long history is built).
         let mut on_screen: Vec<&str> = self.rows.iter().flatten().map(String::as_str).collect();
         on_screen.dedup();
         let index = |ts: &&str| order.iter().rposition(|o| o == ts);
+        // Reading further up: how many messages are below the view.
+        let newer = on_screen.last().and_then(index).filter(|_| self.anchor.is_some()).map_or(0, |b| order.len() - 1 - b);
+        let block = match newer {
+            0 => block,
+            n => block.title_bottom(Line::styled(format!(" ↓ {n} newer "), Style::default().fg(super::theme::p().accent)).right_aligned()),
+        };
+        f.render_widget(Paragraph::new(visible).block(block), area);
         if let (Some(top), Some(bottom)) = (on_screen.first().and_then(index), on_screen.last().and_then(index)) {
             super::scroll::indicator(f, area, top, bottom + 1 - top, order.len(), border);
         }
@@ -397,6 +418,15 @@ fn add_gutter(lines: &mut [Line<'static>], owners: &[Option<String>], own: &std:
         };
         line.spans.insert(0, gutter);
     }
+}
+
+/// Slack timestamp `a` is later than `b` (compared exactly: seconds, then the fraction).
+fn ts_after(a: &str, b: &str) -> bool {
+    let key = |ts: &str| {
+        let (s, frac) = ts.split_once('.').unwrap_or((ts, ""));
+        (s.parse::<u64>().unwrap_or(0), format!("{frac:0<6}"))
+    };
+    key(a) > key(b)
 }
 
 fn day_label(ws: &Workspace, ts: f64) -> String {
@@ -1078,5 +1108,52 @@ mod tests {
         assert!(!p.iter().any(|l| l == "reply"), "{p:?}");
         assert!(p.iter().any(|l| l.contains("👍\u{a0}1")), "the reaction (a pill)");
         assert!(p.iter().any(|l| l.starts_with("💬 2 replies")));
+    }
+
+    #[test]
+    fn timestamps_compare_exactly() {
+        assert!(ts_after("1792331652.105150", "1792331652.105149"), "one microsecond (beyond an f64 at this size)");
+        assert!(!ts_after("1792331652.105149", "1792331652.105149"));
+        assert!(ts_after("10.5", "10.49") && ts_after("11.0", "10.999999") && ts_after("1.0", "0000000000.000000"));
+    }
+
+    #[test]
+    fn new_line_above_the_first_unread_and_newer_count() {
+        let mut ws = Workspace { self_id: "UME".into(), ..Default::default() };
+        for (id, name) in [("U1", "ann"), ("UME", "me")] {
+            ws.users.insert(id.into(), slack_core::types::User { id: id.into(), name: name.into(), ..Default::default() });
+        }
+        let mut t = Timeline { loaded: true, ..Default::default() };
+        let ts = |i: usize| format!("{}.000100", 1_700_000_000 + i * 60);
+        for i in 0..30 {
+            t.upsert(msg(&ts(i), if i == 21 { "UME" } else { "U1" }, &format!("message {i}")));
+        }
+        let media = Media::with(ratatui_image::picker::Picker::halfblocks());
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 14)).unwrap();
+        let screen = |terminal: &ratatui::Terminal<ratatui::backend::TestBackend>| -> Vec<String> {
+            let buf = terminal.backend().buffer();
+            (0..buf.area.height).map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect()).collect()
+        };
+        // Read up to message 20; 21 is our own, so the line stands above 22.
+        let mut pane = MessagePane { new_since: Some(ts(20)), ..Default::default() };
+        terminal.draw(|f| pane.draw(f, f.area(), &ws, "t", Some(&t), false, &media)).unwrap();
+        let at = pane.rows.iter().position(|r| r.as_deref() == Some(ts(22).as_str())).expect("message 22 on screen");
+        assert_eq!(pane.rows[at - 1], None);
+        let rows = screen(&terminal);
+        assert!(rows[at].contains(" new ") && rows[at].contains('─'), "{rows:#?}");
+        assert_eq!(rows.iter().filter(|r| r.contains(" new ")).count(), 1);
+        assert!(!rows[13].contains("newer"), "following the newest: no count");
+        // Only our own messages after it, or a thread: no line.
+        for mut pane in [MessagePane { new_since: Some(ts(20)), thread: true, ..Default::default() }, MessagePane { new_since: Some(ts(29)), ..Default::default() }] {
+            terminal.draw(|f| pane.draw(f, f.area(), &ws, "t", Some(&t), false, &media)).unwrap();
+            assert!(!screen(&terminal).iter().any(|r| r.contains(" new ")));
+        }
+        // Reading further up, the bottom border counts the messages below the view.
+        pane.scroll_up(12);
+        terminal.draw(|f| pane.draw(f, f.area(), &ws, "t", Some(&t), false, &media)).unwrap();
+        let last = pane.rows.iter().flatten().last().cloned().unwrap();
+        let below = 29 - (0..30).position(|i| ts(i) == last).unwrap();
+        assert!(below > 0);
+        assert!(screen(&terminal)[13].contains(&format!("↓ {below} newer")), "{:?}", screen(&terminal)[13]);
     }
 }

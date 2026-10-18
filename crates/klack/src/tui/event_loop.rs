@@ -250,6 +250,9 @@ impl App {
             }
             self.save_drafts();
             self.current = selected.clone();
+            // Where the unread part starts, kept while the conversation stays open (it is
+            // marked read right away).
+            self.messages.new_since = selected.as_ref().filter(|id| self.ws.unread.get(*id).is_some_and(|u| u.has_unreads)).and_then(|id| self.ws.conversations.get(id)).and_then(|c| c.last_read.clone());
             self.messages.to_bottom();
             self.messages.selected = None;
             self.close_thread();

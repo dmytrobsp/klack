@@ -49,7 +49,9 @@ messages in the middle with a reply pane for threads on the right, the composer 
 bar at the bottom: a pill saying where your keys go now (SIDEBAR, MESSAGES, COMPOSE, THREAD, REPLY,
 HUDDLE, or the open dialog: JUMP, SEARCH, PREFS, …), where you are (`#social › Thread`), unread
 counts and messages — or, while a dialog is open, its keys — then F1 for all keys and whether klack
-is connected. A thumb on a pane's right border shows where you are when it scrolls.
+is connected. A thumb on a pane's right border shows where you are when it scrolls. A conversation
+opened with unread messages has a red "new" line above the first of them; while you read further
+up, the bottom border counts the newer messages below ("↓ 3 newer").
 
 ## Signing in
 
