@@ -22,7 +22,8 @@ pub enum Inline {
     Broadcast(String),
     Usergroup { id: String, handle: Option<String> },
     Link { url: String, label: Option<String>, style: Style },
-    Emoji { name: String },
+    /// `unicode` is the hex code point sequence from rich_text (`1f44b`, `1f468-200d-1f4bb`).
+    Emoji { name: String, unicode: Option<String> },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -65,7 +66,7 @@ fn rich_inlines(elements: &Value) -> Vec<Inline> {
             "channel" => out.push(Inline::Channel { id: s("channel_id").unwrap_or_default(), name: None }),
             "usergroup" => out.push(Inline::Usergroup { id: s("usergroup_id").unwrap_or_default(), handle: None }),
             "broadcast" => out.push(Inline::Broadcast(s("range").unwrap_or_else(|| "here".into()))),
-            "emoji" => out.push(Inline::Emoji { name: s("name").unwrap_or_default() }),
+            "emoji" => out.push(Inline::Emoji { name: s("name").unwrap_or_default(), unicode: s("unicode") }),
             "date" => out.push(text(el["fallback"].as_str().unwrap_or(""), Style::default())),
             "color" => out.push(text(el["value"].as_str().unwrap_or(""), Style::default())),
             _ => {}
@@ -80,7 +81,7 @@ fn preformatted_text(elements: &Value) -> String {
         .map(|i| match i {
             Inline::Text { text, .. } => text,
             Inline::Link { url, label, .. } => label.unwrap_or(url),
-            Inline::Emoji { name } => format!(":{name}:"),
+            Inline::Emoji { name, .. } => format!(":{name}:"),
             Inline::User { id } => format!("<@{id}>"),
             _ => String::new(),
         })
@@ -190,7 +191,7 @@ pub fn parse_inline(src: &str) -> Vec<Inline> {
                     let name: String = rest[..end].iter().collect();
                     if name.chars().all(|x| x.is_ascii_alphanumeric() || "_+-'".contains(x)) {
                         flush(&mut buf, &mut out, style);
-                        out.push(Inline::Emoji { name });
+                        out.push(Inline::Emoji { name, unicode: None });
                         i += end + 2;
                         continue;
                     }
@@ -275,6 +276,11 @@ pub fn message_blocks(text: &str, blocks: &[Value]) -> Vec<Block> {
     from_rich_text(blocks).filter(|b| !b.is_empty()).unwrap_or_else(|| from_mrkdwn(text))
 }
 
+/// Decode a rich_text `unicode` value (`1f468-200d-1f4bb`) into a string.
+pub fn decode_unicode(hex: &str) -> Option<String> {
+    hex.split('-').map(|h| u32::from_str_radix(h, 16).ok().and_then(char::from_u32)).collect()
+}
+
 /// Plain-text rendering for notifications and previews, resolving names via `name_of`.
 pub fn plain_text(blocks: &[Block], name_of: &dyn Fn(&Inline) -> String) -> String {
     let inline = |items: &[Inline]| items.iter().map(name_of).collect::<String>();
@@ -329,7 +335,14 @@ mod tests {
         assert_eq!(got[4], Inline::Broadcast("here".into()));
         assert_eq!(got[6], Inline::Link { url: "https://x.y".into(), label: Some("site".into()), style: Style::default() });
         assert_eq!(got[7], text(" <3 ", Style::default()));
-        assert_eq!(got[8], Inline::Emoji { name: "wave".into() });
+        assert_eq!(got[8], Inline::Emoji { name: "wave".into(), unicode: None });
+    }
+
+    #[test]
+    fn unicode_emoji() {
+        assert_eq!(decode_unicode("1f44b").as_deref(), Some("👋"));
+        assert_eq!(decode_unicode("1f468-200d-1f4bb").as_deref(), Some("👨‍💻"));
+        assert_eq!(decode_unicode("zz"), None);
     }
 
     #[test]

@@ -1,6 +1,7 @@
 //! slacktui — a native Slack client for the terminal.
 
 mod ctl;
+mod tui;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
