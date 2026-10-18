@@ -637,8 +637,12 @@ impl App {
         match Some(action) {
             Some(Action::Up) => {
                 pane.move_selection(&order, -1);
+                // On the oldest loaded message: load older ones (the lines above it, like its
+                // day separator, need not be on screen for that).
                 if !in_thread && order.first() == self.messages.selected.as_ref() {
-                    self.maybe_load_older();
+                    if let Some(id) = self.current.clone() {
+                        self.load_history(&id, true);
+                    }
                 }
             }
             Some(Action::Down) => pane.move_selection(&order, 1),

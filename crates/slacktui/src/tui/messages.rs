@@ -35,6 +35,9 @@ const GROUP_WINDOW: f64 = 300.0;
 /// Columns left of every message row; your own messages get a bar there.
 const GUTTER: u16 = 2;
 
+/// The fewest messages built for a draw (more when the view or the selection needs them).
+const BUILD_CHUNK: usize = 100;
+
 #[derive(Debug, Default)]
 pub struct MessagePane {
     /// Lines scrolled up from the bottom (0 = newest visible).
@@ -42,6 +45,8 @@ pub struct MessagePane {
     pub area: Rect,
     /// Total rendered lines on the last draw (to detect reaching the top).
     pub total_lines: usize,
+    /// The last draw built only the newest messages (older ones are further up).
+    partial: bool,
     /// Selected message ts (message focus).
     pub selected: Option<String>,
     /// Message ts owning each visible row of the last draw (for clicks).
@@ -73,7 +78,7 @@ impl MessagePane {
     /// True once the top of the loaded history is on screen.
     pub fn at_top(&self) -> bool {
         let height = self.area.height.saturating_sub(2) as usize;
-        self.total_lines <= height || self.scroll + height >= self.total_lines
+        !self.partial && (self.total_lines <= height || self.scroll + height >= self.total_lines)
     }
 
     /// Move the selection by `delta` messages among the shown ones (`order` = ts list).
@@ -115,12 +120,36 @@ impl MessagePane {
         let inner = block.inner(area);
         let width = inner.width.saturating_sub(1 + GUTTER) as usize;
         let thumb_size = |file: &File, max_cols: u16| media.thumb_size(file, max_cols).filter(|_| ws.settings.messages.inline_images);
+        let avatars = media.avatars && ws.settings.messages.avatars;
         let (mut lines, mut owners, mut slots) = match timeline {
-            Some(t) if t.loaded || !t.messages.is_empty() => build_lines_owned(ws, t, width, self.thread, &thumb_size, media.avatars && ws.settings.messages.avatars),
-            Some(_) => (vec![Line::styled("Loading messages…", Style::default().fg(super::theme::p().dim))], vec![None], vec![]),
-            None => (vec![], vec![], vec![]),
+            Some(t) if t.loaded || !t.messages.is_empty() => {
+                // Building costs time for every line, on every frame: only the newest messages
+                // that cover the view (with a screen to spare), the selection and the message
+                // being edited are built. A thread is built whole.
+                let shown: Vec<&str> = shown_messages(t, self.thread).map(|m| m.ts.as_str()).collect();
+                let need = self.scroll + 2 * inner.height as usize;
+                let kept = [&self.selected, &self.editing].into_iter().flatten().filter_map(|ts| shown.iter().position(|s| *s == ts.as_str())).min();
+                let mut take = BUILD_CHUNK.max(kept.map_or(0, |i| shown.len() - i));
+                loop {
+                    let from = if self.thread { 0 } else { shown.len().saturating_sub(take) };
+                    let built = build_lines_from(ws, t, from, width, self.thread, &thumb_size, avatars);
+                    if from == 0 || built.0.len() >= need {
+                        self.partial = from > 0;
+                        break built;
+                    }
+                    take *= 2;
+                }
+            }
+            Some(_) => {
+                self.partial = false;
+                (vec![Line::styled("Loading messages…", Style::default().fg(super::theme::p().dim))], vec![None], vec![])
+            }
+            None => {
+                self.partial = false;
+                (vec![], vec![], vec![])
+            }
         };
-        if let Some(t) = timeline.filter(|_| !self.thread) {
+        if let Some(t) = timeline.filter(|_| !self.thread && !self.partial) {
             let note = if t.loading && t.loaded {
                 Some("Loading older messages…")
             } else if t.loaded && !t.has_more && !t.messages.is_empty() {
@@ -330,13 +359,23 @@ fn failed_thumb(reason: &str) -> String {
     format!("⚠ preview unavailable: {reason}")
 }
 
+#[cfg(test)]
 pub fn build_lines_owned(ws: &Workspace, t: &Timeline, width: usize, thread: bool, thumb_size: ThumbSize, avatars: bool) -> (Vec<Line<'static>>, Vec<Option<String>>, Vec<ImageSlot>) {
+    build_lines_from(ws, t, 0, width, thread, thumb_size, avatars)
+}
+
+/// [`build_lines_owned`] from the `from`-th shown message on: the same lines as the end of the
+/// whole build (grouping and day separators carry on from the message before it).
+pub fn build_lines_from(ws: &Workspace, t: &Timeline, from: usize, width: usize, thread: bool, thumb_size: ThumbSize, avatars: bool) -> (Vec<Line<'static>>, Vec<Option<String>>, Vec<ImageSlot>) {
     let mut out: Vec<Line<'static>> = Vec::new();
     let mut owners: Vec<Option<String>> = Vec::new();
     let mut slots: Vec<ImageSlot> = Vec::new();
-    let mut prev: Option<&Message> = None;
-    let mut last_day: Option<f64> = None;
-    for (n, m) in shown_messages(t, thread).enumerate() {
+    let shown: Vec<&Message> = shown_messages(t, thread).collect();
+    let before = from.checked_sub(1).and_then(|i| shown.get(i).copied());
+    // What the whole build would carry over: a system message ends a group.
+    let mut prev: Option<&Message> = before.filter(|p| !is_system(p));
+    let mut last_day: Option<f64> = before.map(|p| p.time());
+    for (n, m) in shown.into_iter().enumerate().skip(from) {
         let ts = m.time();
         owners.resize(out.len(), None);
         if thread && n == 1 {
@@ -562,6 +601,81 @@ mod tests {
         let e = "not a picture that can be shown: The image format could not be determined";
         assert_eq!(super::failed_thumb(super::super::media::short_reason(e)), "⚠ preview unavailable: not a picture that can be shown");
         assert_eq!(super::super::media::short_reason("no preview"), "no preview");
+    }
+
+    /// How long building the lines of a big conversation takes (it happens on every frame):
+    /// `cargo test --release -p slacktui build_lines_cost -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn build_lines_cost() {
+        let mut ws = Workspace::default();
+        for (id, name) in [("U1", "ann"), ("U2", "bob"), ("U3", "carol")] {
+            ws.users.insert(id.into(), slack_core::types::User { id: id.into(), name: name.into(), ..Default::default() });
+        }
+        let texts = [
+            "short one",
+            "a *bold* and _italic_ line with a <https://example.com|link> and <@U2>",
+            "```fn main() {\n    println!(\"hi\");\n}```",
+            "a longer message that wraps over several rows of the pane because it goes on and on about nothing in particular, like real chat does",
+        ];
+        for n in [1_000usize, 5_000, 20_000] {
+            let mut t = Timeline { loaded: true, ..Default::default() };
+            t.messages = (0..n).map(|i| msg(&format!("{}.000100", 1_700_000_000 + i * 97), ["U1", "U2", "U3"][i % 3], texts[i % texts.len()])).collect();
+            let start = std::time::Instant::now();
+            let runs = 5;
+            let mut rows = 0;
+            for _ in 0..runs {
+                rows = build_lines_owned(&ws, &t, 100, false, &|_, _| None, false).0.len();
+            }
+            let whole = start.elapsed().as_secs_f64() * 1000.0 / runs as f64;
+            // What a draw at the bottom builds now: the newest BUILD_CHUNK messages.
+            let start = std::time::Instant::now();
+            for _ in 0..runs {
+                build_lines_from(&ws, &t, n - super::BUILD_CHUNK, 100, false, &|_, _| None, false);
+            }
+            let newest = start.elapsed().as_secs_f64() * 1000.0 / runs as f64;
+            println!("{n} messages ({rows} rows): whole {whole:.1} ms, newest {} {newest:.2} ms per frame", super::BUILD_CHUNK);
+        }
+    }
+
+    #[test]
+    fn building_from_any_message_matches_the_whole() {
+        let mut ws = Workspace::default();
+        ws.users.insert("U1".into(), slack_core::types::User { id: "U1".into(), name: "ann".into(), ..Default::default() });
+        ws.users.insert("U2".into(), slack_core::types::User { id: "U2".into(), name: "bob".into(), ..Default::default() });
+        let mut t = Timeline { loaded: true, ..Default::default() };
+        // Groups, a gap past the group window, a day change, a system message and a hidden reply.
+        let day = 86_400.0;
+        let at = |secs: f64, user: &str, text: &str| msg(&format!("{secs:.6}"), user, text);
+        let mut join = at(1_700_000_040.0 + day, "U2", "<@U2> has joined the channel");
+        join.subtype = Some("channel_join".into());
+        let mut reply = at(1_700_000_055.0 + day, "U1", "a reply");
+        reply.thread_ts = Some(format!("{:.6}", 1_700_000_000.0 + day));
+        for m in [
+            at(1_700_000_000.0, "U1", "one"),
+            at(1_700_000_010.0, "U1", "grouped with one"),
+            at(1_700_000_020.0, "U2", "bob speaks"),
+            at(1_700_004_000.0, "U2", "bob again, much later"),
+            at(1_700_000_000.0 + day, "U1", "the next day"),
+            at(1_700_000_030.0 + day, "U1", "and more"),
+            join,
+            at(1_700_000_050.0 + day, "U2", "after joining"),
+            reply,
+            at(1_700_000_060.0 + day, "U2", "last"),
+        ] {
+            t.upsert(m);
+        }
+        let whole = plain(&build_lines_owned(&ws, &t, 40, false, &|_, _| None, false).0);
+        assert!(whole.iter().filter(|l| l.starts_with('─')).count() >= 2 && whole.iter().any(|l| l.contains("has joined")), "{whole:#?}");
+        assert!(!whole.iter().any(|l| l.contains("a reply")), "replies stay in their thread");
+        let shown = shown_messages(&t, false).count();
+        assert_eq!(shown, 9);
+        for from in 0..=shown {
+            let (lines, owners, _) = build_lines_from(&ws, &t, from, 40, false, &|_, _| None, false);
+            let part = plain(&lines);
+            assert!(whole.ends_with(&part), "from {from}: {part:#?}\nis not the end of\n{whole:#?}");
+            assert_eq!(lines.len(), owners.len());
+        }
     }
 
     #[test]
