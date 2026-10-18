@@ -3,7 +3,7 @@
 use chrono::{Local, TimeZone};
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use slack_core::format;
@@ -13,7 +13,7 @@ use ratatui_image::sliced::{SignedPosition, SlicedImage};
 
 use super::media::{Media, Thumb};
 use super::state::{Timeline, Workspace};
-use super::text::{self, DIM};
+use super::text;
 
 /// Rows reserved for an image thumbnail, starting at line `line` of the rendered timeline.
 #[derive(Debug, Clone)]
@@ -33,7 +33,6 @@ const GROUP_WINDOW: f64 = 300.0;
 
 /// Columns left of every message row; your own messages get a bar there.
 const GUTTER: u16 = 2;
-pub const OWN_BAR: Color = Color::Rgb(0x2b, 0xac, 0x76);
 
 #[derive(Debug, Default)]
 pub struct MessagePane {
@@ -101,14 +100,14 @@ impl MessagePane {
     pub fn draw(&mut self, f: &mut Frame, area: Rect, ws: &Workspace, title: &str, timeline: Option<&Timeline>, focused: bool, media: &Media) {
         self.area = area;
         let title = if title.is_empty() { String::new() } else { format!(" {title} ") };
-        let border = if focused { Style::default().fg(Color::Rgb(0x61, 0xaf, 0xef)) } else { Style::default().fg(DIM) };
+        let border = if focused { Style::default().fg(super::theme::p().accent) } else { Style::default().fg(super::theme::p().dim) };
         let block = Block::default().borders(Borders::ALL).border_style(border).title(title);
         let inner = block.inner(area);
         let width = inner.width.saturating_sub(1 + GUTTER) as usize;
         let thumb_size = |file: &File| media.thumb_size(file).filter(|_| ws.settings.messages.inline_images);
         let (mut lines, mut owners, mut slots) = match timeline {
             Some(t) if t.loaded || !t.messages.is_empty() => build_lines_owned(ws, t, width, self.thread, &thumb_size, media.avatars && ws.settings.messages.avatars),
-            Some(_) => (vec![Line::styled("Loading messages…", Style::default().fg(DIM))], vec![None], vec![]),
+            Some(_) => (vec![Line::styled("Loading messages…", Style::default().fg(super::theme::p().dim))], vec![None], vec![]),
             None => (vec![], vec![], vec![]),
         };
         if let Some(t) = timeline.filter(|_| !self.thread) {
@@ -120,7 +119,7 @@ impl MessagePane {
                 None
             };
             if let Some(note) = note {
-                lines.insert(0, Line::styled(note, Style::default().fg(DIM)));
+                lines.insert(0, Line::styled(note, Style::default().fg(super::theme::p().dim)));
                 owners.insert(0, None);
                 for slot in &mut slots {
                     slot.line += 1;
@@ -133,7 +132,7 @@ impl MessagePane {
             add_gutter(&mut lines, &owners, &own, &system);
         }
         // Highlight the selected message's rows.
-        let highlight = Style::default().bg(Color::Rgb(0x2c, 0x3e, 0x5c));
+        let highlight = Style::default().bg(super::theme::p().selection);
         if focused {
             if let Some(sel) = &self.selected {
                 for (line, owner) in lines.iter_mut().zip(&owners) {
@@ -199,7 +198,7 @@ const SNIPPET_PREVIEW: usize = 5;
 
 /// A snippet's first lines in a code box (clipped, not wrapped), then how many are left.
 fn snippet_preview(file: &File, width: usize) -> Vec<Line<'static>> {
-    let mut out: Vec<Line<'static>> = super::highlight::preview(file, Style::default().fg(text::CODE_FG))
+    let mut out: Vec<Line<'static>> = super::highlight::preview(file, Style::default().fg(super::theme::p().code_fg))
         .into_iter()
         .take(SNIPPET_PREVIEW)
         .map(|spans| Line::from(super::highlight::clip_spans(spans, width.saturating_sub(2))))
@@ -208,7 +207,7 @@ fn snippet_preview(file: &File, width: usize) -> Vec<Line<'static>> {
     // Slack's own count first: `lines` includes a trailing newline as a line.
     let more = file.lines_more.or(file.lines.map(|n| n.saturating_sub(shown))).unwrap_or(0);
     if more > 0 {
-        let note = Span::styled(format!("+{more} more line{} · o to view", if more == 1 { "" } else { "s" }), Style::default().fg(DIM));
+        let note = Span::styled(format!("+{more} more line{} · o to view", if more == 1 { "" } else { "s" }), Style::default().fg(super::theme::p().dim));
         out.push(Line::from(super::highlight::clip_spans(vec![note], width.saturating_sub(2))));
     }
     text::shaded(out, width)
@@ -225,9 +224,9 @@ fn add_gutter(lines: &mut [Line<'static>], owners: &[Option<String>], own: &std:
         previous = owner;
         let mine = owner.is_some_and(|ts| own.contains(ts));
         let gutter = match (mine, first) {
-            (true, true) => Span::styled("▌ ", Style::default().fg(OWN_BAR)),
-            (true, false) => Span::styled("▎ ", Style::default().fg(OWN_BAR)),
-            (false, true) if !owner.is_some_and(|ts| system.contains(ts)) => Span::styled("• ", Style::default().fg(DIM)),
+            (true, true) => Span::styled("▌ ", Style::default().fg(super::theme::p().own)),
+            (true, false) => Span::styled("▎ ", Style::default().fg(super::theme::p().own)),
+            (false, true) if !owner.is_some_and(|ts| system.contains(ts)) => Span::styled("• ", Style::default().fg(super::theme::p().dim)),
             _ => Span::raw("  "),
         };
         line.spans.insert(0, gutter);
@@ -280,20 +279,20 @@ pub fn build_lines_owned(ws: &Workspace, t: &Timeline, width: usize, thread: boo
         if thread && n == 1 {
             let replies = t.messages.len() - 1;
             let label = format!(" {replies} {} ", if replies == 1 { "reply" } else { "replies" });
-            out.push(Line::styled(format!("{label}{}", "─".repeat(width.saturating_sub(label.chars().count()))), Style::default().fg(DIM)));
+            out.push(Line::styled(format!("{label}{}", "─".repeat(width.saturating_sub(label.chars().count()))), Style::default().fg(super::theme::p().dim)));
             owners.resize(out.len(), None);
             prev = None;
         } else if !thread && last_day.is_none_or(|d| !same_day(d, ts)) {
             last_day = Some(ts);
             let label = format!(" {} ", day_label(ws, ts));
             let side = width.saturating_sub(label.chars().count()) / 2;
-            out.push(Line::styled(format!("{}{}{}", "─".repeat(side), label, "─".repeat(side)), Style::default().fg(DIM)));
+            out.push(Line::styled(format!("{}{}{}", "─".repeat(side), label, "─".repeat(side)), Style::default().fg(super::theme::p().dim)));
             owners.resize(out.len(), None);
             prev = None;
         }
         if is_system(m) {
             let body = format::plain_text(&format::message_blocks(&m.text, &m.blocks), &|i| text::inline_plain(ws, i));
-            out.push(Line::styled(format!("{}  {}", time_label(ws, ts), body), Style::default().fg(DIM).add_modifier(Modifier::ITALIC)));
+            out.push(Line::styled(format!("{}  {}", time_label(ws, ts), body), Style::default().fg(super::theme::p().dim).add_modifier(Modifier::ITALIC)));
             owners.resize(out.len(), Some(m.ts.clone()));
             prev = None;
             continue;
@@ -305,10 +304,10 @@ pub fn build_lines_owned(ws: &Workspace, t: &Timeline, width: usize, thread: boo
                 out.push(Line::raw(""));
                 owners.resize(out.len(), None);
             }
-            let color = m.user.as_deref().map(text::user_color).unwrap_or(Color::Gray);
+            let color = m.user.as_deref().map(text::user_color).unwrap_or(super::theme::p().dim);
             let mut header = vec![
                 Span::styled(ws.author(m), Style::default().fg(color).add_modifier(Modifier::BOLD)),
-                Span::styled(format!("  {}", time_label(ws, ts)), Style::default().fg(DIM)),
+                Span::styled(format!("  {}", time_label(ws, ts)), Style::default().fg(super::theme::p().dim)),
             ];
             if let Some(file) = m.user.as_deref().and_then(|u| ws.users.get(u)).and_then(super::media::avatar_file).filter(|_| avatars) {
                 slots.push(ImageSlot { line: out.len(), col: 0, file, size: super::media::AVATAR_SIZE });
@@ -338,23 +337,23 @@ pub fn message_body(ws: &Workspace, m: &Message, width: usize, summary: bool, th
     let blocks = format::message_blocks(&m.text, &m.blocks);
     let mut body = text::render_blocks(ws, &blocks, width);
     if m.edited.is_some() {
-        let mark = Span::styled(" (edited)", Style::default().fg(DIM));
+        let mark = Span::styled(" (edited)", Style::default().fg(super::theme::p().dim));
         match body.last_mut() {
             Some(last) if last.width() + mark.width() <= width => last.spans.push(mark),
-            _ => body.push(Line::from(Span::styled("(edited)", Style::default().fg(DIM)))),
+            _ => body.push(Line::from(Span::styled("(edited)", Style::default().fg(super::theme::p().dim)))),
         }
     }
     if !m.pinned_to.is_empty() {
-        out.push(Line::styled("📌 pinned", Style::default().fg(Color::Rgb(0xe5, 0xc0, 0x7b))));
+        out.push(Line::styled("📌 pinned", Style::default().fg(super::theme::p().pin)));
     }
     if summary && m.subtype.as_deref() == Some("thread_broadcast") {
-        out.push(Line::styled("↳ replied to a thread", Style::default().fg(DIM)));
+        out.push(Line::styled("↳ replied to a thread", Style::default().fg(super::theme::p().dim)));
     }
     out.extend(body);
     for att in &m.attachments {
         let title = att["title"].as_str().or_else(|| att["fallback"].as_str()).unwrap_or("");
         let detail = att["text"].as_str().unwrap_or("");
-        let bar = Span::styled("▍ ", Style::default().fg(Color::Rgb(0x6e, 0x6e, 0x6e)));
+        let bar = Span::styled("▍ ", Style::default().fg(super::theme::p().quote_bar));
         if !title.is_empty() {
             out.extend(text::wrap(vec![Span::styled(format::unescape(title), Style::default().add_modifier(Modifier::BOLD))], width, vec![bar.clone()], vec![bar.clone()]));
         }
@@ -380,8 +379,8 @@ pub fn message_body(ws: &Workspace, m: &Message, width: usize, summary: bool, th
         let name = if file.title.is_empty() { &file.name } else { &file.title };
         out.push(Line::from(vec![
             Span::raw(icon),
-            Span::styled(name.clone(), Style::default().fg(text::LINK)),
-            Span::styled(format!("  {}", text::human_size(file.size)), Style::default().fg(DIM)),
+            Span::styled(name.clone(), Style::default().fg(super::theme::p().link)),
+            Span::styled(format!("  {}", text::human_size(file.size)), Style::default().fg(super::theme::p().dim)),
         ]));
         if file.is_snippet() {
             out.extend(snippet_preview(file, width));
@@ -395,7 +394,7 @@ pub fn message_body(ws: &Workspace, m: &Message, width: usize, summary: bool, th
         let mut spans = Vec::new();
         for r in &m.reactions {
             let mine = r.users.iter().any(|u| *u == ws.self_id);
-            let style = if mine { Style::default().fg(text::MENTION).add_modifier(Modifier::BOLD) } else { Style::default() };
+            let style = if mine { Style::default().fg(super::theme::p().mention).add_modifier(Modifier::BOLD) } else { Style::default() };
             spans.push(Span::styled(format!("[{} {}]", text::emoji(ws, &r.name, None), r.count), style));
             spans.push(Span::raw(" "));
         }
@@ -404,7 +403,7 @@ pub fn message_body(ws: &Workspace, m: &Message, width: usize, summary: bool, th
     if summary && m.reply_count > 0 {
         let last = m.latest_reply.as_deref().and_then(|t| t.parse::<f64>().ok()).map(|t| format!(" · last {}", time_label(ws, t))).unwrap_or_default();
         let s = if m.reply_count == 1 { "reply" } else { "replies" };
-        out.push(Line::styled(format!("💬 {} {s}{last}", m.reply_count), Style::default().fg(text::MENTION)));
+        out.push(Line::styled(format!("💬 {} {s}{last}", m.reply_count), Style::default().fg(super::theme::p().mention)));
     }
     (out, slots)
 }
@@ -427,7 +426,7 @@ mod tests {
         let f = File { mode: "snippet".into(), preview: Some("fn main() {\n\tlet a_very_long_name = 1;\n}".into()), lines: Some(9), ..Default::default() };
         let rows = plain(&snippet_preview(&f, 20));
         assert_eq!(rows, vec![" fn main() {        ", "     let a_very_lo… ", " }                  ", " +6 more lines · o… "], "a shaded box, every row as wide");
-        assert!(snippet_preview(&f, 20).iter().all(|l| l.spans.iter().all(|s| s.style.bg == Some(text::CODE_BG))));
+        assert!(snippet_preview(&f, 20).iter().all(|l| l.spans.iter().all(|s| s.style.bg == Some(crate::tui::theme::p().code_bg))));
         let short = File { mode: "snippet".into(), preview: Some("one".into()), lines: Some(1), ..Default::default() };
         assert_eq!(plain(&snippet_preview(&short, 20)), vec![" one "]);
         // Real values for a 3-line file ending in a newline.

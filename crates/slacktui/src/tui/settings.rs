@@ -13,11 +13,19 @@ pub struct Settings {
     pub audio: Audio,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Appearance {
     /// No blank rows between authors.
     pub compact: bool,
+    /// Colour theme: dark, light or terminal (the terminal's own colours).
+    pub theme: String,
+}
+
+impl Default for Appearance {
+    fn default() -> Self {
+        Appearance { compact: false, theme: "dark".into() }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

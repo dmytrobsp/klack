@@ -2,14 +2,13 @@
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use super::composer::Trigger;
 use super::picker::EmojiPicker;
 use super::state::Workspace;
-use super::text::DIM;
 
 const MAX_ITEMS: usize = 8;
 
@@ -115,14 +114,14 @@ pub fn draw(f: &mut Frame, anchor: Rect, c: &Completion) {
     let y = anchor.y.saturating_sub(height);
     let area = Rect { x: anchor.x, y, width, height: height.min(anchor.y) };
     f.render_widget(Clear, area);
-    let block = Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::Rgb(0x61, 0xaf, 0xef))).title(" Suggestions ");
+    let block = Block::default().borders(Borders::ALL).border_style(Style::default().fg(super::theme::p().accent)).title(" Suggestions ");
     let lines: Vec<Line> = c
         .items
         .iter()
         .enumerate()
         .map(|(n, s)| {
-            let line = Line::from(vec![Span::raw(format!(" {}", s.label)), Span::styled(format!("  {}", s.detail), Style::default().fg(DIM))]);
-            if n == c.selected { line.style(Style::default().bg(Color::Rgb(0x2c, 0x3e, 0x5c)).add_modifier(Modifier::BOLD)) } else { line }
+            let line = Line::from(vec![Span::raw(format!(" {}", s.label)), Span::styled(format!("  {}", s.detail), Style::default().fg(super::theme::p().dim))]);
+            if n == c.selected { line.style(Style::default().bg(super::theme::p().selection).add_modifier(Modifier::BOLD)) } else { line }
         })
         .collect();
     f.render_widget(Paragraph::new(lines).block(block), area);

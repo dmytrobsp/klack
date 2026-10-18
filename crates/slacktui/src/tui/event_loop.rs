@@ -1438,6 +1438,7 @@ pub async fn run(profile: slack_core::session::Profile, team: Option<&str>) -> R
         let client = Client::new(sessions[index].clone())?;
         // Read again on every switch, so changes made in the preferences carry over.
         let (settings, settings_problem) = super::settings::load();
+        super::theme::set(&settings.appearance.theme);
         // Keys may have been rebound in the preferences meanwhile.
         let mut keymap = super::keymap::load_user();
         keymap.1.extend(settings_problem);
@@ -2476,22 +2477,22 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
 
 fn draw_confirm(f: &mut ratatui::Frame, area: ratatui::layout::Rect, question: &str) {
     use ratatui::layout::Flex;
-    use ratatui::style::{Color, Style};
+    use ratatui::style::Style;
     use ratatui::widgets::{Block, Borders, Clear};
     let [popup] = Layout::horizontal([Constraint::Length(question.chars().count() as u16 + 4)]).flex(Flex::Center).areas(area);
     let [popup] = Layout::vertical([Constraint::Length(3)]).flex(Flex::Center).areas(popup);
     f.render_widget(Clear, popup);
-    let block = Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::Rgb(0xe0, 0x6c, 0x75)));
+    let block = Block::default().borders(Borders::ALL).border_style(Style::default().fg(super::theme::p().danger));
     f.render_widget(Paragraph::new(format!(" {question}")).block(block), popup);
 }
 
 /// The channel composer, or the thread pane's (`thread`).
 fn draw_composer(f: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &App, thread: bool) {
-    use ratatui::style::{Color, Style};
+    use ratatui::style::Style;
     use ratatui::widgets::{Block, Borders};
     let composer = if thread { &app.thread_composer } else { &app.composer };
     let focused = app.focus == if thread { Focus::ThreadComposer } else { Focus::Composer };
-    let border = if focused { Style::default().fg(Color::Rgb(0x61, 0xaf, 0xef)) } else { Style::default().fg(super::text::DIM) };
+    let border = if focused { Style::default().fg(super::theme::p().accent) } else { Style::default().fg(super::theme::p().dim) };
     let target = app.current.as_deref().map(|c| app.ws.channel_label(c)).unwrap_or_default();
     let typing = if thread { vec![] } else { app.current.as_deref().map(|c| app.ws.typing_in(c)).unwrap_or_default() };
     let title = if composer.editing.is_some() {
@@ -2508,7 +2509,7 @@ fn draw_composer(f: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &App,
     let mut block = Block::default().borders(Borders::ALL).border_style(border).title(title);
     if !typing.is_empty() {
         let who = if typing.len() == 1 { format!("{} is typing…", typing[0]) } else { format!("{} people are typing…", typing.len()) };
-        block = block.title(ratatui::text::Line::styled(format!(" {who} "), Style::default().fg(super::text::DIM)).right_aligned());
+        block = block.title(ratatui::text::Line::styled(format!(" {who} "), Style::default().fg(super::theme::p().dim)).right_aligned());
     }
     let inner = block.inner(area);
     let width = inner.width as usize;
@@ -2521,7 +2522,7 @@ fn draw_composer(f: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &App,
         } else {
             format!("Press {} or click a conversation to type", app.keys.first_key(Context::Global, Action::FocusNext).unwrap_or_default())
         };
-        ratatui::text::Text::styled(hint, Style::default().fg(super::text::DIM))
+        ratatui::text::Text::styled(hint, Style::default().fg(super::theme::p().dim))
     } else {
         ratatui::text::Text::raw(composer.text())
     };

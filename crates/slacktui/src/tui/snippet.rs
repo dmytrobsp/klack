@@ -2,12 +2,11 @@
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use slack_core::types::File;
 
-use super::text::{self, DIM};
 
 pub struct SnippetView {
     pub file: File,
@@ -28,7 +27,7 @@ impl SnippetView {
 
     pub fn set_text(&mut self, result: Result<String, String>) {
         if let Ok(t) = &result {
-            self.lines = super::highlight::highlight(t, &[&self.file.title, &self.file.name], &self.file.filetype, Style::default().fg(text::CODE_FG));
+            self.lines = super::highlight::highlight(t, &[&self.file.title, &self.file.name], &self.file.filetype, Style::default().fg(super::theme::p().code_fg));
         }
         self.text = Some(result);
     }
@@ -53,13 +52,13 @@ impl SnippetView {
         let lang = if lang.is_empty() { String::new() } else { format!(" · {lang}") };
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Rgb(0x61, 0xaf, 0xef)))
+            .border_style(Style::default().fg(super::theme::p().accent))
             .title(format!(" {name}{lang} "));
         let inner = block.inner(area);
         self.height = inner.height as usize;
         let lines: Vec<Line> = match &self.text {
-            None => vec![Line::styled("Loading…", Style::default().fg(DIM))],
-            Some(Err(e)) => vec![Line::styled(format!("cannot load the snippet: {e}"), Style::default().fg(Color::Rgb(0xe0, 0x6c, 0x75)))],
+            None => vec![Line::styled("Loading…", Style::default().fg(super::theme::p().dim))],
+            Some(Err(e)) => vec![Line::styled(format!("cannot load the snippet: {e}"), Style::default().fg(super::theme::p().danger))],
             Some(Ok(_)) => {
                 let digits = self.lines.len().max(1).to_string().len();
                 let room = (inner.width as usize).saturating_sub(digits + 3);
@@ -69,7 +68,7 @@ impl SnippetView {
                     .skip(self.scroll)
                     .take(self.height)
                     .map(|(n, spans)| {
-                        let mut line = vec![Span::styled(format!("{:>digits$} │ ", n + 1), Style::default().fg(DIM))];
+                        let mut line = vec![Span::styled(format!("{:>digits$} │ ", n + 1), Style::default().fg(super::theme::p().dim))];
                         line.extend(super::highlight::clip_spans(spans.clone(), room));
                         Line::from(line)
                     })

@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use chrono::{Local, TimeZone};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use serde_json::Value;
@@ -14,7 +14,7 @@ use slack_core::format;
 use slack_core::types::Message;
 
 use super::state::Workspace;
-use super::text::{self, DIM};
+use super::text;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Kind {
@@ -127,14 +127,14 @@ impl Activity {
         f.render_widget(Clear, popup);
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Rgb(0x61, 0xaf, 0xef)))
+            .border_style(Style::default().fg(super::theme::p().accent))
             .title(" Activity ");
         let inner = block.inner(popup);
         f.render_widget(block, popup);
         self.height = (inner.height / 3) as usize;
         let lines = match &self.items {
-            None => vec![Line::styled("Loading…", Style::default().fg(DIM))],
-            Some(items) if items.is_empty() => vec![Line::styled("Nothing yet: mentions, reactions to your messages and thread replies show up here.", Style::default().fg(DIM))],
+            None => vec![Line::styled("Loading…", Style::default().fg(super::theme::p().dim))],
+            Some(items) if items.is_empty() => vec![Line::styled("Nothing yet: mentions, reactions to your messages and thread replies show up here.", Style::default().fg(super::theme::p().dim))],
             Some(items) => {
                 let start = self.selected.saturating_sub(self.height.saturating_sub(1));
                 let width = inner.width as usize;
@@ -144,7 +144,7 @@ impl Activity {
                     let mut row = vec![headline(ws, it, msg.and_then(Option::as_ref)), body(ws, msg, width), Line::raw("")];
                     if n == self.selected {
                         for l in row.iter_mut().take(2) {
-                            *l = std::mem::take(l).style(Style::default().bg(Color::Rgb(0x2c, 0x3e, 0x5c)));
+                            *l = std::mem::take(l).style(Style::default().bg(super::theme::p().selection));
                         }
                     }
                     lines.extend(row);
@@ -180,25 +180,25 @@ pub fn headline(ws: &Workspace, it: &Item, msg: Option<&Message>) -> Line<'stati
         Kind::Thread { .. } => ("💬", format!("Thread in {place}")),
         Kind::Other(t) => ("•", format!("{t} in {place}")),
     };
-    let style = if it.unread { Style::default().add_modifier(Modifier::BOLD).fg(Color::White) } else { Style::default() };
+    let style = if it.unread { Style::default().add_modifier(Modifier::BOLD).fg(super::theme::p().strong) } else { Style::default() };
     let mut spans = Vec::new();
     if !icon.is_empty() {
         spans.push(Span::raw(format!("{icon} ")));
     }
     spans.push(Span::styled(what, style));
-    spans.push(Span::styled(format!("  {}", when(ws, it.when)), Style::default().fg(DIM)));
+    spans.push(Span::styled(format!("  {}", when(ws, it.when)), Style::default().fg(super::theme::p().dim)));
     Line::from(spans)
 }
 
 fn body(ws: &Workspace, msg: Option<&Option<Message>>, width: usize) -> Line<'static> {
     match msg {
-        None => Line::styled("   …", Style::default().fg(DIM)),
-        Some(None) => Line::styled("   (message not available)", Style::default().fg(DIM)),
+        None => Line::styled("   …", Style::default().fg(super::theme::p().dim)),
+        Some(None) => Line::styled("   (message not available)", Style::default().fg(super::theme::p().dim)),
         Some(Some(m)) => {
             let plain = format::plain_text(&format::message_blocks(&m.text, &m.blocks), &|i| text::inline_plain(ws, i)).replace('\n', " ");
             let plain = if plain.is_empty() && !m.files.is_empty() { format!("[{}]", m.files[0].name) } else { plain };
             let cut: String = plain.chars().take(width.saturating_sub(4)).collect();
-            Line::styled(format!("   {cut}"), Style::default().fg(DIM))
+            Line::styled(format!("   {cut}"), Style::default().fg(super::theme::p().dim))
         }
     }
 }

@@ -3,14 +3,14 @@
 use image::DynamicImage;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect, Size};
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui_image::picker::Picker;
 use ratatui_image::protocol::Protocol;
 use ratatui_image::{Image, Resize};
 use slack_core::types::File;
 
-use super::text::{self, DIM};
+use super::text;
 
 pub enum Loaded {
     Loading,
@@ -64,12 +64,12 @@ impl Viewer {
         let name = if file.title.is_empty() { file.name.clone() } else { file.title.clone() };
         let count = if self.files.len() > 1 { format!(" · {}/{}", self.index + 1, self.files.len()) } else { String::new() };
         let title = format!(" {name} · {}{count} ", text::human_size(file.size));
-        let block = Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::Rgb(0x61, 0xaf, 0xef))).title(title);
+        let block = Block::default().borders(Borders::ALL).border_style(Style::default().fg(super::theme::p().accent)).title(title);
         let inner = block.inner(area);
         f.render_widget(block, area);
         match &self.image {
-            Loaded::Loading => f.render_widget(Paragraph::new("Loading image…").style(Style::default().fg(DIM)), inner),
-            Loaded::Failed(e) => f.render_widget(Paragraph::new(format!("Could not load the image: {e}")).style(Style::default().fg(DIM)), inner),
+            Loaded::Loading => f.render_widget(Paragraph::new("Loading image…").style(Style::default().fg(super::theme::p().dim)), inner),
+            Loaded::Failed(e) => f.render_widget(Paragraph::new(format!("Could not load the image: {e}")).style(Style::default().fg(super::theme::p().dim)), inner),
             Loaded::Ready(img) => {
                 let size = Size::new(inner.width, inner.height);
                 if self.encoded.as_ref().is_none_or(|(s, _)| *s != size) {

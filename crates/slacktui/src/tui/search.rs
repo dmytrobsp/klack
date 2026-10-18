@@ -3,14 +3,14 @@
 use chrono::{Local, TimeZone};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use serde_json::Value;
 use slack_core::format;
 
 use super::state::Workspace;
-use super::text::{self, DIM};
+use super::text;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Hit {
@@ -70,13 +70,13 @@ impl Search {
         };
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Rgb(0x61, 0xaf, 0xef)))
+            .border_style(Style::default().fg(super::theme::p().accent))
             .title(" Search messages ")
-            .title_bottom(Line::styled(status, Style::default().fg(DIM)).right_aligned());
+            .title_bottom(Line::styled(status, Style::default().fg(super::theme::p().dim)).right_aligned());
         let inner = block.inner(popup);
         f.render_widget(block, popup);
         let [input, list] = Layout::vertical([Constraint::Length(2), Constraint::Min(1)]).areas(inner);
-        f.render_widget(Paragraph::new(Line::from(vec![Span::styled("🔍 ", Style::default().fg(DIM)), Span::raw(self.query.clone())])), input);
+        f.render_widget(Paragraph::new(Line::from(vec![Span::styled("🔍 ", Style::default().fg(super::theme::p().dim)), Span::raw(self.query.clone())])), input);
         f.set_cursor_position((input.x + 3 + self.query.chars().count() as u16, input.y));
         let width = list.width as usize;
         // Two rows per hit: where/who/when, then the text.
@@ -91,12 +91,12 @@ impl Search {
             let thread = if hit.thread_ts.is_some() { " · in thread" } else { "" };
             let body = format::plain_text(&format::message_blocks(&hit.text, &[]), &|i| text::inline_plain(ws, i)).replace('\n', " ");
             let body: String = body.chars().take(width.saturating_sub(2)).collect();
-            let style = if n == self.selected { Style::default().bg(Color::Rgb(0x2c, 0x3e, 0x5c)) } else { Style::default() };
-            lines.push(Line::from(vec![Span::styled(format!(" {who}"), Style::default().fg(text::user_color(hit.user.as_deref().unwrap_or("")))), Span::styled(format!(" · {place} · {when}{thread}"), Style::default().fg(DIM))]).style(style));
+            let style = if n == self.selected { Style::default().bg(super::theme::p().selection) } else { Style::default() };
+            lines.push(Line::from(vec![Span::styled(format!(" {who}"), Style::default().fg(text::user_color(hit.user.as_deref().unwrap_or("")))), Span::styled(format!(" · {place} · {when}{thread}"), Style::default().fg(super::theme::p().dim))]).style(style));
             lines.push(Line::raw(format!("   {body}")).style(style));
         }
         if lines.is_empty() && !self.searched.is_empty() && !self.busy {
-            lines.push(Line::styled(" no messages found", Style::default().fg(DIM)));
+            lines.push(Line::styled(" no messages found", Style::default().fg(super::theme::p().dim)));
         }
         f.render_widget(Paragraph::new(lines), list);
     }

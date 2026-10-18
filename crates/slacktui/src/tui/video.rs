@@ -12,14 +12,13 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use image::{DynamicImage, RgbImage};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect, Size};
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui_image::picker::Picker;
 use ratatui_image::protocol::Protocol;
 use ratatui_image::{Image, Resize};
 use serde_json::Value;
 
-use super::text::DIM;
 
 /// Frames per second we decode at (terminal graphics cannot keep up with more).
 const FPS: f64 = 12.0;
@@ -216,11 +215,11 @@ impl Player {
         // Wall time keeps running after the last frame; the clock should not.
         let shown = self.duration.map_or(self.played(), |d| self.played().min(d));
         let title = format!(" {} · {state} {}{total}{sound} ", self.title, clock(shown));
-        let block = Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::Rgb(0x61, 0xaf, 0xef))).title(title);
+        let block = Block::default().borders(Borders::ALL).border_style(Style::default().fg(super::theme::p().accent)).title(title);
         let inner = block.inner(area);
         f.render_widget(block, area);
         let Some(img) = &self.current else {
-            f.render_widget(Paragraph::new("Starting video…").style(Style::default().fg(DIM)), inner);
+            f.render_widget(Paragraph::new("Starting video…").style(Style::default().fg(super::theme::p().dim)), inner);
             return;
         };
         let size = Size::new(inner.width, inner.height);

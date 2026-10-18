@@ -4,20 +4,20 @@
 use chrono::Local;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
 use super::keymap::{ACTIONS, Keymap};
 use super::settings::Settings;
 use super::state::{LEVELS, Workspace, level_label};
-use super::text::DIM;
 
 /// Day-separator formats offered (strftime).
 pub const DATE_FORMATS: &[&str] = &["%A, %B %-d", "%a %-d %b", "%d.%m.%Y", "%Y-%m-%d", "%m/%d/%Y"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Field {
+    Theme,
     /// The leader key for chords.
     Leader,
     /// An action's keys (index into `keymap::ACTIONS`).
@@ -52,7 +52,7 @@ pub const PAUSES: &[u64] = &[0, 30, 60, 120, 480];
 
 pub const CATEGORIES: &[(&str, &[Field])] = &[
     ("Availability", &[Field::Status, Field::Away, Field::Pause]),
-    ("Appearance", &[Field::Compact]),
+    ("Appearance", &[Field::Theme, Field::Compact]),
     ("Messages & media", &[Field::InlineImages, Field::Avatars, Field::EmojiAsNames]),
     ("Language & region", &[Field::Clock24, Field::DateFormat]),
     ("Notifications", &[Field::Desktop, Field::ConversationLevel, Field::ChannelDefault, Field::Keywords, Field::Vips]),
@@ -71,6 +71,7 @@ impl Field {
     fn fixed_label(self) -> &'static str {
         match self {
             Field::Leader | Field::Binding(_) => "",
+            Field::Theme => "Colour theme",
             Field::Compact => "Compact list (no gap between authors)",
             Field::InlineImages => "Show image thumbnails",
             Field::Avatars => "Show profile pictures",
@@ -104,6 +105,7 @@ impl Field {
         let device = |d: &Option<String>| d.clone().unwrap_or_else(|| "system default".into());
         match self {
             Field::Leader | Field::Binding(_) => String::new(),
+            Field::Theme => s.appearance.theme.clone(),
             Field::Compact => yes(s.appearance.compact),
             Field::InlineImages => yes(s.messages.inline_images),
             Field::Avatars => yes(s.messages.avatars),
@@ -160,6 +162,10 @@ impl Field {
             }
         };
         match self {
+            Field::Theme => {
+                s.appearance.theme = super::theme::next(&s.appearance.theme).into();
+                super::theme::set(&s.appearance.theme);
+            }
             Field::Compact => s.appearance.compact ^= true,
             Field::InlineImages => s.messages.inline_images ^= true,
             Field::Avatars => s.messages.avatars ^= true,
@@ -309,13 +315,13 @@ impl Prefs {
         };
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Rgb(0x61, 0xaf, 0xef)))
+            .border_style(Style::default().fg(super::theme::p().accent))
             .title(" Preferences ")
-            .title_bottom(Line::styled(saved, Style::default().fg(DIM)));
+            .title_bottom(Line::styled(saved, Style::default().fg(super::theme::p().dim)));
         let inner = block.inner(popup);
         f.render_widget(block, popup);
         let [left, right] = Layout::horizontal([Constraint::Length(22), Constraint::Min(10)]).areas(inner);
-        let highlight = Style::default().bg(Color::Rgb(0x2c, 0x3e, 0x5c));
+        let highlight = Style::default().bg(super::theme::p().selection);
         let cats: Vec<Line> = CATEGORIES
             .iter()
             .map(|c| c.0)
@@ -345,24 +351,24 @@ impl Prefs {
                 _ => field.value(ws, current, keys),
             };
             let label: String = field.label().chars().take(label_w.saturating_sub(1)).collect();
-            let line = Line::from(vec![Span::raw(format!(" {label:<label_w$}")), Span::styled(value, Style::default().fg(Color::Rgb(0x98, 0xc3, 0x79)))]);
+            let line = Line::from(vec![Span::raw(format!(" {label:<label_w$}")), Span::styled(value, Style::default().fg(super::theme::p().good))]);
             rows.push(if n == self.selected { line.style(highlight) } else { line });
         }
         if self.category_name() == "Keys" {
             rows.push(Line::raw(""));
-            rows.push(Line::styled(" Enter, then press the key (Leader first for a chord). Delete unbinds, r resets.", Style::default().fg(DIM)));
+            rows.push(Line::styled(" Enter, then press the key (Leader first for a chord). Delete unbinds, r resets.", Style::default().fg(super::theme::p().dim)));
         }
         if self.category_name() == "Availability" {
             rows.push(Line::raw(""));
-            rows.push(Line::styled(" Status: \":emoji: text for 30m\" (or today); empty clears.", Style::default().fg(DIM)));
+            rows.push(Line::styled(" Status: \":emoji: text for 30m\" (or today); empty clears.", Style::default().fg(super::theme::p().dim)));
         }
         if self.category_name() == "Notifications" {
             rows.push(Line::raw(""));
-            rows.push(Line::styled(" All but the first are kept on Slack. Keywords: comma-separated.", Style::default().fg(DIM)));
+            rows.push(Line::styled(" All but the first are kept on Slack. Keywords: comma-separated.", Style::default().fg(super::theme::p().dim)));
         }
         if self.category_name() == "Audio" {
             rows.push(Line::raw(""));
-            rows.push(Line::styled(" SLACKTUI_AUDIO_INPUT / _OUTPUT, when set, win over these.", Style::default().fg(DIM)));
+            rows.push(Line::styled(" SLACKTUI_AUDIO_INPUT / _OUTPUT, when set, win over these.", Style::default().fg(super::theme::p().dim)));
         }
         f.render_widget(Paragraph::new(rows).wrap(Wrap { trim: false }), right);
     }

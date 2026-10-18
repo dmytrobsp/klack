@@ -5,14 +5,14 @@
 use chrono::{FixedOffset, Local, TimeZone, Utc};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use slack_core::format::{Block as Doc, Inline};
 use slack_core::types::{Message, User};
 
 use super::state::Workspace;
-use super::text::{self, DIM};
+use super::text;
 
 pub struct ProfileCard {
     /// The people this card can show (author first, then mentions); `index` is shown.
@@ -40,16 +40,16 @@ impl ProfileCard {
         let keys = if self.people.len() > 1 { format!(" {}/{} in this message ", self.index + 1, self.people.len()) } else { String::new() };
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Rgb(0x61, 0xaf, 0xef)))
+            .border_style(Style::default().fg(super::theme::p().accent))
             .title(" Profile ")
-            .title_bottom(Line::styled(keys, Style::default().fg(DIM)).right_aligned());
+            .title_bottom(Line::styled(keys, Style::default().fg(super::theme::p().dim)).right_aligned());
         let lines = match ws.users.get(self.user()) {
             Some(u) => {
                 let mut lines = vec![Line::styled(ws.person_label(&u.id), Style::default().fg(text::user_color(&u.id)).add_modifier(Modifier::BOLD)), Line::raw("")];
                 lines.extend(person_lines(ws, u, Utc::now().timestamp()));
                 lines
             }
-            None => vec![Line::styled(format!("unknown person {}", self.user()), Style::default().fg(DIM))],
+            None => vec![Line::styled(format!("unknown person {}", self.user()), Style::default().fg(super::theme::p().dim))],
         };
         f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).block(block), popup);
     }
@@ -101,7 +101,7 @@ pub fn availability(ws: &Workspace, now: i64) -> String {
 }
 
 pub fn field(label: &str, value: String) -> Line<'static> {
-    Line::from(vec![Span::styled(format!("{label:<11}"), Style::default().fg(DIM)), Span::raw(value)])
+    Line::from(vec![Span::styled(format!("{label:<11}"), Style::default().fg(super::theme::p().dim)), Span::raw(value)])
 }
 
 /// Their local time at `now` (epoch seconds), e.g. `16:05 · Eastern European Summer Time`.

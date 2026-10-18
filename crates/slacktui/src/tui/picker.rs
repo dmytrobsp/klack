@@ -2,11 +2,10 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
-use super::text::DIM;
 
 /// Emoji people reach for most; shown first when the query is empty.
 const FAVOURITES: &[&str] = &["+1", "heart", "joy", "tada", "eyes", "white_check_mark", "pray", "fire", "rocket", "thinking_face", "100", "raised_hands"];
@@ -70,11 +69,11 @@ impl EmojiPicker {
         let [popup] = Layout::horizontal([Constraint::Length(44)]).flex(Flex::Center).areas(area);
         let [popup] = Layout::vertical([Constraint::Length(16)]).flex(Flex::Center).areas(popup);
         f.render_widget(Clear, popup);
-        let block = Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::Rgb(0x61, 0xaf, 0xef))).title(" Add reaction ");
+        let block = Block::default().borders(Borders::ALL).border_style(Style::default().fg(super::theme::p().accent)).title(" Add reaction ");
         let inner = block.inner(popup);
         f.render_widget(block, popup);
         let [input, list] = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(inner);
-        f.render_widget(Paragraph::new(Line::from(vec![Span::styled("search: ", Style::default().fg(DIM)), Span::raw(self.query.clone())])), input);
+        f.render_widget(Paragraph::new(Line::from(vec![Span::styled("search: ", Style::default().fg(super::theme::p().dim)), Span::raw(self.query.clone())])), input);
         f.set_cursor_position((input.x + 8 + self.query.chars().count() as u16, input.y));
         let cands = self.candidates(custom);
         let height = list.height as usize;
@@ -85,11 +84,11 @@ impl EmojiPicker {
             .skip(start)
             .take(height)
             .map(|(n, c)| {
-                let line = Line::from(vec![Span::raw(format!(" {} ", c.glyph)), Span::styled(format!(":{}:", c.name), Style::default().fg(DIM))]);
-                if n == self.selected { line.style(Style::default().bg(Color::Rgb(0x2c, 0x3e, 0x5c)).add_modifier(Modifier::BOLD)) } else { line }
+                let line = Line::from(vec![Span::raw(format!(" {} ", c.glyph)), Span::styled(format!(":{}:", c.name), Style::default().fg(super::theme::p().dim))]);
+                if n == self.selected { line.style(Style::default().bg(super::theme::p().selection).add_modifier(Modifier::BOLD)) } else { line }
             })
             .collect();
-        let lines = if lines.is_empty() { vec![Line::styled(" no matching emoji", Style::default().fg(DIM))] } else { lines };
+        let lines = if lines.is_empty() { vec![Line::styled(" no matching emoji", Style::default().fg(super::theme::p().dim))] } else { lines };
         f.render_widget(Paragraph::new(lines), list);
     }
 }

@@ -2,12 +2,11 @@
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use super::state::Workspace;
-use super::text::DIM;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Item {
@@ -95,11 +94,11 @@ impl Sidebar {
             .skip(self.offset)
             .take(height)
             .map(|(n, item)| match item {
-                Item::Header(h) => Line::styled(format!(" {h}"), Style::default().fg(DIM).add_modifier(Modifier::BOLD)),
+                Item::Header(h) => Line::styled(format!(" {h}"), Style::default().fg(super::theme::p().dim).add_modifier(Modifier::BOLD)),
                 Item::Conversation(id) => conversation_line(ws, id, n == self.selected, width),
             })
             .collect();
-        let border = if focused { Style::default().fg(Color::Rgb(0x61, 0xaf, 0xef)) } else { Style::default().fg(DIM) };
+        let border = if focused { Style::default().fg(super::theme::p().accent) } else { Style::default().fg(super::theme::p().dim) };
         let title = format!(" {} ", ws.team_name);
         f.render_widget(Paragraph::new(lines).block(Block::default().borders(Borders::ALL).border_style(border).title(title)), area);
     }
@@ -111,19 +110,19 @@ fn conversation_line(ws: &Workspace, id: &str, selected: bool, width: usize) -> 
     let muted = ws.muted.contains(id);
     let sigil = if c.is_im {
         let online = c.user.as_deref().and_then(|u| ws.presence.get(u)).copied().unwrap_or(false);
-        Span::styled(if online { "● " } else { "○ " }, Style::default().fg(if online { Color::Green } else { DIM }))
+        Span::styled(if online { "● " } else { "○ " }, Style::default().fg(if online { super::theme::p().good } else { super::theme::p().dim }))
     } else if c.is_mpim {
-        Span::styled("◎ ", Style::default().fg(DIM))
+        Span::styled("◎ ", Style::default().fg(super::theme::p().dim))
     } else if c.is_private {
-        Span::styled("🔒", Style::default().fg(DIM))
+        Span::styled("🔒", Style::default().fg(super::theme::p().dim))
     } else {
-        Span::styled("# ", Style::default().fg(DIM))
+        Span::styled("# ", Style::default().fg(super::theme::p().dim))
     };
     let mut name_style = Style::default();
     if unread.has_unreads && !muted {
-        name_style = name_style.add_modifier(Modifier::BOLD).fg(Color::White);
+        name_style = name_style.add_modifier(Modifier::BOLD).fg(super::theme::p().strong);
     } else if muted {
-        name_style = name_style.fg(DIM);
+        name_style = name_style.fg(super::theme::p().dim);
     }
     let badge = if unread.mentions > 0 { format!(" {}", unread.mentions) } else { String::new() };
     let huddle = ws.huddles.get(id).map(|(_, p)| format!(" 🎧{}", p.len())).unwrap_or_default();
@@ -139,17 +138,17 @@ fn conversation_line(ws: &Workspace, id: &str, selected: bool, width: usize) -> 
     let label: String = if label.chars().count() > room { label.chars().take(room.saturating_sub(1)).chain(['…']).collect() } else { label };
     let mut spans = vec![Span::raw(" "), sigil, Span::styled(label, name_style)];
     if !preview.is_empty() {
-        spans.push(Span::styled(preview, Style::default().fg(DIM)));
+        spans.push(Span::styled(preview, Style::default().fg(super::theme::p().dim)));
     }
     if !huddle.is_empty() {
-        spans.push(Span::styled(huddle, Style::default().fg(Color::Rgb(0x2b, 0xac, 0x76))));
+        spans.push(Span::styled(huddle, Style::default().fg(super::theme::p().own)));
     }
     if !badge.is_empty() {
-        spans.push(Span::styled(badge, Style::default().fg(Color::White).bg(Color::Rgb(0xe0, 0x1e, 0x5a)).add_modifier(Modifier::BOLD)));
+        spans.push(Span::styled(badge, Style::default().fg(super::theme::p().badge_fg).bg(super::theme::p().badge_bg).add_modifier(Modifier::BOLD)));
     }
     let mut line = Line::from(spans);
     if selected {
-        line = line.style(Style::default().bg(Color::Rgb(0x2c, 0x3e, 0x5c)));
+        line = line.style(Style::default().bg(super::theme::p().selection));
     }
     line
 }

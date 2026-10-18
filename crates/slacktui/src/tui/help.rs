@@ -2,12 +2,11 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use super::keymap::{ACTIONS, Context, Keymap};
-use super::text::DIM;
 
 /// Slash commands typed into a composer (not key bindings).
 pub const COMMANDS: &[(&str, &str)] = &[
@@ -53,15 +52,15 @@ impl Help {
         let close = keys.keys_label(Context::Help, "close");
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Rgb(0x61, 0xaf, 0xef)))
+            .border_style(Style::default().fg(super::theme::p().accent))
             .title(" Keys ")
-            .title_bottom(Line::styled(format!(" {close} close · rebind in keys.toml "), Style::default().fg(DIM)).right_aligned());
+            .title_bottom(Line::styled(format!(" {close} close · rebind in keys.toml "), Style::default().fg(super::theme::p().dim)).right_aligned());
         f.render_widget(Paragraph::new(lines).scroll((self.scroll as u16, 0)).block(block), popup);
     }
 }
 
 fn row(keys: String, what: &str) -> Line<'static> {
-    Line::from(vec![Span::styled(format!("  {keys:<30} "), Style::default().fg(Color::Rgb(0x61, 0xaf, 0xef))), Span::raw(what.to_string())])
+    Line::from(vec![Span::styled(format!("  {keys:<30} "), Style::default().fg(super::theme::p().accent)), Span::raw(what.to_string())])
 }
 
 /// Every context's bindings, then the slash commands.

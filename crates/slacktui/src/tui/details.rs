@@ -3,13 +3,13 @@
 use chrono::{Local, TimeZone};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Tabs, Wrap};
 use slack_core::types::{Conversation, Message};
 
 use super::state::Workspace;
-use super::text::{self, DIM};
+use super::text;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
@@ -62,14 +62,14 @@ impl Details {
         let name = conv.map(|c| if c.is_dm() { ws.conversation_label(c) } else { format!("#{}", c.name) }).unwrap_or_else(|| self.channel.clone());
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Rgb(0x61, 0xaf, 0xef)))
+            .border_style(Style::default().fg(super::theme::p().accent))
             .title(format!(" {name} "));
         let inner = block.inner(popup);
         f.render_widget(block, popup);
         let [tabs, body] = Layout::vertical([Constraint::Length(2), Constraint::Min(1)]).areas(inner);
         let titles = ["About".to_string(), format!("Members{}", self.members.as_ref().map(|m| format!(" ({})", m.len())).unwrap_or_default()), format!("Pins{}", self.pins.as_ref().map(|p| format!(" ({})", p.len())).unwrap_or_default())];
         let index = TABS.iter().position(|t| *t == self.tab).unwrap_or(0);
-        f.render_widget(Tabs::new(titles).select(index).highlight_style(Style::default().fg(Color::Rgb(0x61, 0xaf, 0xef)).add_modifier(Modifier::BOLD)), tabs);
+        f.render_widget(Tabs::new(titles).select(index).highlight_style(Style::default().fg(super::theme::p().accent).add_modifier(Modifier::BOLD)), tabs);
         let lines = match self.tab {
             Tab::About => about(ws, conv),
             Tab::Members => self.list(body.height as usize, self.members.as_deref().map(|m| m.iter().map(|u| member_line(ws, u)).collect())),
@@ -80,16 +80,16 @@ impl Details {
 
     /// A scrolled list with the selected row highlighted, or a loading note.
     fn list(&self, height: usize, rows: Option<Vec<Line<'static>>>) -> Vec<Line<'static>> {
-        let Some(rows) = rows else { return vec![Line::styled("Loading…", Style::default().fg(DIM))] };
+        let Some(rows) = rows else { return vec![Line::styled("Loading…", Style::default().fg(super::theme::p().dim))] };
         if rows.is_empty() {
-            return vec![Line::styled("Nothing here.", Style::default().fg(DIM))];
+            return vec![Line::styled("Nothing here.", Style::default().fg(super::theme::p().dim))];
         }
         let start = self.selected.saturating_sub(height.saturating_sub(1));
         rows.into_iter()
             .enumerate()
             .skip(start)
             .take(height)
-            .map(|(n, l)| if n == self.selected { l.style(Style::default().bg(Color::Rgb(0x2c, 0x3e, 0x5c))) } else { l })
+            .map(|(n, l)| if n == self.selected { l.style(Style::default().bg(super::theme::p().selection)) } else { l })
             .collect()
     }
 }
@@ -97,7 +97,7 @@ impl Details {
 use super::profile::field;
 
 fn about(ws: &Workspace, conv: Option<&Conversation>) -> Vec<Line<'static>> {
-    let Some(c) = conv else { return vec![Line::styled("Loading…", Style::default().fg(DIM))] };
+    let Some(c) = conv else { return vec![Line::styled("Loading…", Style::default().fg(super::theme::p().dim))] };
     let mut out = Vec::new();
     if let Some(u) = c.user.as_deref().and_then(|u| ws.users.get(u)) {
         out.push(field("Name", ws.person_label(&u.id)));
@@ -128,12 +128,12 @@ fn about(ws: &Workspace, conv: Option<&Conversation>) -> Vec<Line<'static>> {
 
 fn member_line(ws: &Workspace, id: &str) -> Line<'static> {
     let (dot, color) = match ws.presence.get(id) {
-        Some(true) => ("●", Color::Green),
-        Some(false) => ("○", DIM),
-        None => ("·", DIM),
+        Some(true) => ("●", super::theme::p().good),
+        Some(false) => ("○", super::theme::p().dim),
+        None => ("·", super::theme::p().dim),
     };
     let handle = ws.users.get(id).map(|u| format!("  @{}", u.name)).unwrap_or_default();
-    Line::from(vec![Span::styled(format!(" {dot} "), Style::default().fg(color)), Span::raw(ws.person_label(id)), Span::styled(handle, Style::default().fg(DIM))])
+    Line::from(vec![Span::styled(format!(" {dot} "), Style::default().fg(color)), Span::raw(ws.person_label(id)), Span::styled(handle, Style::default().fg(super::theme::p().dim))])
 }
 
 fn pin_line(ws: &Workspace, m: &Message, width: usize) -> Line<'static> {
@@ -141,7 +141,7 @@ fn pin_line(ws: &Workspace, m: &Message, width: usize) -> Line<'static> {
     let body = slack_core::format::plain_text(&slack_core::format::message_blocks(&m.text, &m.blocks), &|i| text::inline_plain(ws, i)).replace('\n', " ");
     let author = ws.author(m);
     let room = width.saturating_sub(author.chars().count() + when.chars().count() + 6);
-    Line::from(vec![Span::styled(format!(" {author}"), Style::default().fg(text::user_color(m.user.as_deref().unwrap_or("")))), Span::styled(format!(" {when}  "), Style::default().fg(DIM)), Span::raw(body.chars().take(room).collect::<String>())])
+    Line::from(vec![Span::styled(format!(" {author}"), Style::default().fg(text::user_color(m.user.as_deref().unwrap_or("")))), Span::styled(format!(" {when}  "), Style::default().fg(super::theme::p().dim)), Span::raw(body.chars().take(room).collect::<String>())])
 }
 
 /// Pinned messages of a `pins.list` response.

@@ -2,12 +2,11 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use super::state::Workspace;
-use super::text::DIM;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Choice {
@@ -64,18 +63,18 @@ impl MovePicker {
                 };
                 let mut spans = vec![Span::raw(label)];
                 if here {
-                    spans.push(Span::styled("  ✓", Style::default().fg(Color::Green)));
+                    spans.push(Span::styled("  ✓", Style::default().fg(super::theme::p().good)));
                 }
                 let line = Line::from(spans);
-                if n == self.selected { line.style(Style::default().bg(Color::Rgb(0x2c, 0x3e, 0x5c))) } else { line }
+                if n == self.selected { line.style(Style::default().bg(super::theme::p().selection)) } else { line }
             })
             .collect();
         if let Some(text) = &self.naming {
-            lines.push(Line::from(vec![Span::styled(" name › ", Style::default().fg(DIM)), Span::styled(text.clone(), Style::default().add_modifier(Modifier::BOLD))]));
+            lines.push(Line::from(vec![Span::styled(" name › ", Style::default().fg(super::theme::p().dim)), Span::styled(text.clone(), Style::default().add_modifier(Modifier::BOLD))]));
         }
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Rgb(0x61, 0xaf, 0xef)))
+            .border_style(Style::default().fg(super::theme::p().accent))
             .title(format!(" Move {name} to… "));
         let inner = block.inner(popup);
         f.render_widget(Paragraph::new(lines).block(block), popup);

@@ -7,12 +7,11 @@ use huddle::session::{Participant, PcmSink, Session, SessionEvent};
 use huddle::signaling::Credentials;
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use super::state::Workspace;
-use super::text::DIM;
 
 pub struct Call {
     pub channel: String,
@@ -93,10 +92,10 @@ impl Call {
     pub fn draw(&self, f: &mut Frame, area: Rect, ws: &Workspace, keys: (&str, &str)) {
         let place = ws.conversations.get(&self.channel).map(|c| if c.is_dm() { ws.conversation_label(c) } else { format!("#{}", c.name) }).unwrap_or_else(|| self.channel.clone());
         let place = if self.thread.is_some() { format!("{place} · thread") } else { place };
-        let green = Style::default().fg(Color::Rgb(0x2b, 0xac, 0x76));
+        let green = Style::default().fg(super::theme::p().own);
         let mut spans = vec![Span::styled(format!(" 🎧 {place} "), green.add_modifier(Modifier::BOLD))];
         if !self.connected {
-            spans.push(Span::styled("connecting… ", Style::default().fg(DIM)));
+            spans.push(Span::styled("connecting… ", Style::default().fg(super::theme::p().dim)));
         }
         for (n, p) in self.roster.iter().enumerate() {
             if n > 0 {
@@ -106,17 +105,17 @@ impl Call {
             let style = if self.speaking.contains(&p.attendee_id) { green.add_modifier(Modifier::BOLD) } else { Style::default() };
             spans.push(Span::styled(name, style));
             if p.muted {
-                spans.push(Span::styled(" 🔇", Style::default().fg(DIM)));
+                spans.push(Span::styled(" 🔇", Style::default().fg(super::theme::p().dim)));
             } else if self.speaking.contains(&p.attendee_id) {
                 spans.push(Span::styled(" 🔊", green));
             }
         }
         let (mute, leave) = keys;
         let mic = if self.muted { format!("🔇 muted · {mute} unmute") } else { format!("🎙 live · {mute} mute") };
-        spans.push(Span::styled(format!("  ·  {mic} · {leave} leave"), Style::default().fg(DIM)));
+        spans.push(Span::styled(format!("  ·  {mic} · {leave} leave"), Style::default().fg(super::theme::p().dim)));
         if let Some(e) = &self.speaker_error {
-            spans.push(Span::styled(format!(" · no sound: {e}"), Style::default().fg(Color::Red)));
+            spans.push(Span::styled(format!(" · no sound: {e}"), Style::default().fg(super::theme::p().danger)));
         }
-        f.render_widget(Paragraph::new(Line::from(spans)).style(Style::default().bg(Color::Rgb(0x1b, 0x2b, 0x22))), area);
+        f.render_widget(Paragraph::new(Line::from(spans)).style(Style::default().bg(super::theme::p().call_bg)), area);
     }
 }

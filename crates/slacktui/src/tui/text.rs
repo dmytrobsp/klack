@@ -7,18 +7,11 @@ use unicode_width::UnicodeWidthStr;
 
 use super::state::Workspace;
 
-pub const MENTION: Color = Color::Rgb(0x1d, 0x9b, 0xd1);
-pub const LINK: Color = Color::Rgb(0x5d, 0xa9, 0xf6);
-pub const CODE_FG: Color = Color::Rgb(0xe8, 0x91, 0x2d);
-pub const DIM: Color = Color::Rgb(0x8a, 0x8a, 0x8a);
-pub const QUOTE_BAR: Color = Color::Rgb(0x6e, 0x6e, 0x6e);
-/// Background of code blocks and snippets.
-pub const CODE_BG: Color = Color::Rgb(0x2b, 0x2f, 0x3a);
 
 /// Lines drawn as a shaded box: one column of padding on each side, every row filled to
 /// the widest line (at most `width`), so code stands apart from message text.
 pub fn shaded(lines: Vec<Line<'static>>, width: usize) -> Vec<Line<'static>> {
-    let bg = Style::default().bg(CODE_BG);
+    let bg = Style::default().bg(super::theme::p().code_bg);
     let inner = lines.iter().map(Line::width).max().unwrap_or(0).min(width.saturating_sub(2));
     lines
         .into_iter()
@@ -34,20 +27,9 @@ pub fn shaded(lines: Vec<Line<'static>>, width: usize) -> Vec<Line<'static>> {
 
 /// Stable per-user colour for author names.
 pub fn user_color(id: &str) -> Color {
-    const PALETTE: [Color; 10] = [
-        Color::Rgb(0xe0, 0x6c, 0x75),
-        Color::Rgb(0x98, 0xc3, 0x79),
-        Color::Rgb(0xe5, 0xc0, 0x7b),
-        Color::Rgb(0x61, 0xaf, 0xef),
-        Color::Rgb(0xc6, 0x78, 0xdd),
-        Color::Rgb(0x56, 0xb6, 0xc2),
-        Color::Rgb(0xd1, 0x9a, 0x66),
-        Color::Rgb(0xbe, 0x50, 0x46),
-        Color::Rgb(0x7f, 0xb9, 0x8a),
-        Color::Rgb(0xa9, 0x8d, 0xe0),
-    ];
+    let palette = super::theme::p().authors;
     let h = id.bytes().fold(5381u32, |h, b| h.wrapping_mul(33) ^ b as u32);
-    PALETTE[(h % PALETTE.len() as u32) as usize]
+    palette[(h % palette.len() as u32) as usize]
 }
 
 /// Emoji shortcode (optionally with unicode hint) → display text.
@@ -94,14 +76,14 @@ fn text_style(s: format::Style) -> Style {
         st = st.add_modifier(Modifier::CROSSED_OUT);
     }
     if s.code {
-        st = st.fg(CODE_FG);
+        st = st.fg(super::theme::p().code_fg);
     }
     st
 }
 
 /// Spans for one inline element.
 pub fn inline_spans(ws: &Workspace, i: &Inline) -> Vec<Span<'static>> {
-    let mention = Style::default().fg(MENTION).add_modifier(Modifier::BOLD);
+    let mention = Style::default().fg(super::theme::p().mention).add_modifier(Modifier::BOLD);
     match i {
         Inline::Text { text, style } => vec![Span::styled(text.clone(), text_style(*style))],
         Inline::User { id } => {
@@ -113,7 +95,7 @@ pub fn inline_spans(ws: &Workspace, i: &Inline) -> Vec<Span<'static>> {
         Inline::Usergroup { id, handle } => vec![Span::styled(handle.clone().unwrap_or_else(|| format!("@{id}")), mention)],
         Inline::Link { url, label, style } => {
             let shown = label.clone().filter(|l| !l.is_empty()).unwrap_or_else(|| url.trim_start_matches("mailto:").to_string());
-            vec![Span::styled(shown, text_style(*style).fg(LINK).add_modifier(Modifier::UNDERLINED))]
+            vec![Span::styled(shown, text_style(*style).fg(super::theme::p().link).add_modifier(Modifier::UNDERLINED))]
         }
         Inline::Emoji { name, unicode } => vec![Span::raw(emoji(ws, name, unicode.as_deref()))],
     }
@@ -221,12 +203,12 @@ pub fn render_blocks(ws: &Workspace, blocks: &[Block], width: usize) -> Vec<Line
                 }
             }
             Block::Quote(items) => {
-                let bar = vec![Span::styled("▎ ", Style::default().fg(QUOTE_BAR))];
+                let bar = vec![Span::styled("▎ ", Style::default().fg(super::theme::p().quote_bar))];
                 let spans: Vec<Span> = items.iter().flat_map(|i| inline_spans(ws, i)).collect();
                 out.extend(wrap(spans, width, bar.clone(), bar));
             }
             Block::Code(code) => {
-                let st = Style::default().fg(CODE_FG);
+                let st = Style::default().fg(super::theme::p().code_fg);
                 let rows: Vec<Line<'static>> = code.lines().flat_map(|line| wrap(vec![Span::styled(line.to_string(), st)], width.saturating_sub(2), vec![], vec![])).collect();
                 out.extend(shaded(rows, width));
             }

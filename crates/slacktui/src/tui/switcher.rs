@@ -2,13 +2,12 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use super::autocomplete::rank;
 use super::state::Workspace;
-use super::text::DIM;
 
 const MAX: usize = 50;
 
@@ -46,11 +45,11 @@ impl Switcher {
         let [popup] = Layout::horizontal([Constraint::Length(60.min(area.width))]).flex(Flex::Center).areas(area);
         let [popup] = Layout::vertical([Constraint::Length(18.min(area.height))]).flex(Flex::Center).areas(popup);
         f.render_widget(Clear, popup);
-        let block = Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::Rgb(0x61, 0xaf, 0xef))).title(" Jump to… ");
+        let block = Block::default().borders(Borders::ALL).border_style(Style::default().fg(super::theme::p().accent)).title(" Jump to… ");
         let inner = block.inner(popup);
         f.render_widget(block, popup);
         let [input, list] = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(inner);
-        f.render_widget(Paragraph::new(Line::from(vec![Span::styled("› ", Style::default().fg(DIM)), Span::raw(self.query.clone())])), input);
+        f.render_widget(Paragraph::new(Line::from(vec![Span::styled("› ", Style::default().fg(super::theme::p().dim)), Span::raw(self.query.clone())])), input);
         f.set_cursor_position((input.x + 2 + self.query.chars().count() as u16, input.y));
         let items = self.entries(ws);
         let height = list.height as usize;
@@ -62,11 +61,11 @@ impl Switcher {
             .take(height)
             .map(|(n, e)| {
                 let style = if e.unread { Style::default().add_modifier(Modifier::BOLD) } else { Style::default() };
-                let line = Line::from(vec![Span::styled(format!(" {}", e.label), style), Span::styled(format!("  {}", e.detail), Style::default().fg(DIM))]);
-                if n == self.selected { line.style(Style::default().bg(Color::Rgb(0x2c, 0x3e, 0x5c))) } else { line }
+                let line = Line::from(vec![Span::styled(format!(" {}", e.label), style), Span::styled(format!("  {}", e.detail), Style::default().fg(super::theme::p().dim))]);
+                if n == self.selected { line.style(Style::default().bg(super::theme::p().selection)) } else { line }
             })
             .collect();
-        let lines = if lines.is_empty() { vec![Line::styled(" nothing matches", Style::default().fg(DIM))] } else { lines };
+        let lines = if lines.is_empty() { vec![Line::styled(" nothing matches", Style::default().fg(super::theme::p().dim))] } else { lines };
         f.render_widget(Paragraph::new(lines), list);
     }
 }

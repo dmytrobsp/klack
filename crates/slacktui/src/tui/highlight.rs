@@ -11,12 +11,18 @@ use syntect::util::LinesWithEndings;
 use unicode_width::UnicodeWidthStr;
 
 static SYNTAXES: LazyLock<SyntaxSet> = LazyLock::new(SyntaxSet::load_defaults_newlines);
-static THEME: LazyLock<Theme> = LazyLock::new(|| ThemeSet::load_defaults().themes.remove("base16-eighties.dark").unwrap_or_default());
+static THEMES: LazyLock<ThemeSet> = LazyLock::new(ThemeSet::load_defaults);
+
+/// The syntax theme of the current colour theme.
+fn theme() -> &'static Theme {
+    let name = super::theme::p().syntax;
+    THEMES.themes.get(name).or_else(|| THEMES.themes.values().next()).expect("syntect ships themes")
+}
 
 /// Load the grammars and theme ahead of first use (it takes a moment).
 pub fn warm_up() {
     LazyLock::force(&SYNTAXES);
-    LazyLock::force(&THEME);
+    LazyLock::force(&THEMES);
 }
 
 /// Highlighted preview lines of a snippet file, computed once per file.
@@ -27,7 +33,7 @@ pub fn preview(file: &slack_core::types::File, plain: Style) -> Vec<Vec<Span<'st
         return make();
     }
     let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-    cache.entry(file.id.clone()).or_insert_with(make).clone()
+    cache.entry(format!("{}/{}", super::theme::p().name, file.id)).or_insert_with(make).clone()
 }
 
 /// The language a snippet is highlighted as.
@@ -50,7 +56,7 @@ pub fn highlight(text: &str, names: &[&str], filetype: &str, plain: Style) -> Ve
     let Some(syntax) = syntax_for(names, filetype) else {
         return text.lines().map(plain_line).collect();
     };
-    let mut h = HighlightLines::new(syntax, &THEME);
+    let mut h = HighlightLines::new(syntax, theme());
     LinesWithEndings::from(&text)
         .map(|line| match h.highlight_line(line, &SYNTAXES) {
             Ok(parts) => parts
