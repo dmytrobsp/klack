@@ -121,12 +121,13 @@ impl MessagePane {
         let width = inner.width.saturating_sub(1 + GUTTER) as usize;
         let thumb_size = |file: &File, max_cols: u16| media.thumb_size(file, max_cols).filter(|_| ws.settings.messages.inline_images);
         let avatars = media.avatars && ws.settings.messages.avatars;
+        let order: Vec<&str> = timeline.map(|t| shown_messages(t, self.thread).map(|m| m.ts.as_str()).collect()).unwrap_or_default();
         let (mut lines, mut owners, mut slots) = match timeline {
             Some(t) if t.loaded || !t.messages.is_empty() => {
                 // Building costs time for every line, on every frame: only the newest messages
                 // that cover the view (with a screen to spare), the selection and the message
                 // being edited are built. A thread is built whole.
-                let shown: Vec<&str> = shown_messages(t, self.thread).map(|m| m.ts.as_str()).collect();
+                let shown = &order;
                 let need = self.scroll + 2 * inner.height as usize;
                 let kept = [&self.selected, &self.editing].into_iter().flatten().filter_map(|ts| shown.iter().position(|s| *s == ts.as_str())).min();
                 let mut take = BUILD_CHUNK.max(kept.map_or(0, |i| shown.len() - i));
@@ -223,6 +224,13 @@ impl MessagePane {
         }
         self.rows = rows;
         f.render_widget(Paragraph::new(visible).block(block), area);
+        // Where we are, counted in messages (only part of a long history is built).
+        let mut on_screen: Vec<&str> = self.rows.iter().flatten().map(String::as_str).collect();
+        on_screen.dedup();
+        let index = |ts: &&str| order.iter().rposition(|o| o == ts);
+        if let (Some(top), Some(bottom)) = (on_screen.first().and_then(index), on_screen.last().and_then(index)) {
+            super::scroll::indicator(f, area, top, bottom + 1 - top, order.len(), border);
+        }
         // Thumbnails over their reserved rows, sliced when partly scrolled out.
         self.wanted.clear();
         for slot in slots {
