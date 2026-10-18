@@ -142,6 +142,8 @@ pub fn apply(ws: &mut Workspace, ev: &Value, current: Option<&str>) -> Effects {
             let id = room["id"].as_str().unwrap_or_default().to_string();
             let participants: Vec<String> = room["participants"].as_array().into_iter().flatten().filter_map(|u| u.as_str().map(String::from)).collect();
             let ended = room["has_ended"].as_bool().unwrap_or(false) || participants.is_empty();
+            // Slack sends zeros until the huddle's thread message exists.
+            let thread = room["thread_root_ts"].as_str().filter(|t| t.trim_start_matches(['0', '.']).len() > 0).map(String::from);
             let user = ev["user"].as_str().unwrap_or_default();
             for c in room["channels"].as_array().into_iter().flatten().filter_map(|c| c.as_str()) {
                 if ev["type"] == "sh_room_join" && !ended && user != ws.self_id && !ws.huddles.contains_key(c) {
@@ -150,7 +152,8 @@ pub fn apply(ws: &mut Workspace, ev: &Value, current: Option<&str>) -> Effects {
                 if ended {
                     ws.huddles.remove(c);
                 } else {
-                    ws.huddles.insert(c.to_string(), (id.clone(), participants.clone()));
+                    let known = ws.huddles.get(c).and_then(|h| h.thread.clone());
+                    ws.huddles.insert(c.to_string(), super::state::Huddle { room: id.clone(), participants: participants.clone(), thread: thread.clone().or(known) });
                 }
             }
             fx.rebuild_sidebar = true;
@@ -417,9 +420,12 @@ mod tests {
     #[test]
     fn huddle_events_track_active_huddles() {
         let mut w = ws();
-        apply(&mut w, &json!({"type":"sh_room_join","user":"U2","room":{"id":"R1","channels":["C1"],"participants":["U2"],"has_ended":false}}), None);
-        assert_eq!(w.huddles["C1"], ("R1".to_string(), vec!["U2".to_string()]));
-        let fx = apply(&mut w, &json!({"type":"sh_room_join","user":"U3","room":{"id":"R1","channels":["C1"],"participants":["U2","U3"],"has_ended":false}}), None);
+        apply(&mut w, &json!({"type":"sh_room_join","user":"U2","room":{"id":"R1","channels":["C1"],"participants":["U2"],"has_ended":false,"thread_root_ts":"0000000000.000000"}}), None);
+        assert_eq!((w.huddles["C1"].room.as_str(), w.huddles["C1"].participants.clone(), w.huddles["C1"].thread.clone()), ("R1", vec!["U2".to_string()], None), "zeros are no thread");
+        let fx = apply(&mut w, &json!({"type":"sh_room_join","user":"U3","room":{"id":"R1","channels":["C1"],"participants":["U2","U3"],"has_ended":false,"thread_root_ts":"1792332523.612529"}}), None);
+        assert_eq!(w.huddles["C1"].thread.as_deref(), Some("1792332523.612529"));
+        apply(&mut w, &json!({"type":"sh_room_update","user":"U3","room":{"id":"R1","channels":["C1"],"participants":["U2","U3"],"has_ended":false,"thread_root_ts":"0000000000.000000"}}), None);
+        assert_eq!(w.huddles["C1"].thread.as_deref(), Some("1792332523.612529"), "a later placeholder does not lose it");
         assert!(fx.huddle_started.is_none(), "joining a running huddle is not a start");
         apply(&mut w, &json!({"type":"sh_room_leave","user":"U2","room":{"id":"R1","channels":["C1"],"participants":[],"has_ended":false}}), None);
         assert!(w.huddles.is_empty());

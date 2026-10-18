@@ -71,8 +71,8 @@ pub struct Workspace {
     pub custom_emoji: HashMap<String, String>,
     pub muted: std::collections::HashSet<String>,
     pub dnd: Dnd,
-    /// Active huddles: channel → (room id, participant user ids).
-    pub huddles: HashMap<String, (String, Vec<String>)>,
+    /// Active huddles by channel.
+    pub huddles: HashMap<String, Huddle>,
     /// A channel we are not in, shown in the sidebar while it is being looked at.
     pub preview: Option<String>,
     /// Starred conversations.
@@ -85,6 +85,15 @@ pub struct Workspace {
     pub notify: NotifyPrefs,
     /// People marked VIP.
     pub vip: std::collections::HashSet<String>,
+}
+
+/// A huddle going on in a conversation.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Huddle {
+    pub room: String,
+    pub participants: Vec<String>,
+    /// Its thread (the "A huddle started" message), once Slack has posted it.
+    pub thread: Option<String>,
 }
 
 /// Desktop notification levels: `everything`, `mentions_dms` ("just mentions") or `nothing`.

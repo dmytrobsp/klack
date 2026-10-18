@@ -125,7 +125,7 @@ fn conversation_line(ws: &Workspace, id: &str, selected: bool, width: usize) -> 
         name_style = name_style.fg(super::theme::p().dim);
     }
     let badge = if unread.mentions > 0 { format!(" {}", unread.mentions) } else { String::new() };
-    let huddle = ws.huddles.get(id).map(|(_, p)| format!(" 🎧{}", p.len())).unwrap_or_default();
+    let huddle = ws.huddles.get(id).map(|h| format!(" 🎧{}", h.participants.len())).unwrap_or_default();
     let preview = if !c.is_dm() && !c.is_member {
         " ·preview"
     } else if c.is_im && c.user.as_ref().is_some_and(|u| ws.vip.contains(u)) {

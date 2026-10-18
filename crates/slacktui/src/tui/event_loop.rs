@@ -1182,6 +1182,23 @@ impl App {
         }
     }
 
+    /// The thread of the huddle we are in, or of the current conversation's huddle.
+    fn open_huddle_thread(&mut self) {
+        let channel = self.call.as_ref().map(|c| c.channel.clone()).or_else(|| self.current.clone().filter(|c| self.ws.huddles.contains_key(c)));
+        let Some(channel) = channel else {
+            self.status = "no huddle here".into();
+            return;
+        };
+        let thread = self.call.as_ref().and_then(|c| c.thread.clone()).or_else(|| self.ws.huddles.get(&channel).and_then(|h| h.thread.clone()));
+        match thread {
+            Some(ts) => {
+                self.open_hit(super::search::Hit { channel, ts: ts.clone(), thread_ts: Some(ts), user: None, text: String::new() });
+                self.focus = Focus::ThreadComposer;
+            }
+            None => self.status = "the huddle has no thread yet".into(),
+        }
+    }
+
     /// Profile card `h`: a huddle in the DM with `user`.
     fn huddle_with(&mut self, user: String) {
         if user == self.ws.self_id {
@@ -1787,6 +1804,7 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
         }
         Event::Key(k) if k.kind != KeyEventKind::Release && app.global(&k) == Some(Action::Details) => app.open_details(),
         Event::Key(k) if k.kind != KeyEventKind::Release && app.global(&k) == Some(Action::Huddle) => app.toggle_huddle(),
+        Event::Key(k) if k.kind != KeyEventKind::Release && app.global(&k) == Some(Action::HuddleThread) => app.open_huddle_thread(),
         Event::Key(k) if k.kind != KeyEventKind::Release && app.global(&k) == Some(Action::Mute) => {
             if let Some(call) = app.call.as_mut() {
                 if let Err(e) = call.toggle_mute() {
@@ -2396,7 +2414,7 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     let [body, call_bar, status] = Layout::vertical([Constraint::Min(1), Constraint::Length(call_rows), Constraint::Length(1)]).areas(f.area());
     if let Some(call) = &app.call {
         let key = |a| app.keys.first_key(Context::Global, a).unwrap_or_default();
-        call.draw(f, call_bar, &app.ws, (&key(Action::Mute), &key(Action::Huddle)));
+        call.draw(f, call_bar, &app.ws, (&key(Action::Mute), &key(Action::Huddle), &key(Action::HuddleThread)));
     }
     let side_w = (body.width / 4).clamp(18, 32);
     let [side, main] = Layout::horizontal([Constraint::Length(side_w), Constraint::Min(10)]).areas(body);
