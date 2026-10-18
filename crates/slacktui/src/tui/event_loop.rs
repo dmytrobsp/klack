@@ -2316,6 +2316,17 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
                     app.toggle_huddle_view();
                 }
             }
+            // The huddle view's tiles, when they do not all fit (the layout clamps the scroll).
+            MouseEventKind::ScrollUp if app.huddle_view.as_ref().is_some_and(|v| v.tiles_area.contains((m.column, m.row).into())) => {
+                if let Some(v) = app.huddle_view.as_mut() {
+                    v.scroll = v.scroll.saturating_sub(1);
+                }
+            }
+            MouseEventKind::ScrollDown if app.huddle_view.as_ref().is_some_and(|v| v.tiles_area.contains((m.column, m.row).into())) => {
+                if let Some(v) = app.huddle_view.as_mut() {
+                    v.scroll += 1;
+                }
+            }
             MouseEventKind::ScrollUp if app.sidebar.area.contains((m.column, m.row).into()) => app.sidebar.move_by(-1),
             MouseEventKind::ScrollDown if app.sidebar.area.contains((m.column, m.row).into()) => app.sidebar.move_by(1),
             MouseEventKind::ScrollUp if app.messages.area.contains((m.column, m.row).into()) => {

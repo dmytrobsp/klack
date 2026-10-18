@@ -14,11 +14,10 @@ use super::call::Call;
 use super::media::{Media, Thumb};
 use super::state::Workspace;
 
-/// A participant's tile at the smallest scale, in cells.
-pub const TILE_W: u16 = 26;
-pub const TILE_H: u16 = 9;
-/// Tiles grow up to this many times their smallest size when there is room.
-pub const MAX_SCALE: u16 = 3;
+/// The smallest tile, in cells: a short name and a small picture.
+pub const MIN_TILE: (u16, u16) = (18, 6);
+/// Tile width ÷ height in cells: a 16:9 picture in cells twice as tall as wide, plus borders.
+const ASPECT: f32 = 3.2;
 
 #[derive(Default)]
 pub struct HuddleView {
@@ -27,29 +26,92 @@ pub struct HuddleView {
     /// Each participant's video picture as encoded for the terminal, with the frame it came
     /// from and the size it was encoded for (re-encoded only when either changes).
     encoded: std::collections::HashMap<String, (std::sync::Arc<Vec<u8>>, ratatui::layout::Size, ratatui_image::protocol::Protocol)>,
+    /// First row of tiles shown when they do not all fit.
+    pub scroll: usize,
+    /// Where the tiles were drawn (the mouse wheel scrolls them).
+    pub tiles_area: Rect,
 }
 
-/// Where `n` tiles go in `area`, and their scale (1…MAX_SCALE): the largest whole scale
-/// at which all of them fit (trying every column count), in centred rows. If none fits even
-/// at scale 1, as many as fit are placed and the rest left out (the caller says how many).
-pub fn grid(n: usize, area: Rect) -> (Vec<Rect>, u16) {
-    let fits = |cols: usize, scale: u16| {
-        let rows = n.div_ceil(cols.max(1));
-        cols as u16 * TILE_W * scale <= area.width && rows as u16 * TILE_H * scale <= area.height
+/// Where tiles go: `tiles` are (tile index, rect); `above`/`below` count the tiles scrolled
+/// out of view; `scroll` is the first row shown (clamped).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Grid {
+    pub tiles: Vec<(usize, Rect)>,
+    pub cols: usize,
+    pub above: usize,
+    pub below: usize,
+    pub scroll: usize,
+}
+
+/// Lay out `n` tiles in `area`: the largest tiles (about camera-shaped) at which all of them
+/// fit, trying every column count, rows centred. When even the smallest tiles do not fit,
+/// the grid scrolls by rows from `scroll`, with a row kept free above and below for the
+/// "more" markers.
+pub fn layout(n: usize, area: Rect, scroll: usize) -> Grid {
+    if n == 0 || area.width == 0 || area.height == 0 {
+        return Grid::default();
+    }
+    // Keep a tile camera-shaped within the space it gets.
+    let fit = |w: u16, h: u16| -> (u16, u16) {
+        if w as f32 > h as f32 * ASPECT { ((h as f32 * ASPECT) as u16, h) } else { (w, (w as f32 / ASPECT).round().max(1.0) as u16) }
     };
-    let best = (1..=MAX_SCALE).rev().find_map(|scale| (1..=n.max(1)).find(|c| fits(*c, scale)).map(|c| (c, scale)));
-    let (cols, scale) = best.unwrap_or(((area.width / TILE_W).max(1) as usize, 1));
-    let (w, h) = (TILE_W * scale, TILE_H * scale);
-    let shown = n.min(cols * (area.height / h) as usize);
-    let rects = (0..shown)
-        .map(|i| {
-            let (row, col) = (i / cols, i % cols);
-            let in_row = (shown - row * cols).min(cols) as u16;
-            let left = area.x + area.width.saturating_sub(in_row * w) / 2;
-            Rect { x: left + col as u16 * w, y: area.y + row as u16 * h, width: w.min(area.width), height: h }
+    let best = (1..=n)
+        .filter_map(|cols| {
+            let rows = n.div_ceil(cols);
+            let (w, h) = fit(area.width / cols as u16, area.height / rows as u16);
+            (w >= MIN_TILE.0 && h >= MIN_TILE.1).then_some((cols, rows, w, h))
         })
-        .collect();
-    (rects, scale)
+        .max_by_key(|(cols, _, w, h)| (*w as u32 * *h as u32, usize::MAX - cols));
+    let (cols, rows_shown, w, h, first_row, top, above, below, scroll) = match best {
+        Some((cols, rows, w, h)) => (cols, rows, w, h, 0, area.y + area.height.saturating_sub(rows as u16 * h) / 2, 0, 0, 0),
+        None => {
+            let cols = ((area.width / MIN_TILE.0) as usize).max(1);
+            let (w, h) = fit(area.width / cols as u16, area.height);
+            let h = h.max(MIN_TILE.1);
+            let rows = n.div_ceil(cols);
+            // One row for each marker, and at least one row of tiles.
+            let room = (area.height.saturating_sub(2) / h).max(1) as usize;
+            let scroll = scroll.min(rows.saturating_sub(room));
+            let below = n.saturating_sub((scroll + room) * cols);
+            (cols, room.min(rows - scroll), w, h, scroll, area.y + 1, scroll * cols, below, scroll)
+        }
+    };
+    let mut tiles = Vec::new();
+    for row in 0..rows_shown {
+        let first = (first_row + row) * cols;
+        let in_row = cols.min(n.saturating_sub(first));
+        let left = area.x + area.width.saturating_sub(in_row as u16 * w) / 2;
+        for c in 0..in_row {
+            let rect = Rect { x: left + c as u16 * w, y: top + row as u16 * h, width: w, height: h }.intersection(area);
+            tiles.push((first + c, rect));
+        }
+    }
+    Grid { tiles, cols, above, below, scroll }
+}
+
+/// The footer lines that fit and their height: at most a third of the view's `height`, so
+/// tiles keep the room; the audio line goes first, then the controls are cut.
+pub fn footer(lines: &[String], width: usize, height: u16) -> (Vec<String>, u16) {
+    let budget = (height / 3).max(1);
+    let mut shown: Vec<String> = Vec::new();
+    let mut used = 0;
+    for line in lines {
+        let rows = wrapped_rows(line, width);
+        if used + rows <= budget {
+            shown.push(line.clone());
+            used += rows;
+        } else if shown.is_empty() {
+            // Not even the controls fit: as much of them as the budget allows.
+            shown.push(line.clone());
+            used = budget;
+        }
+    }
+    (shown, used.min(height))
+}
+
+/// "▲ 4 more" / "▼ 6 more".
+pub fn more_marker(up: bool, n: usize) -> String {
+    format!("{} {n} more", if up { "▲" } else { "▼" })
 }
 
 /// The call's keys in a line, shortened when `width` is too narrow for the long form.
@@ -142,27 +204,35 @@ impl HuddleView {
         f.render_widget(block, area);
         // The controls and audio lines, wrapped in a narrow pane.
         let width = inner.width as usize;
-        let texts = [controls(keys, call.muted, call.camera_on(), call.is_sharing(), width), audio_summary(&ws.settings.audio, width)];
-        let footer_h = (texts.iter().map(|t| wrapped_rows(t, width)).sum::<u16>()).min(inner.height);
+        let all = [controls(keys, call.muted, call.camera_on(), call.is_sharing(), width), audio_summary(&ws.settings.audio, width)];
+        let (texts, footer_h) = footer(&all, width, inner.height);
         let tiles_area = Rect { height: inner.height.saturating_sub(footer_h + 1), y: inner.y + 1, ..inner };
         let footer = Rect { y: inner.y + inner.height - footer_h, height: footer_h, ..inner };
 
         // Screen shares first, then the people.
         let shares = call.shown_shares(&ws.self_id);
         let tiles = shares.len() + call.roster.len();
-        let (rects, _) = grid(tiles, tiles_area);
-        for (n, rect) in rects.iter().enumerate() {
-            match shares.get(n) {
+        self.tiles_area = tiles_area;
+        let grid = layout(tiles, tiles_area, self.scroll);
+        self.scroll = grid.scroll;
+        for (n, rect) in &grid.tiles {
+            match shares.get(*n) {
                 Some((share, user)) => self.draw_share(f, *rect, call, share, user, ws, media),
-                None => self.draw_tile(f, *rect, call, &call.roster[n - shares.len()], ws, media),
+                None => self.draw_tile(f, *rect, call, &call.roster[*n - shares.len()], ws, media),
             }
         }
-        if rects.len() < tiles {
-            let more = Rect { y: tiles_area.y + tiles_area.height.saturating_sub(1), height: 1.min(tiles_area.height), ..tiles_area };
-            f.render_widget(Paragraph::new(format!("+{} more (make the window larger)", tiles - rects.len())).style(dim).alignment(Alignment::Center), more);
+        // Tiles scrolled out of view are counted above and below.
+        let marker = Style::default().fg(super::theme::p().accent).add_modifier(Modifier::BOLD);
+        if grid.above > 0 {
+            let top = Rect { height: 1.min(tiles_area.height), ..tiles_area };
+            f.render_widget(Paragraph::new(more_marker(true, grid.above)).style(marker).alignment(Alignment::Center), top);
+        }
+        if grid.below > 0 {
+            let bottom = Rect { y: tiles_area.y + tiles_area.height.saturating_sub(1), height: 1.min(tiles_area.height), ..tiles_area };
+            f.render_widget(Paragraph::new(more_marker(false, grid.below)).style(marker).alignment(Alignment::Center), bottom);
         }
 
-        let lines: Vec<Line> = texts.into_iter().map(|t| Line::styled(t, dim)).collect();
+        let lines: Vec<Line> = texts.iter().map(|t| Line::styled(t.clone(), dim)).collect();
         f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), footer);
     }
 
@@ -258,26 +328,62 @@ impl HuddleView {
 mod tests {
     use super::*;
 
+    /// Tiles never leave the area or overlap.
+    fn sane(g: &Grid, area: Rect) {
+        for (n, (_, a)) in g.tiles.iter().enumerate() {
+            assert_eq!(a.intersection(area), *a, "inside");
+            for (_, b) in &g.tiles[n + 1..] {
+                assert!(!a.intersects(*b), "{a:?} overlaps {b:?}");
+            }
+        }
+    }
+
     #[test]
-    fn tiles_fill_rows_and_centre() {
-        let area = Rect::new(10, 5, 80, 20);
-        // 80 columns hold three 26-wide tiles; 20 rows hold two rows of 9.
-        let (one, scale) = grid(1, area);
-        assert_eq!((one, scale), (vec![Rect::new(10 + (80 - 52) / 2, 5, 52, 18)], 2), "a single tile, doubled and centred");
-        let (four, scale) = grid(4, area);
-        assert_eq!((four.len(), scale), (4, 1));
-        let corners: Vec<(u16, u16)> = four.iter().map(|r| (r.x, r.y)).collect();
-        assert_eq!(corners, vec![(24, 5), (50, 5), (24, 14), (50, 14)], "2 × 2 (the fewest columns that fit), centred");
-        let (three, _) = grid(3, Rect::new(0, 0, 80, 18));
-        assert_eq!((three[2].x, three[2].y), ((80 - 26) / 2, 9), "a short last row is centred");
-        assert_eq!(grid(9, area).0.len(), 6, "only what fits");
-        assert!(grid(3, Rect::new(0, 0, 80, 5)).0.is_empty(), "too short for a tile");
-        let (narrow, _) = grid(2, Rect::new(0, 0, 20, 20));
-        assert_eq!((narrow.len(), narrow[0].width), (2, 20), "one column, clipped to the width");
-        // Two people in a tall pane: one column at twice the size beats two small columns.
-        let (tall, scale) = grid(2, Rect::new(0, 0, 67, 40));
-        assert_eq!((scale, tall[0].x, tall[1].y), (2, (67 - 52) / 2, 18));
-        assert_eq!(grid(1, Rect::new(0, 0, 200, 60)).1, MAX_SCALE);
+    fn tiles_shrink_as_people_join() {
+        let area = Rect::new(2, 3, 120, 40);
+        let one = layout(1, area, 0);
+        let (_, r) = one.tiles[0];
+        assert!(r.width >= 100 && r.height >= 30, "one person gets most of the space: {r:?}");
+        assert_eq!(r.x - area.x, area.width - r.width - (r.x - area.x), "centred");
+        let mut last = u32::MAX;
+        for n in 1..=12 {
+            let g = layout(n, area, 0);
+            sane(&g, area);
+            assert_eq!(g.tiles.len(), n, "{n} fit without scrolling");
+            let (_, r) = g.tiles[0];
+            assert!(r.width >= MIN_TILE.0 && r.height >= MIN_TILE.1);
+            let size = r.width as u32 * r.height as u32;
+            assert!(size <= last, "tiles do not grow when someone joins ({n})");
+            last = size;
+        }
+    }
+
+    #[test]
+    fn overflow_scrolls_with_markers() {
+        let area = Rect::new(0, 0, 80, 20);
+        let g = layout(30, area, 0);
+        sane(&g, area);
+        assert_eq!(g.cols, 4, "80 columns of 18-wide tiles");
+        assert_eq!((g.above, g.tiles.len() + g.below), (0, 30));
+        assert!(g.below > 0 && g.tiles.iter().all(|(_, r)| r.y >= 1 && r.y + r.height <= 19), "rows free for the markers");
+        let s1 = layout(30, area, 1);
+        assert_eq!((s1.above, s1.tiles[0].0), (4, 4), "one row down");
+        let end = layout(30, area, 99);
+        assert_eq!(end.below, 0, "scrolling stops at the end");
+        assert_eq!(end.above + end.tiles.len(), 30);
+        assert_eq!(more_marker(true, 4), "▲ 4 more");
+        assert!(layout(0, area, 0).tiles.is_empty());
+        // Too small for even one minimum row: still one row, never nothing.
+        assert_eq!(layout(5, Rect::new(0, 0, 40, 5), 0).tiles.len(), 2);
+    }
+
+    #[test]
+    fn footer_yields_to_the_tiles() {
+        let lines = vec!["F4 unmute · F9 camera on · F10 share screen".to_string(), "vol 100% · gain 100%".to_string()];
+        assert_eq!(footer(&lines, 80, 40), (lines.clone(), 2), "room for both");
+        assert_eq!(footer(&lines, 20, 40).1, 4, "wrapped");
+        assert_eq!(footer(&lines, 20, 9), (vec![lines[0].clone()], 3), "the audio line goes first");
+        assert_eq!(footer(&lines, 10, 6), (vec![lines[0].clone()], 2), "the controls are cut to a third");
     }
 
     #[test]
