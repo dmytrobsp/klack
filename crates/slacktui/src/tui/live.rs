@@ -1,0 +1,273 @@
+//! Apply real-time (RTM) events to the workspace state.
+
+use serde_json::Value;
+use slack_core::types::{Conversation, Message, Reaction, User};
+
+use super::state::{Workspace, thread_key};
+
+/// What the UI should do after an event.
+#[derive(Debug, Default)]
+pub struct Effects {
+    pub rebuild_sidebar: bool,
+    /// A new message from someone else arrived in this channel.
+    pub incoming: Option<(String, Message)>,
+}
+
+fn parse_message(v: &Value, channel: &str) -> Option<Message> {
+    let mut m: Message = serde_json::from_value(v.clone()).ok()?;
+    if m.channel.is_none() {
+        m.channel = Some(channel.to_string());
+    }
+    Some(m)
+}
+
+/// Does this message mention us (directly or via @here/@channel)?
+pub fn mentions_me(ws: &Workspace, m: &Message) -> bool {
+    let me = format!("<@{}", ws.self_id);
+    m.text.contains(&me) || m.text.contains("<!here") || m.text.contains("<!channel") || m.text.contains("<!everyone")
+}
+
+pub fn apply(ws: &mut Workspace, ev: &Value, current: Option<&str>) -> Effects {
+    let mut fx = Effects::default();
+    let channel = ev["channel"].as_str().unwrap_or_default().to_string();
+    match ev["type"].as_str().unwrap_or("") {
+        "message" => match ev["subtype"].as_str() {
+            Some("message_changed") => {
+                if let Some(m) = parse_message(&ev["message"], &channel) {
+                    update_everywhere(ws, &channel, m);
+                }
+            }
+            Some("message_deleted") => {
+                if let Some(ts) = ev["deleted_ts"].as_str() {
+                    if let Some(t) = ws.timelines.get_mut(&channel) {
+                        t.remove(ts);
+                    }
+                    for (key, t) in ws.threads.iter_mut() {
+                        if key.starts_with(&format!("{channel}/")) {
+                            t.remove(ts);
+                        }
+                    }
+                }
+            }
+            Some("message_replied") => {
+                if let Some(m) = parse_message(&ev["message"], &channel) {
+                    update_everywhere(ws, &channel, m);
+                }
+            }
+            _ => {
+                let Some(m) = parse_message(ev, &channel) else { return fx };
+                let from_me = m.user.as_deref() == Some(ws.self_id.as_str());
+                if let Some(parent) = m.thread_ts.clone().filter(|_| m.is_reply()) {
+                    if let Some(t) = ws.threads.get_mut(&thread_key(&channel, &parent)) {
+                        t.upsert(m.clone());
+                    }
+                    if let Some(p) = ws.timelines.get_mut(&channel).and_then(|t| t.messages.iter_mut().find(|x| x.ts == parent)) {
+                        p.reply_count += 1;
+                        p.latest_reply = Some(m.ts.clone());
+                        if let Some(u) = &m.user {
+                            if !p.reply_users.contains(u) {
+                                p.reply_users.push(u.clone());
+                            }
+                        }
+                    }
+                    if m.subtype.as_deref() == Some("thread_broadcast") {
+                        if let Some(t) = ws.timelines.get_mut(&channel).filter(|t| t.loaded) {
+                            t.upsert(m.clone());
+                        }
+                    }
+                } else if let Some(t) = ws.timelines.get_mut(&channel).filter(|t| t.loaded) {
+                    t.upsert(m.clone());
+                }
+                if !from_me {
+                    // Someone stopped typing once their message lands.
+                    if let (Some(list), Some(u)) = (ws.typing.get_mut(&channel), m.user.as_deref()) {
+                        list.retain(|(x, _)| x != u);
+                    }
+                    if current != Some(channel.as_str()) && !m.is_reply() {
+                        let is_dm = ws.conversations.get(&channel).is_some_and(|c| c.is_dm());
+                        let mention = is_dm || mentions_me(ws, &m);
+                        let u = ws.unread.entry(channel.clone()).or_default();
+                        u.has_unreads = true;
+                        if mention {
+                            u.mentions += 1;
+                        }
+                    }
+                    fx.incoming = Some((channel, m));
+                }
+            }
+        },
+        "reaction_added" | "reaction_removed" => {
+            let added = ev["type"] == "reaction_added";
+            let item_channel = ev["item"]["channel"].as_str().unwrap_or_default();
+            let ts = ev["item"]["ts"].as_str().unwrap_or_default();
+            let name = ev["reaction"].as_str().unwrap_or_default();
+            let user = ev["user"].as_str().unwrap_or_default();
+            let mut targets: Vec<&mut Message> = Vec::new();
+            if let Some(t) = ws.timelines.get_mut(item_channel) {
+                targets.extend(t.messages.iter_mut().filter(|m| m.ts == ts));
+            }
+            for (key, t) in ws.threads.iter_mut() {
+                if key.starts_with(&format!("{item_channel}/")) {
+                    targets.extend(t.messages.iter_mut().filter(|m| m.ts == ts));
+                }
+            }
+            for m in targets {
+                apply_reaction(m, name, user, added);
+            }
+        }
+        "user_typing" => {
+            if let Some(u) = ev["user"].as_str() {
+                let list = ws.typing.entry(channel).or_default();
+                list.retain(|(x, _)| x != u);
+                list.push((u.to_string(), std::time::Instant::now()));
+            }
+        }
+        "channel_marked" | "im_marked" | "group_marked" | "mpim_marked" => {
+            let u = ws.unread.entry(channel.clone()).or_default();
+            u.has_unreads = ev["unread_count_display"].as_u64().unwrap_or(0) > 0;
+            u.mentions = ev["num_mentions_display"].as_u64().unwrap_or(0);
+            if let Some(c) = ws.conversations.get_mut(&channel) {
+                c.last_read = ev["ts"].as_str().map(String::from);
+            }
+        }
+        "presence_change" => {
+            let active = ev["presence"] == "active";
+            let users: Vec<String> = match ev["users"].as_array() {
+                Some(list) => list.iter().filter_map(|u| u.as_str().map(String::from)).collect(),
+                None => ev["user"].as_str().map(|u| vec![u.to_string()]).unwrap_or_default(),
+            };
+            for u in users {
+                ws.presence.insert(u, active);
+            }
+        }
+        "channel_joined" | "group_joined" | "im_created" | "channel_created" | "mpim_joined" => {
+            if let Ok(mut c) = serde_json::from_value::<Conversation>(ev["channel"].clone()) {
+                if ev["type"] == "im_created" {
+                    c.is_im = true;
+                }
+                if ev["type"] != "channel_created" {
+                    c.is_member = true;
+                }
+                ws.conversations.insert(c.id.clone(), c);
+                fx.rebuild_sidebar = true;
+            }
+        }
+        "channel_left" | "group_left" | "channel_archive" | "channel_deleted" => {
+            if let Some(c) = ws.conversations.get_mut(&channel) {
+                c.is_member = false;
+                fx.rebuild_sidebar = true;
+            }
+        }
+        "channel_rename" | "group_rename" => {
+            let id = ev["channel"]["id"].as_str().unwrap_or_default();
+            if let (Some(c), Some(name)) = (ws.conversations.get_mut(id), ev["channel"]["name"].as_str()) {
+                c.name = name.to_string();
+                fx.rebuild_sidebar = true;
+            }
+        }
+        "user_change" | "team_join" => {
+            if let Ok(u) = serde_json::from_value::<User>(ev["user"].clone()) {
+                ws.users.insert(u.id.clone(), u);
+            }
+        }
+        _ => {}
+    }
+    fx
+}
+
+fn update_everywhere(ws: &mut Workspace, channel: &str, m: Message) {
+    if let Some(t) = ws.timelines.get_mut(channel) {
+        if t.index_of(&m.ts).is_some() {
+            t.upsert(m.clone());
+        }
+    }
+    let thread = m.thread_ts.clone().unwrap_or_else(|| m.ts.clone());
+    if let Some(t) = ws.threads.get_mut(&thread_key(channel, &thread)) {
+        if t.index_of(&m.ts).is_some() {
+            t.upsert(m);
+        }
+    }
+}
+
+fn apply_reaction(m: &mut Message, name: &str, user: &str, added: bool) {
+    match m.reactions.iter_mut().position(|r| r.name == name) {
+        Some(i) => {
+            let r = &mut m.reactions[i];
+            if added && !r.users.iter().any(|u| u == user) {
+                r.users.push(user.to_string());
+                r.count += 1;
+            } else if !added && r.users.iter().any(|u| u == user) {
+                r.users.retain(|u| u != user);
+                r.count = r.count.saturating_sub(1);
+                if r.count == 0 {
+                    m.reactions.remove(i);
+                }
+            }
+        }
+        None if added => m.reactions.push(Reaction { name: name.to_string(), users: vec![user.to_string()], count: 1 }),
+        None => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tui::state::Timeline;
+    use serde_json::json;
+
+    fn ws() -> Workspace {
+        let mut ws = Workspace { self_id: "UME".into(), ..Default::default() };
+        ws.conversations.insert("C1".into(), Conversation { id: "C1".into(), name: "general".into(), is_member: true, ..Default::default() });
+        ws.timelines.insert("C1".into(), Timeline { loaded: true, ..Default::default() });
+        ws
+    }
+
+    #[test]
+    fn new_message_lands_and_counts_unread() {
+        let mut w = ws();
+        let fx = apply(&mut w, &json!({"type":"message","channel":"C1","user":"U2","text":"hi <@UME>","ts":"10.0"}), None);
+        assert_eq!(w.timelines["C1"].messages.len(), 1);
+        assert!(fx.incoming.is_some());
+        assert!(w.unread["C1"].has_unreads);
+        assert_eq!(w.unread["C1"].mentions, 1);
+        // Viewing the channel: no unread bump.
+        apply(&mut w, &json!({"type":"message","channel":"C1","user":"U2","text":"again","ts":"11.0"}), Some("C1"));
+        assert_eq!(w.unread["C1"].mentions, 1);
+    }
+
+    #[test]
+    fn edits_deletes_and_reactions() {
+        let mut w = ws();
+        apply(&mut w, &json!({"type":"message","channel":"C1","user":"U2","text":"orig","ts":"10.0"}), Some("C1"));
+        apply(&mut w, &json!({"type":"message","subtype":"message_changed","channel":"C1","message":{"type":"message","user":"U2","text":"edited","ts":"10.0","edited":{"user":"U2","ts":"12.0"}}}), Some("C1"));
+        assert_eq!(w.timelines["C1"].messages[0].text, "edited");
+        apply(&mut w, &json!({"type":"reaction_added","user":"UME","reaction":"tada","item":{"channel":"C1","ts":"10.0"}}), Some("C1"));
+        apply(&mut w, &json!({"type":"reaction_added","user":"U2","reaction":"tada","item":{"channel":"C1","ts":"10.0"}}), Some("C1"));
+        assert_eq!(w.timelines["C1"].messages[0].reactions[0].count, 2);
+        apply(&mut w, &json!({"type":"reaction_removed","user":"UME","reaction":"tada","item":{"channel":"C1","ts":"10.0"}}), Some("C1"));
+        assert_eq!(w.timelines["C1"].messages[0].reactions[0].count, 1);
+        apply(&mut w, &json!({"type":"message","subtype":"message_deleted","channel":"C1","deleted_ts":"10.0"}), Some("C1"));
+        assert!(w.timelines["C1"].messages.is_empty());
+    }
+
+    #[test]
+    fn replies_bump_parent_not_timeline() {
+        let mut w = ws();
+        apply(&mut w, &json!({"type":"message","channel":"C1","user":"U2","text":"parent","ts":"10.0"}), Some("C1"));
+        apply(&mut w, &json!({"type":"message","channel":"C1","user":"U3","text":"reply","ts":"11.0","thread_ts":"10.0"}), Some("C1"));
+        let t = &w.timelines["C1"];
+        assert_eq!(t.messages.len(), 1);
+        assert_eq!(t.messages[0].reply_count, 1);
+        assert_eq!(t.messages[0].latest_reply.as_deref(), Some("11.0"));
+    }
+
+    #[test]
+    fn markers_and_typing() {
+        let mut w = ws();
+        apply(&mut w, &json!({"type":"message","channel":"C1","user":"U2","text":"x","ts":"10.0"}), None);
+        apply(&mut w, &json!({"type":"channel_marked","channel":"C1","ts":"10.0","unread_count_display":0,"num_mentions_display":0}), None);
+        assert!(!w.unread["C1"].has_unreads);
+        apply(&mut w, &json!({"type":"user_typing","channel":"C1","user":"U2"}), None);
+        assert_eq!(w.typing_in("C1"), vec!["U2".to_string()]);
+    }
+}

@@ -35,6 +35,11 @@ enum Focus {
 }
 
 struct App {
+    rtm_commands: mpsc::UnboundedSender<slack_core::rtm::RtmCommand>,
+    connected: bool,
+    last_typing_sent: Option<std::time::Instant>,
+    /// Newest ts we already marked read, per channel.
+    marked: std::collections::HashMap<String, String>,
     focus: Focus,
     composer: Composer,
     client: Client,
@@ -77,6 +82,36 @@ impl App {
                 self.load_history(&id, false);
             }
         }
+    }
+
+    /// Mark the current conversation read up to its newest message.
+    fn mark_current_read(&mut self) {
+        let Some(channel) = self.current.clone() else { return };
+        let Some(latest) = self.ws.timelines.get(&channel).and_then(|t| t.messages.last()).map(|m| m.ts.clone()) else { return };
+        if self.marked.get(&channel) == Some(&latest) {
+            return;
+        }
+        self.marked.insert(channel.clone(), latest.clone());
+        if let Some(u) = self.ws.unread.get_mut(&channel) {
+            u.has_unreads = false;
+            u.mentions = 0;
+        }
+        let client = self.client.clone();
+        tokio::spawn(async move {
+            if let Err(e) = client.mark(&channel, &latest).await {
+                tracing::warn!("mark read failed: {e}");
+            }
+        });
+    }
+
+    /// Tell the other side we are typing (at most every 3 s).
+    fn notify_typing(&mut self) {
+        let Some(channel) = self.current.clone() else { return };
+        if self.last_typing_sent.is_some_and(|t| t.elapsed().as_secs() < 3) {
+            return;
+        }
+        self.last_typing_sent = Some(std::time::Instant::now());
+        let _ = self.rtm_commands.send(slack_core::rtm::RtmCommand::Typing { channel });
     }
 
     /// Send the composer contents to the current conversation.
@@ -123,7 +158,12 @@ fn spawn_boot(client: Client, tx: mpsc::UnboundedSender<Net>) {
 pub async fn run(client: Client) -> Result<()> {
     let (net_tx, mut net_rx) = mpsc::unbounded_channel();
     spawn_boot(client.clone(), net_tx.clone());
+    let mut rtm = slack_core::rtm::spawn(client.clone());
     let mut app = App {
+        rtm_commands: rtm.commands.clone(),
+        connected: false,
+        last_typing_sent: None,
+        marked: Default::default(),
         focus: Focus::Composer,
         composer: Composer::default(),
         client: client.clone(),
@@ -154,9 +194,13 @@ pub async fn run(client: Client) -> Result<()> {
                 }
             }
             Some(msg) = net_rx.recv() => handle_net(&mut app, msg),
+            Some(ev) = rtm.events.recv() => handle_rtm(&mut app, ev),
             _ = tick.tick() => {}
         }
         app.sync_current();
+        if app.current.as_ref().and_then(|c| app.ws.timelines.get(c)).is_some_and(|t| t.loaded) {
+            app.mark_current_read();
+        }
     }
     Ok(())
 }
@@ -218,7 +262,10 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
                         KeyCode::Char('u') if ctrl => c.kill_line(),
                         KeyCode::Char('a') if ctrl => c.home(),
                         KeyCode::Char('e') if ctrl => c.end(),
-                        KeyCode::Char(ch) if !ctrl && !alt => c.insert(ch),
+                        KeyCode::Char(ch) if !ctrl && !alt => {
+                            c.insert(ch);
+                            app.notify_typing();
+                        }
                         KeyCode::Backspace if ctrl || alt => c.delete_word_left(),
                         KeyCode::Backspace => c.backspace(),
                         KeyCode::Delete => c.delete(),
@@ -260,6 +307,23 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
     true
 }
 
+fn handle_rtm(app: &mut App, ev: slack_core::rtm::RtmEvent) {
+    use slack_core::rtm::RtmEvent;
+    match ev {
+        RtmEvent::Connected => app.connected = true,
+        RtmEvent::Disconnected(reason) => {
+            app.connected = false;
+            tracing::warn!("rtm disconnected: {reason}");
+        }
+        RtmEvent::Event(v) => {
+            let fx = super::live::apply(&mut app.ws, &v, app.current.as_deref());
+            if fx.rebuild_sidebar {
+                app.sidebar.rebuild(&app.ws);
+            }
+        }
+    }
+}
+
 fn handle_net(app: &mut App, msg: Net) {
     match msg {
         Net::Boot { boot, users, counts } => {
@@ -272,8 +336,7 @@ fn handle_net(app: &mut App, msg: Net) {
             }
             app.sidebar.rebuild(&app.ws);
             app.loading = false;
-            let (unread, mentions) = app.ws.total_unread();
-            app.status = format!("{} conversations · {unread} unread · {mentions} mentions", app.ws.conversations.len());
+            app.status.clear();
         }
         Net::History { channel, page, older } => {
             let tl = app.ws.timelines.entry(channel).or_default();
@@ -311,7 +374,10 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     let timeline = current.as_deref().and_then(|c| app.ws.timelines.get(c));
     app.messages.draw(f, msgs, &app.ws, current.as_deref(), timeline);
     draw_composer(f, comp, app);
-    f.render_widget(Paragraph::new(format!(" {} · Enter send · Alt+Enter newline · Tab focus · Alt+↑↓ channel · PgUp/PgDn scroll · Ctrl+Q quit", app.status)), status);
+    let live = if app.connected { "● live" } else { "○ connecting" };
+    let (unread, mentions) = app.ws.total_unread();
+    let info = if app.status.is_empty() { format!("{unread} unread · {mentions} mentions") } else { app.status.clone() };
+    f.render_widget(Paragraph::new(format!(" {live} · {info} · Enter send · Alt+Enter newline · Tab focus · Alt+↑↓ channel · PgUp/PgDn scroll · Ctrl+Q quit")), status);
 }
 
 fn draw_composer(f: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &App) {
@@ -320,7 +386,12 @@ fn draw_composer(f: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &App)
     let focused = app.focus == Focus::Composer;
     let border = if focused { Style::default().fg(Color::Rgb(0x61, 0xaf, 0xef)) } else { Style::default().fg(super::text::DIM) };
     let target = app.current.as_deref().map(|c| app.ws.channel_label(c)).unwrap_or_default();
-    let block = Block::default().borders(Borders::ALL).border_style(border).title(format!(" Message {target} "));
+    let typing = app.current.as_deref().map(|c| app.ws.typing_in(c)).unwrap_or_default();
+    let mut block = Block::default().borders(Borders::ALL).border_style(border).title(format!(" Message {target} "));
+    if !typing.is_empty() {
+        let who = if typing.len() == 1 { format!("{} is typing…", typing[0]) } else { format!("{} people are typing…", typing.len()) };
+        block = block.title(ratatui::text::Line::styled(format!(" {who} "), Style::default().fg(super::text::DIM)).right_aligned());
+    }
     let inner = block.inner(area);
     let width = inner.width as usize;
     let (row, col) = app.composer.cursor_position(width);
