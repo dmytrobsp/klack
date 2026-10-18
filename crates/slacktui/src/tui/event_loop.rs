@@ -943,6 +943,14 @@ impl App {
             return;
         }
         let Some(change) = change else { return };
+        if let SlackChange::Command(text) = &change {
+            match super::commands::parse(text, text) {
+                Some(Ok(cmd)) => self.run_command(current.unwrap_or_default(), cmd, None),
+                Some(Err(e)) => self.status = e,
+                None => {}
+            }
+            return;
+        }
         let (name, value, channel) = match &change {
             SlackChange::ConversationLevel { channel, level } => {
                 self.ws.notify.channels.insert(channel.clone(), level.clone());
@@ -956,6 +964,7 @@ impl App {
                 self.ws.notify.keywords = words.split(',').filter(|w| !w.is_empty()).map(String::from).collect();
                 ("global_keywords", words.clone(), None)
             }
+            SlackChange::Command(_) => return,
         };
         let (client, tx) = (self.client.clone(), self.net.clone());
         tokio::spawn(async move {

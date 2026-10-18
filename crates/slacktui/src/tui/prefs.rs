@@ -32,11 +32,21 @@ pub enum Field {
     Keywords,
     /// Slack: your VIPs (changed with v on a profile card).
     Vips,
+    /// Slack: your status (a text field: `:emoji: text`).
+    Status,
+    /// Slack: appear away.
+    Away,
+    /// Slack: pause notifications.
+    Pause,
     Input,
     Output,
 }
 
+/// Pause lengths offered, in minutes (0: not paused).
+pub const PAUSES: &[u64] = &[0, 30, 60, 120, 480];
+
 pub const CATEGORIES: &[(&str, &[Field])] = &[
+    ("Availability", &[Field::Status, Field::Away, Field::Pause]),
     ("Appearance", &[Field::Compact]),
     ("Messages & media", &[Field::InlineImages, Field::Avatars, Field::EmojiAsNames]),
     ("Language & region", &[Field::Clock24, Field::DateFormat]),
@@ -58,6 +68,9 @@ impl Field {
             Field::ChannelDefault => "Channels notify about (default)",
             Field::Keywords => "Keywords",
             Field::Vips => "VIPs (v on a profile card)",
+            Field::Status => "Status",
+            Field::Away => "Appear away",
+            Field::Pause => "Pause notifications",
             Field::Input => "Microphone",
             Field::Output => "Speaker",
         }
@@ -86,6 +99,21 @@ impl Field {
             Field::ChannelDefault => level_label(&ws.notify.global).into(),
             Field::Keywords if ws.notify.keywords.is_empty() => "none".into(),
             Field::Keywords => ws.notify.keywords.join(", "),
+            Field::Status => {
+                let p = ws.users.get(&ws.self_id).map(|u| &u.profile);
+                match p.map(|p| (p.status_emoji.trim_matches(':'), p.status_text.as_str())) {
+                    Some((e, t)) if !e.is_empty() || !t.is_empty() => format!("{} {t}", if e.is_empty() { String::new() } else { super::text::emoji(ws, e, None) }).trim().to_string(),
+                    _ => "none".into(),
+                }
+            }
+            Field::Away => yes(ws.presence.get(&ws.self_id) == Some(&false)),
+            Field::Pause => {
+                let now = Local::now().timestamp() as f64;
+                match ws.dnd.snooze_until.filter(|t| *t > now) {
+                    Some(t) => chrono::TimeZone::timestamp_opt(&Local, t as i64, 0).single().map(|d| format!("until {}", d.format(s.time_format()))).unwrap_or_default(),
+                    None => "no".into(),
+                }
+            }
             Field::Vips if ws.vip.is_empty() => "none".into(),
             Field::Vips => {
                 let mut names: Vec<String> = ws.vip.iter().map(|u| ws.user_name(u)).collect();
@@ -120,7 +148,7 @@ impl Field {
             }
             Field::Desktop => s.notifications.desktop ^= true,
             // Slack-side: see `Prefs::change`.
-            Field::ConversationLevel | Field::ChannelDefault | Field::Keywords | Field::Vips => {}
+            Field::ConversationLevel | Field::ChannelDefault | Field::Keywords | Field::Vips | Field::Status | Field::Away | Field::Pause => {}
             Field::Input => s.audio.input = next(&s.audio.input, &devices.0),
             Field::Output => s.audio.output = next(&s.audio.output, &devices.1),
         }
@@ -133,6 +161,8 @@ pub enum SlackChange {
     ConversationLevel { channel: String, level: String },
     ChannelDefault(String),
     Keywords(String),
+    /// Run this slash command (status, away, pause).
+    Command(String),
 }
 
 fn next_level(level: &str) -> String {
@@ -185,6 +215,26 @@ impl Prefs {
             }
             Field::ChannelDefault => Some(SlackChange::ChannelDefault(next_level(&ws.notify.global))),
             Field::Vips => None,
+            Field::Status => match self.editing.take() {
+                Some(text) if text.trim().is_empty() => Some(SlackChange::Command("/status clear".into())),
+                Some(text) => Some(SlackChange::Command(format!("/status {}", text.trim()))),
+                None => {
+                    let p = ws.users.get(&ws.self_id).map(|u| &u.profile);
+                    self.editing = Some(p.map(|p| format!("{} {}", p.status_emoji, p.status_text).trim().to_string()).unwrap_or_default());
+                    None
+                }
+            },
+            Field::Away => Some(SlackChange::Command(if ws.presence.get(&ws.self_id) == Some(&false) { "/active" } else { "/away" }.into())),
+            Field::Pause => {
+                // Step from the pause in effect (rounded to an offered length) to the next.
+                let now = Local::now().timestamp() as f64;
+                let left = ws.dnd.snooze_until.filter(|t| *t > now).map_or(0, |t| ((t - now) / 60.0).round() as u64);
+                let i = PAUSES.iter().position(|m| *m >= left && (*m == 0) == (left == 0)).unwrap_or(0);
+                Some(SlackChange::Command(match PAUSES[(i + 1) % PAUSES.len()] {
+                    0 => "/dnd off".into(),
+                    m => format!("/dnd {m}m"),
+                }))
+            }
             Field::Keywords => match self.editing.take() {
                 Some(text) => Some(SlackChange::Keywords(text.split(',').map(str::trim).filter(|k| !k.is_empty()).collect::<Vec<_>>().join(","))),
                 None => {
@@ -201,7 +251,7 @@ impl Prefs {
 
     /// Whether the selected field is kept on Slack (nothing to save locally).
     pub fn on_slack(&self) -> bool {
-        matches!(self.fields().get(self.selected), Some(Field::ConversationLevel | Field::ChannelDefault | Field::Keywords | Field::Vips))
+        matches!(self.fields().get(self.selected), Some(Field::ConversationLevel | Field::ChannelDefault | Field::Keywords | Field::Vips | Field::Status | Field::Away | Field::Pause))
     }
 
     pub fn draw(&self, f: &mut Frame, area: Rect, ws: &Workspace, current: Option<&str>) {
@@ -240,6 +290,10 @@ impl Prefs {
             };
             let line = Line::from(vec![Span::raw(format!(" {:<label_w$}", field.label())), Span::styled(value, Style::default().fg(Color::Rgb(0x98, 0xc3, 0x79)))]);
             rows.push(if n == self.selected { line.style(highlight) } else { line });
+        }
+        if CATEGORIES[self.category].0 == "Availability" {
+            rows.push(Line::raw(""));
+            rows.push(Line::styled(" Status: \":emoji: text for 30m\" (or today); empty clears.", Style::default().fg(DIM)));
         }
         if CATEGORIES[self.category].0 == "Notifications" {
             rows.push(Line::raw(""));
@@ -283,7 +337,7 @@ mod tests {
     #[test]
     fn slack_side_changes() {
         let mut ws = Workspace::default();
-        let mut p = Prefs { category: 3, ..Default::default() };
+        let mut p = Prefs { category: 4, ..Default::default() };
         p.selected = 1;
         assert_eq!(p.change(&mut ws, Some("C1")), Some(SlackChange::ConversationLevel { channel: "C1".into(), level: "nothing".into() }), "mentions (default) → nothing");
         assert_eq!(p.change(&mut ws, None), None, "no conversation, no change");
@@ -296,6 +350,29 @@ mod tests {
         p.editing = Some(" deploy ,, release notes ".into());
         assert_eq!(p.change(&mut ws, None), Some(SlackChange::Keywords("deploy,release notes".into())));
         assert!(p.editing.is_none() && p.on_slack());
+    }
+
+    #[test]
+    fn availability_becomes_commands() {
+        let mut ws = Workspace { self_id: "UME".into(), ..Default::default() };
+        let mut p = Prefs::default();
+        assert_eq!(CATEGORIES[0].0, "Availability");
+        p.selected = 1;
+        assert_eq!(p.change(&mut ws, None), Some(SlackChange::Command("/away".into())));
+        ws.presence.insert("UME".into(), false);
+        assert_eq!(p.change(&mut ws, None), Some(SlackChange::Command("/active".into())));
+        p.selected = 2;
+        assert_eq!(p.change(&mut ws, None), Some(SlackChange::Command("/dnd 30m".into())), "not paused → 30 minutes");
+        ws.dnd.snooze_until = Some(Local::now().timestamp() as f64 + 29.6 * 60.0);
+        assert_eq!(p.change(&mut ws, None), Some(SlackChange::Command("/dnd 60m".into())), "30 min left → an hour");
+        ws.dnd.snooze_until = Some(Local::now().timestamp() as f64 + 470.0 * 60.0);
+        assert_eq!(p.change(&mut ws, None), Some(SlackChange::Command("/dnd off".into())), "the longest → off");
+        p.selected = 0;
+        assert_eq!(p.change(&mut ws, None), None, "Enter edits the status");
+        p.editing = Some(":coffee: break for 30m".into());
+        assert_eq!(p.change(&mut ws, None), Some(SlackChange::Command("/status :coffee: break for 30m".into())));
+        p.editing = Some("  ".into());
+        assert_eq!(p.change(&mut ws, None), Some(SlackChange::Command("/status clear".into())));
     }
 
     #[test]
