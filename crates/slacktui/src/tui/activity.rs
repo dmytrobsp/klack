@@ -128,8 +128,7 @@ impl Activity {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Rgb(0x61, 0xaf, 0xef)))
-            .title(" Activity ")
-            .title_bottom(Line::styled(" ↑↓ Enter open · r refresh · Esc ", Style::default().fg(DIM)).right_aligned());
+            .title(" Activity ");
         let inner = block.inner(popup);
         f.render_widget(block, popup);
         self.height = (inner.height / 3) as usize;

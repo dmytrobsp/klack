@@ -64,9 +64,9 @@ impl Search {
         let status = if self.busy {
             " searching… ".to_string()
         } else if self.searched.is_empty() {
-            " Enter search · Esc close ".to_string()
+            String::new()
         } else {
-            format!(" {} of {} · Enter open · Esc close ", self.hits.len(), self.total)
+            format!(" {} of {} ", self.hits.len(), self.total)
         };
         let block = Block::default()
             .borders(Borders::ALL)

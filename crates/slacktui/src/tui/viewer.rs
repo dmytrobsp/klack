@@ -62,8 +62,8 @@ impl Viewer {
         f.render_widget(Clear, area);
         let file = self.file().clone();
         let name = if file.title.is_empty() { file.name.clone() } else { file.title.clone() };
-        let count = if self.files.len() > 1 { format!(" · {}/{} · ←/→", self.index + 1, self.files.len()) } else { String::new() };
-        let title = format!(" {name} · {}{count} · Esc close ", text::human_size(file.size));
+        let count = if self.files.len() > 1 { format!(" · {}/{}", self.index + 1, self.files.len()) } else { String::new() };
+        let title = format!(" {name} · {}{count} ", text::human_size(file.size));
         let block = Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::Rgb(0x61, 0xaf, 0xef))).title(title);
         let inner = block.inner(area);
         f.render_widget(block, area);

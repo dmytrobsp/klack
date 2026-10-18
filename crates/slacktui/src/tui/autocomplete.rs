@@ -115,7 +115,7 @@ pub fn draw(f: &mut Frame, anchor: Rect, c: &Completion) {
     let y = anchor.y.saturating_sub(height);
     let area = Rect { x: anchor.x, y, width, height: height.min(anchor.y) };
     f.render_widget(Clear, area);
-    let block = Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::Rgb(0x61, 0xaf, 0xef))).title(" Tab/Enter insert · Esc close ");
+    let block = Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::Rgb(0x61, 0xaf, 0xef))).title(" Suggestions ");
     let lines: Vec<Line> = c
         .items
         .iter()

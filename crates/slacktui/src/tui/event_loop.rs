@@ -968,6 +968,31 @@ impl App {
         });
     }
 
+    /// Add `user` to the VIPs or remove them (optimistic, then `users.prefs.set vip_users`).
+    fn toggle_vip(&mut self, user: String) {
+        if user == self.ws.self_id {
+            self.status = "you cannot be your own VIP".into();
+            return;
+        }
+        let added = self.ws.vip.insert(user.clone());
+        if !added {
+            self.ws.vip.remove(&user);
+        }
+        self.status = format!("{} {} your VIPs", self.ws.user_name(&user), if added { "added to" } else { "removed from" });
+        self.sidebar.rebuild(&self.ws);
+        let mut list: Vec<String> = self.ws.vip.iter().cloned().collect();
+        list.sort();
+        let (client, tx) = (self.client.clone(), self.net.clone());
+        tokio::spawn(async move {
+            if let Err(e) = client.set_pref("vip_users", &list.join(",")).await {
+                let _ = tx.send(Net::Error(format!("saving VIPs failed: {e}")));
+                if let Ok(prefs) = client.user_prefs().await {
+                    let _ = tx.send(Net::Prefs(prefs));
+                }
+            }
+        });
+    }
+
     /// F5: open the activity view and load the feed.
     fn open_activity(&mut self) {
         self.activity = Some(super::activity::Activity::default());
@@ -1086,7 +1111,7 @@ impl App {
         } else if index == self.workspace {
             self.status = format!("already in {}", self.workspaces[index]);
         } else if self.call.is_some() {
-            self.status = "leave the huddle first (F3)".into();
+            self.status = "leave the huddle first".into();
         } else {
             self.switch_to = Some(index);
         }
@@ -1097,7 +1122,7 @@ impl App {
         if user == self.ws.self_id {
             self.status = "that is you".into();
         } else if self.call.is_some() {
-            self.status = "leave the current huddle first (F3)".into();
+            self.status = "leave the current huddle first".into();
         } else if let Some(id) = self.ws.conversations.values().find(|c| c.is_im && c.user.as_deref() == Some(user.as_str())).map(|c| c.id.clone()) {
             self.jump_to(&id);
             self.join_huddle(id, None);
@@ -1645,6 +1670,10 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
                     app.details = None;
                     app.huddle_with(user);
                 }
+                Some(Action::Vip) => {
+                    let user = card.user().to_string();
+                    app.toggle_vip(user);
+                }
                 _ => {}
             }
         }
@@ -2006,7 +2035,7 @@ fn handle_rtm(app: &mut App, ev: slack_core::rtm::RtmEvent) {
             if let Some((channel, user)) = fx.huddle_started {
                 let in_it = app.call.as_ref().is_some_and(|c| c.channel == channel);
                 let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64();
-                if let Some((title, body)) = super::notify::huddle_notification(&app.ws, &channel, &user, in_it, now) {
+                if let Some((title, body)) = super::notify::huddle_notification(&app.ws, &channel, &user, in_it, now, &app.keys.first_key(Context::Global, Action::Huddle).unwrap_or_default()) {
                     if app.ws.settings.notifications.desktop {
                         super::notify::show(title, body);
                     }
@@ -2271,7 +2300,8 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     let call_rows = if app.call.is_some() { 1 } else { 0 };
     let [body, call_bar, status] = Layout::vertical([Constraint::Min(1), Constraint::Length(call_rows), Constraint::Length(1)]).areas(f.area());
     if let Some(call) = &app.call {
-        call.draw(f, call_bar, &app.ws);
+        let key = |a| app.keys.first_key(Context::Global, a).unwrap_or_default();
+        call.draw(f, call_bar, &app.ws, (&key(Action::Mute), &key(Action::Huddle)));
     }
     let side_w = (body.width / 4).clamp(18, 32);
     let [side, main] = Layout::horizontal([Constraint::Length(side_w), Constraint::Min(10)]).areas(body);
@@ -2285,7 +2315,7 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     if let (Some(area), Some((channel, ts))) = (thread_area, app.thread.clone()) {
         let h = app.thread_composer.rows(area.width.saturating_sub(2) as usize).clamp(1, 8) + 2;
         let [pane, comp] = Layout::vertical([Constraint::Min(3), Constraint::Length(h)]).areas(area);
-        let title = format!("Thread · {} · Esc close", app.ws.channel_label(&channel));
+        let title = format!("Thread · {} · {} close", app.ws.channel_label(&channel), app.keys.first_key(Context::Messages, Action::Back).unwrap_or_default());
         let timeline = app.ws.threads.get(&super::state::thread_key(&channel, &ts));
         app.thread_pane.draw(f, pane, &app.ws, &title, timeline, app.focus == Focus::Thread, &app.media);
         app.thread_composer_area = comp;
@@ -2382,9 +2412,11 @@ fn draw_composer(f: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &App,
     let target = app.current.as_deref().map(|c| app.ws.channel_label(c)).unwrap_or_default();
     let typing = if thread { vec![] } else { app.current.as_deref().map(|c| app.ws.typing_in(c)).unwrap_or_default() };
     let title = if composer.editing.is_some() {
-        " Editing message · Enter save · Esc cancel ".to_string()
+        let key = |a| app.keys.first_key(Context::Composer, a).unwrap_or_default();
+        format!(" Editing message · {} save · {} cancel ", key(Action::Send), key(Action::Leave))
     } else if thread {
-        format!(" Reply · [{}] also to channel (Alt+A) ", if app.broadcast { "x" } else { " " })
+        let key = app.keys.first_key(Context::Composer, Action::AlsoToChannel).unwrap_or_default();
+        format!(" Reply · [{}] also to channel ({key}) ", if app.broadcast { "x" } else { " " })
     } else if app.current.as_deref().is_some_and(|c| app.ws.is_outside(c)) {
         format!(" Previewing #{target} · /join to join ")
     } else {
@@ -2401,7 +2433,11 @@ fn draw_composer(f: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &App,
     // Scroll so the cursor line stays visible.
     let skip = row.saturating_sub(inner.height.saturating_sub(1));
     let text = if composer.text().is_empty() && !focused {
-        let hint = if thread { "i to reply" } else { "Press Tab or click a conversation to type" };
+        let hint = if thread {
+            format!("{} to reply", app.keys.first_key(Context::Messages, Action::Type).unwrap_or_default())
+        } else {
+            format!("Press {} or click a conversation to type", app.keys.first_key(Context::Global, Action::FocusNext).unwrap_or_default())
+        };
         ratatui::text::Text::styled(hint, Style::default().fg(super::text::DIM))
     } else {
         ratatui::text::Text::raw(composer.text())

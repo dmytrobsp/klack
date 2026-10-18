@@ -127,7 +127,13 @@ fn conversation_line(ws: &Workspace, id: &str, selected: bool, width: usize) -> 
     }
     let badge = if unread.mentions > 0 { format!(" {}", unread.mentions) } else { String::new() };
     let huddle = ws.huddles.get(id).map(|(_, p)| format!(" 🎧{}", p.len())).unwrap_or_default();
-    let preview = if !c.is_dm() && !c.is_member { " ·preview" } else { "" };
+    let preview = if !c.is_dm() && !c.is_member {
+        " ·preview"
+    } else if c.is_im && c.user.as_ref().is_some_and(|u| ws.vip.contains(u)) {
+        " VIP"
+    } else {
+        ""
+    };
     let label = ws.conversation_label(c);
     let room = width.saturating_sub(3 + badge.chars().count() + huddle.chars().count() + preview.chars().count() + 1);
     let label: String = if label.chars().count() > room { label.chars().take(room.saturating_sub(1)).chain(['…']).collect() } else { label };

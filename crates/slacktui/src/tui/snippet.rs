@@ -54,8 +54,7 @@ impl SnippetView {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Rgb(0x61, 0xaf, 0xef)))
-            .title(format!(" {name}{lang} "))
-            .title_bottom(Line::styled(" ↑↓ PgUp PgDn g G scroll · y copy · Esc close ", Style::default().fg(DIM)).right_aligned());
+            .title(format!(" {name}{lang} "));
         let inner = block.inner(area);
         self.height = inner.height as usize;
         let lines: Vec<Line> = match &self.text {

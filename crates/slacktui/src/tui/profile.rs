@@ -37,11 +37,7 @@ impl ProfileCard {
         let [popup] = Layout::horizontal([Constraint::Length(56.min(area.width))]).flex(Flex::Center).areas(area);
         let [popup] = Layout::vertical([Constraint::Length(15.min(area.height))]).flex(Flex::Center).areas(popup);
         f.render_widget(Clear, popup);
-        let mut keys = String::from(" Enter message · h huddle");
-        if self.people.len() > 1 {
-            keys += &format!(" · ←/→ {}/{}", self.index + 1, self.people.len());
-        }
-        keys += " · Esc ";
+        let keys = if self.people.len() > 1 { format!(" {}/{} in this message ", self.index + 1, self.people.len()) } else { String::new() };
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Rgb(0x61, 0xaf, 0xef)))
@@ -126,6 +122,9 @@ pub fn person_lines(ws: &Workspace, u: &User, now: i64) -> Vec<Line<'static>> {
     out.push(field("Handle", format!("@{}{pronouns}", u.name)));
     if !u.profile.title.is_empty() {
         out.push(field("Title", u.profile.title.clone()));
+    }
+    if ws.vip.contains(&u.id) {
+        out.push(field("VIP", "yes (v on their card removes them)".into()));
     }
     if !u.profile.status_text.is_empty() || !u.profile.status_emoji.is_empty() {
         let emoji = u.profile.status_emoji.trim_matches(':');

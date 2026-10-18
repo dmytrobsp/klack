@@ -89,7 +89,8 @@ impl Call {
         false
     }
 
-    pub fn draw(&self, f: &mut Frame, area: Rect, ws: &Workspace) {
+    /// `keys`: the mute and huddle keys, for the hint.
+    pub fn draw(&self, f: &mut Frame, area: Rect, ws: &Workspace, keys: (&str, &str)) {
         let place = ws.conversations.get(&self.channel).map(|c| if c.is_dm() { ws.conversation_label(c) } else { format!("#{}", c.name) }).unwrap_or_else(|| self.channel.clone());
         let place = if self.thread.is_some() { format!("{place} · thread") } else { place };
         let green = Style::default().fg(Color::Rgb(0x2b, 0xac, 0x76));
@@ -110,8 +111,9 @@ impl Call {
                 spans.push(Span::styled(" 🔊", green));
             }
         }
-        let mic = if self.muted { "🔇 muted · F4 unmute" } else { "🎙 live · F4 mute" };
-        spans.push(Span::styled(format!("  ·  {mic} · F3 leave"), Style::default().fg(DIM)));
+        let (mute, leave) = keys;
+        let mic = if self.muted { format!("🔇 muted · {mute} unmute") } else { format!("🎙 live · {mute} mute") };
+        spans.push(Span::styled(format!("  ·  {mic} · {leave} leave"), Style::default().fg(DIM)));
         if let Some(e) = &self.speaker_error {
             spans.push(Span::styled(format!(" · no sound: {e}"), Style::default().fg(Color::Red)));
         }

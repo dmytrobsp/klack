@@ -53,14 +53,14 @@ pub fn notification(ws: &Workspace, channel: &str, m: &Message, viewing: bool, n
 
 /// Notification for someone starting a huddle in a DM or group DM with us (Slack rings
 /// there); None for channels, muted conversations, DND, or a huddle we are already in.
-pub fn huddle_notification(ws: &Workspace, channel: &str, user: &str, in_it: bool, now: f64) -> Option<(String, String)> {
+pub fn huddle_notification(ws: &Workspace, channel: &str, user: &str, in_it: bool, now: f64, join_key: &str) -> Option<(String, String)> {
     let conv = ws.conversations.get(channel)?;
     if in_it || user == ws.self_id || !conv.is_dm() || ws.muted.contains(channel) || ws.dnd.active(now) {
         return None;
     }
     let who = ws.user_name(user);
     let title = if conv.is_mpim { format!("{who} started a huddle in {}", ws.conversation_label(conv)) } else { format!("{who} started a huddle") };
-    Some((title, "Press F3 in slacktui to join".into()))
+    Some((title, format!("Press {join_key} in slacktui to join")))
 }
 
 /// Show a desktop notification without blocking the UI.
@@ -135,10 +135,10 @@ mod tests {
     #[test]
     fn huddle_starts_in_dms_only() {
         let w = ws();
-        assert_eq!(huddle_notification(&w, "D1", "U2", false, 0.0).map(|n| n.0), Some("Bob started a huddle".into()));
-        assert!(huddle_notification(&w, "C1", "U2", false, 0.0).is_none());
-        assert!(huddle_notification(&w, "D1", "U2", true, 0.0).is_none());
-        assert!(huddle_notification(&w, "D1", "UME", false, 0.0).is_none());
+        assert_eq!(huddle_notification(&w, "D1", "U2", false, 0.0, "F3").map(|n| n.0), Some("Bob started a huddle".into()));
+        assert!(huddle_notification(&w, "C1", "U2", false, 0.0, "F3").is_none());
+        assert!(huddle_notification(&w, "D1", "U2", true, 0.0, "F3").is_none());
+        assert!(huddle_notification(&w, "D1", "UME", false, 0.0, "F3").is_none());
     }
 
     #[test]

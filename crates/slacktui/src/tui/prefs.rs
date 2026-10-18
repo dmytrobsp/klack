@@ -30,6 +30,8 @@ pub enum Field {
     ChannelDefault,
     /// Slack: words that notify like a mention.
     Keywords,
+    /// Slack: your VIPs (changed with v on a profile card).
+    Vips,
     Input,
     Output,
 }
@@ -38,7 +40,7 @@ pub const CATEGORIES: &[(&str, &[Field])] = &[
     ("Appearance", &[Field::Compact]),
     ("Messages & media", &[Field::InlineImages, Field::Avatars, Field::EmojiAsNames]),
     ("Language & region", &[Field::Clock24, Field::DateFormat]),
-    ("Notifications", &[Field::Desktop, Field::ConversationLevel, Field::ChannelDefault, Field::Keywords]),
+    ("Notifications", &[Field::Desktop, Field::ConversationLevel, Field::ChannelDefault, Field::Keywords, Field::Vips]),
     ("Audio", &[Field::Input, Field::Output]),
 ];
 
@@ -55,6 +57,7 @@ impl Field {
             Field::ConversationLevel => "This conversation notifies about",
             Field::ChannelDefault => "Channels notify about (default)",
             Field::Keywords => "Keywords",
+            Field::Vips => "VIPs (v on a profile card)",
             Field::Input => "Microphone",
             Field::Output => "Speaker",
         }
@@ -83,6 +86,12 @@ impl Field {
             Field::ChannelDefault => level_label(&ws.notify.global).into(),
             Field::Keywords if ws.notify.keywords.is_empty() => "none".into(),
             Field::Keywords => ws.notify.keywords.join(", "),
+            Field::Vips if ws.vip.is_empty() => "none".into(),
+            Field::Vips => {
+                let mut names: Vec<String> = ws.vip.iter().map(|u| ws.user_name(u)).collect();
+                names.sort();
+                names.join(", ")
+            }
             Field::Input => device(&s.audio.input),
             Field::Output => device(&s.audio.output),
         }
@@ -111,7 +120,7 @@ impl Field {
             }
             Field::Desktop => s.notifications.desktop ^= true,
             // Slack-side: see `Prefs::change`.
-            Field::ConversationLevel | Field::ChannelDefault | Field::Keywords => {}
+            Field::ConversationLevel | Field::ChannelDefault | Field::Keywords | Field::Vips => {}
             Field::Input => s.audio.input = next(&s.audio.input, &devices.0),
             Field::Output => s.audio.output = next(&s.audio.output, &devices.1),
         }
@@ -175,6 +184,7 @@ impl Prefs {
                 Some(SlackChange::ConversationLevel { channel, level })
             }
             Field::ChannelDefault => Some(SlackChange::ChannelDefault(next_level(&ws.notify.global))),
+            Field::Vips => None,
             Field::Keywords => match self.editing.take() {
                 Some(text) => Some(SlackChange::Keywords(text.split(',').map(str::trim).filter(|k| !k.is_empty()).collect::<Vec<_>>().join(","))),
                 None => {
@@ -191,7 +201,7 @@ impl Prefs {
 
     /// Whether the selected field is kept on Slack (nothing to save locally).
     pub fn on_slack(&self) -> bool {
-        matches!(self.fields().get(self.selected), Some(Field::ConversationLevel | Field::ChannelDefault | Field::Keywords))
+        matches!(self.fields().get(self.selected), Some(Field::ConversationLevel | Field::ChannelDefault | Field::Keywords | Field::Vips))
     }
 
     pub fn draw(&self, f: &mut Frame, area: Rect, ws: &Workspace, current: Option<&str>) {
@@ -233,7 +243,7 @@ impl Prefs {
         }
         if CATEGORIES[self.category].0 == "Notifications" {
             rows.push(Line::raw(""));
-            rows.push(Line::styled(" The last three are kept on Slack. Keywords: comma-separated.", Style::default().fg(DIM)));
+            rows.push(Line::styled(" All but the first are kept on Slack. Keywords: comma-separated.", Style::default().fg(DIM)));
         }
         if CATEGORIES[self.category].0 == "Audio" {
             rows.push(Line::raw(""));

@@ -63,8 +63,7 @@ impl Details {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Rgb(0x61, 0xaf, 0xef)))
-            .title(format!(" {name} "))
-            .title_bottom(Line::styled(" ←/→ tabs · Esc close ", Style::default().fg(DIM)).right_aligned());
+            .title(format!(" {name} "));
         let inner = block.inner(popup);
         f.render_widget(block, popup);
         let [tabs, body] = Layout::vertical([Constraint::Length(2), Constraint::Min(1)]).areas(inner);

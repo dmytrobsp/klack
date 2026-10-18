@@ -248,6 +248,7 @@ pub enum Action {
     Huddle,
     Mute,
     Activity,
+    Vip,
     Preferences,
     PrevConversation,
     NextConversation,
@@ -451,6 +452,7 @@ actions! {
         NextTab "next_person" "next person in the message" ["right", "tab"]
         Open "message" "message them" ["enter", "m"]
         Huddle "huddle" "start a huddle with them" ["h"]
+        Vip "vip" "add to / remove from your VIPs" ["v"]
     }
     Activity {
         Close "close" "close" ["esc", "f5", "q"]
@@ -683,7 +685,7 @@ pub fn hints_for(context: Context) -> &'static [(Action, &'static str)] {
         Context::Switcher | Context::Search => &[(Open, "go"), (Down, "next"), (Close, "close")],
         Context::Picker => &[(Open, "react"), (Close, "close")],
         Context::Details => &[(NextTab, "next tab"), (Open, "open"), (Close, "close")],
-        Context::Profile => &[(Open, "message"), (Huddle, "huddle"), (NextTab, "next person"), (Close, "close")],
+        Context::Profile => &[(Open, "message"), (Huddle, "huddle"), (Vip, "VIP"), (NextTab, "next person"), (Close, "close")],
         Context::Activity => &[(Open, "open"), (Refresh, "refresh"), (Close, "close")],
         Context::Mover => &[(Open, "move"), (Close, "close")],
         Context::TextField => &[(Open, "done"), (Close, "cancel")],

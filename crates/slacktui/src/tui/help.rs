@@ -55,7 +55,7 @@ impl Help {
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Rgb(0x61, 0xaf, 0xef)))
             .title(" Keys ")
-            .title_bottom(Line::styled(format!(" ↑↓ PgUp PgDn scroll · {close} close · rebind in keys.toml "), Style::default().fg(DIM)).right_aligned());
+            .title_bottom(Line::styled(format!(" {close} close · rebind in keys.toml "), Style::default().fg(DIM)).right_aligned());
         f.render_widget(Paragraph::new(lines).scroll((self.scroll as u16, 0)).block(block), popup);
     }
 }

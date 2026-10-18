@@ -73,12 +73,10 @@ impl MovePicker {
         if let Some(text) = &self.naming {
             lines.push(Line::from(vec![Span::styled(" name › ", Style::default().fg(DIM)), Span::styled(text.clone(), Style::default().add_modifier(Modifier::BOLD))]));
         }
-        let hint = if self.naming.is_some() { " Enter create · Esc back " } else { " ↑↓ Enter move · Esc " };
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Rgb(0x61, 0xaf, 0xef)))
-            .title(format!(" Move {name} to… "))
-            .title_bottom(Line::styled(hint, Style::default().fg(DIM)).right_aligned());
+            .title(format!(" Move {name} to… "));
         let inner = block.inner(popup);
         f.render_widget(Paragraph::new(lines).block(block), popup);
         if let Some(text) = &self.naming {

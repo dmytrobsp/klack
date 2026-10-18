@@ -215,7 +215,7 @@ impl Player {
         let sound = if self.audio.is_some() { "" } else { " · no sound" };
         // Wall time keeps running after the last frame; the clock should not.
         let shown = self.duration.map_or(self.played(), |d| self.played().min(d));
-        let title = format!(" {} · {state} {}{total}{sound} · Space pause · Esc close ", self.title, clock(shown));
+        let title = format!(" {} · {state} {}{total}{sound} ", self.title, clock(shown));
         let block = Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::Rgb(0x61, 0xaf, 0xef))).title(title);
         let inner = block.inner(area);
         f.render_widget(block, area);
