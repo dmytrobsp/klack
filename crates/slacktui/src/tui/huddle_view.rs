@@ -54,11 +54,22 @@ pub fn grid(n: usize, area: Rect) -> (Vec<Rect>, u16) {
 }
 
 /// The call's keys in a line, shortened when `width` is too narrow for the long form.
-pub fn controls(keys: (&str, &str, &str, &str), muted: bool, width: usize) -> String {
-    let (mute, leave, thread, view) = keys;
+pub fn controls(keys: Keys, muted: bool, camera_on: bool, width: usize) -> String {
+    let Keys { mute, leave, thread, view, camera } = keys;
     let mic = if muted { "unmute" } else { "mute" };
-    let long = format!(" {mute} {mic} · {thread} thread · {leave} leave · {view} back to the messages");
-    if long.chars().count() <= width { long } else { format!(" {mute} {mic} · {thread} thread · {leave} leave · {view} messages") }
+    let cam = if camera_on { "camera off" } else { "camera on" };
+    let long = format!(" {mute} {mic} · {camera} {cam} · {thread} thread · {leave} leave · {view} back to the messages");
+    if long.chars().count() <= width { long } else { format!(" {mute} {mic} · {camera} {cam} · {thread} thread · {leave} leave · {view} messages") }
+}
+
+/// The call's keys, for the hints.
+#[derive(Debug, Clone, Copy)]
+pub struct Keys<'a> {
+    pub mute: &'a str,
+    pub leave: &'a str,
+    pub thread: &'a str,
+    pub view: &'a str,
+    pub camera: &'a str,
 }
 
 /// Rows `text` takes when wrapped at word boundaries to `width` (as `Wrap { trim: true }`).
@@ -107,7 +118,7 @@ pub fn state_text(muted: bool, speaking: bool, gated: bool) -> &'static str {
 
 impl HuddleView {
     /// `keys`: mute, leave, thread and view keys, for the controls line.
-    pub fn draw(&mut self, f: &mut Frame, area: Rect, call: &Call, ws: &Workspace, media: &Media, keys: (&str, &str, &str, &str)) {
+    pub fn draw(&mut self, f: &mut Frame, area: Rect, call: &Call, ws: &Workspace, media: &Media, keys: Keys) {
         let dim = Style::default().fg(super::theme::p().dim);
         let green = Style::default().fg(super::theme::p().own);
         let place = call.place(ws);
@@ -124,7 +135,7 @@ impl HuddleView {
         f.render_widget(block, area);
         // The controls and audio lines, wrapped in a narrow pane.
         let width = inner.width as usize;
-        let texts = [controls(keys, call.muted, width), audio_summary(&ws.settings.audio, width)];
+        let texts = [controls(keys, call.muted, call.camera_on(), width), audio_summary(&ws.settings.audio, width)];
         let footer_h = (texts.iter().map(|t| wrapped_rows(t, width)).sum::<u16>()).min(inner.height);
         let tiles_area = Rect { height: inner.height.saturating_sub(footer_h + 1), y: inner.y + 1, ..inner };
         let footer = Rect { y: inner.y + inner.height - footer_h, height: footer_h, ..inner };
@@ -289,9 +300,9 @@ mod tests {
         assert_eq!(wrapped_rows(" vol 100% · gain 100% · gate off · noise off", 80), 1);
         assert_eq!(wrapped_rows(" vol 100% · gain 100% · gate off · noise off", 38), 2);
         assert_eq!(wrapped_rows("abcdefghij", 4), 3, "a long word is broken");
-        let keys = ("F4", "F3", "F7", "F8");
-        assert_eq!(controls(keys, true, 80), " F4 unmute · F7 thread · F3 leave · F8 back to the messages");
-        assert_eq!(controls(keys, false, 40), " F4 mute · F7 thread · F3 leave · F8 messages");
+        let keys = Keys { mute: "F4", leave: "F3", thread: "F7", view: "F8", camera: "F9" };
+        assert_eq!(controls(keys, true, false, 100), " F4 unmute · F9 camera on · F7 thread · F3 leave · F8 back to the messages");
+        assert_eq!(controls(keys, false, true, 40), " F4 mute · F9 camera off · F7 thread · F3 leave · F8 messages");
     }
 
     #[test]

@@ -42,6 +42,10 @@ pub struct Call {
     /// Screen shares going on: (the share's attendee id, the sharer's user id). A share is a
     /// second attendee (`<attendee>#content`) that only shows up among the video sources.
     pub shares: Vec<(String, String)>,
+    /// Our attendee id (our own picture is kept under it).
+    self_attendee: String,
+    /// Open only while the camera is on.
+    camera: Option<huddle::camera::Camera>,
 }
 
 pub type Videos = std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, huddle::session::VideoFrame)>>>;
@@ -72,6 +76,7 @@ impl Call {
     /// Start the session (muted) and play the meeting's audio on the default output.
     /// `devices`: (microphone, speaker) names, None for the system default.
     pub fn start(channel: String, creds: Credentials, devices: (Option<String>, Option<String>), audio_settings: &super::settings::Audio) -> Call {
+        let self_attendee = creds.attendee.attendee_id.clone();
         let mut session = Session::start(creds, Default::default());
         let sink = session.pcm_sink();
         let (_, empty) = tokio::sync::mpsc::unbounded_channel();
@@ -119,6 +124,8 @@ impl Call {
             speaker_error,
             videos,
             shares: Vec::new(),
+            self_attendee,
+            camera: None,
         };
         call.set_audio(audio_settings);
         call
@@ -154,8 +161,43 @@ impl Call {
         Ok(())
     }
 
+    pub fn camera_on(&self) -> bool {
+        self.camera.is_some()
+    }
+
+    /// Switch the camera on or off; `wanted` is the camera chosen in the preferences (only
+    /// that one is ever opened). Our own picture shows in our tile while it is on.
+    pub fn toggle_camera(&mut self, wanted: Option<&str>) -> anyhow::Result<String> {
+        use huddle::video::{H264Encoder, TEST_FPS as FPS, TEST_HEIGHT as H, TEST_WIDTH as W};
+        if self.camera.take().is_some() {
+            self.session.set_camera(false);
+            self.videos.lock().unwrap_or_else(|e| e.into_inner()).remove(&self.self_attendee);
+            return Ok("camera off".into());
+        }
+        let wanted = wanted.filter(|w| !w.trim().is_empty()).ok_or_else(|| anyhow::anyhow!("no camera chosen (F6 → Audio & video → Camera)"))?;
+        let info = huddle::camera::find_camera(&huddle::camera::list_cameras(), wanted)?;
+        let mut encoder = H264Encoder::new(W, H, FPS, 600_000)?;
+        let (sink, videos, me) = (self.session.video_sink(), self.videos.clone(), self.self_attendee.clone());
+        let period = std::time::Duration::from_secs_f64(1.0 / FPS as f64);
+        let camera = huddle::camera::Camera::start(&info, W, H, FPS, move |rgb| {
+            if sink.keyframe_wanted() {
+                encoder.request_keyframe();
+            }
+            match encoder.encode_rgb(&rgb) {
+                Ok(unit) => sink.send(unit, period),
+                Err(e) => tracing::warn!("camera: {e}"),
+            }
+            let frame = huddle::session::VideoFrame { attendee_id: me.clone(), stream_id: 0, width: W, height: H, rgb: std::sync::Arc::new(rgb) };
+            videos.lock().unwrap_or_else(|e| e.into_inner()).insert(me.clone(), (std::time::Instant::now(), frame));
+        })?;
+        self.session.set_camera(true);
+        self.camera = Some(camera);
+        Ok(format!("camera on: {}", info.name))
+    }
+
     pub fn leave(&mut self) {
         self.mic = None;
+        self.camera = None;
         self.session.leave();
     }
 

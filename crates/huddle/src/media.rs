@@ -307,7 +307,8 @@ impl Media {
 
     /// Send one H.264 access unit (Annex-B) covering `duration`; nothing while the camera is off.
     pub async fn send_h264(&self, access_unit: Vec<u8>, duration: Duration) -> Result<()> {
-        if !self.camera_on {
+        // A skipped frame (empty) has nothing to send.
+        if !self.camera_on || access_unit.is_empty() {
             return Ok(());
         }
         let (track, ssrc) = &self.video;

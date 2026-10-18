@@ -52,6 +52,8 @@ pub enum Field {
     MicGain,
     SpeakingThreshold,
     NoiseSuppression,
+    /// The camera for huddles (one of the cameras found; never a default).
+    Camera,
 }
 
 /// Pause lengths offered, in minutes (0: not paused).
@@ -63,7 +65,7 @@ pub const CATEGORIES: &[(&str, &[Field])] = &[
     ("Messages & media", &[Field::InlineImages, Field::Avatars, Field::EmojiAsNames]),
     ("Language & region", &[Field::Clock24, Field::DateFormat, Field::TimeZone, Field::Language]),
     ("Notifications", &[Field::Desktop, Field::Sound, Field::ConversationLevel, Field::ChannelDefault, Field::Keywords, Field::Vips]),
-    ("Audio", &[Field::Input, Field::Output, Field::HuddleVolume, Field::SoundVolume, Field::MicGain, Field::SpeakingThreshold, Field::NoiseSuppression]),
+    ("Audio & video", &[Field::Input, Field::Output, Field::HuddleVolume, Field::SoundVolume, Field::MicGain, Field::SpeakingThreshold, Field::NoiseSuppression, Field::Camera]),
 ];
 
 /// Volumes offered, in percent.
@@ -121,6 +123,7 @@ impl Field {
             Field::MicGain => "Microphone gain",
             Field::SpeakingThreshold => "Speaking threshold",
             Field::NoiseSuppression => "Noise suppression",
+            Field::Camera => "Camera (F9 in a huddle)",
         }
     }
 
@@ -190,6 +193,7 @@ impl Field {
             Field::MicGain => format!("{}%", s.audio.mic_gain),
             Field::SpeakingThreshold => s.audio.speaking_threshold_db.map_or("off".into(), |d| format!("{d} dB")),
             Field::NoiseSuppression => yes(s.audio.noise_suppression),
+            Field::Camera => s.video.camera.clone().unwrap_or_else(|| "none (the camera stays off)".into()),
         }
     }
 
@@ -247,6 +251,8 @@ impl Field {
             Field::Input => s.audio.input = next(&s.audio.input, &devices.0),
             Field::Output => s.audio.output = next(&s.audio.output, &devices.1),
             Field::NoiseSuppression => s.audio.noise_suppression ^= true,
+            // Needs the cameras found: see `Prefs::change`.
+            Field::Camera => {}
             Field::HuddleVolume | Field::SoundVolume | Field::MicGain | Field::SpeakingThreshold => {
                 self.adjust(s, true, true);
             }
@@ -276,7 +282,7 @@ pub fn translatable() -> Vec<String> {
     let all = [
         Field::Theme, Field::Compact, Field::InlineImages, Field::Avatars, Field::EmojiAsNames, Field::Clock24, Field::DateFormat, Field::TimeZone, Field::Language, Field::Desktop, Field::Sound,
         Field::ConversationLevel, Field::ChannelDefault, Field::Keywords, Field::Vips, Field::Status, Field::Away, Field::Pause, Field::Input, Field::Output,
-        Field::HuddleVolume, Field::SoundVolume, Field::MicGain, Field::SpeakingThreshold, Field::NoiseSuppression,
+        Field::HuddleVolume, Field::SoundVolume, Field::MicGain, Field::SpeakingThreshold, Field::NoiseSuppression, Field::Camera,
     ];
     CATEGORIES.iter().map(|c| c.0).chain(["Keys", LEADER_LABEL]).chain(all.iter().map(|f| f.fixed_label())).map(String::from).collect()
 }
@@ -293,6 +299,8 @@ pub struct Prefs {
     pub selected: usize,
     /// Audio devices as ids (listed when the menu opens; only names, nothing is opened).
     pub devices: (Vec<String>, Vec<String>),
+    /// Camera names (listed when the menu opens; nothing is opened).
+    pub cameras: Vec<String>,
     /// Where the settings were saved, or why not.
     pub saved: Option<Result<String, String>>,
 }
@@ -301,7 +309,8 @@ impl Prefs {
     pub fn new() -> Prefs {
         let id = |d: &String| d.split(" — ").next().unwrap_or(d).to_string();
         let devices = huddle::devices::list_devices().map(|(i, o)| (i.iter().map(id).collect(), o.iter().map(id).collect())).unwrap_or_default();
-        Prefs { devices, ..Default::default() }
+        let cameras = huddle::camera::list_cameras().into_iter().map(|c| c.name).collect();
+        Prefs { devices, cameras, ..Default::default() }
     }
 
     pub fn fields(&self) -> Vec<Field> {
@@ -362,6 +371,20 @@ impl Prefs {
                     }
                 }
                 ws.settings.appearance.theme = name;
+                None
+            }
+            Field::Camera => {
+                // None, then each camera found, then None again.
+                let c = &mut ws.settings.video.camera;
+                let pos = c.as_ref().and_then(|c| self.cameras.iter().position(|n| n == c));
+                *c = match pos {
+                    None if c.is_none() => self.cameras.first().cloned(),
+                    None => None,
+                    Some(i) => self.cameras.get(i + 1).cloned(),
+                };
+                if self.cameras.is_empty() {
+                    self.saved = Some(Err("no camera found".into()));
+                }
                 None
             }
             Field::TimeZone => {
@@ -483,7 +506,7 @@ impl Prefs {
             rows.push(Line::raw(""));
             rows.push(Line::styled(" All but the first are kept on Slack. Keywords: comma-separated.", Style::default().fg(super::theme::p().dim)));
         }
-        if self.category_name() == "Audio" {
+        if self.category_name() == "Audio & video" {
             rows.push(Line::raw(""));
             rows.push(Line::styled(" + / - (or Enter) change the levels; a huddle you are in follows at once.", Style::default().fg(super::theme::p().dim)));
             rows.push(Line::styled(" Below the speaking threshold the microphone sends silence.", Style::default().fg(super::theme::p().dim)));
@@ -539,6 +562,22 @@ mod tests {
         Field::NoiseSuppression.change(&mut s, &Default::default());
         assert!(s.audio.noise_suppression);
         assert!(!Field::Compact.adjust(&mut s, true, false), "not a level");
+    }
+
+    #[test]
+    fn choosing_a_camera() {
+        let mut ws = Workspace::default();
+        let mut p = Prefs { category: 5, cameras: vec!["cam A".into(), "cam B".into()], ..Default::default() };
+        assert_eq!(p.category_name(), "Audio & video");
+        p.selected = p.fields().iter().position(|f| *f == Field::Camera).unwrap();
+        let steps: Vec<Option<String>> = (0..3)
+            .map(|_| {
+                p.change(&mut ws, None);
+                ws.settings.video.camera.clone()
+            })
+            .collect();
+        assert_eq!(steps, vec![Some("cam A".into()), Some("cam B".into()), None], "none → each camera → none");
+        assert!(!p.on_slack());
     }
 
     #[test]

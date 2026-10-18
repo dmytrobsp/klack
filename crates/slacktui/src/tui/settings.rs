@@ -11,6 +11,14 @@ pub struct Settings {
     pub region: Region,
     pub notifications: Notifications,
     pub audio: Audio,
+    pub video: Video,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Video {
+    /// The camera for huddles (part of its name or path); none chosen: the camera stays off.
+    pub camera: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

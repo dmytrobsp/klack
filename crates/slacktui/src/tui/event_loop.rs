@@ -2054,6 +2054,13 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
         Event::Key(k) if k.kind != KeyEventKind::Release && app.global(&k) == Some(Action::Huddle) => app.toggle_huddle(),
         Event::Key(k) if k.kind != KeyEventKind::Release && app.global(&k) == Some(Action::HuddleThread) => app.open_huddle_thread(),
         Event::Key(k) if k.kind != KeyEventKind::Release && app.global(&k) == Some(Action::HuddleView) => app.toggle_huddle_view(),
+        Event::Key(k) if k.kind != KeyEventKind::Release && app.global(&k) == Some(Action::Camera) => {
+            let wanted = app.ws.settings.video.camera.clone();
+            app.status = match app.call.as_mut() {
+                Some(call) => call.toggle_camera(wanted.as_deref()).unwrap_or_else(|e| format!("camera: {e}")),
+                None => "not in a huddle".into(),
+            };
+        }
         Event::Key(k) if k.kind != KeyEventKind::Release && app.global(&k) == Some(Action::Mute) => {
             if let Some(call) = app.call.as_mut() {
                 if let Err(e) = call.toggle_mute() {
@@ -2585,7 +2592,7 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     let [body, call_bar, status] = Layout::vertical([Constraint::Min(1), Constraint::Length(call_rows), Constraint::Length(1)]).areas(f.area());
     app.call_bar_area = call_bar;
     let key = |a| app.keys.first_key(Context::Global, a).unwrap_or_default();
-    let call_keys = (key(Action::Mute), key(Action::Huddle), key(Action::HuddleThread), key(Action::HuddleView));
+    let call_keys = (key(Action::Mute), key(Action::Huddle), key(Action::HuddleThread), key(Action::HuddleView), key(Action::Camera));
     if let Some(call) = &app.call {
         call.draw(f, call_bar, &app.ws, (&call_keys.0, &call_keys.1, &call_keys.2, &call_keys.3));
     }
@@ -2613,7 +2620,8 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         app.messages.area = Default::default();
         app.messages.hover = None;
         app.composer_area = Default::default();
-        view.draw(f, main, call, &app.ws, &app.media, (&call_keys.0, &call_keys.1, &call_keys.2, &call_keys.3));
+        let keys = super::huddle_view::Keys { mute: &call_keys.0, leave: &call_keys.1, thread: &call_keys.2, view: &call_keys.3, camera: &call_keys.4 };
+        view.draw(f, main, call, &app.ws, &app.media, keys);
     } else {
         let inner_w = main.width.saturating_sub(2) as usize;
         let composer_h = app.composer.rows(inner_w).clamp(1, 8) + 2;

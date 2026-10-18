@@ -59,12 +59,15 @@ impl H264Encoder {
             .max_frame_rate(FrameRate::from_hz(fps as f32))
             .profile(Profile::Baseline)
             .intra_frame_period(IntraFramePeriod::from_num_frames(fps * 2))
-            .skip_frames(false);
+            // Real-time: drop a frame rather than overshoot the bitrate (OpenH264 also warns on
+            // stderr otherwise, which would land on the TUI).
+            .skip_frames(true);
         let inner = Encoder::with_api_config(OpenH264API::from_source(), config).map_err(|e| anyhow!("H.264 encoder: {e}"))?;
         Ok(H264Encoder { inner, width, height })
     }
 
-    /// Encode one packed-RGB frame of the encoder's size.
+    /// Encode one packed-RGB frame of the encoder's size; empty when the encoder skipped it
+    /// to keep to the bitrate.
     pub fn encode_rgb(&mut self, rgb: &[u8]) -> Result<Vec<u8>> {
         if rgb.len() != self.width * self.height * 3 {
             return Err(anyhow!("frame is {} bytes, expected {}×{} RGB", rgb.len(), self.width, self.height));
@@ -242,7 +245,6 @@ mod tests {
     #[test]
     fn rtp_round_trip_and_gaps() {
         let (w, h) = (TEST_WIDTH, TEST_HEIGHT);
-        let mut enc = H264Encoder::new(w, h, TEST_FPS, 600_000).unwrap();
         // Noise in the dark band makes the keyframe span many packets.
         let mut seed = 7u32;
         let noisy = |n: u64, seed: &mut u32| {
@@ -253,7 +255,10 @@ mod tests {
             }
             rgb
         };
+        // Enough bitrate that the noisy frames are not skipped.
+        let mut enc = H264Encoder::new(w, h, TEST_FPS, 20_000_000).unwrap();
         let units: Vec<Vec<u8>> = (0..5).map(|n| enc.encode_rgb(&noisy(n, &mut seed)).unwrap()).collect();
+        assert!(units.iter().all(|u| !u.is_empty()));
         // Across the sequence number wrap.
         let packets = packetize(&units, u16::MAX - 2);
         assert!(packets.len() > units.len(), "the keyframe needs several packets");

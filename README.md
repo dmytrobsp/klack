@@ -50,7 +50,7 @@ Press **F1** (or `?`) in the app for the full list. The essentials:
 | `/away` · `/active` · `/dnd 30m` · `/dnd off` | appear away / active · pause or resume notifications |
 | `*` · `m` (sidebar) | star / unstar · move to a section (or a new one); `/section rename <name>` · `/section delete` |
 | F2 | conversation details: about, members, pins |
-| F3 / F4 / F7 / F8 | join or leave the huddle / mute or unmute / open the huddle's thread / huddle view |
+| F3 / F4 / F7 / F8 / F9 | join or leave the huddle / mute or unmute / open the huddle's thread / huddle view / camera on or off |
 | F6 | preferences (also `/prefs`): availability, appearance, messages, region, notifications, audio, keys |
 | Enter (on a message) | open its thread |
 | r · e · d · y · Y · o · s · P | react · edit · delete · copy text · copy link · open image/video/snippet · save files · pin |
@@ -110,11 +110,18 @@ stop so words are not cut) and noise suppression (RNNoise via `nnnoiseless`). `+
 step the levels, and a huddle you are in follows at once.
 
 Other people's cameras play in their tiles in the huddle view (F8), with 📹 next to them in the
-call bar; a screen share gets its own "🖥 <name>'s screen" tile (🖥 in the call bar). Video is H.264 (OpenH264, built from source — note that H.264 is patent-encumbered when
-you distribute binaries). `slacktui ctl huddle-media <channel> --video-test` joins with a synthetic
-camera (a moving test pattern), `--share-test` shares it as a screen, and `--record-video DIR`
-saves what arrives. Sending your own
-camera, screen sharing and echo cancellation are not done yet.
+call bar; a screen share gets its own "🖥 <name>'s screen" tile (🖥 in the call bar).
+
+Your camera: choose it in F6 → Audio & video → Camera (until you do, it can never switch on), then
+F9 in a huddle switches it on and off; you see yourself in your tile. Capture goes through the
+`ffmpeg` tool (V4L2 on Linux; AVFoundation/DirectShow on macOS/Windows are written but untested).
+
+Video is H.264 (OpenH264, built from source — note that H.264 is patent-encumbered when you
+distribute binaries). For tests, `slacktui ctl huddle-media <channel> --video-test` joins with a
+synthetic camera (a moving test pattern), `--share-test` shares it as a screen, `--camera NAME`
+sends a real camera (`ctl cameras` lists them), and `--record-video DIR` saves what arrives.
+
+Sharing your screen and echo cancellation are not done yet.
 
 ## Other settings
 
