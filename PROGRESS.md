@@ -161,8 +161,8 @@ D. Queued by the agent on 2026-10-18 when the user said "queue next items as you
   D7. ~~Mark conversations with a draft in the sidebar~~ — done (✎).
   D8. ~~Snippets: check Slack's `snippet_type` list~~ — done (validated; the C++ note was wrong).
   D9. ~~Sections paging~~ — not needed (the page is the whole list; a warning if not).
-  D10. Notifications: let a conversation's level go back to "default" (find how the web client does it; — NEXT
-       Slack refuses `default` in the way we send it).
+  D10. Notifications: let a conversation's level go back to "default" (find how the web client does it;
+       Slack refuses `default` in the way we send it) — NEXT.
   D11. Other workspaces: unread badges and notifications while not shown (a light background connection
        per workspace), so Alt+1…9 is not the only way to notice them. Bigger; do last.
   Needs the user (not queued for autonomous work): an X11 screen-share test against Xvfb (`sudo apt install
