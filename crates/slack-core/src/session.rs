@@ -108,7 +108,8 @@ impl Profile {
 }
 
 /// Write a file readable only by the owner.
-fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
+/// Write `bytes` to `path` readable by the owner only (atomically, through a temporary file).
+pub fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
     let tmp = path.with_extension("tmp");
     {
         #[cfg(unix)]

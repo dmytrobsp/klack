@@ -8,6 +8,7 @@ pub mod clock;
 pub mod commands;
 pub mod composer;
 pub mod details;
+pub mod drafts;
 pub mod event_loop;
 pub mod files;
 pub mod help;

@@ -48,8 +48,9 @@ Press **F1** (or `?`) in the app for the full list. The essentials:
 
 What you type is kept per conversation and per thread: leave a half-written message (or an
 edit in progress) and it is back when you return, until you send it; the sidebar marks such
-conversations with ✎. Drafts live in memory only
-(gone after quitting or switching workspace).
+conversations with ✎. Drafts also survive quitting and switching workspace: they are saved per
+workspace account in `drafts/<team>-<user>.json` under the local data folder
+(`~/.local/share/slacktui` on Linux), readable by you only, and the file goes once no draft is left.
 
 | Key | |
 |---|---|

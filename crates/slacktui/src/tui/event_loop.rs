@@ -148,7 +148,7 @@ struct App {
     /// A huddle invitation ringing now.
     ringing: Option<Ring>,
     /// What was typed in conversations (by id) and threads (by thread key) you left.
-    drafts: std::collections::HashMap<String, super::composer::Draft>,
+    drafts: super::drafts::Drafts,
     /// Open quick switcher (Ctrl+K).
     switcher: Option<super::switcher::Switcher>,
     /// Key help overlay is open.
@@ -244,6 +244,7 @@ impl App {
             if let Some(d) = selected.as_ref().and_then(|id| self.drafts.remove(id)) {
                 self.composer.restore(d);
             }
+            self.save_drafts();
             self.current = selected.clone();
             self.messages.scroll = 0;
             self.messages.selected = None;
@@ -949,6 +950,7 @@ impl App {
             if let Some(d) = self.drafts.remove(&key) {
                 self.thread_composer.restore(d);
             }
+            self.save_drafts();
         }
         self.thread_pane.scroll = 0;
         self.thread_pane.selected = None;
@@ -972,6 +974,7 @@ impl App {
     fn close_thread(&mut self) {
         if let Some((c, t)) = self.thread.take() {
             stash(&mut self.drafts, &super::state::thread_key(&c, &t), &mut self.thread_composer);
+            self.save_drafts();
         }
         self.broadcast = false;
         if matches!(self.focus, Focus::Thread | Focus::ThreadComposer) {
@@ -1890,9 +1893,23 @@ fn seek_older(ts: &str, first: &str) -> bool {
     }
 }
 
+impl App {
+    /// Save the drafts, with what is in the open composers, for the next run.
+    fn save_drafts(&self) {
+        let mut drafts = self.drafts.clone();
+        if let Some((c, d)) = self.current.as_ref().zip(self.composer.draft()) {
+            drafts.insert(c.clone(), d);
+        }
+        if let Some(((c, t), d)) = self.thread.as_ref().zip(self.thread_composer.draft()) {
+            drafts.insert(super::state::thread_key(c, t), d);
+        }
+        super::drafts::save(&self.client.session.team_id, &self.client.session.user_id, &drafts);
+    }
+}
+
 /// Keep what is typed in `composer` as the draft for `key` (or forget the old draft when
 /// nothing is typed), leaving the composer empty.
-fn stash(drafts: &mut std::collections::HashMap<String, super::composer::Draft>, key: &str, composer: &mut super::composer::Composer) {
+fn stash(drafts: &mut super::drafts::Drafts, key: &str, composer: &mut super::composer::Composer) {
     match composer.take_draft() {
         Some(d) => drafts.insert(key.to_string(), d),
         None => drafts.remove(key),
@@ -2013,7 +2030,7 @@ async fn run_workspace(
         pending_hit: None,
         ringing: None,
         seeking: None,
-        drafts: Default::default(),
+        drafts: super::drafts::load(&client.session.team_id, &client.session.user_id),
         player: None,
         screen: Default::default(),
         terminal_focused: true,
@@ -2129,6 +2146,7 @@ async fn run_workspace(
             app.mark_current_read();
         }
     }
+    app.save_drafts();
     let App { switch_to, media, clipboard, .. } = app;
     Ok((switch_to, media, clipboard))
 }

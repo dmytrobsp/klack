@@ -29,10 +29,12 @@ pub enum Trigger {
 }
 
 /// What is typed in a composer — text, cursor, mentions and the message being edited — kept
-/// while you are in another conversation or thread (the sent-message history stays put).
-#[derive(Debug, Default, Clone, PartialEq)]
+/// while you are in another conversation or thread (the sent-message history stays put), and
+/// across runs (see `drafts.rs`).
+#[derive(Debug, Default, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Draft {
-    chars: Vec<char>,
+    text: String,
+    /// In characters.
     cursor: usize,
     mentions: Vec<(String, String)>,
     editing: Option<String>,
@@ -116,15 +118,21 @@ impl Composer {
 
     /// Take what is typed out, leaving the composer empty; None when there is nothing to keep.
     pub fn take_draft(&mut self) -> Option<Draft> {
-        let draft = (!self.is_empty() || self.editing.is_some()).then(|| Draft { chars: self.chars.clone(), cursor: self.cursor, mentions: self.mentions.clone(), editing: self.editing.clone() });
+        let draft = self.draft();
         self.clear();
         draft
+    }
+
+    /// What is typed, as a draft (None when nothing is), leaving it in place.
+    pub fn draft(&self) -> Option<Draft> {
+        (!self.is_empty() || self.editing.is_some()).then(|| Draft { text: self.chars.iter().collect(), cursor: self.cursor, mentions: self.mentions.clone(), editing: self.editing.clone() })
     }
 
     /// Put a draft back in place of what is there.
     pub fn restore(&mut self, d: Draft) {
         self.clear();
-        (self.chars, self.cursor, self.mentions, self.editing) = (d.chars, d.cursor, d.mentions, d.editing);
+        self.chars = d.text.chars().collect();
+        (self.cursor, self.mentions, self.editing) = (d.cursor.min(self.chars.len()), d.mentions, d.editing);
     }
 
     pub fn clear(&mut self) {
