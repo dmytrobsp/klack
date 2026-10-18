@@ -22,6 +22,8 @@ use super::terminal::TerminalGuard;
 /// Results of background API calls.
 enum Net {
     Boot { boot: Value, users: Vec<User>, counts: Option<Value> },
+    /// A person looked up with `users.info`.
+    UserInfo(User),
     /// Public channels, including those we are not in.
     Channels(Vec<slack_core::types::Conversation>),
     /// `users.channelSections.list`.
@@ -1838,6 +1840,17 @@ fn handle_net(app: &mut App, msg: Net) {
             app.loading = false;
             app.status.clear();
             app.subscribe_presence();
+            for user in app.ws.unknown_dm_users() {
+                let (client, tx) = (app.client.clone(), app.net.clone());
+                tokio::spawn(async move {
+                    match client.user_info(&user).await {
+                        Ok(u) => {
+                            let _ = tx.send(Net::UserInfo(u));
+                        }
+                        Err(e) => tracing::warn!("users.info {user}: {e}"),
+                    }
+                });
+            }
             let (client, tx) = (app.client.clone(), app.net.clone());
             tokio::spawn(async move {
                 match client.channel_sections().await {
@@ -1855,6 +1868,10 @@ fn handle_net(app: &mut App, msg: Net) {
             });
         }
         Net::Channels(list) => app.ws.add_channels(list),
+        Net::UserInfo(u) => {
+            app.ws.users.insert(u.id.clone(), u);
+            app.sidebar.rebuild(&app.ws);
+        }
         Net::Sections(v) => {
             app.ws.apply_sections(&v);
             app.sidebar.rebuild(&app.ws);

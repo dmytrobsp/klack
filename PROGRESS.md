@@ -65,7 +65,7 @@ background is in `../REPORT.md` and `../notes/`.
 | Image viewer: `o` on a message with images opens a full-window view of the large version (`thumb_1024`, else the original), fitted without upscaling and re-encoded on resize; ←/→ or h/l between the message's images; Esc/q closes | done | LIVE (B's PNG shown complete and centred; thumbnail intact after closing) + UNIT (stepping, stale results ignored) | 0721cdd |
 | Inline image thumbnails: terminal graphics detected at startup (`Picker::from_query_stdio`, half-block fallback); rows reserved from `original_w/h` (≤ 36×10 cells, no upscaling) so nothing jumps; thumbnails fetched lazily when on screen (`thumb_*` with the session cookie), decoded/encoded off the UI task, cached per file; drawn with `SlicedImage` so partly scrolled images are clipped | done | LIVE (kitty: B's 800×500 PNG shown under its file line; clipped correctly after scrolling; no remnants after switching conversation) + UNIT (sizing, reserved rows) | a113b72 |
 
-Tests: `cargo test` → slack-core 9, huddle 11, slacktui 82, all passing. `cargo build` has no errors.
+Tests: `cargo test` → slack-core 9, huddle 11, slacktui 83, all passing. `cargo build` has no errors.
 
 ## Next (in order, each as a small, separately verified step)
 
@@ -128,6 +128,8 @@ Hard (huddles video; the user's real camera/screen must not be captured in tests
 - Channels: a previewed channel is not updated live (Slack sends no RTM events for channels you are not in); the Ctrl+K list is capped at 50 entries, so in a big workspace browsing needs a query; no archive, rename, invite or topic editing; the public channel list is loaded once after boot (new channels arrive over RTM).
 
 ## Bug log
+
+- B's sidebar listed a DM as "USLACK": Slack's system user (`USLACK`, "Slack", trial notices) is not returned by `users.list`. Seen while testing workspace switching; DM partners missing from the user list are now looked up with `users.info` after boot. Test `dm_partners_missing_from_the_user_list`; live, B's sidebar shows "Slack".
 
 - Scheduled quiet hours were assumed to repeat every day, so with a weekday-only schedule (17:00–09:00) the app thought DND was on on a Sunday evening and would have kept notifications quiet; seen as a stray 🔕 in the new status bar. `dnd.info` then reports the next window (Mon 17:00 → Tue 09:00). Now only the window ending at `next_dnd_end_ts` counts (its length being the schedule's daily span), and `dnd.info` is asked again once it has passed. The `dnd_windows` test has the real values.
 

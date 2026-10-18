@@ -387,6 +387,15 @@ impl Workspace {
         }
     }
 
+    /// People we have a DM with who are not in the user list (`users.list` leaves out some
+    /// system users, such as Slack's own `USLACK`).
+    pub fn unknown_dm_users(&self) -> Vec<String> {
+        let mut out: Vec<String> = self.conversations.values().filter(|c| c.is_im).filter_map(|c| c.user.clone()).filter(|u| !self.users.contains_key(u)).collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
     /// A public channel we are not a member of.
     pub fn is_outside(&self, id: &str) -> bool {
         self.conversations.get(id).is_some_and(|c| !c.is_dm() && !c.is_member)
@@ -532,6 +541,16 @@ mod tests {
         ws.remove_from_section("L6", &["C3".into()]);
         ws.remove_section("L5");
         assert!(ws.section_of("C3").is_none() && ws.section_of("D1").is_none());
+    }
+
+    #[test]
+    fn dm_partners_missing_from_the_user_list() {
+        let mut ws = Workspace::default();
+        ws.users.insert("U1".into(), User { id: "U1".into(), ..Default::default() });
+        for (id, user) in [("D1", "U1"), ("D2", "USLACK"), ("D3", "USLACK")] {
+            ws.conversations.insert(id.into(), Conversation { id: id.into(), is_im: true, user: Some(user.into()), ..Default::default() });
+        }
+        assert_eq!(ws.unknown_dm_users(), vec!["USLACK"]);
     }
 
     #[test]
