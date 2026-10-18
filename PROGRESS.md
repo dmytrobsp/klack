@@ -91,6 +91,9 @@ Tests: `cargo test` → slack-core 9, huddle 13, slacktui 109, all passing. `car
 
 ## Next (in order, each as a small, separately verified step)
 
+**NEXT UP: 13h (audio controls)** — not started (no code yet). Then 14, then 15 (15 needs the user's
+go-ahead for any live camera/screen test).
+
 The original roadmap is done. On 2026-10-18 the user asked for the missing features below, in this
 order (agreed after an audit; item 12 added later the same day; run autonomously, one verified commit per step). Where a Slack endpoint is
 not a documented public method, confirm it from the web client bundles first (see `../notes/huddles.md`
@@ -115,7 +118,6 @@ Medium:
 12b. ~~Clearer message boundaries~~ — done (spacing, gutter markers, shaded code). A compact/spacious choice belongs in the preferences (item 13).
 13. ~~Preferences menu~~ — done (F6: availability, appearance incl. themes, messages & media, language & region incl. time zone and i18n scaffolding, Slack notification levels/keywords/VIPs, audio devices, key bindings).
 
-Hard (huddles video; the user's real camera/screen must not be captured in tests without them):
 Added by the user on 2026-10-18 (after item 13, before the video items):
 13b. ~~Notification sounds~~ — done (F6 → Notifications → Sound).
 13c. ~~Huddle threads~~ — done (F7).
@@ -124,6 +126,7 @@ Added by the user on 2026-10-18 (after item 13, before the video items):
 13f. ~~Extended mouse support~~ — done (hover shading, right-click menus).
 13g. ~~Custom themes as files~~ — done (themes/*.toml, ctl theme-template / theme-import).
 13h. Audio controls (added by the user on 2026-10-18): volume for notification sounds and for huddle playback, microphone gain, a minimum input level that counts as speaking (a gate on what is sent), and noise suppression (e.g. `nnnoiseless`, a pure-Rust RNNoise); in F6 → Audio. Microphone processing verified with synthetic input only.
+Hard (huddles video; the user's real camera/screen must not be captured in tests without them):
 14. View other participants' webcam and screen share (receive video over WebRTC, decode, draw like the video player).
 15. Send your own webcam, then screen share (camera capture, VP8/H.264 encode; Wayland needs the screen-cast portal + PipeWire).
 

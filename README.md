@@ -50,7 +50,8 @@ Press **F1** (or `?`) in the app for the full list. The essentials:
 | `/away` · `/active` · `/dnd 30m` · `/dnd off` | appear away / active · pause or resume notifications |
 | `*` · `m` (sidebar) | star / unstar · move to a section (or a new one); `/section rename <name>` · `/section delete` |
 | F2 | conversation details: about, members, pins |
-| F3 / F4 | join or leave the huddle / mute or unmute |
+| F3 / F4 / F7 | join or leave the huddle / mute or unmute / open the huddle's thread |
+| F6 | preferences (also `/prefs`): availability, appearance, messages, region, notifications, audio, keys |
 | Enter (on a message) | open its thread |
 | r · e · d · y · Y · o · s · P | react · edit · delete · copy text · copy link · open image/video/snippet · save files · pin |
 | u | profile card of the author (←/→: people the message mentions); Enter messages them, h starts a huddle |
@@ -106,7 +107,7 @@ No video, screen sharing, echo cancellation or noise suppression yet.
 
 | Variable | |
 |---|---|
-| (F6 or `/prefs`) | preferences: compact list, thumbnails, profile pictures, emoji as names, 12/24 h clock, date format, desktop notifications, microphone and speaker — saved in `settings.toml` next to `keys.toml` |
+| (F6 or `/prefs`) | preferences: theme, compact list, thumbnails, profile pictures, emoji as names, 12/24 h clock, date format, time zone, language, desktop notifications and sound, microphone and speaker — saved in `settings.toml` next to `keys.toml` |
 | `SLACKTUI_LOG` | log filter, e.g. `slacktui=debug` (log file: `~/.cache/slacktui/<profile>/slacktui.log`) |
 | `SLACKTUI_DOWNLOAD_DIR` | where `s` saves attachments (default: your downloads folder) |
 | `SLACKTUI_AVATARS=0` | no profile pictures next to names (they are also off on terminals without real graphics) |

@@ -10,7 +10,16 @@ client, using a browser-session token (`xoxc-…`) plus the `d` cookie (see
 | Crate | Role |
 |---|---|
 | `crates/slack-core` | Session/auth import, Web API client, RTM websocket, data model, mrkdwn/rich_text parsing. No terminal code. |
-| `crates/slacktui` | Binary: TUI (ratatui + crossterm), media (images, video and audio), notifications, huddles, and the `ctl` scripting CLI used for end-to-end tests. |
+| `crates/huddle` | Huddles: Chime SDK signaling (prost subset of `SignalingProtocol.proto`), WebRTC audio (webrtc-rs, Opus), audio devices (cpal: microphone, speaker, resampling, levels). |
+| `crates/slacktui` | Binary: TUI (ratatui + crossterm), media (images, video and audio), notifications and sounds, huddle UI, preferences, keymap, themes, i18n, and the `ctl` scripting CLI used for end-to-end tests. |
+
+## Local files
+
+All next to the profiles in the config directory (`~/.config/slacktui/` on Linux):
+`<profile>/session.json` (0600), `keys.toml` (key bindings, `keymap.rs`), `settings.toml` (local
+preferences, `settings.rs`), `themes/<name>.toml` (`theme.rs`), `locales/<code>.toml` (`i18n.rs`).
+Slack-side preferences (notification levels, keywords, VIPs, sections, stars, status) stay on Slack;
+the reverse-engineered endpoints are documented in `../notes/` (sections, activity, notifications, huddles).
 
 ## Portability rules
 
