@@ -161,7 +161,7 @@ Tests: `cargo test` → slack-core 10, huddle 33, klack 156 (+1 ignored: the `bu
 
 ## Next (in order, each as a small, separately verified step)
 
-**NEXT UP: G2b** (queue G below) — waiting for the user to install foot and WezTerm (offered 2026-10-19); then H4 (H1–H3 done). B's test picture `g2-test.png` (F0CA1HJ6DSR) is still in #new-channel for G2b: delete it (file + message) afterwards.
+**NEXT UP: G2b** (queue G below) — waiting for the user to install foot and WezTerm (offered 2026-10-19); then H4a (H1–H3 done; H4 = the slk ideas below). B's test picture `g2-test.png` (F0CA1HJ6DSR) is still in #new-channel for G2b: delete it (file + message) afterwards.
 
 G. Agreed with the user on 2026-10-19 after queue F ("proceed with proposed order"); run autonomously, one
    verified commit per step:
@@ -189,7 +189,18 @@ H. Added by the user on 2026-10-19 (after queue G), in this order:
       notifications, no audio device), terminals (graphics or not), locales; it degrades with a clear message
       instead of failing. H3 covers building from source, H5 the shipped binaries on each platform.
   H4 (NEXT). UI pass: study the interface of github.com/gammons/slk (the client the user meant; not slack-tui) and
-      lift good design decisions from it.
+      lift good design decisions from it. Studied 2026-10-19 (README, screenshot, six demo GIFs: Go/bubbletea,
+      vim modes, workspace rail, collapsible sidebar sections, "— new —" unread line, reaction pills, initials
+      avatars, dimmed backdrop under popups, mode pill + breadcrumb status bar, tinted composer, per-workspace
+      themes, filterable theme picker with preview, Threads view). The user picked, in order of size (one
+      verified step each):
+      H4a (NEXT) reaction pills; H4b attachment bars in the attachment's own colour; H4c initials avatars where
+      pictures cannot be shown; H4d dim everything behind popups; H4e tinted composer while it has the focus;
+      H4f status bar: focus pill + breadcrumb + connection state, hints shrink to "F1 keys"; H4g "— new —" line
+      above the first unread message + "↓ N new" while reading further up; H4h bigger (two-row) profile
+      pictures as a setting; H4i collapsible sidebar sections with unread counts when folded; H4j a theme per
+      workspace; H4k a filterable theme picker with live preview; H4l a workspace rail (2+ workspaces); H4m a
+      Threads view (every thread you are in). Not taken: vim-style modes, reading the desktop app's session.
   H5. Distribution: push to GitHub, set up CI, and work out distribution for Linux, Windows and macOS (the
       push and the repository's name/visibility need the user's go-ahead first).
 
