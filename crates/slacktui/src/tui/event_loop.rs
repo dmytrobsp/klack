@@ -314,6 +314,18 @@ impl App {
                 None => {}
             },
             Command::Dm(people) => self.open_group(people),
+            Command::Snippet { lang, title, body } => {
+                let name = if title.is_empty() { "snippet".to_string() } else { title };
+                self.status = format!("posting {name}…");
+                let (client, tx) = (self.client.clone(), self.net.clone());
+                tokio::spawn(async move {
+                    let result = client.upload(&channel, &name, body.into_bytes(), None, thread_ts.as_deref(), Some(&lang)).await;
+                    let _ = tx.send(Net::FileDone(match result {
+                        Ok(_) => format!("posted snippet {name}"),
+                        Err(e) => format!("snippet failed: {e}"),
+                    }));
+                });
+            }
             Command::Create { name, private } => {
                 self.status = format!("creating #{name}…");
                 let (client, tx) = (self.client.clone(), self.net.clone());

@@ -53,6 +53,7 @@ Press **F1** (or `?`) in the app for the full list. The essentials:
 | `/join [#channel]` · `/leave` | join (default: the channel you are previewing) · leave the current channel |
 | `/create <name>` · `/create-private <name>` | create a channel |
 | `/dm @a [@b …]` | open a DM, or a group DM with up to 8 people |
+| `/snippet [lang] [title]` + lines | post the lines after the command (Alt+Enter) as a text snippet |
 | Ctrl+Q | quit |
 
 ## Huddles

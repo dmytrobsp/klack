@@ -11,6 +11,8 @@ pub enum Command {
     Create { name: String, private: bool },
     /// Open a DM, or a group DM with several people.
     Dm(Vec<Recipient>),
+    /// Post the lines after `/snippet [lang] [title]` as a text snippet.
+    Snippet { lang: String, title: String, body: String },
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -40,6 +42,19 @@ pub fn parse(text: &str, mrkdwn: &str) -> Option<Result<Command, String>> {
             0 => Err("usage: /dm @person [@person…]".into()),
             n if n > MAX_GROUP => Err(format!("a group DM can have at most {MAX_GROUP} other people")),
             _ => Ok(Command::Dm(people)),
+        });
+    }
+    if let Some(rest) = text.strip_prefix("/snippet").filter(|r| r.is_empty() || r.starts_with(char::is_whitespace)) {
+        let (head, body) = rest.split_once('\n').unwrap_or((rest, ""));
+        let (lang, title) = head.trim().split_once(char::is_whitespace).unwrap_or((head.trim(), ""));
+        return Some(if body.trim().is_empty() {
+            Err("usage: /snippet [lang] [title], then the snippet on the next lines (Alt+Enter)".into())
+        } else {
+            Ok(Command::Snippet {
+                lang: if lang.is_empty() { "text".into() } else { lang.to_lowercase() },
+                title: title.trim().to_string(),
+                body: body.to_string(),
+            })
         });
     }
     if let Some(upload) = parse_upload(text) {
@@ -82,6 +97,17 @@ mod tests {
         assert!(matches!(parse("/dm"), Some(Err(_))));
         assert!(matches!(parse("/dm a b c d e f g h i"), Some(Err(_))));
         assert_eq!(parse("/dmx"), None);
+    }
+
+    #[test]
+    fn snippets() {
+        assert_eq!(
+            parse("/snippet python my script.py\nprint(1)\n  x = 2"),
+            Some(Ok(Command::Snippet { lang: "python".into(), title: "my script.py".into(), body: "print(1)\n  x = 2".into() }))
+        );
+        assert_eq!(parse("/snippet\nhello"), Some(Ok(Command::Snippet { lang: "text".into(), title: String::new(), body: "hello".into() })));
+        assert!(matches!(parse("/snippet rust"), Some(Err(_))), "nothing to post");
+        assert_eq!(parse("/snippets"), None);
     }
 
     #[test]

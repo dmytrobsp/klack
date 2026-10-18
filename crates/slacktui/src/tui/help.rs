@@ -44,6 +44,7 @@ pub const KEYS: &[(&str, &[(&str, &str)])] = &[
         ("/join [#channel]", "join a channel (default: the one previewed)"),
         ("/leave", "leave the current channel"),
         ("/dm @a [@b…]", "open a DM, or a group DM with several people"),
+        ("/snippet [lang] [title]", "post the following lines as a snippet"),
         ("/create[-private] <name>", "create a channel"),
         ("Alt+A (reply box)", "also send the reply to the channel"),
         ("Esc", "cancel an edit, else leave the composer"),
