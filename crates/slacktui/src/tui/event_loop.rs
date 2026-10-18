@@ -31,6 +31,7 @@ enum Net {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Focus {
     Sidebar,
+    Messages,
     Composer,
 }
 
@@ -78,6 +79,7 @@ impl App {
         if selected != self.current {
             self.current = selected.clone();
             self.messages.scroll = 0;
+            self.messages.selected = None;
             if let Some(id) = selected {
                 self.load_history(&id, false);
             }
@@ -232,8 +234,20 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
                     app.messages.scroll_down(app.messages.area.height.saturating_sub(3) as usize);
                     return true;
                 }
-                KeyCode::Tab | KeyCode::BackTab => {
-                    app.focus = if app.focus == Focus::Composer { Focus::Sidebar } else { Focus::Composer };
+                KeyCode::Tab => {
+                    app.focus = match app.focus {
+                        Focus::Sidebar => Focus::Messages,
+                        Focus::Messages => Focus::Composer,
+                        Focus::Composer => Focus::Sidebar,
+                    };
+                    return true;
+                }
+                KeyCode::BackTab => {
+                    app.focus = match app.focus {
+                        Focus::Sidebar => Focus::Composer,
+                        Focus::Messages => Focus::Sidebar,
+                        Focus::Composer => Focus::Messages,
+                    };
                     return true;
                 }
                 _ => {}
@@ -247,6 +261,27 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
                     KeyCode::Enter | KeyCode::Char('i') | KeyCode::Esc => app.focus = Focus::Composer,
                     _ => {}
                 },
+                Focus::Messages => {
+                    let order: Vec<String> = app
+                        .current
+                        .as_ref()
+                        .and_then(|c| app.ws.timelines.get(c))
+                        .map(|t| super::messages::shown_messages(t).map(|m| m.ts.clone()).collect())
+                        .unwrap_or_default();
+                    match k.code {
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            app.messages.move_selection(&order, -1);
+                            if order.first() == app.messages.selected.as_ref() {
+                                app.maybe_load_older();
+                            }
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => app.messages.move_selection(&order, 1),
+                        KeyCode::Home | KeyCode::Char('g') => app.messages.move_selection(&order, isize::MIN / 2),
+                        KeyCode::End | KeyCode::Char('G') => app.messages.move_selection(&order, isize::MAX / 2),
+                        KeyCode::Esc | KeyCode::Char('i') => app.focus = Focus::Composer,
+                        _ => {}
+                    }
+                }
                 Focus::Composer => {
                     let c = &mut app.composer;
                     match k.code {
@@ -291,6 +326,8 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
             MouseEventKind::Down(MouseButton::Left) => {
                 if app.sidebar.click(m.column, m.row) {
                     app.focus = Focus::Composer;
+                } else if app.messages.click(m.column, m.row) {
+                    app.focus = Focus::Messages;
                 }
             }
             MouseEventKind::ScrollUp if app.sidebar.area.contains((m.column, m.row).into()) => app.sidebar.move_by(-1),
@@ -372,7 +409,7 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     let [msgs, comp] = Layout::vertical([Constraint::Min(3), Constraint::Length(composer_h)]).areas(main);
     let current = app.current.clone();
     let timeline = current.as_deref().and_then(|c| app.ws.timelines.get(c));
-    app.messages.draw(f, msgs, &app.ws, current.as_deref(), timeline);
+    app.messages.draw(f, msgs, &app.ws, current.as_deref(), timeline, app.focus == Focus::Messages);
     draw_composer(f, comp, app);
     let live = if app.connected { "● live" } else { "○ connecting" };
     let (unread, mentions) = app.ws.total_unread();

@@ -22,6 +22,10 @@ pub struct MessagePane {
     pub area: Rect,
     /// Total rendered lines on the last draw (to detect reaching the top).
     pub total_lines: usize,
+    /// Selected message ts (message focus).
+    pub selected: Option<String>,
+    /// Message ts owning each visible row of the last draw (for clicks).
+    rows: Vec<Option<String>>,
 }
 
 impl MessagePane {
@@ -39,36 +43,98 @@ impl MessagePane {
         self.total_lines <= height || self.scroll + height >= self.total_lines
     }
 
-    pub fn draw(&mut self, f: &mut Frame, area: Rect, ws: &Workspace, channel: Option<&str>, timeline: Option<&Timeline>) {
+    /// Move the selection by `delta` messages among the shown ones (`order` = ts list).
+    pub fn move_selection(&mut self, order: &[String], delta: isize) {
+        if order.is_empty() {
+            self.selected = None;
+            return;
+        }
+        let pos = self.selected.as_ref().and_then(|s| order.iter().position(|t| t == s)).map(|p| p as isize).unwrap_or(order.len() as isize);
+        let next = (pos + delta).clamp(0, order.len() as isize - 1) as usize;
+        self.selected = Some(order[next].clone());
+    }
+
+    /// Select the message drawn at terminal row `row`; true if one was hit.
+    pub fn click(&mut self, column: u16, row: u16) -> bool {
+        let inner = self.area.inner(ratatui::layout::Margin { horizontal: 1, vertical: 1 });
+        if !inner.contains((column, row).into()) {
+            return false;
+        }
+        match self.rows.get((row - inner.y) as usize).cloned().flatten() {
+            Some(ts) => {
+                self.selected = Some(ts);
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub fn draw(&mut self, f: &mut Frame, area: Rect, ws: &Workspace, channel: Option<&str>, timeline: Option<&Timeline>, focused: bool) {
         self.area = area;
         let title = channel.map(|c| format!(" {} ", ws.channel_label(c))).unwrap_or_default();
-        let block = Block::default().borders(Borders::ALL).border_style(Style::default().fg(DIM)).title(title);
+        let border = if focused { Style::default().fg(Color::Rgb(0x61, 0xaf, 0xef)) } else { Style::default().fg(DIM) };
+        let block = Block::default().borders(Borders::ALL).border_style(border).title(title);
         let inner = block.inner(area);
         let width = inner.width.saturating_sub(1) as usize;
-        let mut lines = match timeline {
-            Some(t) if t.loaded || !t.messages.is_empty() => build_lines(ws, t, width),
-            Some(_) => vec![Line::styled("Loading messages…", Style::default().fg(DIM))],
-            None => vec![],
+        let (mut lines, mut owners) = match timeline {
+            Some(t) if t.loaded || !t.messages.is_empty() => build_lines_owned(ws, t, width),
+            Some(_) => (vec![Line::styled("Loading messages…", Style::default().fg(DIM))], vec![None]),
+            None => (vec![], vec![]),
         };
         if let Some(t) = timeline {
-            if t.loading && t.loaded {
-                lines.insert(0, Line::styled("Loading older messages…", Style::default().fg(DIM)));
+            let note = if t.loading && t.loaded {
+                Some("Loading older messages…")
             } else if t.loaded && !t.has_more && !t.messages.is_empty() {
-                lines.insert(0, Line::styled("— beginning of conversation —", Style::default().fg(DIM)));
+                Some("— beginning of conversation —")
+            } else {
+                None
+            };
+            if let Some(note) = note {
+                lines.insert(0, Line::styled(note, Style::default().fg(DIM)));
+                owners.insert(0, None);
+            }
+        }
+        // Highlight the selected message's rows.
+        let highlight = Style::default().bg(Color::Rgb(0x2c, 0x3e, 0x5c));
+        if focused {
+            if let Some(sel) = &self.selected {
+                for (line, owner) in lines.iter_mut().zip(&owners) {
+                    if owner.as_ref() == Some(sel) {
+                        *line = std::mem::take(line).patch_style(highlight);
+                    }
+                }
             }
         }
         self.total_lines = lines.len();
         let height = inner.height as usize;
+        // Keep the selection on screen.
+        if let (true, Some(sel)) = (focused, &self.selected) {
+            if let (Some(first), Some(last)) = (owners.iter().position(|o| o.as_ref() == Some(sel)), owners.iter().rposition(|o| o.as_ref() == Some(sel))) {
+                let end = self.total_lines.saturating_sub(self.scroll);
+                let start = end.saturating_sub(height);
+                if last >= end {
+                    self.scroll = self.total_lines - (last + 1);
+                } else if first < start {
+                    self.scroll = self.total_lines.saturating_sub(first + height);
+                }
+            }
+        }
         self.scroll = self.scroll.min(self.total_lines.saturating_sub(height));
         let end = self.total_lines.saturating_sub(self.scroll);
         let start = end.saturating_sub(height);
         let mut visible: Vec<Line> = lines[start..end].to_vec();
+        let mut rows: Vec<Option<String>> = owners[start..end].to_vec();
         // Anchor short timelines to the bottom like a chat.
         if visible.len() < height {
-            let mut padded = vec![Line::raw(""); height - visible.len()];
+            let pad = height - visible.len();
+            let mut padded = vec![Line::raw(""); pad];
             padded.append(&mut visible);
             visible = padded;
+            let mut prow = vec![None; pad];
+            prow.append(&mut rows);
+            rows = prow;
         }
+        self.rows = rows;
         f.render_widget(Paragraph::new(visible).block(block), area);
     }
 }
@@ -94,13 +160,28 @@ fn is_system(m: &Message) -> bool {
     )
 }
 
+/// Top-level messages shown in the pane, oldest first (selection order).
+pub fn shown_messages(t: &Timeline) -> impl Iterator<Item = &Message> {
+    t.messages.iter().filter(|m| !m.hidden && !m.is_reply() || m.subtype.as_deref() == Some("thread_broadcast"))
+}
+
 /// Render every message in the timeline, oldest first.
+#[cfg(test)]
 pub fn build_lines(ws: &Workspace, t: &Timeline, width: usize) -> Vec<Line<'static>> {
+    build_lines_owned(ws, t, width).0
+}
+
+/// Lines plus the ts of the message each line belongs to.
+pub fn build_lines_owned(ws: &Workspace, t: &Timeline, width: usize) -> (Vec<Line<'static>>, Vec<Option<String>>) {
     let mut out: Vec<Line<'static>> = Vec::new();
+    let mut owners: Vec<Option<String>> = Vec::new();
     let mut prev: Option<&Message> = None;
-    for m in t.messages.iter().filter(|m| !m.hidden && !m.is_reply() || m.subtype.as_deref() == Some("thread_broadcast")) {
+    let mut last_day: Option<f64> = None;
+    for m in shown_messages(t) {
         let ts = m.time();
-        if prev.is_none_or(|p| !same_day(p.time(), ts)) {
+        owners.resize(out.len(), None);
+        if last_day.is_none_or(|d| !same_day(d, ts)) {
+            last_day = Some(ts);
             let label = format!(" {} ", day_label(ts));
             let side = width.saturating_sub(label.chars().count()) / 2;
             out.push(Line::styled(format!("{}{}{}", "─".repeat(side), label, "─".repeat(side)), Style::default().fg(DIM)));
@@ -109,6 +190,7 @@ pub fn build_lines(ws: &Workspace, t: &Timeline, width: usize) -> Vec<Line<'stat
         if is_system(m) {
             let body = format::plain_text(&format::message_blocks(&m.text, &m.blocks), &|i| text::inline_plain(ws, i));
             out.push(Line::styled(format!("{}  {}", time_label(ts), body), Style::default().fg(DIM).add_modifier(Modifier::ITALIC)));
+            owners.resize(out.len(), Some(m.ts.clone()));
             prev = None;
             continue;
         }
@@ -121,9 +203,11 @@ pub fn build_lines(ws: &Workspace, t: &Timeline, width: usize) -> Vec<Line<'stat
             ]));
         }
         out.extend(message_body(ws, m, width));
+        owners.resize(out.len(), Some(m.ts.clone()));
         prev = Some(m);
     }
-    out
+    owners.resize(out.len(), None);
+    (out, owners)
 }
 
 /// Text, files, reactions and thread summary of one message.
@@ -214,6 +298,16 @@ mod tests {
         assert_eq!(p[2], "first");
         assert_eq!(p[3], "second");
         assert!(p[4].starts_with("U2"));
+    }
+
+    #[test]
+    fn one_day_separator_around_system_messages() {
+        let ws = Workspace::default();
+        let mut join = msg("1000.0", "U1", "joined");
+        join.subtype = Some("channel_join".into());
+        let t = Timeline { messages: vec![join, msg("1010.0", "U2", "hello")], loaded: true, ..Default::default() };
+        let p = plain(&build_lines(&ws, &t, 60));
+        assert_eq!(p.iter().filter(|l| l.contains('─')).count(), 1, "{p:?}");
     }
 
     #[test]
