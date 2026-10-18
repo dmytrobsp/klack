@@ -85,6 +85,21 @@ pub enum Ctl {
     AudioDevices,
     /// List cameras (names usable with `huddle-media --camera` and in the preferences).
     Cameras,
+    /// Edit a message (`chat.update`).
+    Edit { channel: String, ts: String, text: String },
+    /// Delete a message (`chat.delete`).
+    Delete { channel: String, ts: String },
+    /// Send typing indicators over RTM for N seconds (every 3 s), in a thread with --thread.
+    Typing {
+        channel: String,
+        #[arg(default_value_t = 10)]
+        seconds: u64,
+        #[arg(long)]
+        thread: Option<String>,
+        /// Send the web client's frame (`user_typing` with `thread_ts`) instead of RTM's `typing`.
+        #[arg(long)]
+        web: bool,
+    },
     /// Leave a huddle via `rooms.leave`.
     HuddleLeave { channel: String, call_id: String, attendee_id: String },
     /// Call any Web API method with key=value arguments; prints the response with
@@ -378,6 +393,37 @@ pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
             let _ = tokio::time::timeout(std::time::Duration::from_secs(5), async { while let Some(ev) = session.events.recv().await { if matches!(ev, SessionEvent::Ended) { break; } } }).await;
             let rms = if received > 0 { (sum_sq / received as f64).sqrt() } else { 0.0 };
             println!("received {:.1} s of audio, rms {rms:.0}", received as f64 / SAMPLE_RATE as f64);
+        }
+        Ctl::Edit { channel, ts, text } => {
+            let id = resolve_channel(&client, &channel).await?;
+            client.update_message(&id, &ts, &text).await?;
+            println!("edited {ts}");
+        }
+        Ctl::Delete { channel, ts } => {
+            let id = resolve_channel(&client, &channel).await?;
+            client.delete_message(&id, &ts).await?;
+            println!("deleted {ts}");
+        }
+        Ctl::Typing { channel, seconds, thread, web } => {
+            let id = resolve_channel(&client, &channel).await?;
+            let mut rtm = slack_core::rtm::spawn(client.clone());
+            // Wait for the socket before typing.
+            while let Some(ev) = rtm.events.recv().await {
+                if matches!(ev, slack_core::rtm::RtmEvent::Connected) {
+                    break;
+                }
+            }
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(seconds);
+            while tokio::time::Instant::now() < deadline {
+                let cmd = if web {
+                    slack_core::rtm::RtmCommand::Raw(serde_json::json!({"type": "user_typing", "channel": id, "thread_ts": thread}))
+                } else {
+                    slack_core::rtm::RtmCommand::Typing { channel: id.clone(), thread_ts: thread.clone() }
+                };
+                rtm.commands.send(cmd)?;
+                println!("typing");
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            }
         }
         Ctl::Cameras => {
             for c in huddle::camera::list_cameras() {

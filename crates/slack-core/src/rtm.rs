@@ -20,7 +20,10 @@ pub enum RtmEvent {
 
 #[derive(Debug, Clone)]
 pub enum RtmCommand {
-    Typing { channel: String },
+    /// We are typing in `channel`, or in the thread under `thread_ts`.
+    Typing { channel: String, thread_ts: Option<String> },
+    /// Any frame (for research); the id is added.
+    Raw(Value),
     /// Subscribe to presence changes of these users.
     PresenceSub { users: Vec<String> },
 }
@@ -102,7 +105,13 @@ async fn run_once(client: &Client, ev_tx: &mpsc::UnboundedSender<RtmEvent>, cmd_
                 let Some(cmd) = cmd else { return Ok(()) };
                 next_id += 1;
                 let frame = match cmd {
-                    RtmCommand::Typing { channel } => json!({"id": next_id, "type": "typing", "channel": channel}),
+                    RtmCommand::Typing { channel, thread_ts: None } => json!({"id": next_id, "type": "typing", "channel": channel}),
+                    // RTM's `typing` drops `thread_ts`; the web client's `user_typing` keeps it.
+                    RtmCommand::Typing { channel, thread_ts: Some(ts) } => json!({"id": next_id, "type": "user_typing", "channel": channel, "thread_ts": ts}),
+                    RtmCommand::Raw(mut v) => {
+                        v["id"] = json!(next_id);
+                        v
+                    }
                     RtmCommand::PresenceSub { users } => json!({"id": next_id, "type": "presence_sub", "ids": users}),
                 };
                 sink.send(WsMessage::Text(frame.to_string().into())).await?;

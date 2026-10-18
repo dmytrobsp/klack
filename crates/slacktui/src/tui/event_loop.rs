@@ -273,14 +273,20 @@ impl App {
         });
     }
 
-    /// Tell the other side we are typing (at most every 3 s).
-    fn notify_typing(&mut self) {
-        let Some(channel) = self.current.clone() else { return };
+    /// Tell the other side we are typing (at most every 3 s), in the thread from the reply box.
+    fn notify_typing(&mut self, thread: bool) {
+        let (channel, thread_ts) = match (thread, self.thread.clone()) {
+            (true, Some((channel, ts))) => (channel, Some(ts)),
+            _ => match self.current.clone() {
+                Some(c) => (c, None),
+                None => return,
+            },
+        };
         if self.last_typing_sent.is_some_and(|t| t.elapsed().as_secs() < 3) {
             return;
         }
         self.last_typing_sent = Some(std::time::Instant::now());
-        let _ = self.rtm_commands.send(slack_core::rtm::RtmCommand::Typing { channel });
+        let _ = self.rtm_commands.send(slack_core::rtm::RtmCommand::Typing { channel, thread_ts });
     }
 
     /// The channel composer, or the thread pane's (`thread`).
@@ -2267,7 +2273,7 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
                     let composer = if thread { &mut app.thread_composer } else { &mut app.composer };
                     match composer.handle_key(k, &app.keys) {
                         KeyOutcome::Done => {}
-                        KeyOutcome::Typed => app.notify_typing(),
+                        KeyOutcome::Typed => app.notify_typing(thread),
                         KeyOutcome::Submit if app.composer_for(thread).editing.is_some() => app.save_edit(thread),
                         KeyOutcome::Submit => app.send(thread),
                         KeyOutcome::Leave => app.focus = if thread { Focus::Thread } else { Focus::Sidebar },
@@ -2753,7 +2759,11 @@ fn draw_composer(f: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &App,
     let focused = app.focus == if thread { Focus::ThreadComposer } else { Focus::Composer };
     let border = if focused { Style::default().fg(super::theme::p().accent) } else { Style::default().fg(super::theme::p().dim) };
     let target = app.current.as_deref().map(|c| app.ws.channel_label(c)).unwrap_or_default();
-    let typing = if thread { vec![] } else { app.current.as_deref().map(|c| app.ws.typing_in(c)).unwrap_or_default() };
+    let typing = if thread {
+        app.thread.as_ref().map(|(c, ts)| app.ws.typing_in(&super::state::thread_key(c, ts))).unwrap_or_default()
+    } else {
+        app.current.as_deref().map(|c| app.ws.typing_in(c)).unwrap_or_default()
+    };
     let title = if composer.editing.is_some() {
         let key = |a| app.keys.first_key(Context::Composer, a).unwrap_or_default();
         format!(" Editing message · {} save · {} cancel ", key(Action::Send), key(Action::Leave))

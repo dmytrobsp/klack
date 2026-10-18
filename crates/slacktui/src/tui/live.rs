@@ -124,7 +124,12 @@ pub fn apply(ws: &mut Workspace, ev: &Value, current: Option<&str>) -> Effects {
         }
         "user_typing" => {
             if let Some(u) = ev["user"].as_str() {
-                let list = ws.typing.entry(channel).or_default();
+                // Typing in a thread shows in that thread's reply box, not the channel's.
+                let key = match ev["thread_ts"].as_str() {
+                    Some(ts) => super::state::thread_key(&channel, ts),
+                    None => channel,
+                };
+                let list = ws.typing.entry(key).or_default();
                 list.retain(|(x, _)| x != u);
                 list.push((u.to_string(), std::time::Instant::now()));
             }
@@ -477,5 +482,9 @@ mod tests {
         assert!(!w.unread["C1"].has_unreads);
         apply(&mut w, &json!({"type":"user_typing","channel":"C1","user":"U2"}), None);
         assert_eq!(w.typing_in("C1"), vec!["U2".to_string()]);
+        // Captured from Slack (B typing in a thread, the web client's frame).
+        apply(&mut w, &json!({"channel":"C0CA5R2EX1Q","id":3,"thread_ts":"1792344539.206299","type":"user_typing","user":"U3"}), None);
+        assert_eq!(w.typing_in("C0CA5R2EX1Q"), Vec::<String>::new(), "thread typing is not channel typing");
+        assert_eq!(w.typing_in("C0CA5R2EX1Q/1792344539.206299"), vec!["U3".to_string()]);
     }
 }
