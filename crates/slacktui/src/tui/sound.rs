@@ -7,7 +7,7 @@ use std::f32::consts::PI;
 pub const SOUNDS: &[&str] = &["off", "chime", "ping", "knock", "system"];
 
 /// The choices for huddle events (no "system": the desktop has no such sounds).
-pub const HUDDLE_SOUNDS: &[&str] = &["off", "rise", "chime", "ping", "knock"];
+pub const HUDDLE_SOUNDS: &[&str] = &["off", "rise", "pop", "fall", "chime", "ping", "knock"];
 
 const RATE: f32 = huddle::session::SAMPLE_RATE as f32;
 
@@ -36,6 +36,9 @@ pub fn samples(name: &str) -> Vec<i16> {
         "knock" => [tone(196.0, 60, 0.6), silence(70), tone(196.0, 60, 0.6)].concat(),
         // Joining a huddle: a soft rising C major arpeggio.
         "rise" => [tone(523.25, 90, 0.25), tone(659.25, 90, 0.25), tone(783.99, 200, 0.25)].concat(),
+        // Someone joined: a short upward blip; someone left: a falling pair.
+        "pop" => [tone(587.33, 60, 0.25), tone(880.0, 120, 0.25)].concat(),
+        "fall" => [tone(698.46, 110, 0.25), tone(466.16, 220, 0.25)].concat(),
         _ => vec![],
     };
     f.into_iter().map(|s| (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16).collect()

@@ -124,7 +124,8 @@ name from `slacktui ctl audio-devices`). A device that is named but missing is a
 no silent fallback.
 
 F6 → Huddles has the huddle sounds (at the notification sound volume; each can be turned off): a soft
-rising arpeggio when you join.
+rising arpeggio when you join, and while you are in a huddle a short "pop" when someone joins and a
+falling pair when someone leaves.
 
 F6 → Audio also has the huddle volume, the notification sound volume, a microphone gain, a
 speaking threshold (quieter microphone input is sent as silence, held open 300 ms after you

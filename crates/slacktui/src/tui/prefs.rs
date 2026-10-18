@@ -56,6 +56,8 @@ pub enum Field {
     /// The camera for huddles (one of the cameras found; never a default).
     Camera,
     JoinSound,
+    SomeoneJoined,
+    SomeoneLeft,
 }
 
 /// Pause lengths offered, in minutes (0: not paused).
@@ -68,7 +70,7 @@ pub const CATEGORIES: &[(&str, &[Field])] = &[
     ("Language & region", &[Field::Clock24, Field::DateFormat, Field::TimeZone, Field::Language]),
     ("Notifications", &[Field::Desktop, Field::Sound, Field::ConversationLevel, Field::ChannelDefault, Field::Keywords, Field::Vips]),
     ("Audio & video", &[Field::Input, Field::Output, Field::HuddleVolume, Field::SoundVolume, Field::MicGain, Field::SpeakingThreshold, Field::NoiseSuppression, Field::EchoCancellation, Field::Camera]),
-    ("Huddles", &[Field::JoinSound]),
+    ("Huddles", &[Field::JoinSound, Field::SomeoneJoined, Field::SomeoneLeft]),
 ];
 
 /// Volumes offered, in percent.
@@ -129,6 +131,8 @@ impl Field {
             Field::EchoCancellation => "Echo cancellation",
             Field::Camera => "Camera (F9 in a huddle)",
             Field::JoinSound => "Sound when you join",
+            Field::SomeoneJoined => "Sound when someone joins",
+            Field::SomeoneLeft => "Sound when someone leaves",
         }
     }
 
@@ -201,6 +205,8 @@ impl Field {
             Field::EchoCancellation => yes(s.audio.echo_cancellation),
             Field::Camera => s.video.camera.clone().unwrap_or_else(|| "none (the camera stays off)".into()),
             Field::JoinSound => s.huddle.join_sound.clone(),
+            Field::SomeoneJoined => s.huddle.someone_joined.clone(),
+            Field::SomeoneLeft => s.huddle.someone_left.clone(),
         }
     }
 
@@ -246,9 +252,16 @@ impl Field {
                 s.region.date_format = DATE_FORMATS[i].into();
             }
             Field::Desktop => s.notifications.desktop ^= true,
-            Field::JoinSound => {
-                s.huddle.join_sound = next_sound(&s.huddle.join_sound);
-                super::sound::play(&s.huddle.join_sound, Settings::device(huddle::devices::OUTPUT_ENV, &s.audio.output), s.audio.sound_volume);
+            Field::JoinSound | Field::SomeoneJoined | Field::SomeoneLeft => {
+                let h = &mut s.huddle;
+                let slot = match self {
+                    Field::JoinSound => &mut h.join_sound,
+                    Field::SomeoneJoined => &mut h.someone_joined,
+                    _ => &mut h.someone_left,
+                };
+                *slot = next_sound(slot);
+                let name = slot.clone();
+                super::sound::play(&name, Settings::device(huddle::devices::OUTPUT_ENV, &s.audio.output), s.audio.sound_volume);
             }
             Field::Sound => {
                 let sounds = super::sound::SOUNDS;
@@ -309,7 +322,7 @@ pub fn translatable() -> Vec<String> {
     let all = [
         Field::Theme, Field::Compact, Field::InlineImages, Field::Avatars, Field::EmojiAsNames, Field::Clock24, Field::DateFormat, Field::TimeZone, Field::Language, Field::Desktop, Field::Sound,
         Field::ConversationLevel, Field::ChannelDefault, Field::Keywords, Field::Vips, Field::Status, Field::Away, Field::Pause, Field::Input, Field::Output,
-        Field::HuddleVolume, Field::SoundVolume, Field::MicGain, Field::SpeakingThreshold, Field::NoiseSuppression, Field::EchoCancellation, Field::Camera, Field::JoinSound,
+        Field::HuddleVolume, Field::SoundVolume, Field::MicGain, Field::SpeakingThreshold, Field::NoiseSuppression, Field::EchoCancellation, Field::Camera, Field::JoinSound, Field::SomeoneJoined, Field::SomeoneLeft,
     ];
     CATEGORIES.iter().map(|c| c.0).chain(["Keys", LEADER_LABEL]).chain(all.iter().map(|f| f.fixed_label())).map(String::from).collect()
 }
@@ -601,7 +614,9 @@ mod tests {
             s = next_sound(&s);
             seen.push(s.clone());
         }
-        assert_eq!(seen, ["rise", "chime", "ping", "knock", "off"]);
+        assert_eq!(seen, ["rise", "pop", "fall", "chime", "ping", "knock", "off"]);
+        let h = Settings::default().huddle;
+        assert_eq!((h.someone_joined.as_str(), h.someone_left.as_str()), ("pop", "fall"));
         assert_eq!(next_sound("unknown"), "off", "a hand-edited name starts over");
     }
 

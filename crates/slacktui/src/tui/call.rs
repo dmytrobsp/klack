@@ -35,6 +35,12 @@ pub struct Call {
     volume: Option<Volume>,
     pub muted: bool,
     pub connected: bool,
+    /// When media connected: roster changes in the first moments are the people already
+    /// there arriving, not joins.
+    connected_at: Option<std::time::Instant>,
+    /// People who joined / left since the last [`Call::take_roster_changes`].
+    joined: usize,
+    left: usize,
     sink: PcmSink,
     /// Open only while unmuted, so a muted call never touches the microphone.
     mic: Option<Microphone>,
@@ -187,6 +193,9 @@ impl Call {
             volume,
             muted: true,
             connected: false,
+            connected_at: None,
+            joined: 0,
+            left: 0,
             sink,
             mic: None,
             speaker_error,
@@ -276,9 +285,20 @@ impl Call {
     /// Apply a session event; true once the session has ended.
     pub fn apply(&mut self, ev: SessionEvent) -> bool {
         match ev {
-            SessionEvent::Connected => self.connected = true,
+            SessionEvent::Connected => {
+                self.connected = true;
+                self.connected_at = Some(std::time::Instant::now());
+            }
             // A screen share joins as a second attendee: it is shown as a share, not a person.
-            SessionEvent::Roster(r) => self.roster = r.into_iter().filter(|p| !huddle::signaling::is_content(&p.attendee_id)).collect(),
+            SessionEvent::Roster(r) => {
+                let roster: Vec<Participant> = r.into_iter().filter(|p| !huddle::signaling::is_content(&p.attendee_id)).collect();
+                if self.connected_at.is_some_and(|t| t.elapsed() >= ROSTER_SETTLE) {
+                    let (joined, left) = roster_changes(&self.roster, &roster, &self.self_attendee);
+                    self.joined += joined;
+                    self.left += left;
+                }
+                self.roster = roster;
+            }
             SessionEvent::Levels(l) => self.levels = l.into_iter().collect(),
             SessionEvent::Error(e) => tracing::warn!("huddle: {e}"),
             SessionEvent::VideoSources(sources) => self.shares = screen_shares(&sources),
@@ -287,6 +307,11 @@ impl Call {
             SessionEvent::Ended => return true,
         }
         false
+    }
+
+    /// People who joined and left since the last call (for the huddle sounds).
+    pub fn take_roster_changes(&mut self) -> (usize, usize) {
+        (std::mem::take(&mut self.joined), std::mem::take(&mut self.left))
     }
 
     /// Where the huddle is: "#social", a DM partner, with " · thread" for a thread's huddle.
@@ -386,8 +411,33 @@ impl Call {
     }
 }
 
+/// After connecting, roster changes this soon are the people already there arriving.
+const ROSTER_SETTLE: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// How many people (other than `me`) joined and left between two rosters.
+fn roster_changes(old: &[Participant], new: &[Participant], me: &str) -> (usize, usize) {
+    let had = |r: &[Participant], id: &str| r.iter().any(|p| p.attendee_id == id);
+    let joined = new.iter().filter(|p| p.attendee_id != me && !had(old, &p.attendee_id)).count();
+    let left = old.iter().filter(|p| p.attendee_id != me && !had(new, &p.attendee_id)).count();
+    (joined, left)
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn roster_changes_count_others() {
+        // Shaped like the real rosters (attendee ids, `<team>-<room>-<user>`).
+        let p = |id: &str, user: &str| huddle::session::Participant { attendee_id: id.into(), external_user_id: format!("T0CA6QW46KB-R0CA47XA37G-{user}"), muted: false };
+        let me = p("ecfb4d87-adf6", "U0C9YM9J3RR");
+        let b = p("95952636-2b52", "U0CA4NBE06N");
+        let c = p("11111111-2222", "U0C0000000C");
+        assert_eq!(super::roster_changes(&[me.clone()], &[me.clone(), b.clone()], &me.attendee_id), (1, 0));
+        assert_eq!(super::roster_changes(&[me.clone(), b.clone()], &[me.clone()], &me.attendee_id), (0, 1));
+        assert_eq!(super::roster_changes(&[me.clone(), b.clone()], &[me.clone(), c.clone()], &me.attendee_id), (1, 1), "one left, one came");
+        assert_eq!(super::roster_changes(&[], &[me.clone()], &me.attendee_id), (0, 0), "not for ourselves");
+        assert_eq!(super::roster_changes(&[me.clone(), b.clone()], &[b.clone(), me.clone()], &me.attendee_id), (0, 0), "order does not matter");
+    }
+
     #[test]
     fn shares_from_video_sources() {
         let src = |attendee: &str| huddle::session::VideoSource { stream_id: 1, group_id: 1, attendee_id: attendee.into(), external_user_id: "T1-R1-U2".into(), max_bitrate_kbps: 1000 };

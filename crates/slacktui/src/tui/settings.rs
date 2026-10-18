@@ -21,11 +21,14 @@ pub struct Settings {
 pub struct Huddle {
     /// When you join (once the huddle is connected).
     pub join_sound: String,
+    /// While you are in it: when someone else joins, and when someone leaves.
+    pub someone_joined: String,
+    pub someone_left: String,
 }
 
 impl Default for Huddle {
     fn default() -> Self {
-        Huddle { join_sound: "rise".into() }
+        Huddle { join_sound: "rise".into(), someone_joined: "pop".into(), someone_left: "fall".into() }
     }
 }
 

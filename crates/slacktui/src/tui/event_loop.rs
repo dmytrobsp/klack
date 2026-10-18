@@ -2023,7 +2023,16 @@ async fn run_workspace(
                     let s = &app.ws.settings;
                     super::sound::play(&s.huddle.join_sound, super::settings::Settings::device(huddle::devices::OUTPUT_ENV, &s.audio.output), s.audio.sound_volume);
                 }
-                if app.call.as_mut().is_some_and(|c| c.apply(ev)) {
+                let ended = app.call.as_mut().is_some_and(|c| c.apply(ev));
+                // Someone joined or left while we are in the huddle.
+                if let Some((joined, left)) = app.call.as_mut().map(|c| c.take_roster_changes()) {
+                    let s = &app.ws.settings;
+                    let name = if joined > 0 { Some(&s.huddle.someone_joined) } else if left > 0 { Some(&s.huddle.someone_left) } else { None };
+                    if let Some(name) = name.filter(|_| !ended) {
+                        super::sound::play(name, super::settings::Settings::device(huddle::devices::OUTPUT_ENV, &s.audio.output), s.audio.sound_volume);
+                    }
+                }
+                if ended {
                     app.call = None;
                     app.status = "left the huddle".into();
                 }
