@@ -12,7 +12,7 @@ cookie). It is not an official Slack app.
 - A recent stable Rust toolchain (edition 2024).
 - **libopus** (huddles): `apt install libopus-dev` · `brew install opus` · vcpkg on Windows.
 - **ALSA headers** on Linux (audio): `apt install libasound2-dev`.
-- **ffmpeg / ffprobe on PATH** at runtime, for video playback only.
+- **ffmpeg / ffprobe on PATH** at runtime, for video playback, cameras and (outside Wayland) screen sharing.
 - A terminal with graphics for real images (kitty, WezTerm, Ghostty, iTerm2, or any sixel
   terminal); others get half-block images.
 
@@ -21,6 +21,11 @@ cargo build --release
 ./target/release/slacktui login --workspace acme.slack.com   # prompts for the `d` cookie
 ./target/release/slacktui
 ```
+
+Windows from Linux: `rustup target add x86_64-pc-windows-gnu`, `apt install mingw-w64`, then
+`cargo build --release --target x86_64-pc-windows-gnu`. The result is one `slacktui.exe` that needs no
+MinGW DLLs (`crates/slacktui/build.rs` links OpenH264's C++ runtime statically, `.cargo/config.toml` the C
+runtime).
 
 ## Signing in
 
@@ -145,7 +150,7 @@ screen or a window, through the screen-cast portal, read with GStreamer's `pipew
 and F10 shares the **whole** screen through `ffmpeg`: `x11grab` in an X11 session, the main screen
 via AVFoundation on macOS (the terminal needs the Screen Recording permission), the desktop via
 `gdigrab` on Windows. The Wayland portal and X11 (against a virtual Xvfb display) have been tried;
-macOS and Windows are written but untested.
+on Windows only from an SSH session, where `gdigrab` cannot capture (no desktop); macOS is untested.
 
 ## Other settings
 

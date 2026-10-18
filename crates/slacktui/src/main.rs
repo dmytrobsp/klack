@@ -50,7 +50,7 @@ fn init_logging(profile: &str) -> Result<()> {
     std::fs::create_dir_all(&dir)?;
     let file = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("slacktui.log"))?;
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::try_from_env("SLACKTUI_LOG").unwrap_or_else(|_| "slacktui=info,slack_core=info".into()))
+        .with_env_filter(tracing_subscriber::EnvFilter::try_from_env("SLACKTUI_LOG").unwrap_or_else(|_| "slacktui=info,slack_core=info,huddle=info".into()))
         .with_writer(std::sync::Mutex::new(file))
         .with_ansi(false)
         .init();

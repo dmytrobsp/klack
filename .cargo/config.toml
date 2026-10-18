@@ -1,0 +1,4 @@
+# Windows built from Linux with MinGW: link the C runtime (libgcc, winpthread) statically;
+# libstdc++ is made static by crates/slacktui/build.rs. The .exe then needs no MinGW DLLs.
+[target.x86_64-pc-windows-gnu]
+rustflags = ["-C", "target-feature=+crt-static"]
