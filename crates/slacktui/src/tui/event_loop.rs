@@ -61,6 +61,8 @@ enum Focus {
 }
 
 struct App {
+    /// Presence subscription sent on the current RTM connection.
+    presence_subscribed: bool,
     /// Open conversation details (F2).
     details: Option<super::details::Details>,
     /// Open search overlay (Ctrl+F).
@@ -524,6 +526,18 @@ impl App {
         }
     }
 
+    /// Subscribe to everyone's presence once connected and the user list is known
+    /// (again after each reconnect); Slack answers with their current presence.
+    fn subscribe_presence(&mut self) {
+        if self.presence_subscribed || !self.connected || self.ws.users.is_empty() {
+            return;
+        }
+        let users: Vec<String> = self.ws.users.values().filter(|u| !u.deleted && !u.is_bot && u.id != "USLACKBOT").map(|u| u.id.clone()).take(500).collect();
+        if self.rtm_commands.send(slack_core::rtm::RtmCommand::PresenceSub { users }).is_ok() {
+            self.presence_subscribed = true;
+        }
+    }
+
     /// Show the DM with `user`, opening one if needed.
     fn open_dm_with(&mut self, user: String) {
         if let Some(id) = self.ws.conversations.values().find(|c| c.is_im && c.user.as_deref() == Some(user.as_str())).map(|c| c.id.clone()) {
@@ -746,6 +760,7 @@ pub async fn run(client: Client) -> Result<()> {
         switcher: None,
         search: None,
         details: None,
+        presence_subscribed: false,
         pending_hit: None,
         player: None,
         screen: Default::default(),
@@ -1127,7 +1142,11 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
 fn handle_rtm(app: &mut App, ev: slack_core::rtm::RtmEvent) {
     use slack_core::rtm::RtmEvent;
     match ev {
-        RtmEvent::Connected => app.connected = true,
+        RtmEvent::Connected => {
+            app.connected = true;
+            app.presence_subscribed = false;
+            app.subscribe_presence();
+        }
         RtmEvent::Disconnected(reason) => {
             app.connected = false;
             tracing::warn!("rtm disconnected: {reason}");
@@ -1167,6 +1186,7 @@ fn handle_net(app: &mut App, msg: Net) {
             app.sidebar.rebuild(&app.ws);
             app.loading = false;
             app.status.clear();
+            app.subscribe_presence();
         }
         Net::History { channel, page, older } => {
             let tl = app.ws.timelines.entry(channel).or_default();
