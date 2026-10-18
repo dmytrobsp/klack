@@ -66,8 +66,8 @@ pub type Click = (usize, super::notify::Target);
 /// Where a click from another workspace leads once that workspace has booted.
 pub type OpenAfter = Arc<Mutex<Option<Click>>>;
 
-/// Start a headless watcher for every workspace of a profile with several; each notifies
-/// only while its workspace is not the shown one (that one notifies itself).
+/// Start a headless watcher for every workspace of a profile with several; each runs only
+/// while its workspace is not the shown one (that one notifies itself).
 pub fn spawn_watchers(sessions: Vec<WorkspaceSession>, labels: Vec<String>, shown: Arc<AtomicUsize>, clicks: tokio::sync::mpsc::UnboundedSender<Click>) {
     if sessions.len() < 2 {
         return;
@@ -82,9 +82,33 @@ pub fn spawn_watchers(sessions: Vec<WorkspaceSession>, labels: Vec<String>, show
     }
 }
 
+/// How often a watcher checks whether its workspace became the shown one (or stopped being it).
+const SHOWN_CHECK: Duration = Duration::from_secs(1);
+
+/// Watch workspace `index` while it is not the shown one; while it is shown the app has its
+/// own connection, so the watcher holds none (no RTM, no copy of the users) and boots afresh
+/// when the user switches away.
 async fn watch(index: usize, session: WorkspaceSession, label: String, shown: Arc<AtomicUsize>, clicks: tokio::sync::mpsc::UnboundedSender<Click>) -> anyhow::Result<()> {
-    use super::state::{Dnd, Workspace};
     let client = Client::new(session)?;
+    loop {
+        while shown.load(Ordering::Relaxed) == index {
+            tokio::time::sleep(SHOWN_CHECK).await;
+        }
+        tracing::debug!("watching workspace {}", index + 1);
+        match watch_hidden(index, &client, &label, &shown, &clicks).await {
+            Ok(()) => tracing::debug!("workspace {} shown: its watcher pauses", index + 1),
+            Err(e) => {
+                tracing::warn!("watching workspace {}: {e}", index + 1);
+                tokio::time::sleep(Duration::from_secs(30)).await;
+            }
+        }
+    }
+}
+
+/// Boot workspace `index` into its own state and notify from its RTM events until it becomes
+/// the shown one (then the connection and the state are dropped).
+async fn watch_hidden(index: usize, client: &Client, label: &str, shown: &AtomicUsize, clicks: &tokio::sync::mpsc::UnboundedSender<Click>) -> anyhow::Result<()> {
+    use super::state::{Dnd, Workspace};
     let (boot, users) = tokio::join!(client.user_boot(), client.users_list());
     let mut ws = Workspace::default();
     for u in users? {
@@ -92,11 +116,21 @@ async fn watch(index: usize, session: WorkspaceSession, label: String, shown: Ar
     }
     ws.apply_boot(&boot?);
     let mut rtm = slack_core::rtm::spawn(client.clone());
-    while let Some(ev) = rtm.events.recv().await {
+    let mut check = tokio::time::interval(SHOWN_CHECK);
+    loop {
+        let ev = tokio::select! {
+            ev = rtm.events.recv() => ev.ok_or_else(|| anyhow::anyhow!("RTM stopped"))?,
+            _ = check.tick() => {
+                if shown.load(Ordering::Relaxed) == index {
+                    return Ok(());
+                }
+                continue;
+            }
+        };
         let slack_core::rtm::RtmEvent::Event(v) = ev else { continue };
         let fx = super::live::apply(&mut ws, &v, None);
         if shown.load(Ordering::Relaxed) == index {
-            continue;
+            return Ok(());
         }
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64();
         if ws.dnd.stale(now) {
@@ -111,7 +145,12 @@ async fn watch(index: usize, session: WorkspaceSession, label: String, shown: Ar
                 .map(|n| (n, super::notify::Target { channel: channel.clone(), ts: None, thread_ts: None })),
             _ => None,
         };
-        let Some(((title, body), target)) = note else { continue };
+        let Some(((title, body), target)) = note else {
+            if let Some((channel, _)) = &fx.incoming {
+                tracing::debug!(workspace = index + 1, channel, dnd = ws.dnd.active(now), "message from another workspace: no notification");
+            }
+            continue;
+        };
         let (settings, _) = super::settings::load();
         tracing::debug!(workspace = index + 1, channel = target.channel, "notification from another workspace");
         if settings.notifications.desktop {
@@ -121,7 +160,6 @@ async fn watch(index: usize, session: WorkspaceSession, label: String, shown: Ar
             })));
         }
     }
-    Ok(())
 }
 
 /// The status bar's note on the other workspaces: " · Alt+2 @3" for something needing
