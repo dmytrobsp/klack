@@ -81,6 +81,29 @@ pub fn people_in(m: &Message) -> Vec<String> {
     out
 }
 
+/// Your own availability for the status bar: status, away, paused notifications.
+pub fn availability(ws: &Workspace, now: i64) -> String {
+    let mut parts = Vec::new();
+    if let Some(me) = ws.users.get(&ws.self_id) {
+        let p = &me.profile;
+        let live = p.status_expiration.is_none_or(|t| t == 0 || t > now);
+        if live && (!p.status_emoji.is_empty() || !p.status_text.is_empty()) {
+            let emoji = p.status_emoji.trim_matches(':');
+            let emoji = if emoji.is_empty() { String::new() } else { text::emoji(ws, emoji, None) };
+            parts.push(format!("{emoji} {}", p.status_text).trim().to_string());
+        }
+    }
+    if ws.presence.get(&ws.self_id) == Some(&false) {
+        parts.push("away".into());
+    }
+    match ws.dnd.snooze_until.filter(|t| *t > now as f64) {
+        Some(t) => parts.push(format!("🔕 until {}", Local.timestamp_opt(t as i64, 0).single().map(|d| d.format("%H:%M").to_string()).unwrap_or_default())),
+        None if ws.dnd.active(now as f64) => parts.push("🔕".into()),
+        None => {}
+    }
+    parts.join(" · ")
+}
+
 pub fn field(label: &str, value: String) -> Line<'static> {
     Line::from(vec![Span::styled(format!("{label:<11}"), Style::default().fg(DIM)), Span::raw(value)])
 }
@@ -151,6 +174,20 @@ mod tests {
         // 2026-10-18 12:00 UTC
         assert_eq!(local_time(&u, 1_792_324_800).as_deref(), Some("15:00 · Eastern European Summer Time"));
         assert_eq!(local_time(&User::default(), 0), None);
+    }
+
+    #[test]
+    fn availability_summary() {
+        let mut ws = Workspace { self_id: "UME".into(), ..Default::default() };
+        let mut me = User { id: "UME".into(), ..Default::default() };
+        me.profile.status_text = "lunch".into();
+        me.profile.status_expiration = Some(1000);
+        ws.users.insert("UME".into(), me);
+        ws.presence.insert("UME".into(), false);
+        assert_eq!(availability(&ws, 500), "lunch · away");
+        assert_eq!(availability(&ws, 2000), "away", "an expired status is not shown");
+        ws.dnd.snooze_until = Some(3000.0);
+        assert!(availability(&ws, 2000).starts_with("away · 🔕 until "), "{}", availability(&ws, 2000));
     }
 
     #[test]

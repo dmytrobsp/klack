@@ -52,6 +52,8 @@ enum Net {
     VideoReady { title: String, result: Result<std::path::PathBuf, String> },
     /// Result of a file save or upload, shown in the status bar.
     FileDone(String),
+    /// `dnd.info` asked again after the known quiet-hours window ended.
+    Dnd(Value),
     /// The activity feed.
     ActivityFeed(Result<Value, String>),
     /// A message an activity item is about.
@@ -93,6 +95,8 @@ struct App {
     details: Option<super::details::Details>,
     /// Open profile card.
     profile: Option<super::profile::ProfileCard>,
+    /// A `dnd.info` refresh is on its way.
+    dnd_refreshing: bool,
     /// Open activity view (F5).
     activity: Option<super::activity::Activity>,
     /// Open "move to section" picker.
@@ -328,6 +332,25 @@ impl App {
             },
             Command::Dm(people) => self.open_group(people),
             Command::Star => self.toggle_star(channel),
+            Command::Status { emoji, text, expiry } => {
+                use super::commands::Expiry;
+                let now = chrono::Local::now();
+                let expiration = match expiry {
+                    Expiry::Never => 0,
+                    Expiry::Minutes(m) => now.timestamp() + m as i64 * 60,
+                    Expiry::Today => (now.date_naive() + chrono::Days::new(1)).and_hms_opt(0, 0, 0).and_then(|t| t.and_local_timezone(chrono::Local).earliest()).map_or(0, |t| t.timestamp()),
+                };
+                let done = if text.is_empty() && emoji.is_empty() { "status cleared".to_string() } else { "status set".to_string() };
+                self.spawn_simple(done, async move |client: Client| client.set_status(&emoji, &text, expiration).await);
+            }
+            Command::Away(away) => {
+                let done = if away { "you appear away" } else { "you appear active" };
+                self.spawn_simple(done.into(), async move |client: Client| client.set_presence(away).await);
+            }
+            Command::Dnd(minutes) => {
+                let done = if minutes.is_some() { "notifications paused" } else { "notifications resumed" };
+                self.spawn_simple(done.into(), async move |client: Client| client.snooze(minutes).await);
+            }
             Command::SectionRename(name) => match self.ws.section_of(&channel).map(|s| s.id.clone()) {
                 Some(id) => self.rename_section(id, name),
                 None => self.status = "this conversation is not in a section of yours (m in the sidebar)".into(),
@@ -505,6 +528,20 @@ impl App {
                     let _ = tx.send(Net::Sections(v));
                 }
             }
+        });
+    }
+
+    /// Run an API call in the background; report `done` or the error in the status bar.
+    fn spawn_simple<F>(&mut self, done: String, call: impl FnOnce(Client) -> F + Send + 'static)
+    where
+        F: std::future::Future<Output = anyhow::Result<()>> + Send,
+    {
+        let (client, tx) = (self.client.clone(), self.net.clone());
+        tokio::spawn(async move {
+            let _ = tx.send(match call(client).await {
+                Ok(()) => Net::FileDone(done),
+                Err(e) => Net::Error(e.to_string()),
+            });
         });
     }
 
@@ -839,6 +876,24 @@ impl App {
         });
     }
 
+    /// Ask for the next quiet-hours window once the known one has ended.
+    fn refresh_dnd(&mut self) {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64();
+        if self.dnd_refreshing || !self.ws.dnd.stale(now) {
+            return;
+        }
+        self.dnd_refreshing = true;
+        let (client, tx) = (self.client.clone(), self.net.clone());
+        tokio::spawn(async move {
+            match client.call_raw("dnd.info", &[]).await {
+                Ok(v) => {
+                    let _ = tx.send(Net::Dnd(v));
+                }
+                Err(e) => tracing::warn!("dnd.info failed: {e}"),
+            }
+        });
+    }
+
     /// F5: open the activity view and load the feed.
     fn open_activity(&mut self) {
         self.activity = Some(super::activity::Activity::default());
@@ -1123,6 +1178,7 @@ pub async fn run(client: Client) -> Result<()> {
         details: None,
         profile: None,
         activity: None,
+        dnd_refreshing: false,
         mover: None,
         huddle_after_open: None,
         presence_subscribed: false,
@@ -1169,6 +1225,7 @@ pub async fn run(client: Client) -> Result<()> {
         terminal.draw(|f| draw(f, &mut app))?;
         app.request_thumbs();
         app.request_activity_messages();
+        app.refresh_dnd();
         tokio::select! {
             ev = events.next() => {
                 let Some(ev) = ev else { break };
@@ -1813,6 +1870,12 @@ fn handle_net(app: &mut App, msg: Net) {
                 Err(e) => app.status = format!("cannot play video: {e}"),
             }
         }
+        Net::Dnd(v) => {
+            app.ws.dnd = super::state::Dnd::from_json(&v);
+            // An answer that is already out of date is not asked again.
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64();
+            app.dnd_refreshing = app.ws.dnd.stale(now);
+        }
         Net::ActivityFeed(result) => match result {
             Ok(v) => {
                 if let Some(a) = app.activity.as_mut() {
@@ -1929,7 +1992,11 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     if let Some(s) = app.snippet.as_mut() {
         s.draw(f, body);
     }
-    let live = if app.connected { "● live" } else { "○ connecting" };
+    let mut live = if app.connected { "● live" } else { "○ connecting" }.to_string();
+    let me = super::profile::availability(&app.ws, chrono::Utc::now().timestamp());
+    if !me.is_empty() {
+        live = format!("{live} · {me}");
+    }
     let (unread, mentions) = app.ws.total_unread();
     let info = if app.status.is_empty() { format!("{unread} unread · {mentions} mentions") } else { app.status.clone() };
     if let Some(sw) = &app.switcher {

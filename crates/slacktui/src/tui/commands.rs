@@ -13,6 +13,12 @@ pub enum Command {
     Dm(Vec<Recipient>),
     /// Star or unstar the current conversation.
     Star,
+    /// Set your status (empty emoji and text clear it).
+    Status { emoji: String, text: String, expiry: Expiry },
+    /// Appear away (true) or active.
+    Away(bool),
+    /// Pause notifications for this many minutes; None resumes them.
+    Dnd(Option<u64>),
     /// Rename the section holding the current conversation.
     SectionRename(String),
     /// Delete the section holding the current conversation.
@@ -27,6 +33,59 @@ pub enum Recipient {
     Id(String),
     /// A typed handle or display name without spaces.
     Name(String),
+}
+
+/// When a status clears.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Expiry {
+    Never,
+    Minutes(u64),
+    /// At the end of the local day.
+    Today,
+}
+
+/// `30m`, `2h`, `1d` or `90` (minutes).
+pub fn minutes(s: &str) -> Option<u64> {
+    let s = s.trim().to_lowercase();
+    let (n, unit) = match s.char_indices().find(|(_, c)| !c.is_ascii_digit()) {
+        Some((i, _)) => s.split_at(i),
+        None => (s.as_str(), "m"),
+    };
+    let n: u64 = n.parse().ok().filter(|n| *n > 0)?;
+    match unit.trim() {
+        "m" | "min" | "mins" | "minutes" => Some(n),
+        "h" | "hr" | "hour" | "hours" => Some(n * 60),
+        "d" | "day" | "days" => Some(n * 1440),
+        _ => None,
+    }
+}
+
+/// `/status [:emoji:] [text] [for <30m|2h|1d|today>]`.
+fn parse_status(rest: &str) -> Result<Command, String> {
+    let usage = "usage: /status [:emoji:] [text] [for 30m|2h|1d|today] · /status clear";
+    if rest.is_empty() {
+        return Err(usage.into());
+    }
+    if rest == "clear" {
+        return Ok(Command::Status { emoji: String::new(), text: String::new(), expiry: Expiry::Never });
+    }
+    let (body, expiry) = match rest.rsplit_once(" for ") {
+        Some((body, "today")) => (body, Expiry::Today),
+        Some((body, d)) => match minutes(d) {
+            Some(m) => (body, Expiry::Minutes(m)),
+            None => return Err(format!("cannot read the duration '{d}' ({usage})")),
+        },
+        None => (rest, Expiry::Never),
+    };
+    let body = body.trim();
+    let (emoji, text) = match body.split_once(char::is_whitespace).unwrap_or((body, "")) {
+        (e, t) if e.len() > 2 && e.starts_with(':') && e.ends_with(':') => (e.to_string(), t.trim()),
+        _ => (String::new(), body),
+    };
+    if emoji.is_empty() && text.is_empty() {
+        return Err(usage.into());
+    }
+    Ok(Command::Status { emoji: if emoji.is_empty() { ":speech_balloon:".into() } else { emoji }, text: text.to_string(), expiry })
 }
 
 /// Most people in a group DM besides yourself (Slack allows nine in all).
@@ -72,6 +131,14 @@ pub fn parse(text: &str, mrkdwn: &str) -> Option<Result<Command, String>> {
         "/join" if rest.contains(char::is_whitespace) => Err("usage: /join [#channel]".into()),
         "/join" => Ok(Command::Join(Some(rest.trim_start_matches('#').to_string()).filter(|n| !n.is_empty()))),
         "/star" if rest.is_empty() => Ok(Command::Star),
+        "/status" => parse_status(rest),
+        "/away" if rest.is_empty() => Ok(Command::Away(true)),
+        "/active" | "/back" if rest.is_empty() => Ok(Command::Away(false)),
+        "/dnd" if rest == "off" => Ok(Command::Dnd(None)),
+        "/dnd" => match minutes(rest) {
+            Some(m) => Ok(Command::Dnd(Some(m))),
+            None => Err("usage: /dnd 30m|2h|1d · /dnd off".into()),
+        },
         "/section" => match rest.split_once(char::is_whitespace).unwrap_or((rest, "")) {
             ("rename", name) if !name.trim().is_empty() => Ok(Command::SectionRename(name.trim().to_string())),
             ("delete", "") => Ok(Command::SectionDelete),
@@ -120,6 +187,26 @@ mod tests {
         assert_eq!(parse("/snippet\nhello"), Some(Ok(Command::Snippet { lang: "text".into(), title: String::new(), body: "hello".into() })));
         assert!(matches!(parse("/snippet rust"), Some(Err(_))), "nothing to post");
         assert_eq!(parse("/snippets"), None);
+    }
+
+    #[test]
+    fn availability() {
+        assert_eq!(minutes("30m"), Some(30));
+        assert_eq!(minutes("2h"), Some(120));
+        assert_eq!(minutes("1 day"), Some(1440));
+        assert_eq!(minutes("45"), Some(45));
+        assert_eq!((minutes("0m"), minutes("soon")), (None, None));
+        assert_eq!(parse("/status :coffee: on a break for 30m"), Some(Ok(Command::Status { emoji: ":coffee:".into(), text: "on a break".into(), expiry: Expiry::Minutes(30) })));
+        assert_eq!(parse("/status in a meeting for today"), Some(Ok(Command::Status { emoji: ":speech_balloon:".into(), text: "in a meeting".into(), expiry: Expiry::Today })));
+        assert_eq!(parse("/status :palm_tree:"), Some(Ok(Command::Status { emoji: ":palm_tree:".into(), text: String::new(), expiry: Expiry::Never })));
+        assert_eq!(parse("/status clear"), Some(Ok(Command::Status { emoji: String::new(), text: String::new(), expiry: Expiry::Never })));
+        assert!(matches!(parse("/status hi for ever"), Some(Err(_))));
+        assert!(matches!(parse("/status"), Some(Err(_))));
+        assert_eq!(parse("/away"), Some(Ok(Command::Away(true))));
+        assert_eq!(parse("/back"), Some(Ok(Command::Away(false))));
+        assert_eq!(parse("/dnd 1h"), Some(Ok(Command::Dnd(Some(60)))));
+        assert_eq!(parse("/dnd off"), Some(Ok(Command::Dnd(None))));
+        assert!(matches!(parse("/dnd"), Some(Err(_))));
     }
 
     #[test]

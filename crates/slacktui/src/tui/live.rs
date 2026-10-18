@@ -168,6 +168,10 @@ pub fn apply(ws: &mut Workspace, ev: &Value, current: Option<&str>) -> Effects {
             }
         }
         "dnd_updated" => ws.dnd = super::state::Dnd::from_json(&ev["dnd_status"]),
+        "manual_presence_change" => {
+            let self_id = ws.self_id.clone();
+            ws.presence.insert(self_id, ev["presence"] != "away");
+        }
         "presence_change" => {
             let active = ev["presence"] == "active";
             let users: Vec<String> = match ev["users"].as_array() {

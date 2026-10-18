@@ -52,6 +52,8 @@ pub const KEYS: &[(&str, &[(&str, &str)])] = &[
         ("/dm @a [@b…]", "open a DM, or a group DM with several people"),
         ("/snippet [lang] [title]", "post the following lines as a snippet"),
         ("/star · /section rename|delete", "star this conversation · rename / delete its section"),
+        ("/status [:e:] [text] [for 30m|today]", "set your status · /status clear"),
+        ("/away · /active · /dnd 30m|off", "appear away / active · pause notifications"),
         ("/create[-private] <name>", "create a channel"),
         ("Alt+A (reply box)", "also send the reply to the channel"),
         ("Esc", "cancel an edit, else leave the composer"),

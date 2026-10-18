@@ -113,8 +113,9 @@ impl Section {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Dnd {
     /// Scheduled quiet hours as Slack reports them: the next start and the next end. They
-    /// are not one window (after today's window, start is today's and end is tomorrow's),
-    /// so they are read as a daily schedule.
+    /// are not always one window (after today's window, start is today's and end is
+    /// tomorrow's), and the schedule may skip days (weekdays only), so only the window that
+    /// ends at `end` is known; `dnd.info` is asked again once it has passed.
     pub window: Option<(f64, f64)>,
     /// Manual snooze until this time.
     pub snooze_until: Option<f64>,
@@ -131,11 +132,17 @@ impl Dnd {
         Dnd { window, snooze_until }
     }
 
+    /// The known scheduled window has ended, so Slack should be asked for the next one.
+    pub fn stale(&self, now: f64) -> bool {
+        self.window.is_some_and(|(_, end)| now >= end)
+    }
+
     pub fn active(&self, now: f64) -> bool {
         const DAY: f64 = 86_400.0;
+        // The window ending at `end` is `len` long, len being the schedule's daily span.
         let scheduled = self.window.is_some_and(|(start, end)| {
             let len = (end - start).rem_euclid(DAY);
-            (now - start).rem_euclid(DAY) < len
+            end - len <= now && now < end
         });
         self.snooze_until.is_some_and(|t| now < t) || scheduled
     }
@@ -464,6 +471,11 @@ mod tests {
         let daily = Dnd::from_json(&serde_json::json!({"dnd_enabled":true,"next_dnd_start_ts":1792270800,"next_dnd_end_ts":1792389600}));
         assert!(!daily.active(1792326040.0), "15:20 is outside 00:00–09:00");
         assert!(daily.active(1792270800.0 + 86_400.0 + 3.0 * 3600.0), "03:00 the next night is inside");
+        // Real dnd.info for 17:00–09:00 on weekdays, seen on Sunday 17:24: next window Mon 17:00 → Tue 09:00.
+        let weekdays = Dnd::from_json(&serde_json::json!({"dnd_enabled":true,"next_dnd_start_ts":1792418400,"next_dnd_end_ts":1792476000,"snooze_enabled":false}));
+        assert!(!weekdays.active(1792333440.0), "Sunday evening is not in a weekday schedule");
+        assert!(weekdays.active(1792418400.0 + 3.0 * 3600.0), "Monday 20:00 is");
+        assert!(!weekdays.active(1792476000.0 + 60.0), "after the known window: unknown until dnd.info is asked again");
     }
 
     #[test]

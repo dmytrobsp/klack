@@ -249,6 +249,20 @@ impl Client {
         self.call_field("users.info", "user", &[("user", user.into())]).await
     }
 
+    /// Set your status; `expiration` is epoch seconds (0 = never). Empty values clear it.
+    pub async fn set_status(&self, emoji: &str, text: &str, expiration: i64) -> Result<()> {
+        let profile = serde_json::json!({"status_emoji": emoji, "status_text": text, "status_expiration": expiration}).to_string();
+        self.call_raw("users.profile.set", &[("profile", profile)]).await.map(|_| ())
+    }
+
+    /// Pause notifications for `minutes`, or resume them (None).
+    pub async fn snooze(&self, minutes: Option<u64>) -> Result<()> {
+        match minutes {
+            Some(m) => self.call_raw("dnd.setSnooze", &[("num_minutes", m.to_string())]).await.map(|_| ()),
+            None => self.call_raw("dnd.endSnooze", &[]).await.map(|_| ()),
+        }
+    }
+
     pub async fn set_presence(&self, away: bool) -> Result<()> {
         self.call_raw("users.setPresence", &[("presence", if away { "away" } else { "auto" }.into())]).await.map(|_| ())
     }

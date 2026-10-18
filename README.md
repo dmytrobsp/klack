@@ -43,6 +43,8 @@ Press **F1** (or `?`) in the app for the full list. The essentials:
 | Alt+↑ / Alt+↓, Ctrl+K | previous / next conversation, jump to any conversation or person (`#` lists every channel, including ones you are not in) |
 | Ctrl+F | search messages |
 | F5 | activity: mentions, reactions to your messages, thread replies |
+| `/status [:emoji:] [text] [for 30m\|2h\|today]` · `/status clear` | set or clear your status |
+| `/away` · `/active` · `/dnd 30m` · `/dnd off` | appear away / active · pause or resume notifications |
 | `*` · `m` (sidebar) | star / unstar · move to a section (or a new one); `/section rename <name>` · `/section delete` |
 | F2 | conversation details: about, members, pins |
 | F3 / F4 | join or leave the huddle / mute or unmute |
