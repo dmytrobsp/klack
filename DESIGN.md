@@ -15,7 +15,7 @@ client, using a browser-session token (`xoxc-…`) plus the `d` cookie (see
 ## Portability rules
 
 - **Terminal:** crossterm, which works on Linux, macOS and Windows. Graphics go through `ratatui-image`: kitty/sixel/iTerm2 protocols, with a half-block fallback.
-- **Audio:** cpal (ALSA/PipeWire, CoreAudio, WASAPI). **Video decoding:** ffmpeg (system libraries; vcpkg/brew on the other platforms).
+- **Audio:** cpal (ALSA/PipeWire, CoreAudio, WASAPI). **Video decoding:** the `ffmpeg`/`ffprobe` command-line tools on PATH (decoded frames and PCM come back over pipes), so nothing links against the ffmpeg libraries and every platform only needs the ffmpeg binaries installed.
 - **Notifications:** notify-rust (D-Bus, macOS NSUserNotification, Windows toast).
 - **Paths:** `directories`. Session files are created with owner-only permissions (0600 on unix).
 - **Optional dependencies:** importing a session from RSlack needs SQLite (bundled). No other code may depend on Linux-only APIs unless it is behind `cfg`.

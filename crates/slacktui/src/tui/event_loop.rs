@@ -28,6 +28,8 @@ enum Net {
     Posted { channel: String, message: slack_core::types::Message },
     /// All replies of a thread (parent first).
     Replies { channel: String, ts: String, page: HistoryPage },
+    /// A video downloaded to a temporary file, ready to play.
+    VideoReady { title: String, result: Result<std::path::PathBuf, String> },
     /// Result of a file save or upload, shown in the status bar.
     FileDone(String),
     /// A full-size image for the viewer.
@@ -51,6 +53,10 @@ enum Focus {
 }
 
 struct App {
+    /// Open video player.
+    player: Option<super::video::Player>,
+    /// Whole terminal area on the last draw (to size video frames).
+    screen: ratatui::layout::Rect,
     /// Open image viewer.
     viewer: Option<super::viewer::Viewer>,
     media: super::media::Media,
@@ -471,9 +477,21 @@ impl App {
         }
     }
 
-    /// Open the viewer on the images of message `ts` in the current conversation.
+    /// Open the viewer on the images of message `ts` in the current conversation, or play
+    /// its first video.
     fn open_viewer(&mut self, ts: &str) {
         let Some(channel) = self.current.clone() else { return };
+        let video = self.ws.find_message(&channel, ts).and_then(|m| m.files.iter().find(|f| f.is_video()).cloned());
+        if let Some(file) = video {
+            self.status = format!("loading {}…", file.name);
+            let (client, tx) = (self.client.clone(), self.net.clone());
+            tokio::spawn(async move {
+                let title = file.name.clone();
+                let result = super::video::download(client, file).await.map_err(|e| e.to_string());
+                let _ = tx.send(Net::VideoReady { title, result });
+            });
+            return;
+        }
         let files: Vec<slack_core::types::File> = self.ws.find_message(&channel, ts).map(|m| m.files.iter().filter(|f| f.is_image()).cloned().collect()).unwrap_or_default();
         if files.is_empty() {
             self.status = "no image in this message".into();
@@ -559,6 +577,8 @@ pub async fn run(client: Client) -> Result<()> {
     let mut app = App {
         media,
         viewer: None,
+        player: None,
+        screen: Default::default(),
         terminal_focused: true,
         completion: None,
         completion_dismissed: None,
@@ -594,6 +614,7 @@ pub async fn run(client: Client) -> Result<()> {
 
     let mut events = EventStream::new();
     let mut tick = tokio::time::interval(Duration::from_millis(500));
+    let mut video_tick = tokio::time::interval(Duration::from_millis(40));
     loop {
         terminal.draw(|f| draw(f, &mut app))?;
         app.request_thumbs();
@@ -608,6 +629,11 @@ pub async fn run(client: Client) -> Result<()> {
             Some(msg) = net_rx.recv() => handle_net(&mut app, msg),
             Some(ev) = rtm.events.recv() => handle_rtm(&mut app, ev),
             _ = tick.tick() => {}
+            _ = video_tick.tick(), if app.player.is_some() => {
+                if let Some(p) = app.player.as_mut() {
+                    p.advance();
+                }
+            }
         }
         app.sync_current();
         if app.current.as_ref().and_then(|c| app.ws.timelines.get(c)).is_some_and(|t| t.loaded) {
@@ -621,6 +647,15 @@ pub async fn run(client: Client) -> Result<()> {
 /// Returns false to quit.
 fn handle_terminal(app: &mut App, ev: Event) -> bool {
     match ev {
+        Event::Key(k) if k.kind != KeyEventKind::Release && app.player.is_some() => {
+            let Some(p) = app.player.as_mut() else { return true };
+            match k.code {
+                KeyCode::Char('q') if k.modifiers.contains(KeyModifiers::CONTROL) => return false,
+                KeyCode::Esc | KeyCode::Char('q') => app.player = None,
+                KeyCode::Char(' ') | KeyCode::Char('p') => p.toggle_pause(),
+                _ => {}
+            }
+        }
         Event::Key(k) if k.kind != KeyEventKind::Release && app.viewer.is_some() => {
             let Some(v) = app.viewer.as_mut() else { return true };
             match k.code {
@@ -914,6 +949,17 @@ fn handle_net(app: &mut App, msg: Net) {
             tl.loading = false;
         }
         Net::FileDone(message) => app.status = message,
+        Net::VideoReady { title, result } => {
+            let font = app.media.picker.font_size();
+            let max_px = (app.screen.width.saturating_sub(2) as u32 * font.width as u32, app.screen.height.saturating_sub(3) as u32 * font.height as u32);
+            match result.map_err(anyhow::Error::msg).and_then(|path| super::video::Player::start(title, path, max_px)) {
+                Ok(player) => {
+                    app.player = Some(player);
+                    app.status.clear();
+                }
+                Err(e) => app.status = format!("cannot play video: {e}"),
+            }
+        }
         Net::FullImage { id, result } => {
             if let Some(v) = app.viewer.as_mut() {
                 v.set_image(&id, result);
@@ -953,6 +999,7 @@ fn handle_net(app: &mut App, msg: Net) {
 }
 
 fn draw(f: &mut ratatui::Frame, app: &mut App) {
+    app.screen = f.area();
     let [body, status] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(f.area());
     let side_w = (body.width / 4).clamp(18, 32);
     let [side, main] = Layout::horizontal([Constraint::Length(side_w), Constraint::Min(10)]).areas(body);
@@ -994,6 +1041,9 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     }
     if let Some(v) = app.viewer.as_mut() {
         v.draw(f, body, &app.media.picker);
+    }
+    if let Some(p) = app.player.as_mut() {
+        p.draw(f, body, &app.media.picker);
     }
     let live = if app.connected { "● live" } else { "○ connecting" };
     let (unread, mentions) = app.ws.total_unread();
