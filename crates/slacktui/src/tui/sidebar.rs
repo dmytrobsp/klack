@@ -12,6 +12,8 @@ use super::state::Workspace;
 pub enum Item {
     Header(String),
     Conversation(String),
+    /// A blank row between sections.
+    Gap,
 }
 
 #[derive(Debug, Default)]
@@ -35,6 +37,10 @@ impl Sidebar {
         let keep = self.selected_id().map(String::from);
         self.items.clear();
         for (header, ids) in ws.sidebar_groups() {
+            // Sections stand apart: a blank row before each (none in compact mode).
+            if !self.items.is_empty() && !ws.settings.appearance.compact {
+                self.items.push(Item::Gap);
+            }
             self.items.push(Item::Header(header));
             self.items.extend(ids.into_iter().map(Item::Conversation));
         }
@@ -93,7 +99,9 @@ impl Sidebar {
         self.area = area;
         let height = area.height.saturating_sub(2) as usize;
         if self.selected < self.offset {
-            self.offset = self.selected.saturating_sub(1);
+            // With the section's header (and the gap above it) when it is the first.
+            let above = self.items[..self.selected].iter().rev().take_while(|i| !matches!(i, Item::Conversation(_))).count();
+            self.offset = self.selected.saturating_sub(above.max(1));
         } else if height > 0 && self.selected >= self.offset + height {
             self.offset = self.selected + 1 - height;
         }
@@ -105,7 +113,8 @@ impl Sidebar {
             .skip(self.offset)
             .take(height)
             .map(|(n, item)| match item {
-                Item::Header(h) => Line::styled(format!(" {h}"), Style::default().fg(super::theme::p().dim).add_modifier(Modifier::BOLD)),
+                Item::Header(h) => header_line(h, width),
+                Item::Gap => Line::raw(""),
                 Item::Conversation(id) if n != self.selected && self.hover == Some(n) => conversation_line(ws, id, false, self.drafts.contains(id), width).style(Style::default().bg(super::theme::p().hover)),
                 Item::Conversation(id) => conversation_line(ws, id, n == self.selected, self.drafts.contains(id), width),
             })
@@ -114,6 +123,16 @@ impl Sidebar {
         let title = format!(" {} ", ws.team_name);
         f.render_widget(Paragraph::new(lines).block(Block::default().borders(Borders::ALL).border_style(border).title(title)), area);
     }
+}
+
+/// A section's header: its name, then a rule to the edge (" Channels ────────").
+fn header_line(name: &str, width: usize) -> Line<'static> {
+    let label = format!(" {name} ");
+    let rule = width.saturating_sub(unicode_width::UnicodeWidthStr::width(label.as_str()));
+    Line::from(vec![
+        Span::styled(label, Style::default().fg(super::theme::p().accent).add_modifier(Modifier::BOLD)),
+        Span::styled("─".repeat(rule), Style::default().fg(super::theme::p().dim)),
+    ])
 }
 
 fn conversation_line(ws: &Workspace, id: &str, selected: bool, draft: bool, width: usize) -> Line<'static> {
@@ -209,6 +228,33 @@ mod tests {
         assert_eq!(s.selected_id(), Some("D1"));
         s.move_by(-10);
         assert_eq!(s.selected_id(), Some("C1"));
+    }
+
+    #[test]
+    fn sections_stand_apart() {
+        let mut s = Sidebar::default();
+        let mut w = ws();
+        s.rebuild(&w);
+        let kinds: Vec<String> = s.items.iter().map(|i| match i {
+            Item::Header(h) => format!("[{h}]"),
+            Item::Conversation(id) => id.clone(),
+            Item::Gap => "".into(),
+        }).collect();
+        assert_eq!(kinds, ["[Channels]", "C1", "C2", "", "[Direct messages]", "D1"], "a gap before every section but the first");
+        w.settings.appearance.compact = true;
+        s.rebuild(&w);
+        assert!(!s.items.contains(&Item::Gap), "compact: no gaps");
+        let text = |l: Line| l.spans.iter().map(|s| s.content.to_string()).collect::<String>();
+        assert_eq!(text(header_line("Channels", 20)), " Channels ──────────");
+        assert_eq!(text(header_line("A very long section name", 10)), " A very long section name ", "no rule when there is no room");
+        // Scrolling up to a section's first conversation shows its header and the gap above.
+        s.rebuild(&ws());
+        s.select_id("D1");
+        s.offset = 6;
+        let backend = ratatui::backend::TestBackend::new(30, 5);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| s.draw(f, f.area(), &ws(), false)).unwrap();
+        assert_eq!(s.offset, 3);
     }
 
     #[test]

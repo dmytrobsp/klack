@@ -118,7 +118,7 @@ impl Field {
         match self {
             Field::Leader | Field::Binding(_) => "",
             Field::Theme => "Colour theme",
-            Field::Compact => "Compact list (no gap between authors)",
+            Field::Compact => "Compact (no gaps between authors or sidebar sections)",
             Field::InlineImages => "Show image thumbnails",
             Field::Avatars => "Show profile pictures",
             Field::EmojiAsNames => "Show emoji as :names:",

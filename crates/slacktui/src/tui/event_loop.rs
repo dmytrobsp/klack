@@ -1408,6 +1408,10 @@ impl App {
             if p.saved.is_none() && p.editing.is_none() {
                 p.saved = Some(super::settings::save(&self.ws.settings).map(|path| path.display().to_string()));
             }
+            if field == Some(super::prefs::Field::Compact) {
+                // The sidebar's gaps between sections follow it.
+                self.sidebar.rebuild(&self.ws);
+            }
             self.audio_changed(field);
             return;
         }
