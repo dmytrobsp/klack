@@ -148,6 +148,23 @@ enum Command {
     Leave,
 }
 
+/// How a session joins.
+#[derive(Debug, Clone, Copy)]
+pub struct Options {
+    /// Join with the microphone muted.
+    pub muted: bool,
+    /// Offer a camera (fed through [`Session::video_sink`]).
+    pub send_video: bool,
+    /// Receive other people's video (a screen share session does not).
+    pub receive_video: bool,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Options { muted: true, send_video: false, receive_video: true }
+    }
+}
+
 pub struct Session {
     commands: mpsc::UnboundedSender<Command>,
     keyframe: Arc<AtomicBool>,
@@ -194,8 +211,8 @@ impl Session {
         VideoSink(self.commands.clone(), self.keyframe.clone())
     }
 
-    /// `send_video`: offer a camera (fed through [`Session::video_sink`]).
-    pub fn start(creds: Credentials, muted: bool, send_video: bool) -> Session {
+    pub fn start(creds: Credentials, options: Options) -> Session {
+        let Options { muted, send_video, receive_video } = options;
         let (commands, command_rx) = mpsc::unbounded_channel();
         let (event_tx, events) = mpsc::unbounded_channel();
         let (audio_tx, audio) = mpsc::unbounded_channel();
@@ -203,7 +220,7 @@ impl Session {
         let keyframe = Arc::new(AtomicBool::new(false));
         let kf = keyframe.clone();
         tokio::spawn(async move {
-            if let Err(e) = run(creds, muted, send_video, kf, command_rx, event_tx.clone(), audio_tx, video_tx).await {
+            if let Err(e) = run(creds, muted, send_video, receive_video, kf, command_rx, event_tx.clone(), audio_tx, video_tx).await {
                 let _ = event_tx.send(SessionEvent::Error(e.to_string()));
             }
             let _ = event_tx.send(SessionEvent::Ended);
@@ -251,6 +268,7 @@ async fn run(
     creds: Credentials,
     mut muted: bool,
     send_video: bool,
+    receive_video: bool,
     keyframe: Arc<AtomicBool>,
     mut commands: mpsc::UnboundedReceiver<Command>,
     events: mpsc::UnboundedSender<SessionEvent>,
@@ -285,7 +303,7 @@ async fn run(
     // offer in a new SUBSCRIBE (one at a time: a change meanwhile waits for its ACK).
     let me = creds.attendee.attendee_id.clone();
     let mut slots: Vec<u32> = Vec::new();
-    let (mut subscribing, mut resubscribe) = (false, true);
+    let (mut subscribing, mut resubscribe) = (false, receive_video);
 
     let mut encoder = opus::Encoder::new(SAMPLE_RATE, opus::Channels::Mono, opus::Application::Voip)?;
     let mut decoder = opus::Decoder::new(SAMPLE_RATE, opus::Channels::Mono)?;
@@ -347,7 +365,7 @@ async fn run(
                 if let Some(index) = &frame.index {
                     sources = video_sources(index);
                     let _ = events.send(SessionEvent::VideoSources(sources.clone()));
-                    resubscribe = true;
+                    resubscribe = receive_video;
                 }
                 if let Some(ack) = frame.suback.clone().filter(|_| frame.r#type == Type::SubscribeAck as i32) {
                     subscribing = false;

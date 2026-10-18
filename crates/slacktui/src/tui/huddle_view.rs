@@ -129,14 +129,19 @@ impl HuddleView {
         let tiles_area = Rect { height: inner.height.saturating_sub(footer_h + 1), y: inner.y + 1, ..inner };
         let footer = Rect { y: inner.y + inner.height - footer_h, height: footer_h, ..inner };
 
-        let (rects, scale) = grid(call.roster.len(), tiles_area);
+        // Screen shares first, then the people.
+        let tiles = call.shares.len() + call.roster.len();
+        let (rects, scale) = grid(tiles, tiles_area);
         let picture = (PICTURE.0 * scale, PICTURE.1 * scale);
-        for (p, rect) in call.roster.iter().zip(&rects) {
-            self.draw_tile(f, *rect, picture, call, p, ws, media);
+        for (n, rect) in rects.iter().enumerate() {
+            match call.shares.get(n) {
+                Some((share, user)) => self.draw_share(f, *rect, call, share, user, ws, media),
+                None => self.draw_tile(f, *rect, picture, call, &call.roster[n - call.shares.len()], ws, media),
+            }
         }
-        if rects.len() < call.roster.len() {
+        if rects.len() < tiles {
             let more = Rect { y: tiles_area.y + tiles_area.height.saturating_sub(1), height: 1.min(tiles_area.height), ..tiles_area };
-            f.render_widget(Paragraph::new(format!("+{} more (make the window larger)", call.roster.len() - rects.len())).style(dim).alignment(Alignment::Center), more);
+            f.render_widget(Paragraph::new(format!("+{} more (make the window larger)", tiles - rects.len())).style(dim).alignment(Alignment::Center), more);
         }
 
         let lines: Vec<Line> = texts.into_iter().map(|t| Line::styled(t, dim)).collect();
@@ -193,6 +198,22 @@ impl HuddleView {
         }
         let below = Rect { y: pic.y + pic.height + top, height: inner.height.saturating_sub(pic.height + 2 * top), ..inner };
         self.draw_state(f, below, me, level, speaking, muted, gated);
+    }
+
+    /// Someone's screen share: their name and the picture filling the tile.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_share(&mut self, f: &mut Frame, rect: Rect, call: &Call, share: &str, user: &str, ws: &Workspace, media: &Media) {
+        let accent = Style::default().fg(super::theme::p().accent);
+        let block = Block::default().borders(Borders::ALL).border_style(accent).title(Span::styled(format!(" 🖥 {}'s screen ", ws.person_label(user)), accent.add_modifier(Modifier::BOLD)));
+        let inner = block.inner(rect);
+        f.render_widget(block, rect);
+        match call.video(share) {
+            Some(frame) => self.draw_video(f, inner, share, &frame, media),
+            None => {
+                let mid = Rect { y: inner.y + inner.height / 2, height: 1.min(inner.height), ..inner };
+                f.render_widget(Paragraph::new("waiting for the picture…").style(Style::default().fg(super::theme::p().dim)).alignment(Alignment::Center), mid);
+            }
+        }
     }
 
     /// The meter and the state line, centred.

@@ -73,6 +73,25 @@ impl Credentials {
     }
 }
 
+/// Suffix of a screen share's attendee id and join token (the SDK's content modality).
+pub const CONTENT_MODALITY: &str = "#content";
+
+/// Whether an attendee is someone's screen share rather than a person.
+pub fn is_content(attendee_id: &str) -> bool {
+    attendee_id.ends_with(CONTENT_MODALITY)
+}
+
+impl Credentials {
+    /// Our screen share's credentials: the Chime SDK joins it as a second attendee,
+    /// `<attendee>#content` with `<join token>#content` (Slack's client does the same).
+    pub fn content_share(&self) -> Credentials {
+        let mut c = self.clone();
+        c.attendee.attendee_id.push_str(CONTENT_MODALITY);
+        c.attendee.join_token.push_str(CONTENT_MODALITY);
+        c
+    }
+}
+
 fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
@@ -219,6 +238,9 @@ mod tests {
         assert_eq!(c.meeting.media_placement.audio_host_url, "a.chime.aws:3478");
         assert!(!format!("{c:?}").contains("secret"), "the join token must not appear in Debug output");
         assert!(Credentials::from_rooms_join(&serde_json::json!({"call":{}})).is_err());
+        let share = c.content_share();
+        assert_eq!((share.attendee.attendee_id.as_str(), share.attendee.join_token.as_str(), share.attendee.external_user_id.as_str()), ("att-1#content", "secret#content", "T-R1-U"));
+        assert!(is_content(&share.attendee.attendee_id) && !is_content("att-1"));
     }
 
     #[test]

@@ -39,12 +39,27 @@ pub struct Call {
     pub speaker_error: Option<String>,
     /// The latest picture of each participant's video and when it came, by attendee id.
     pub videos: Videos,
+    /// Screen shares going on: (the share's attendee id, the sharer's user id). A share is a
+    /// second attendee (`<attendee>#content`) that only shows up among the video sources.
+    pub shares: Vec<(String, String)>,
 }
 
 pub type Videos = std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, huddle::session::VideoFrame)>>>;
 
 /// A picture older than this means the video has stopped.
 pub const VIDEO_STALE: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// The screen shares among the video sources: (share attendee id, sharer's user id).
+pub fn screen_shares(sources: &[huddle::session::VideoSource]) -> Vec<(String, String)> {
+    let mut shares: Vec<(String, String)> = sources
+        .iter()
+        .filter(|s| huddle::signaling::is_content(&s.attendee_id))
+        .map(|s| (s.attendee_id.clone(), s.external_user_id.rsplit('-').next().unwrap_or_default().to_string()))
+        .collect();
+    shares.sort();
+    shares.dedup();
+    shares
+}
 
 /// A four-bar level meter ("▂▄▆█" when loud, "▂···" when quiet).
 pub fn meter(level: f32) -> String {
@@ -57,7 +72,7 @@ impl Call {
     /// Start the session (muted) and play the meeting's audio on the default output.
     /// `devices`: (microphone, speaker) names, None for the system default.
     pub fn start(channel: String, creds: Credentials, devices: (Option<String>, Option<String>), audio_settings: &super::settings::Audio) -> Call {
-        let mut session = Session::start(creds, true, false);
+        let mut session = Session::start(creds, Default::default());
         let sink = session.pcm_sink();
         let (_, empty) = tokio::sync::mpsc::unbounded_channel();
         let mut audio = std::mem::replace(&mut session.audio, empty);
@@ -103,6 +118,7 @@ impl Call {
             mic: None,
             speaker_error,
             videos,
+            shares: Vec::new(),
         };
         call.set_audio(audio_settings);
         call
@@ -147,11 +163,12 @@ impl Call {
     pub fn apply(&mut self, ev: SessionEvent) -> bool {
         match ev {
             SessionEvent::Connected => self.connected = true,
-            SessionEvent::Roster(r) => self.roster = r,
+            // A screen share joins as a second attendee: it is shown as a share, not a person.
+            SessionEvent::Roster(r) => self.roster = r.into_iter().filter(|p| !huddle::signaling::is_content(&p.attendee_id)).collect(),
             SessionEvent::Levels(l) => self.levels = l.into_iter().collect(),
             SessionEvent::Error(e) => tracing::warn!("huddle: {e}"),
-            // Video arrives with item 14.
-            SessionEvent::VideoSources(_) | SessionEvent::SendingVideo { .. } => {}
+            SessionEvent::VideoSources(sources) => self.shares = screen_shares(&sources),
+            SessionEvent::SendingVideo { .. } => {}
             SessionEvent::Ended => return true,
         }
         false
@@ -172,6 +189,11 @@ impl Call {
         let gated = me && !self.muted && !self.mic_open.load(std::sync::atomic::Ordering::Relaxed);
         let muted = p.muted || (me && self.muted);
         (level, level >= huddle::session::SPEAKING && !gated && !muted, muted, gated)
+    }
+
+    /// Whether the participant is sharing their screen.
+    pub fn sharing(&self, attendee_id: &str) -> bool {
+        self.shares.iter().any(|(share, _)| share.strip_suffix(huddle::signaling::CONTENT_MODALITY) == Some(attendee_id))
     }
 
     /// The participant's latest picture, if their video is running.
@@ -198,6 +220,9 @@ impl Call {
             if self.video(&p.attendee_id).is_some() {
                 spans.push(Span::raw(" 📹"));
             }
+            if self.sharing(&p.attendee_id) {
+                spans.push(Span::raw(" 🖥"));
+            }
             if muted {
                 spans.push(Span::styled(" 🔇", Style::default().fg(super::theme::p().dim)));
             } else {
@@ -216,6 +241,12 @@ impl Call {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn shares_from_video_sources() {
+        let src = |attendee: &str| huddle::session::VideoSource { stream_id: 1, group_id: 1, attendee_id: attendee.into(), external_user_id: "T1-R1-U2".into(), max_bitrate_kbps: 1000 };
+        assert_eq!(super::screen_shares(&[src("a"), src("b#content"), src("b#content")]), vec![("b#content".to_string(), "U2".to_string())]);
+    }
+
     #[test]
     fn meters() {
         assert_eq!(super::meter(0.0), "····");

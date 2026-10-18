@@ -68,6 +68,10 @@ pub enum Ctl {
         /// Save others' video into this folder: a PNG per person every 2 seconds.
         #[arg(long)]
         record_video: Option<std::path::PathBuf>,
+        /// Also share a synthetic screen: the test pattern from a second attendee
+        /// (`<attendee>#content`), the way Slack shares a screen.
+        #[arg(long)]
+        share_test: bool,
     },
     /// List audio input/output devices (names usable in SLACKTUI_AUDIO_INPUT/OUTPUT).
     AudioDevices,
@@ -222,41 +226,42 @@ pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
             }
             sig.close().await;
         }
-        Ctl::HuddleMedia { channel, seconds, tone, record, mic, video_test, record_video } => {
-            use huddle::session::{FRAME_SAMPLES, SAMPLE_RATE, Session, SessionEvent};
+        Ctl::HuddleMedia { channel, seconds, tone, record, mic, video_test, record_video, share_test } => {
+            use huddle::session::{FRAME_SAMPLES, Options, SAMPLE_RATE, Session, SessionEvent};
             let id = resolve_channel(&client, &channel).await?;
             let creds = huddle::signaling::Credentials::from_rooms_join(&client.call_raw("rooms.join", &[("channel_id", id)]).await?)?;
             println!("room {} attendee {}", creds.room_id, creds.attendee.attendee_id);
-            let mut session = Session::start(creds, false, video_test);
+            let share = share_test.then(|| creds.content_share());
+            let mut session = Session::start(creds, Options { muted: false, send_video: video_test, receive_video: true });
             let sink = session.pcm_sink();
-            // The test pattern is encoded on its own thread, paced at the frame rate.
             let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             let sent = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
             if video_test {
-                use huddle::video::{H264Encoder, TEST_FPS, TEST_HEIGHT, TEST_WIDTH, test_pattern};
-                let (video, stop, sent) = (session.video_sink(), stop.clone(), sent.clone());
-                let mut encoder = H264Encoder::new(TEST_WIDTH, TEST_HEIGHT, TEST_FPS, 600_000)?;
-                std::thread::spawn(move || {
-                    let period = std::time::Duration::from_secs_f64(1.0 / TEST_FPS as f64);
-                    let start = std::time::Instant::now();
-                    for n in 0u64.. {
-                        if stop.load(std::sync::atomic::Ordering::Relaxed) {
-                            break;
-                        }
-                        if video.keyframe_wanted() {
-                            encoder.request_keyframe();
-                        }
-                        match encoder.encode_rgb(&test_pattern(n, TEST_WIDTH, TEST_HEIGHT)) {
-                            Ok(au) => {
-                                sent.fetch_add(au.len() as u64, std::sync::atomic::Ordering::Relaxed);
-                                video.send(au, period);
-                            }
-                            Err(e) => eprintln!("{e}"),
-                        }
-                        std::thread::sleep((start + period * (n as u32 + 1)).saturating_duration_since(std::time::Instant::now()));
-                    }
-                });
+                spawn_test_video(session.video_sink(), stop.clone(), sent.clone())?;
             }
+            // The screen share is a second attendee that only sends video.
+            let share = share.map(|c| Session::start(c, Options { muted: true, send_video: true, receive_video: false }));
+            let share = match share {
+                Some(mut s) => {
+                    spawn_test_video(s.video_sink(), stop.clone(), sent.clone())?;
+                    // It hears the meeting too; nobody listens.
+                    s.audio = tokio::sync::mpsc::unbounded_channel().1;
+                    let mut events = std::mem::replace(&mut s.events, tokio::sync::mpsc::unbounded_channel().1);
+                    let (done_tx, done) = tokio::sync::oneshot::channel::<()>();
+                    tokio::spawn(async move {
+                        while let Some(ev) = events.recv().await {
+                            match ev {
+                                SessionEvent::Ended => break,
+                                SessionEvent::Levels(_) | SessionEvent::Roster(_) | SessionEvent::VideoSources(_) => {}
+                                ev => println!("share: {ev:?}"),
+                            }
+                        }
+                        let _ = done_tx.send(());
+                    });
+                    Some((s, done))
+                }
+                None => None,
+            };
             let _mic = if mic { Some(huddle::devices::Microphone::start(std::env::var(huddle::devices::INPUT_ENV).ok(), move |frame| sink.send(frame))?) } else { None };
             let mut file = match &record {
                 Some(p) => Some(std::fs::File::create(p)?),
@@ -314,6 +319,10 @@ pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
             }
             for (who, (n, w, h, _)) in &pictures {
                 println!("video from {who}: {n} pictures, {w}×{h}");
+            }
+            if let Some((s, done)) = share {
+                s.leave();
+                let _ = tokio::time::timeout(std::time::Duration::from_secs(5), done).await;
             }
             session.leave();
             let _ = tokio::time::timeout(std::time::Duration::from_secs(5), async { while let Some(ev) = session.events.recv().await { if matches!(ev, SessionEvent::Ended) { break; } } }).await;
@@ -445,4 +454,32 @@ fn describe_frame(f: &huddle::proto::SdkSignalFrame) -> String {
         String::new()
     };
     format!("{kind} {detail}")
+}
+
+/// Encode the test pattern on its own thread, paced at its frame rate, into `video` until
+/// `stop`; `sent` counts the bytes.
+fn spawn_test_video(video: huddle::session::VideoSink, stop: std::sync::Arc<std::sync::atomic::AtomicBool>, sent: std::sync::Arc<std::sync::atomic::AtomicU64>) -> Result<()> {
+    use huddle::video::{H264Encoder, TEST_FPS, TEST_HEIGHT, TEST_WIDTH, test_pattern};
+    let mut encoder = H264Encoder::new(TEST_WIDTH, TEST_HEIGHT, TEST_FPS, 600_000)?;
+    std::thread::spawn(move || {
+        let period = std::time::Duration::from_secs_f64(1.0 / TEST_FPS as f64);
+        let start = std::time::Instant::now();
+        for n in 0u64.. {
+            if stop.load(std::sync::atomic::Ordering::Relaxed) {
+                break;
+            }
+            if video.keyframe_wanted() {
+                encoder.request_keyframe();
+            }
+            match encoder.encode_rgb(&test_pattern(n, TEST_WIDTH, TEST_HEIGHT)) {
+                Ok(au) => {
+                    sent.fetch_add(au.len() as u64, std::sync::atomic::Ordering::Relaxed);
+                    video.send(au, period);
+                }
+                Err(e) => eprintln!("{e}"),
+            }
+            std::thread::sleep((start + period * (n as u32 + 1)).saturating_duration_since(std::time::Instant::now()));
+        }
+    });
+    Ok(())
 }
