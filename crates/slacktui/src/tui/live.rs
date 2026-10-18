@@ -11,6 +11,8 @@ pub struct Effects {
     pub rebuild_sidebar: bool,
     /// A new message from someone else arrived in this channel.
     pub incoming: Option<(String, Message)>,
+    /// Someone else started a huddle: (channel, user).
+    pub huddle_started: Option<(String, String)>,
 }
 
 fn parse_message(v: &Value, channel: &str) -> Option<Message> {
@@ -140,7 +142,11 @@ pub fn apply(ws: &mut Workspace, ev: &Value, current: Option<&str>) -> Effects {
             let id = room["id"].as_str().unwrap_or_default().to_string();
             let participants: Vec<String> = room["participants"].as_array().into_iter().flatten().filter_map(|u| u.as_str().map(String::from)).collect();
             let ended = room["has_ended"].as_bool().unwrap_or(false) || participants.is_empty();
+            let user = ev["user"].as_str().unwrap_or_default();
             for c in room["channels"].as_array().into_iter().flatten().filter_map(|c| c.as_str()) {
+                if ev["type"] == "sh_room_join" && !ended && user != ws.self_id && !ws.huddles.contains_key(c) {
+                    fx.huddle_started = Some((c.to_string(), user.to_string()));
+                }
                 if ended {
                     ws.huddles.remove(c);
                 } else {
@@ -326,6 +332,8 @@ mod tests {
         let mut w = ws();
         apply(&mut w, &json!({"type":"sh_room_join","user":"U2","room":{"id":"R1","channels":["C1"],"participants":["U2"],"has_ended":false}}), None);
         assert_eq!(w.huddles["C1"], ("R1".to_string(), vec!["U2".to_string()]));
+        let fx = apply(&mut w, &json!({"type":"sh_room_join","user":"U3","room":{"id":"R1","channels":["C1"],"participants":["U2","U3"],"has_ended":false}}), None);
+        assert!(fx.huddle_started.is_none(), "joining a running huddle is not a start");
         apply(&mut w, &json!({"type":"sh_room_leave","user":"U2","room":{"id":"R1","channels":["C1"],"participants":[],"has_ended":false}}), None);
         assert!(w.huddles.is_empty());
     }

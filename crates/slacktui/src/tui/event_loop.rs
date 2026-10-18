@@ -1201,6 +1201,13 @@ fn handle_rtm(app: &mut App, ev: slack_core::rtm::RtmEvent) {
             if fx.rebuild_sidebar {
                 app.sidebar.rebuild(&app.ws);
             }
+            if let Some((channel, user)) = fx.huddle_started {
+                let in_it = app.call.as_ref().is_some_and(|c| c.channel == channel);
+                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64();
+                if let Some((title, body)) = super::notify::huddle_notification(&app.ws, &channel, &user, in_it, now) {
+                    super::notify::show(title, body);
+                }
+            }
             if let Some((channel, m)) = fx.incoming {
                 let in_view = if m.is_reply() {
                     app.thread.as_ref().is_some_and(|(c, t)| *c == channel && m.thread_ts.as_ref() == Some(t))
