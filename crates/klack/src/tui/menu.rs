@@ -104,7 +104,7 @@ impl Menu {
         let x = self.at.0.min(screen.right().saturating_sub(width));
         let y = self.at.1.min(screen.bottom().saturating_sub(height));
         self.area = Rect { x, y, width, height };
-        super::media::clear_popup(f, self.area);
+        super::media::clear_modal(f, self.area);
         let lines: Vec<Line> = self
             .items
             .iter()

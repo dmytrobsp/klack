@@ -36,7 +36,7 @@ impl ProfileCard {
     pub fn draw(&self, f: &mut Frame, area: Rect, ws: &Workspace) {
         let [popup] = Layout::horizontal([Constraint::Length(56.min(area.width))]).flex(Flex::Center).areas(area);
         let [popup] = Layout::vertical([Constraint::Length(15.min(area.height))]).flex(Flex::Center).areas(popup);
-        super::media::clear_popup(f, popup);
+        super::media::clear_modal(f, popup);
         let keys = if self.people.len() > 1 { format!(" {}/{} in this message ", self.index + 1, self.people.len()) } else { String::new() };
         let block = Block::default()
             .borders(Borders::ALL)

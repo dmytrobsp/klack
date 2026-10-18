@@ -56,7 +56,7 @@ impl Details {
     pub fn draw(&self, f: &mut Frame, area: Rect, ws: &Workspace) {
         let [popup] = Layout::horizontal([Constraint::Length(80.min(area.width))]).flex(Flex::Center).areas(area);
         let [popup] = Layout::vertical([Constraint::Length(26.min(area.height))]).flex(Flex::Center).areas(popup);
-        super::media::clear_popup(f, popup);
+        super::media::clear_modal(f, popup);
         let conv = self.info.as_ref().or_else(|| ws.conversations.get(&self.channel));
         let name = conv.map(|c| if c.is_dm() { ws.conversation_label(c) } else { format!("#{}", c.name) }).unwrap_or_else(|| self.channel.clone());
         let block = Block::default()

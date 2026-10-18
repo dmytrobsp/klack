@@ -68,7 +68,7 @@ impl EmojiPicker {
     pub fn draw(&self, f: &mut Frame, area: Rect, custom: &[String]) {
         let [popup] = Layout::horizontal([Constraint::Length(44)]).flex(Flex::Center).areas(area);
         let [popup] = Layout::vertical([Constraint::Length(16)]).flex(Flex::Center).areas(popup);
-        super::media::clear_popup(f, popup);
+        super::media::clear_modal(f, popup);
         let block = Block::default().borders(Borders::ALL).border_style(Style::default().fg(super::theme::p().accent)).title(format!(" {} ", super::i18n::tr("Add reaction")));
         let inner = block.inner(popup);
         f.render_widget(block, popup);

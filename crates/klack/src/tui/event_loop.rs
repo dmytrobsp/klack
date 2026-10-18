@@ -3184,7 +3184,7 @@ fn draw_confirm(f: &mut ratatui::Frame, area: ratatui::layout::Rect, question: &
     use ratatui::widgets::{Block, Borders};
     let [popup] = Layout::horizontal([Constraint::Length(question.chars().count() as u16 + 4)]).flex(Flex::Center).areas(area);
     let [popup] = Layout::vertical([Constraint::Length(3)]).flex(Flex::Center).areas(popup);
-    super::media::clear_popup(f, popup);
+    super::media::clear_modal(f, popup);
     let block = Block::default().borders(Borders::ALL).border_style(Style::default().fg(super::theme::p().danger));
     f.render_widget(Paragraph::new(format!(" {question}")).block(block), popup);
 }

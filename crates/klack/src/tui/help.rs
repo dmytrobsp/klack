@@ -45,7 +45,7 @@ impl Help {
         let width = 92.min(area.width);
         let [popup] = Layout::horizontal([Constraint::Length(width)]).flex(Flex::Center).areas(area);
         let [popup] = Layout::vertical([Constraint::Length(area.height.saturating_sub(2).max(5))]).flex(Flex::Center).areas(popup);
-        super::media::clear_popup(f, popup);
+        super::media::clear_modal(f, popup);
         let lines = lines(keys);
         self.lines = lines.len();
         self.height = popup.height.saturating_sub(2) as usize;

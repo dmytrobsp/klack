@@ -99,7 +99,7 @@ impl Search {
     pub fn draw(&self, f: &mut Frame, area: Rect, ws: &Workspace) {
         let [popup] = Layout::horizontal([Constraint::Length(90.min(area.width))]).flex(Flex::Center).areas(area);
         let [popup] = Layout::vertical([Constraint::Length(24.min(area.height))]).flex(Flex::Center).areas(popup);
-        super::media::clear_popup(f, popup);
+        super::media::clear_modal(f, popup);
         let status = if self.busy {
             " searching… ".to_string()
         } else if self.searched.is_empty() {

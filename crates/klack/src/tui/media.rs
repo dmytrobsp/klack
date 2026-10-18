@@ -208,6 +208,32 @@ pub fn clear_popup(f: &mut ratatui::Frame, area: ratatui::layout::Rect) {
     }
 }
 
+/// [`clear_popup`] for a dialog: everything else on screen fades first (dim colour and the
+/// terminal's dim attribute), so the dialog stands out. Picture cells are left alone — kitty
+/// tells pictures apart by their cells' foreground colour.
+pub fn clear_modal(f: &mut ratatui::Frame, area: ratatui::layout::Rect) {
+    fade_outside(f.buffer_mut(), area);
+    clear_popup(f, area);
+}
+
+fn fade_outside(buf: &mut ratatui::buffer::Buffer, keep: ratatui::layout::Rect) {
+    let dim = super::theme::p().dim;
+    let screen = buf.area;
+    for y in screen.top()..screen.bottom() {
+        for x in screen.left()..screen.right() {
+            if keep.contains((x, y).into()) {
+                continue;
+            }
+            let cell = &mut buf[(x, y)];
+            if cell.symbol().contains(PLACEHOLDER) {
+                continue;
+            }
+            cell.set_fg(dim);
+            cell.modifier.insert(ratatui::style::Modifier::DIM);
+        }
+    }
+}
+
 /// A placeholder numbered from its left neighbour (no diacritics after it).
 fn is_continuation(symbol: &str) -> bool {
     symbol.split_once(PLACEHOLDER).is_some_and(|(_, marks)| marks.is_empty())
@@ -302,6 +328,22 @@ mod tests {
         assert_eq!(thumb_cells(&image(Some(800), Some(500)), font, 0, 10), None, "a pane with no columns left");
         assert_eq!(thumb_cells(&image(Some(800), Some(500)), font, 10, 0), None);
         assert_eq!(thumb_cells(&image(Some(800), Some(500)), font, 1, 1), Some((1, 1)));
+    }
+
+    #[test]
+    fn dialogs_fade_the_rest() {
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+        use ratatui::style::{Color, Modifier};
+        let mut buf = Buffer::empty(Rect::new(0, 0, 6, 3));
+        for x in 0..6 {
+            buf[(x, 1)].set_symbol("x").set_fg(Color::Red);
+        }
+        buf[(0, 0)].set_symbol("\u{10EEEE}").set_fg(Color::Rgb(0, 0, 7));
+        fade_outside(&mut buf, Rect::new(2, 1, 2, 1));
+        assert!(buf[(0, 1)].modifier.contains(Modifier::DIM) && buf[(0, 1)].fg != Color::Red, "outside: faded");
+        assert_eq!((buf[(2, 1)].fg, buf[(2, 1)].modifier), (Color::Red, Modifier::empty()), "the dialog's area: untouched");
+        assert_eq!(buf[(0, 0)].fg, Color::Rgb(0, 0, 7), "picture cells keep their colour (it names the picture)");
     }
 
     #[test]
