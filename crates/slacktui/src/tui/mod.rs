@@ -14,6 +14,7 @@ pub mod media;
 pub mod messages;
 pub mod notify;
 pub mod picker;
+pub mod profile;
 pub mod search;
 pub mod sidebar;
 pub mod state;

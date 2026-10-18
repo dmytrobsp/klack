@@ -46,6 +46,7 @@ Press **F1** (or `?`) in the app for the full list. The essentials:
 | F3 / F4 | join or leave the huddle / mute or unmute |
 | Enter (on a message) | open its thread |
 | r · e · d · y · Y · o · s · P | react · edit · delete · copy text · copy link · open image/video · save files · pin |
+| u | profile card of the author (←/→: people the message mentions); Enter messages them, h starts a huddle |
 | Enter · Alt+Enter | send · new line |
 | @ # : | mention, channel, emoji autocomplete |
 | `/upload <path> [text]` | upload a file |

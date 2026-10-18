@@ -95,36 +95,14 @@ impl Details {
     }
 }
 
-fn field(label: &str, value: String) -> Line<'static> {
-    Line::from(vec![Span::styled(format!("{label:<10}"), Style::default().fg(DIM)), Span::raw(value)])
-}
+use super::profile::field;
 
 fn about(ws: &Workspace, conv: Option<&Conversation>) -> Vec<Line<'static>> {
     let Some(c) = conv else { return vec![Line::styled("Loading…", Style::default().fg(DIM))] };
     let mut out = Vec::new();
     if let Some(u) = c.user.as_deref().and_then(|u| ws.users.get(u)) {
         out.push(field("Name", u.display().to_string()));
-        if let Some(real) = u.real_name.as_deref().filter(|r| !r.is_empty() && *r != u.display()) {
-            out.push(field("Full name", real.to_string()));
-        }
-        out.push(field("Handle", format!("@{}", u.name)));
-        if !u.profile.title.is_empty() {
-            out.push(field("Title", u.profile.title.clone()));
-        }
-        if !u.profile.status_text.is_empty() || !u.profile.status_emoji.is_empty() {
-            let emoji = u.profile.status_emoji.trim_matches(':');
-            let emoji = if emoji.is_empty() { String::new() } else { text::emoji(ws, emoji, None) + " " };
-            out.push(field("Status", format!("{emoji}{}", u.profile.status_text)));
-        }
-        if let Some(tz) = &u.tz {
-            out.push(field("Time zone", tz.clone()));
-        }
-        let presence = match ws.presence.get(&u.id) {
-            Some(true) => "active",
-            Some(false) => "away",
-            None => "unknown",
-        };
-        out.push(field("Presence", presence.into()));
+        out.extend(super::profile::person_lines(ws, u, chrono::Utc::now().timestamp()));
         return out;
     }
     let kind = if c.is_mpim { "group message" } else if c.is_private { "private channel" } else { "public channel" };

@@ -80,6 +80,10 @@ struct App {
     presence_subscribed: bool,
     /// Open conversation details (F2).
     details: Option<super::details::Details>,
+    /// Open profile card.
+    profile: Option<super::profile::ProfileCard>,
+    /// Join the huddle of the DM with this person once it is open.
+    huddle_after_open: Option<String>,
     /// Open search overlay (Ctrl+F).
     search: Option<super::search::Search>,
     /// A search hit to select once its conversation is shown.
@@ -673,7 +677,12 @@ impl App {
             self.status = "leaving the huddle…".into();
             return;
         }
-        let Some(channel) = self.current.clone() else { return };
+        if let Some(channel) = self.current.clone() {
+            self.join_huddle(channel);
+        }
+    }
+
+    fn join_huddle(&mut self, channel: String) {
         self.status = "joining the huddle…".into();
         let (client, tx) = (self.client.clone(), self.net.clone());
         tokio::spawn(async move {
@@ -685,6 +694,21 @@ impl App {
             .map_err(|e| e.to_string());
             let _ = tx.send(Net::HuddleJoined { channel, result });
         });
+    }
+
+    /// Profile card `h`: a huddle in the DM with `user`.
+    fn huddle_with(&mut self, user: String) {
+        if user == self.ws.self_id {
+            self.status = "that is you".into();
+        } else if self.call.is_some() {
+            self.status = "leave the current huddle first (F3)".into();
+        } else if let Some(id) = self.ws.conversations.values().find(|c| c.is_im && c.user.as_deref() == Some(user.as_str())).map(|c| c.id.clone()) {
+            self.jump_to(&id);
+            self.join_huddle(id);
+        } else {
+            self.huddle_after_open = Some(user.clone());
+            self.open_dm_with(user);
+        }
     }
 
     /// Show the DM with `user`, opening one if needed.
@@ -751,8 +775,9 @@ impl App {
         match d.tab {
             super::details::Tab::Members => {
                 if let Some(user) = d.members.as_ref().and_then(|m| m.get(d.selected)).cloned() {
-                    self.open_dm_with(user);
+                    self.profile = super::profile::ProfileCard::new(vec![user]);
                 }
+                self.details = Some(d);
             }
             super::details::Tab::Pins => {
                 if let Some(m) = d.pins.as_ref().and_then(|p| p.get(d.selected)) {
@@ -909,6 +934,8 @@ pub async fn run(client: Client) -> Result<()> {
         switcher: None,
         search: None,
         details: None,
+        profile: None,
+        huddle_after_open: None,
         presence_subscribed: false,
         call: None,
         pending_hit: None,
@@ -1014,6 +1041,32 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
                 KeyCode::Char(c) if !k.modifiers.contains(KeyModifiers::CONTROL) => {
                     sw.query.push(c);
                     sw.selected = 0;
+                }
+                _ => {}
+            }
+        }
+        Event::Key(k) if k.kind != KeyEventKind::Release && app.profile.is_some() => {
+            let Some(card) = app.profile.as_mut() else { return true };
+            match k.code {
+                KeyCode::Char('q') if k.modifiers.contains(KeyModifiers::CONTROL) => return false,
+                KeyCode::Esc | KeyCode::Char('q') => app.profile = None,
+                KeyCode::Left | KeyCode::BackTab => card.step(-1),
+                KeyCode::Right | KeyCode::Tab => card.step(1),
+                KeyCode::Enter | KeyCode::Char('m') => {
+                    let user = card.user().to_string();
+                    app.profile = None;
+                    app.details = None;
+                    if user == app.ws.self_id {
+                        app.status = "that is you".into();
+                    } else {
+                        app.open_dm_with(user);
+                    }
+                }
+                KeyCode::Char('h') => {
+                    let user = card.user().to_string();
+                    app.profile = None;
+                    app.details = None;
+                    app.huddle_with(user);
                 }
                 _ => {}
             }
@@ -1230,6 +1283,13 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
                         KeyCode::Char('P') => {
                             if let Some(ts) = app.selected_ts() {
                                 app.toggle_pin(&ts);
+                            }
+                        }
+                        KeyCode::Char('u') => {
+                            let m = app.selected_ts().and_then(|ts| app.current.as_deref().and_then(|c| app.ws.find_message(c, &ts)));
+                            match m.map(super::profile::people_in).and_then(super::profile::ProfileCard::new) {
+                                Some(card) => app.profile = Some(card),
+                                None => app.status = "no person on this message".into(),
                             }
                         }
                         KeyCode::Char('s') => {
@@ -1454,6 +1514,9 @@ fn handle_net(app: &mut App, msg: Net) {
         },
         Net::DmOpened(c) => {
             let id = c.id.clone();
+            if app.huddle_after_open.take().is_some_and(|u| c.user.as_deref() == Some(u.as_str())) && app.call.is_none() {
+                app.join_huddle(id.clone());
+            }
             app.ws.conversations.entry(id.clone()).or_insert(c);
             app.sidebar.rebuild(&app.ws);
             app.status.clear();
@@ -1572,6 +1635,9 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     }
     if let Some(d) = &app.details {
         d.draw(f, body, &app.ws);
+    }
+    if let Some(card) = &app.profile {
+        card.draw(f, body, &app.ws);
     }
     if app.help {
         super::help::draw(f, body);

@@ -74,6 +74,9 @@ pub struct UserProfile {
     pub image_192: Option<String>,
     pub email: Option<String>,
     pub title: String,
+    pub pronouns: Option<String>,
+    /// When the status clears (epoch seconds, 0 = never).
+    pub status_expiration: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -86,6 +89,9 @@ pub struct User {
     pub is_bot: bool,
     pub is_app_user: bool,
     pub tz: Option<String>,
+    pub tz_label: Option<String>,
+    /// Seconds east of UTC, for the person's local time.
+    pub tz_offset: Option<i64>,
     pub profile: UserProfile,
 }
 
