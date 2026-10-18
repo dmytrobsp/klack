@@ -9,13 +9,16 @@ pub struct Clipboard {
     system: Option<arboard::Clipboard>,
     /// Last text placed on the system clipboard, for `hand_off`.
     last: Option<String>,
+    /// The system clipboard could not be reached; not tried again (it can take seconds).
+    unavailable: bool,
 }
 
 impl Clipboard {
     /// Copy `text`; returns how it was copied.
     pub fn copy(&mut self, text: &str) -> &'static str {
-        if self.system.is_none() {
+        if self.system.is_none() && !self.unavailable {
             self.system = arboard::Clipboard::new().map_err(|e| tracing::warn!("no system clipboard: {e}")).ok();
+            self.unavailable = self.system.is_none();
         }
         if let Some(cb) = self.system.as_mut() {
             match cb.set_text(text) {
