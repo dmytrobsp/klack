@@ -5,6 +5,7 @@ pub mod clipboard;
 pub mod composer;
 pub mod event_loop;
 pub mod files;
+pub mod help;
 pub mod live;
 pub mod media;
 pub mod messages;

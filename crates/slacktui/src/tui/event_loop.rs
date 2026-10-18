@@ -53,6 +53,8 @@ enum Focus {
 }
 
 struct App {
+    /// Key help overlay is open.
+    help: bool,
     /// Open video player.
     player: Option<super::video::Player>,
     /// Whole terminal area on the last draw (to size video frames).
@@ -577,6 +579,7 @@ pub async fn run(client: Client) -> Result<()> {
     let mut app = App {
         media,
         viewer: None,
+        help: false,
         player: None,
         screen: Default::default(),
         terminal_focused: true,
@@ -647,6 +650,18 @@ pub async fn run(client: Client) -> Result<()> {
 /// Returns false to quit.
 fn handle_terminal(app: &mut App, ev: Event) -> bool {
     match ev {
+        Event::Key(k) if k.kind != KeyEventKind::Release && app.help => {
+            if k.code == KeyCode::Char('q') && k.modifiers.contains(KeyModifiers::CONTROL) {
+                return false;
+            }
+            app.help = false;
+        }
+        Event::Key(k)
+            if k.kind != KeyEventKind::Release
+                && (k.code == KeyCode::F(1) || k.code == KeyCode::Char('?') && matches!(app.focus, Focus::Sidebar | Focus::Messages | Focus::Thread)) =>
+        {
+            app.help = true;
+        }
         Event::Key(k) if k.kind != KeyEventKind::Release && app.player.is_some() => {
             let Some(p) = app.player.as_mut() else { return true };
             match k.code {
@@ -1048,7 +1063,10 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     let live = if app.connected { "● live" } else { "○ connecting" };
     let (unread, mentions) = app.ws.total_unread();
     let info = if app.status.is_empty() { format!("{unread} unread · {mentions} mentions") } else { app.status.clone() };
-    f.render_widget(Paragraph::new(format!(" {live} · {info} · Enter send · Alt+Enter newline · Tab focus · Alt+↑↓ channel · PgUp/PgDn scroll · Ctrl+Q quit")), status);
+    if app.help {
+        super::help::draw(f, body);
+    }
+    f.render_widget(Paragraph::new(format!(" {live} · {info} · F1 help · Tab focus · Alt+↑↓ channel · Ctrl+Q quit")), status);
 }
 
 fn draw_confirm(f: &mut ratatui::Frame, area: ratatui::layout::Rect, question: &str) {
