@@ -2,6 +2,7 @@
 
 pub mod composer;
 pub mod event_loop;
+pub mod sidebar;
 pub mod state;
 pub mod terminal;
 pub mod text;
