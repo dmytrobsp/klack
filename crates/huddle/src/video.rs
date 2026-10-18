@@ -4,7 +4,7 @@
 use anyhow::{Result, anyhow};
 use openh264::OpenH264API;
 use openh264::decoder::Decoder;
-use openh264::encoder::{BitRate, Encoder, EncoderConfig, FrameRate, IntraFramePeriod, Profile};
+use openh264::encoder::{BitRate, Encoder, EncoderConfig, FrameRate, IntraFramePeriod, Profile, UsageType};
 use openh264::formats::{RgbSliceU8, YUVBuffer, YUVSource};
 
 /// Size and rate of the test pattern.
@@ -54,7 +54,22 @@ pub struct H264Encoder {
 
 impl H264Encoder {
     pub fn new(width: usize, height: usize, fps: u32, bitrate_bps: u32) -> Result<H264Encoder> {
+        Self::with_usage(width, height, fps, bitrate_bps, UsageType::CameraVideoRealTime)
+    }
+
+    /// For a shared screen: tuned for text and flat areas.
+    pub fn for_screen(width: usize, height: usize, fps: u32, bitrate_bps: u32) -> Result<H264Encoder> {
+        Self::with_usage(width, height, fps, bitrate_bps, UsageType::ScreenContentRealTime)
+    }
+
+    fn with_usage(width: usize, height: usize, fps: u32, bitrate_bps: u32, usage: UsageType) -> Result<H264Encoder> {
+        // OpenH264 has no adaptive quantisation or background detection for screen content
+        // (and warns on stderr, over the TUI, when they are left on).
+        let camera = matches!(usage, UsageType::CameraVideoRealTime);
         let config = EncoderConfig::new()
+            .usage_type(usage)
+            .adaptive_quantization(camera)
+            .background_detection(camera)
             .bitrate(BitRate::from_bps(bitrate_bps))
             .max_frame_rate(FrameRate::from_hz(fps as f32))
             .profile(Profile::Baseline)
@@ -216,6 +231,10 @@ mod tests {
         let mut enc2 = H264Encoder::new(w, h, TEST_FPS, 600_000).unwrap();
         let idr: Vec<u64> = (0..61).filter(|n| nal_types(&enc2.encode_rgb(&test_pattern(*n, w, h)).unwrap()).contains(&5)).collect();
         assert_eq!(idr, vec![0, 30, 60], "a keyframe every {} frames", TEST_FPS * 2);
+        // The screen encoder works too (and decodes back).
+        let mut screen = H264Encoder::for_screen(w, h, TEST_FPS, 1_500_000).unwrap();
+        let mut dec2 = H264Decoder::new().unwrap();
+        assert!(dec2.decode(&screen.encode_rgb(&test_pattern(0, w, h)).unwrap()).unwrap().is_some());
         // A requested keyframe is an IDR.
         enc.request_keyframe();
         assert!(nal_types(&enc.encode_rgb(&test_pattern(11, w, h)).unwrap()).contains(&5));

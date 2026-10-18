@@ -22,3 +22,7 @@ bytes = "1.12.1"
 cpal = "0.18.2"
 nnnoiseless = { version = "0.5.2", default-features = false }
 openh264 = "0.9.9"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ashpd = { version = "0.13.13", default-features = false, features = ["tokio", "screencast"] }
+libc = "0.2"

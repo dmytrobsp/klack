@@ -76,6 +76,10 @@ pub enum Ctl {
         /// connected. Only the named camera is ever opened.
         #[arg(long)]
         camera: Option<String>,
+        /// Share your screen: the desktop asks what to share (nothing is captured before you
+        /// choose).
+        #[arg(long)]
+        share_screen: bool,
     },
     /// List audio input/output devices (names usable in SLACKTUI_AUDIO_INPUT/OUTPUT).
     AudioDevices,
@@ -232,7 +236,7 @@ pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
             }
             sig.close().await;
         }
-        Ctl::HuddleMedia { channel, seconds, tone, record, mic, video_test, record_video, share_test, camera } => {
+        Ctl::HuddleMedia { channel, seconds, tone, record, mic, video_test, record_video, share_test, camera, share_screen } => {
             // Resolve the camera before joining, so a wrong name fails early.
             let mut camera = match camera {
                 Some(wanted) => Some(huddle::camera::find_camera(&huddle::camera::list_cameras(), &wanted)?),
@@ -243,7 +247,8 @@ pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
             let id = resolve_channel(&client, &channel).await?;
             let creds = huddle::signaling::Credentials::from_rooms_join(&client.call_raw("rooms.join", &[("channel_id", id)]).await?)?;
             println!("room {} attendee {}", creds.room_id, creds.attendee.attendee_id);
-            let share = share_test.then(|| creds.content_share());
+            let share = (share_test || share_screen).then(|| creds.content_share());
+            let mut screen: Option<huddle::screen::ScreenCapture> = None;
             let mut session = Session::start(creds, Options { muted: false, send_video: video_test, receive_video: true });
             let sink = session.pcm_sink();
             let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -255,7 +260,30 @@ pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
             let share = share.map(|c| Session::start(c, Options { muted: true, send_video: true, receive_video: false }));
             let share = match share {
                 Some(mut s) => {
-                    spawn_test_video(s.video_sink(), stop.clone(), sent.clone())?;
+                    if share_screen {
+                        use huddle::screen::{SHARE_FPS, SHARE_HEIGHT, SHARE_WIDTH};
+                        let mut encoder = huddle::video::H264Encoder::for_screen(SHARE_WIDTH, SHARE_HEIGHT, SHARE_FPS, 1_500_000)?;
+                        let (video, sent) = (s.video_sink(), sent.clone());
+                        let period = std::time::Duration::from_secs_f64(1.0 / SHARE_FPS as f64);
+                        println!("choose what to share in the desktop's dialog…");
+                        let (capture, what) = huddle::screen::ScreenCapture::start(SHARE_WIDTH, SHARE_HEIGHT, SHARE_FPS, move |rgb| {
+                            if video.keyframe_wanted() {
+                                encoder.request_keyframe();
+                            }
+                            match encoder.encode_rgb(&rgb) {
+                                Ok(unit) => {
+                                    sent.fetch_add(unit.len() as u64, std::sync::atomic::Ordering::Relaxed);
+                                    video.send(unit, period);
+                                }
+                                Err(e) => eprintln!("{e}"),
+                            }
+                        })
+                        .await?;
+                        println!("sharing: {what}");
+                        screen = Some(capture);
+                    } else {
+                        spawn_test_video(s.video_sink(), stop.clone(), sent.clone())?;
+                    }
                     // It hears the meeting too; nobody listens.
                     s.audio = tokio::sync::mpsc::unbounded_channel().1;
                     let mut events = std::mem::replace(&mut s.events, tokio::sync::mpsc::unbounded_channel().1);
@@ -335,7 +363,8 @@ pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
             }
             stop.store(true, std::sync::atomic::Ordering::Relaxed);
             drop(capture);
-            if video_test {
+            drop(screen);
+            if video_test || share_test || share_screen || camera.is_some() {
                 println!("encoded {} kB of video", sent.load(std::sync::atomic::Ordering::Relaxed) / 1000);
             }
             for (who, (n, w, h, _)) in &pictures {
