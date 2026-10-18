@@ -106,6 +106,7 @@ background is in `../REPORT.md` and `../notes/`.
 | D6 — a left click on an autocomplete suggestion completes it (the same path as Tab/Enter): the popup's geometry is one function (`popup_area`) used for drawing and for `Completion::row_at`, checked first on a left click | done | LIVE (`@dmy` in the DM composer, a click on the second row "Dmytro Dudnyk (You)" → "@Dmytro Dudnyk " in the composer, popup closed; the text was then erased, nothing sent) + UNIT (rows, border, composer and outside map correctly) | 84f6eac |
 | D7 — the sidebar marks conversations with a kept draft "✎" (a thread's draft counts for its conversation; the conversation you are in has its text in the composer, so it is marked only for a kept thread draft); the name is shortened to make room | done | LIVE ("half-written" in the DM, then #social: "○ Dmytro ✎"; erased in the DM and left again: "○ Dmytro") + UNIT (marker, room for it) | 8bf92f0 |
 | D8 — snippet languages checked against Slack's list (`../notes/snippets.md`): `/snippet` resolves its first word through the 142 languages of the web client's snippet editor plus `text` and an alias table (`rs`, `py`, `sh`, `yml`, `c++`, …); a first word that looks like a file name becomes the title and its extension gives the language (unknown extension: `text`); an unknown language is refused locally with examples (the composer keeps the text). Probing showed the old gap note was wrong: Slack honours valid types and refuses unknown ones (`unknown_snippet_type`); the C++ cases came from Slack relabelling the tiny content `fn main() {}` | done | LIVE (A: `/snippet build.sh` in #history-paging → B read back `build.sh`, `filetype: shell`; `/snippet klingon hello` → "unknown snippet language \"klingon\" — e.g. rust, …", nothing uploaded; probes as B: rust/toml honoured, `nosuchlang` refused, `fn main() {}` relabelled C++) + UNIT (aliases, file names, unknown words, the list) | 2598be0 |
+| D9 — section paging: **not needed**. A real `users.channelSections.list` shows `channel_ids_page.cursor` equal to the section's last channel id (count 1, one id) and the top-level `cursor` equal to the last section id; the web client reads only `channel_ids_page.channel_ids`, never follows a cursor and calls the method without arguments (`../notes/sections.md`). slacktui now logs a warning if a section's `count` ever exceeds the ids sent | done | LIVE (A's real response inspected; the sidebar still shows Projects / slacktui-made; no warning logged) + code reading of the web client. No section with many conversations exists in the testbed | (this commit) |
 | Huddle invites: a desktop notification when someone else starts a huddle in a DM / group DM ("X started a huddle · Press F3 to join"); not for channels, muted conversations, DND, or a huddle you are in | done | LIVE (B started a huddle in the DM → D-Bus `Notify` "Dmytro started a huddle" captured; DM showed 🎧1) + UNIT (rules, start vs join) | 8d57bb0 |
 | Audio device selection: `SLACKTUI_AUDIO_INPUT` / `SLACKTUI_AUDIO_OUTPUT` match a device id or name (case-insensitive part); a named device that is missing is an error, never a fallback; `ctl audio-devices` lists `<id> — <name>` | done | LIVE (listing; `SLACKTUI_AUDIO_OUTPUT=nonexistent-device` → call bar "no sound: no output device matching…", no playback stream created) + UNIT (matching) | a708e3b |
 | Huddles in the TUI: F3 joins/starts the current conversation's huddle (`rooms.join`) or leaves; joins **muted** (the microphone is opened only while unmuted); F4 mute/unmute (AUDIO_CONTROL); call bar with participants, speaking 🔊 and muted 🔇; the meeting mix plays on the default output (cpal, resampled); sidebar shows `🎧N` on conversations with an active huddle (live `sh_room_join/leave/update`) | done | LIVE (B started a huddle in #social with a 440 Hz tone → `🎧1` appeared in A's sidebar; F3 joined: call bar listed B speaking and A muted; slacktui's own PipeWire playback stream carried the tone, −29.8 dB at 440 Hz vs −77.5 dB at 2 kHz; B's roster showed A `muted: true`; F3 left and B's roster dropped A) + UNIT (resampler, mixdown, roster rules, huddle tracking). **Microphone capture NOT verified live** (not recording the user's room); the send path itself is verified with `ctl huddle-media --tone`. | 4be3870 |
@@ -125,12 +126,13 @@ Tests: `cargo test` → slack-core 9, huddle 33, slacktui 134, all passing. `car
 
 ## Next (in order, each as a small, separately verified step)
 
-**NEXT UP: D9 — sections: read every page of `channel_ids_page`.** `users.channelSections.list` returns
-each section's first page of channel ids (`channel_ids_page.channel_ids`, with a `cursor` when there are
-more); slacktui reads only that page. Find in the web client how the rest is fetched (probably
-`users.channelSections.channels.list` or a cursor on the same method; see `../notes/sections.md`), fetch the
-remaining pages after boot, unit-test with a captured payload. Live: needs a section with more ids than one
-page — check the page size first (it may be large; then verify with the paging code path forced small).
+**NEXT UP: D10 — a conversation's notification level back to "default".** F6 → Notifications sets a
+per-conversation level (everything / mentions / nothing) but cannot reset it: Slack refuses `default` the
+way we send it (see `../notes/notifications.md`). Find in the web client how its "Use default settings"
+choice is saved (the pref key and value it writes — perhaps removing the channel's entry from
+`all_notifications_prefs` or a `desktop: "default"` per-channel value via `users.prefs.setNotifications`),
+implement it as a fourth choice, unit-test, verify live on #social as A (read back with `ctl api
+users.prefs.get`) and restore the original setting.
 
 The roadmap (items 1–15) is complete. Queue from the user (2026-10-18), in this order; run autonomously,
 one verified commit per step:
@@ -158,8 +160,8 @@ D. Queued by the agent on 2026-10-18 when the user said "queue next items as you
   D6. ~~Autocomplete completes on a mouse click~~ — done.
   D7. ~~Mark conversations with a draft in the sidebar~~ — done (✎).
   D8. ~~Snippets: check Slack's `snippet_type` list~~ — done (validated; the C++ note was wrong).
-  D9. Sections: read every page of a section's `channel_ids_page` (only the first today) — NEXT.
-  D10. Notifications: let a conversation's level go back to "default" (find how the web client does it;
+  D9. ~~Sections paging~~ — not needed (the page is the whole list; a warning if not).
+  D10. Notifications: let a conversation's level go back to "default" (find how the web client does it; — NEXT
        Slack refuses `default` in the way we send it).
   D11. Other workspaces: unread badges and notifications while not shown (a light background connection
        per workspace), so Alt+1…9 is not the only way to notice them. Bigger; do last.
@@ -223,7 +225,7 @@ Hard (huddles video; the user's real camera/screen must not be captured in tests
 - A freshly opened kitty window does not report focus-out until it has had one focus-in, so right after launch an unfocused slacktui may think it is focused (harness quirk; normal use is unaffected once the window has been focused).
 - Workspaces: only the shown workspace is connected, so other workspaces show no unread badges or notifications until you switch; switching reloads everything (no per-workspace state is kept).
 - Profile pictures: bots and apps get none (only users); pictures are cached for the session only and not refreshed when someone changes theirs; sixel/iTerm2 not tried.
-- Sections: only the first page of a section's `channel_ids_page` is read (paging not implemented); built-in sections other than Starred/Channels/Direct messages (Slack Connect, Recent Apps, Agents, …) are not shown; section emoji are ignored; no per-section sort or collapse.
+- Sections: built-in sections other than Starred/Channels/Direct messages (Slack Connect, Recent Apps, Agents, …) are not shown; section emoji are ignored; no per-section sort or collapse.
 - Snippets: Slack may relabel a tiny snippet by its content (`fn main() {}` became C++; slacktui still highlights by extension); snippets are not editable; long snippet scrolling LIVE since A5 (from the thread pane).
 - Cosmetic (kitty): a small fragment ("vk") was seen just outside the right edge of the move-picker popup, probably half of a wide character cut by the overlay; not investigated.
 - Cosmetic (kitty): after a layout change (thread pane opened) the 🖼 file icon was drawn over the space after it ("🖼test1.png"); not investigated, not known whether it predates the gutter.

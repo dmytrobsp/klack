@@ -175,7 +175,12 @@ pub struct Section {
 impl Section {
     fn from_json(v: &Value) -> Option<Section> {
         let str_of = |k: &str| v[k].as_str().unwrap_or_default().to_string();
-        let ids = v["channel_ids_page"]["channel_ids"].as_array().into_iter().flatten().filter_map(|c| c.as_str()).map(String::from).collect();
+        let ids: Vec<String> = v["channel_ids_page"]["channel_ids"].as_array().into_iter().flatten().filter_map(|c| c.as_str()).map(String::from).collect();
+        // The page is the whole list as far as seen (its `cursor` is just the last id, and the
+        // web client never pages); say so if Slack ever counts more than it sent.
+        if let Some(count) = v["channel_ids_page"]["count"].as_u64().filter(|c| *c as usize > ids.len()) {
+            tracing::warn!("section {} has {count} conversations but only {} were sent", str_of("name"), ids.len());
+        }
         Some(Section {
             id: v["channel_section_id"].as_str()?.to_string(),
             kind: v["channel_section_type"].as_str().or(v["type"].as_str()).unwrap_or("standard").to_string(),
