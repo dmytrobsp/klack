@@ -12,6 +12,7 @@ use slack_core::Client;
 use slack_core::types::{HistoryPage, User};
 use tokio::sync::mpsc;
 
+use super::composer::Composer;
 use super::messages::MessagePane;
 use super::sidebar::Sidebar;
 use super::state::Workspace;
@@ -22,10 +23,20 @@ enum Net {
     Boot { boot: Value, users: Vec<User>, counts: Option<Value> },
     /// A page of history; `older` pages are prepended.
     History { channel: String, page: HistoryPage, older: bool },
+    /// Our own message, as returned by chat.postMessage.
+    Posted { channel: String, message: slack_core::types::Message },
     Error(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Focus {
+    Sidebar,
+    Composer,
+}
+
 struct App {
+    focus: Focus,
+    composer: Composer,
     client: Client,
     net: mpsc::UnboundedSender<Net>,
     ws: Workspace,
@@ -68,6 +79,26 @@ impl App {
         }
     }
 
+    /// Send the composer contents to the current conversation.
+    fn send(&mut self) {
+        let Some(channel) = self.current.clone() else { return };
+        if self.composer.is_empty() {
+            return;
+        }
+        let text = self.composer.to_mrkdwn();
+        self.composer.push_history(self.composer.text());
+        self.composer.clear();
+        self.messages.scroll = 0;
+        let (client, tx) = (self.client.clone(), self.net.clone());
+        tokio::spawn(async move {
+            let msg = match client.post_message(&channel, &text, None, false).await {
+                Ok(message) => Net::Posted { channel, message },
+                Err(e) => Net::Error(format!("send failed: {e}")),
+            };
+            let _ = tx.send(msg);
+        });
+    }
+
     /// Load older history once the top is visible.
     fn maybe_load_older(&mut self) {
         if let Some(id) = self.current.clone() {
@@ -93,6 +124,8 @@ pub async fn run(client: Client) -> Result<()> {
     let (net_tx, mut net_rx) = mpsc::unbounded_channel();
     spawn_boot(client.clone(), net_tx.clone());
     let mut app = App {
+        focus: Focus::Composer,
+        composer: Composer::default(),
         client: client.clone(),
         net: net_tx.clone(),
         ws: Workspace {
@@ -133,23 +166,85 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
     match ev {
         Event::Key(k) if k.kind != KeyEventKind::Release => {
             let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+            let alt = k.modifiers.contains(KeyModifiers::ALT);
+            let shift = k.modifiers.contains(KeyModifiers::SHIFT);
+            // Global keys.
             match k.code {
                 KeyCode::Char('q') if ctrl => return false,
-                KeyCode::Up | KeyCode::Char('k') => app.sidebar.move_by(-1),
-                KeyCode::Down | KeyCode::Char('j') => app.sidebar.move_by(1),
+                KeyCode::Up if alt => {
+                    app.sidebar.move_by(-1);
+                    return true;
+                }
+                KeyCode::Down if alt => {
+                    app.sidebar.move_by(1);
+                    return true;
+                }
                 KeyCode::PageUp => {
                     app.messages.scroll_up(app.messages.area.height.saturating_sub(3) as usize);
                     app.maybe_load_older();
+                    return true;
                 }
-                KeyCode::PageDown => app.messages.scroll_down(app.messages.area.height.saturating_sub(3) as usize),
-                KeyCode::Home | KeyCode::Char('g') => app.sidebar.move_by(isize::MIN / 2),
-                KeyCode::End | KeyCode::Char('G') => app.sidebar.move_by(isize::MAX / 2),
+                KeyCode::PageDown => {
+                    app.messages.scroll_down(app.messages.area.height.saturating_sub(3) as usize);
+                    return true;
+                }
+                KeyCode::Tab | KeyCode::BackTab => {
+                    app.focus = if app.focus == Focus::Composer { Focus::Sidebar } else { Focus::Composer };
+                    return true;
+                }
                 _ => {}
             }
+            match app.focus {
+                Focus::Sidebar => match k.code {
+                    KeyCode::Up | KeyCode::Char('k') => app.sidebar.move_by(-1),
+                    KeyCode::Down | KeyCode::Char('j') => app.sidebar.move_by(1),
+                    KeyCode::Home | KeyCode::Char('g') => app.sidebar.move_by(isize::MIN / 2),
+                    KeyCode::End | KeyCode::Char('G') => app.sidebar.move_by(isize::MAX / 2),
+                    KeyCode::Enter | KeyCode::Char('i') | KeyCode::Esc => app.focus = Focus::Composer,
+                    _ => {}
+                },
+                Focus::Composer => {
+                    let c = &mut app.composer;
+                    match k.code {
+                        KeyCode::Esc => app.focus = Focus::Sidebar,
+                        KeyCode::Enter if alt || shift => c.insert('\n'),
+                        KeyCode::Char('j') if ctrl => c.insert('\n'),
+                        KeyCode::Enter => app.send(),
+                        KeyCode::Char('b') if alt => c.toggle_marker('*'),
+                        KeyCode::Char('i') if alt => c.toggle_marker('_'),
+                        KeyCode::Char('s') if alt => c.toggle_marker('~'),
+                        KeyCode::Char('c') if alt => c.toggle_marker('`'),
+                        KeyCode::Char('w') if ctrl => c.delete_word_left(),
+                        KeyCode::Char('u') if ctrl => c.kill_line(),
+                        KeyCode::Char('a') if ctrl => c.home(),
+                        KeyCode::Char('e') if ctrl => c.end(),
+                        KeyCode::Char(ch) if !ctrl && !alt => c.insert(ch),
+                        KeyCode::Backspace if ctrl || alt => c.delete_word_left(),
+                        KeyCode::Backspace => c.backspace(),
+                        KeyCode::Delete => c.delete(),
+                        KeyCode::Left if ctrl => c.word_left(),
+                        KeyCode::Right if ctrl => c.word_right(),
+                        KeyCode::Left => c.left(),
+                        KeyCode::Right => c.right(),
+                        KeyCode::Home => c.home(),
+                        KeyCode::End => c.end(),
+                        KeyCode::Up => {
+                            c.up();
+                        }
+                        KeyCode::Down => {
+                            c.down();
+                        }
+                        _ => {}
+                    }
+                }
+            }
         }
+        Event::Paste(text) if app.focus == Focus::Composer => app.composer.insert_str(&text.replace("\r\n", "\n")),
         Event::Mouse(m) => match m.kind {
             MouseEventKind::Down(MouseButton::Left) => {
-                app.sidebar.click(m.column, m.row);
+                if app.sidebar.click(m.column, m.row) {
+                    app.focus = Focus::Composer;
+                }
             }
             MouseEventKind::ScrollUp if app.sidebar.area.contains((m.column, m.row).into()) => app.sidebar.move_by(-1),
             MouseEventKind::ScrollDown if app.sidebar.area.contains((m.column, m.row).into()) => app.sidebar.move_by(1),
@@ -193,6 +288,9 @@ fn handle_net(app: &mut App, msg: Net) {
                 }
             }
         }
+        Net::Posted { channel, message } => {
+            app.ws.timelines.entry(channel).or_default().upsert(message);
+        }
         Net::Error(e) => {
             app.loading = false;
             app.status = e;
@@ -204,10 +302,37 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     let [body, status] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(f.area());
     let side_w = (body.width / 4).clamp(18, 32);
     let [side, main] = Layout::horizontal([Constraint::Length(side_w), Constraint::Min(10)]).areas(body);
-    app.sidebar.draw(f, side, &app.ws, true);
+    app.sidebar.draw(f, side, &app.ws, app.focus == Focus::Sidebar);
 
+    let inner_w = main.width.saturating_sub(2) as usize;
+    let composer_h = app.composer.rows(inner_w).clamp(1, 8) + 2;
+    let [msgs, comp] = Layout::vertical([Constraint::Min(3), Constraint::Length(composer_h)]).areas(main);
     let current = app.current.clone();
     let timeline = current.as_deref().and_then(|c| app.ws.timelines.get(c));
-    app.messages.draw(f, main, &app.ws, current.as_deref(), timeline);
-    f.render_widget(Paragraph::new(format!(" {} · ↑↓/jk channel · PgUp/PgDn or wheel scroll · Ctrl+Q quit", app.status)), status);
+    app.messages.draw(f, msgs, &app.ws, current.as_deref(), timeline);
+    draw_composer(f, comp, app);
+    f.render_widget(Paragraph::new(format!(" {} · Enter send · Alt+Enter newline · Tab focus · Alt+↑↓ channel · PgUp/PgDn scroll · Ctrl+Q quit", app.status)), status);
+}
+
+fn draw_composer(f: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &App) {
+    use ratatui::style::{Color, Style};
+    use ratatui::widgets::{Block, Borders};
+    let focused = app.focus == Focus::Composer;
+    let border = if focused { Style::default().fg(Color::Rgb(0x61, 0xaf, 0xef)) } else { Style::default().fg(super::text::DIM) };
+    let target = app.current.as_deref().map(|c| app.ws.channel_label(c)).unwrap_or_default();
+    let block = Block::default().borders(Borders::ALL).border_style(border).title(format!(" Message {target} "));
+    let inner = block.inner(area);
+    let width = inner.width as usize;
+    let (row, col) = app.composer.cursor_position(width);
+    // Scroll so the cursor line stays visible.
+    let skip = row.saturating_sub(inner.height.saturating_sub(1));
+    let text = if app.composer.text().is_empty() && !focused {
+        ratatui::text::Text::styled("Press Tab or click a conversation to type", Style::default().fg(super::text::DIM))
+    } else {
+        ratatui::text::Text::raw(app.composer.text())
+    };
+    f.render_widget(Paragraph::new(text).wrap(ratatui::widgets::Wrap { trim: false }).scroll((skip, 0)).block(block), area);
+    if focused {
+        f.set_cursor_position((inner.x + col, inner.y + row - skip));
+    }
 }
