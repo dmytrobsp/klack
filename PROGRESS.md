@@ -88,6 +88,7 @@ Easy (standard API or a small client endpoint):
 Medium:
 10. ~~Profile pictures in the message list~~ — done.
 11. ~~Multiple workspaces~~ — done (Alt+1…9, `/workspace`).
+11b. Your own account marked "(You)" (added by the user on 2026-10-18): the self-DM in the sidebar's Direct messages, people search (Ctrl+K, `@` autocomplete, `/dm`), member lists, profile cards and wherever else a list names people.
 12. Remappable keys (added by the user on 2026-10-18): every keystroke in the app is an action that can be rebound, both in a config file and from the preferences menu (item 13); support a prefix/leader key (e.g. `Ctrl+X` then a key, like tmux/vim chords) with a pending-chord indicator. The F1 help panel and a *contextual* help bar (the status-bar hints should follow the focused pane/overlay, not be fixed) must show the user's actual bindings. Needs a central action registry replacing the hard-coded `KeyCode` matches in `event_loop.rs`; detect conflicts; keep the defaults identical to today.
 13. Preferences menu: availability, notifications (per-channel all/mentions/nothing, keywords), VIP, appearance (theme/colours, compact mode), messages & media (inline images/video on/off, emoji style), language & region (time zone, 12/24 h, date format; i18n scaffolding), audio & video (devices). Save to a config file; Slack-side prefs via `users.prefs.*`.
 
