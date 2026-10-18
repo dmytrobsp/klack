@@ -338,6 +338,8 @@ pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
             let (mut phase, mut received, mut sum_sq) = (0u64, 0usize, 0f64);
             // Pictures received per attendee, and when each was last saved.
             let mut pictures: std::collections::BTreeMap<String, (u64, usize, usize, Option<std::time::Instant>)> = Default::default();
+            // When media connected, to report how long each first picture took.
+            let mut connected_at: Option<std::time::Instant> = None;
             loop {
                 tokio::select! {
                     _ = &mut deadline => break,
@@ -358,6 +360,7 @@ pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
                         Some(SessionEvent::Levels(_)) => {}
                         Some(SessionEvent::Connected) => {
                             println!("Connected");
+                            connected_at = Some(std::time::Instant::now());
                             if let Some(info) = camera.take() {
                                 session.set_camera(true);
                                 capture = Some(start_camera(&info, session.video_sink(), sent.clone())?);
@@ -370,6 +373,10 @@ pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
                         let entry = pictures.entry(frame.attendee_id.clone()).or_insert((0, 0, 0, None));
                         entry.0 += 1;
                         (entry.1, entry.2) = (frame.width, frame.height);
+                        if entry.0 == 1 {
+                            let after = connected_at.map(|t| format!(" {} ms after connecting", t.elapsed().as_millis())).unwrap_or_default();
+                            println!("first picture from {}{after}", frame.attendee_id);
+                        }
                         if let Some(dir) = &record_video {
                             if entry.3.is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(2)) {
                                 entry.3 = Some(std::time::Instant::now());

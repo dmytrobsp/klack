@@ -205,7 +205,7 @@ impl VideoSink {
     }
 
     /// Whether the next frame should be a keyframe (media just connected, so frames sent
-    /// before were dropped); asking clears it.
+    /// before were dropped, or the server asked with a PLI/FIR); asking clears it.
     pub fn keyframe_wanted(&self) -> bool {
         self.1.swap(false, Ordering::Relaxed)
     }
@@ -295,7 +295,7 @@ async fn run(
     let ack = expect_keeping(&mut sig, Type::JoinAck, &mut earlier).await?;
     let limit = ack.joinack.as_ref().and_then(|a| a.video_subscription_limit).map_or(MAX_VIDEOS, |l| (l as usize).min(MAX_VIDEOS));
     let turn = ack.joinack.and_then(|a| a.turn_credentials).ok_or_else(|| anyhow!("JOIN_ACK without TURN credentials"))?;
-    let (mut media, offer) = Media::offer(&turn, send_video).await?;
+    let (mut media, offer) = Media::offer(&turn, send_video, keyframe.clone()).await?;
     // One entry per video section: just the camera's, which is 0.
     let receive = receive_ids(true, &[]);
     sig.send(&signaling::subscribe_frame(offer, &creds.meeting.media_placement.audio_host_url, &creds.attendee.attendee_id, muted, send_video, receive)).await?;

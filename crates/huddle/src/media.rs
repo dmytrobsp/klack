@@ -2,17 +2,22 @@
 //! credentials) with one Opus send/receive audio track and an H.264 camera section after it
 //! (mid 1: inactive until the camera is on, then sendrecv, as the Chime SDK lays it out).
 
+use std::collections::VecDeque;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow};
 use bytes::Bytes;
+use rtc::interceptor::{Attribute, Interceptor, Packet, Slot, StreamInfo, TaggedPacket};
 use rtc::peer_connection::configuration::media_engine::{MIME_TYPE_H264, MIME_TYPE_OPUS};
+use rtc::rtcp::payload_feedbacks::full_intra_request::FullIntraRequest;
+use rtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
 use rtc::rtp_transceiver::rtp_sender::{RTCPFeedback, RTCRtpCodec, RTCRtpCodecParameters, RTCRtpCodingParameters, RTCRtpEncodingParameters, RtpCodecKind};
 use rtc::rtp_transceiver::{RTCRtpTransceiverDirection, RTCRtpTransceiverInit};
 use tokio::sync::{mpsc, watch};
 use webrtc::media_stream::MediaStreamTrack;
-use webrtc::media_stream::track_local::TrackLocal;
+use webrtc::media_stream::track_local::{TrackLocal, TrackLocalEvent};
 use webrtc::media_stream::track_local::static_sample::TrackLocalStaticSample;
 use webrtc::media_stream::track_remote::{TrackRemote, TrackRemoteEvent};
 use webrtc::peer_connection::{
@@ -40,6 +45,63 @@ pub fn h264_codec() -> RTCRtpCodec {
         sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f".to_owned(),
         rtcp_feedback: vec![fb("goog-remb", ""), fb("ccm", "fir"), fb("nack", ""), fb("nack", "pli")],
     }
+}
+
+/// Whether an RTCP packet asks for a keyframe (PLI or FIR).
+fn is_keyframe_request(packet: &dyn rtc::rtcp::Packet) -> bool {
+    let p = packet.as_any();
+    p.is::<PictureLossIndication>() || p.is::<FullIntraRequest>()
+}
+
+/// Hands inbound keyframe requests (PLI/FIR) to the application. webrtc-rs ends inbound RTCP
+/// at the interceptor chain unless a packet is marked `DeliverToApplication`; this sits last
+/// (app-most), keeps only the requests, marks them, and drops the rest, which the interceptors
+/// before it have already acted on (see the webrtc-rs `rtcp-processing` example).
+#[derive(Default)]
+struct KeyframeRequests {
+    read: VecDeque<TaggedPacket>,
+    write: VecDeque<TaggedPacket>,
+}
+
+impl rtc::sansio::Protocol<TaggedPacket, TaggedPacket, ()> for KeyframeRequests {
+    type Rout = TaggedPacket;
+    type Wout = TaggedPacket;
+    type Eout = ();
+    type Error = rtc::shared::error::Error;
+    type Time = Instant;
+
+    fn handle_read(&mut self, mut msg: TaggedPacket) -> Result<(), Self::Error> {
+        if let Packet::Rtcp(packets) = &msg.message.packet {
+            let requests: Vec<_> = packets.iter().filter(|p| is_keyframe_request(p.as_ref())).cloned().collect();
+            if requests.is_empty() {
+                return Ok(());
+            }
+            msg.message.packet = Packet::Rtcp(requests);
+            msg.message.add(Attribute::DeliverToApplication);
+        }
+        self.read.push_back(msg);
+        Ok(())
+    }
+
+    fn poll_read(&mut self) -> Option<TaggedPacket> {
+        self.read.pop_front()
+    }
+
+    fn handle_write(&mut self, msg: TaggedPacket) -> Result<(), Self::Error> {
+        self.write.push_back(msg);
+        Ok(())
+    }
+
+    fn poll_write(&mut self) -> Option<TaggedPacket> {
+        self.write.pop_front()
+    }
+}
+
+impl Interceptor for KeyframeRequests {
+    fn bind_local_stream(&mut self, _info: &StreamInfo) {}
+    fn unbind_local_stream(&mut self, _info: &StreamInfo) {}
+    fn bind_remote_stream(&mut self, _info: &StreamInfo) {}
+    fn unbind_remote_stream(&mut self, _info: &StreamInfo) {}
 }
 
 /// TURN servers we can use: Chime offers UDP and TLS-over-TCP; the stack relays over UDP.
@@ -73,7 +135,6 @@ const PLI_INTERVAL: Duration = Duration::from_secs(1);
 /// Receive one remote video track: RTP → access units → a decoder thread → frames. Asks for
 /// a keyframe (PLI) until a picture decodes, and again after a lost packet or a decode error.
 async fn receive_video(track: Arc<dyn TrackRemote>, frames: mpsc::UnboundedSender<DecodedFrame>) {
-    use std::sync::atomic::{AtomicBool, Ordering};
     let msid = track.stream_id().await;
     let (units_tx, units_rx) = std::sync::mpsc::channel::<(u32, Vec<u8>)>();
     let want_keyframe = Arc::new(AtomicBool::new(true));
@@ -188,14 +249,17 @@ pub struct Media {
 
 impl Media {
     /// Build the connection and return it with its SDP offer (after ICE gathering, so the
-    /// offer carries the relay candidates). `send_video`: the camera is on from the start.
-    pub async fn offer(turn: &SdkTurnCredentials, send_video: bool) -> Result<(Media, String)> {
+    /// offer carries the relay candidates). `send_video`: the camera is on from the start;
+    /// `keyframe` is set whenever the server asks for a keyframe of our video (PLI/FIR).
+    pub async fn offer(turn: &SdkTurnCredentials, send_video: bool, keyframe: Arc<AtomicBool>) -> Result<(Media, String)> {
         let codec = RTCRtpCodec { mime_type: MIME_TYPE_OPUS.to_owned(), clock_rate: 48000, channels: 2, sdp_fmtp_line: "minptime=10;useinbandfec=1".to_owned(), rtcp_feedback: vec![] };
         let mut media_engine = MediaEngine::default();
         media_engine.register_codec(RTCRtpCodecParameters { rtp_codec: codec.clone(), payload_type: OPUS_PAYLOAD_TYPE, ..Default::default() }, RtpCodecKind::Audio)?;
         // Registered even when not sending, to receive others' video.
         media_engine.register_codec(RTCRtpCodecParameters { rtp_codec: h264_codec(), payload_type: H264_PAYLOAD_TYPE, ..Default::default() }, RtpCodecKind::Video)?;
         let registry = register_default_interceptors(Registry::new(), &mut media_engine)?;
+        // App-most, after every interceptor that reads RTCP.
+        let registry = registry.with(Slot::from(14_000), KeyframeRequests::default());
         let uris = udp_turn_uris(turn);
         if uris.is_empty() {
             return Err(anyhow!("no UDP TURN server offered"));
@@ -252,6 +316,15 @@ impl Media {
         if !send_video {
             camera.set_direction(camera_direction(false)).await?;
         }
+        // The track is bound from here until the connection closes (poll then ends).
+        let requests = Arc::clone(&video.0);
+        tokio::spawn(async move {
+            while let Some(TrackLocalEvent::OnRtcpPacket(packets)) = requests.poll().await {
+                let kinds: Vec<_> = packets.iter().map(|p| if p.as_any().is::<FullIntraRequest>() { "FIR" } else { "PLI" }).collect();
+                tracing::debug!("keyframe request from the server: {}", kinds.join(", "));
+                keyframe.store(true, Ordering::Relaxed);
+            }
+        });
 
         let offer = pc.create_offer(None).await?;
         pc.set_local_description(offer).await?;
@@ -352,5 +425,38 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(udp_turn_uris(&t), vec!["turn:a.chime.aws:3478?transport=udp".to_string()]);
+    }
+
+    /// Inbound RTCP as it reaches the end of the chain.
+    fn rtcp(wire: &[u8]) -> TaggedPacket {
+        let packets = rtc::rtcp::packet::unmarshal(&mut &wire[..]).unwrap();
+        TaggedPacket { now: Instant::now(), transport: Default::default(), message: rtc::interceptor::AttributedPacket::new(Packet::Rtcp(packets)) }
+    }
+
+    #[test]
+    fn only_keyframe_requests_reach_the_application() {
+        use rtc::sansio::Protocol;
+        // RFC 3550/4585/5104 wire formats: an empty receiver report, a PLI and a FIR for
+        // media SSRC 0x0a0b0c0d from sender 0x01020304.
+        let rr = [0x80, 0xc9, 0x00, 0x01, 0x01, 0x02, 0x03, 0x04];
+        let pli = [0x81, 0xce, 0x00, 0x02, 0x01, 0x02, 0x03, 0x04, 0x0a, 0x0b, 0x0c, 0x0d];
+        let fir = [0x84, 0xce, 0x00, 0x04, 0x01, 0x02, 0x03, 0x04, 0, 0, 0, 0, 0x0a, 0x0b, 0x0c, 0x0d, 0x07, 0, 0, 0];
+        let mut k = KeyframeRequests::default();
+
+        k.handle_read(rtcp(&rr)).unwrap();
+        assert!(k.poll_read().is_none(), "a receiver report stops here");
+
+        k.handle_read(rtcp(&[&rr[..], &pli[..]].concat())).unwrap();
+        let out = k.poll_read().expect("the PLI goes on");
+        assert!(out.message.has(&Attribute::DeliverToApplication));
+        let Packet::Rtcp(packets) = &out.message.packet else { panic!("not RTCP") };
+        assert_eq!(packets.len(), 1);
+        assert!(packets[0].as_any().is::<PictureLossIndication>());
+
+        k.handle_read(rtcp(&fir)).unwrap();
+        let out = k.poll_read().expect("the FIR goes on");
+        let Packet::Rtcp(packets) = &out.message.packet else { panic!("not RTCP") };
+        assert!(packets[0].as_any().is::<FullIntraRequest>());
+        assert!(k.poll_read().is_none());
     }
 }
