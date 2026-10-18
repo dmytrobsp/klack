@@ -109,6 +109,21 @@ pub fn footer(lines: &[String], width: usize, height: u16) -> (Vec<String>, u16)
     (shown, used.min(height))
 }
 
+/// Split `area` into a stage (a screen share) and a strip for the `others`: a column on the
+/// right when the area is wide, a band at the bottom otherwise; no strip without others.
+pub fn stage_split(area: Rect, others: usize) -> (Rect, Rect) {
+    if others == 0 {
+        return (area, Rect { width: 0, height: 0, ..area });
+    }
+    if area.width as f32 >= area.height as f32 * 3.0 {
+        let w = (area.width / 4).clamp(MIN_TILE.0 + 2, 40).min(area.width / 2);
+        (Rect { width: area.width - w, ..area }, Rect { x: area.x + area.width - w, width: w, ..area })
+    } else {
+        let h = (area.height / 4).clamp(MIN_TILE.1, 12).min(area.height / 2);
+        (Rect { height: area.height - h, ..area }, Rect { y: area.y + area.height - h, height: h, ..area })
+    }
+}
+
 /// "▲ 4 more" / "▼ 6 more".
 pub fn more_marker(up: bool, n: usize) -> String {
     format!("{} {n} more", if up { "▲" } else { "▼" })
@@ -213,14 +228,22 @@ impl HuddleView {
         let shares = call.shown_shares(&ws.self_id);
         let tiles = shares.len() + call.roster.len();
         self.tiles_area = tiles_area;
-        let grid = layout(tiles, tiles_area, self.scroll);
+        // A screen share takes the stage; everyone else goes into a strip beside or below it.
+        let (stage, strip) = if shares.is_empty() { (None, tiles_area) } else { let (s, r) = stage_split(tiles_area, tiles - 1); (Some(s), r) };
+        if let (Some(stage), Some((share, user))) = (stage, shares.first()) {
+            self.draw_share(f, stage, call, share, user, ws, media);
+        }
+        let first = usize::from(stage.is_some());
+        let grid = layout(tiles - first, strip, self.scroll);
         self.scroll = grid.scroll;
         for (n, rect) in &grid.tiles {
-            match shares.get(*n) {
+            let n = n + first;
+            match shares.get(n) {
                 Some((share, user)) => self.draw_share(f, *rect, call, share, user, ws, media),
-                None => self.draw_tile(f, *rect, call, &call.roster[*n - shares.len()], ws, media),
+                None => self.draw_tile(f, *rect, call, &call.roster[n - shares.len()], ws, media),
             }
         }
+        let tiles_area = strip;
         // Tiles scrolled out of view are counted above and below.
         let marker = Style::default().fg(super::theme::p().accent).add_modifier(Modifier::BOLD);
         if grid.above > 0 {
@@ -375,6 +398,22 @@ mod tests {
         assert!(layout(0, area, 0).tiles.is_empty());
         // Too small for even one minimum row: still one row, never nothing.
         assert_eq!(layout(5, Rect::new(0, 0, 40, 5), 0).tiles.len(), 2);
+    }
+
+    #[test]
+    fn shares_take_the_stage() {
+        // Wide: a column on the right.
+        let (stage, strip) = stage_split(Rect::new(0, 0, 160, 40), 3);
+        assert_eq!((stage, strip), (Rect::new(0, 0, 120, 40), Rect::new(120, 0, 40, 40)));
+        // Tall: a band at the bottom.
+        let (stage, strip) = stage_split(Rect::new(0, 0, 70, 40), 2);
+        assert_eq!((stage, strip), (Rect::new(0, 0, 70, 30), Rect::new(0, 30, 70, 10)));
+        assert!(!stage.intersects(strip));
+        // Alone: the whole area.
+        assert_eq!(stage_split(Rect::new(5, 5, 70, 40), 0).0, Rect::new(5, 5, 70, 40));
+        // The strip lays out (and scrolls) like the grid: 2 others side by side in the band.
+        let g = layout(2, Rect::new(0, 30, 70, 10), 0);
+        assert_eq!(g.tiles.len(), 2);
     }
 
     #[test]
