@@ -481,7 +481,7 @@ pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
             println!("{} bytes", bytes.len());
         }
         Ctl::Search { query } => {
-            let v = client.search_messages(&query, 20).await?;
+            let v = client.search_messages(&query, 20, 1).await?;
             println!("total: {}", v["messages"]["total"]);
             for m in v["messages"]["matches"].as_array().into_iter().flatten() {
                 let keys: Vec<&String> = m.as_object().map(|o| o.keys().collect()).unwrap_or_default();

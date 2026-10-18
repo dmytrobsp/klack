@@ -47,7 +47,7 @@ edit in progress) and it is back when you return, until you send it. Drafts live
 |---|---|
 | Tab / Shift+Tab | move between sidebar, messages, composer, thread, reply box |
 | Alt+↑ / Alt+↓, Ctrl+K | previous / next conversation, jump to any conversation or person (`#` lists every channel, including ones you are not in) |
-| Ctrl+F | search messages |
+| Ctrl+F | search messages (more results load as you move down the list) |
 | mouse | click to select, wheel to scroll, hover shading, right-click for a context menu (messages, sidebar entries) |
 | F5 | activity: mentions, reactions to your messages, thread replies |
 | `/status [:emoji:] [text] [for 30m\|2h\|today]` · `/status clear` | set or clear your status |

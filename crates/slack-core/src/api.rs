@@ -329,8 +329,9 @@ impl Client {
         self.call_raw("pins.list", &[("channel", channel.into())]).await
     }
 
-    pub async fn search_messages(&self, query: &str, count: u32) -> Result<Value> {
-        self.call_raw("search.messages", &[("query", query.into()), ("count", count.to_string()), ("highlight", "false".into())]).await
+    /// One page (1-based) of `count` matches; `messages.paging.pages` says how many there are.
+    pub async fn search_messages(&self, query: &str, count: u32, page: u32) -> Result<Value> {
+        self.call_raw("search.messages", &[("query", query.into()), ("count", count.to_string()), ("page", page.to_string()), ("highlight", "false".into())]).await
     }
 
     pub async fn emoji_list(&self) -> Result<std::collections::HashMap<String, String>> {

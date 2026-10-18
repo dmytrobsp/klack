@@ -48,7 +48,7 @@ enum Net {
     DetailsMembers { channel: String, members: Vec<String> },
     DetailsPins { channel: String, pins: Vec<slack_core::types::Message> },
     /// Search results for a query.
-    SearchDone { query: String, result: Result<serde_json::Value, String> },
+    SearchDone { query: String, page: u32, result: Result<serde_json::Value, String> },
     /// Huddle credentials from `rooms.join`.
     HuddleJoined { channel: String, thread: Option<String>, result: Result<huddle::signaling::Credentials, String> },
     /// Our screen share started (the user chose what to share), or why not.
@@ -1023,10 +1023,24 @@ impl App {
             return;
         }
         search.busy = true;
+        search.loading_more = false;
+        self.fetch_search_page(query, 1);
+    }
+
+    /// Load the next page of search results once the selection nears the end of the list.
+    fn search_more(&mut self) {
+        let Some(search) = self.search.as_mut() else { return };
+        if let Some(page) = search.next_page() {
+            let query = search.searched.clone();
+            self.fetch_search_page(query, page);
+        }
+    }
+
+    fn fetch_search_page(&self, query: String, page: u32) {
         let (client, tx) = (self.client.clone(), self.net.clone());
         tokio::spawn(async move {
-            let result = client.search_messages(&query, 50).await.map_err(|e| e.to_string());
-            let _ = tx.send(Net::SearchDone { query, result });
+            let result = client.search_messages(&query, super::search::PAGE_SIZE, page).await.map_err(|e| e.to_string());
+            let _ = tx.send(Net::SearchDone { query, page, result });
         });
     }
 
@@ -2169,7 +2183,10 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
             match action {
                 Some(Action::Close) => app.search = None,
                 Some(Action::Up) => search.move_by(-1),
-                Some(Action::Down) => search.move_by(1),
+                Some(Action::Down) => {
+                    search.move_by(1);
+                    app.search_more();
+                }
                 Some(Action::Open) => app.search_enter(),
                 Some(Action::Erase) => {
                     search.query.pop();
@@ -2597,17 +2614,17 @@ fn handle_net(app: &mut App, msg: Net) {
                 d.pins = Some(pins);
             }
         }
-        Net::SearchDone { query, result } => {
+        Net::SearchDone { query, page, result } => {
             if let Some(search) = app.search.as_mut() {
-                search.busy = false;
+                if page <= 1 {
+                    search.busy = false;
+                }
                 match result {
-                    Ok(v) => {
-                        search.hits = super::search::parse_hits(&v);
-                        search.total = v["messages"]["total"].as_u64().unwrap_or(search.hits.len() as u64);
-                        search.searched = query;
-                        search.selected = 0;
+                    Ok(v) => search.add_page(query, page, &v),
+                    Err(e) => {
+                        search.loading_more = false;
+                        app.status = format!("search failed: {e}");
                     }
-                    Err(e) => app.status = format!("search failed: {e}"),
                 }
             }
         }
