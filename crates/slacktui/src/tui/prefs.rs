@@ -274,6 +274,15 @@ pub enum SlackChange {
     Command(String),
 }
 
+/// A conversation's own level cycles through the three and back to "default" (no override).
+fn next_conversation_level(own: Option<&str>) -> String {
+    match own {
+        None => LEVELS[0].to_string(),
+        Some(l) if l == LEVELS[LEVELS.len() - 1] => "default".to_string(),
+        Some(l) => next_level(l),
+    }
+}
+
 fn next_level(level: &str) -> String {
     let i = LEVELS.iter().position(|l| *l == level).map_or(0, |i| (i + 1) % LEVELS.len());
     LEVELS[i].to_string()
@@ -403,8 +412,7 @@ impl Prefs {
             }
             Field::ConversationLevel => {
                 let channel = current?.to_string();
-                let mpim = ws.conversations.get(&channel).is_some_and(|c| c.is_mpim);
-                let level = next_level(ws.notify.level(&channel, mpim));
+                let level = next_conversation_level(ws.notify.channels.get(&channel).map(String::as_str));
                 Some(SlackChange::ConversationLevel { channel, level })
             }
             Field::ChannelDefault => Some(SlackChange::ChannelDefault(next_level(&ws.notify.global))),
@@ -591,7 +599,14 @@ mod tests {
         let mut ws = Workspace::default();
         let mut p = Prefs { category: 4, ..Default::default() };
         p.selected = 2;
-        assert_eq!(p.change(&mut ws, Some("C1")), Some(SlackChange::ConversationLevel { channel: "C1".into(), level: "nothing".into() }), "mentions (default) → nothing");
+        assert_eq!(p.change(&mut ws, Some("C1")), Some(SlackChange::ConversationLevel { channel: "C1".into(), level: "everything".into() }), "default → everything");
+        let mut cycle = Vec::new();
+        for _ in 0..4 {
+            let Some(SlackChange::ConversationLevel { level, .. }) = p.change(&mut ws, Some("C1")) else { panic!() };
+            if level == "default" { ws.notify.channels.remove("C1") } else { ws.notify.channels.insert("C1".into(), level.clone()) };
+            cycle.push(level);
+        }
+        assert_eq!(cycle, ["everything", "mentions_dms", "nothing", "default"], "back to the default after nothing");
         assert_eq!(p.change(&mut ws, None), None, "no conversation, no change");
         p.selected = 3;
         assert_eq!(p.change(&mut ws, None), Some(SlackChange::ChannelDefault("nothing".into())));

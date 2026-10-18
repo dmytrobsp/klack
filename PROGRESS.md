@@ -107,6 +107,7 @@ background is in `../REPORT.md` and `../notes/`.
 | D7 — the sidebar marks conversations with a kept draft "✎" (a thread's draft counts for its conversation; the conversation you are in has its text in the composer, so it is marked only for a kept thread draft); the name is shortened to make room | done | LIVE ("half-written" in the DM, then #social: "○ Dmytro ✎"; erased in the DM and left again: "○ Dmytro") + UNIT (marker, room for it) | 8bf92f0 |
 | D8 — snippet languages checked against Slack's list (`../notes/snippets.md`): `/snippet` resolves its first word through the 142 languages of the web client's snippet editor plus `text` and an alias table (`rs`, `py`, `sh`, `yml`, `c++`, …); a first word that looks like a file name becomes the title and its extension gives the language (unknown extension: `text`); an unknown language is refused locally with examples (the composer keeps the text). Probing showed the old gap note was wrong: Slack honours valid types and refuses unknown ones (`unknown_snippet_type`); the C++ cases came from Slack relabelling the tiny content `fn main() {}` | done | LIVE (A: `/snippet build.sh` in #history-paging → B read back `build.sh`, `filetype: shell`; `/snippet klingon hello` → "unknown snippet language \"klingon\" — e.g. rust, …", nothing uploaded; probes as B: rust/toml honoured, `nosuchlang` refused, `fn main() {}` relabelled C++) + UNIT (aliases, file names, unknown words, the list) | 2598be0 |
 | D9 — section paging: **not needed**. A real `users.channelSections.list` shows `channel_ids_page.cursor` equal to the section's last channel id (count 1, one id) and the top-level `cursor` equal to the last section id; the web client reads only `channel_ids_page.channel_ids`, never follows a cursor and calls the method without arguments (`../notes/sections.md`). slacktui now logs a warning if a section's `count` ever exceeds the ids sent | done | LIVE (A's real response inspected; the sidebar still shows Projects / slacktui-made; no warning logged) + code reading of the web client. No section with many conversations exists in the testbed | 566bc13 |
+| D10 — a conversation's notification level can go back to the default: F6 → Notifications → "This conversation notifies about" now cycles default → all new messages → mentions and DMs → nothing → default; "default" sends what the web client sends (`users.prefs.setNotifications name=reset value=default channel_id=…`, found in `resetChannelNotificationOverride`; `../notes/notifications.md`), which drops the whole override including a mute, so a muted conversation is muted again right after | done | LIVE (A on #social, which had `{desktop: everything}`: cycled to default → the server entry was gone and the row read "all new messages (default)"; one more step → `{desktop: everything}` again; with `{desktop: nothing, muted: true}` set via the API, default → `{muted: true}`; #social restored to `{desktop: everything}`) + UNIT (the cycle). The long value "all new messages (default)" wraps onto a second row in an 80-column popup (cosmetic, pre-existing) | (this commit) |
 | Huddle invites: a desktop notification when someone else starts a huddle in a DM / group DM ("X started a huddle · Press F3 to join"); not for channels, muted conversations, DND, or a huddle you are in | done | LIVE (B started a huddle in the DM → D-Bus `Notify` "Dmytro started a huddle" captured; DM showed 🎧1) + UNIT (rules, start vs join) | 8d57bb0 |
 | Audio device selection: `SLACKTUI_AUDIO_INPUT` / `SLACKTUI_AUDIO_OUTPUT` match a device id or name (case-insensitive part); a named device that is missing is an error, never a fallback; `ctl audio-devices` lists `<id> — <name>` | done | LIVE (listing; `SLACKTUI_AUDIO_OUTPUT=nonexistent-device` → call bar "no sound: no output device matching…", no playback stream created) + UNIT (matching) | a708e3b |
 | Huddles in the TUI: F3 joins/starts the current conversation's huddle (`rooms.join`) or leaves; joins **muted** (the microphone is opened only while unmuted); F4 mute/unmute (AUDIO_CONTROL); call bar with participants, speaking 🔊 and muted 🔇; the meeting mix plays on the default output (cpal, resampled); sidebar shows `🎧N` on conversations with an active huddle (live `sh_room_join/leave/update`) | done | LIVE (B started a huddle in #social with a 440 Hz tone → `🎧1` appeared in A's sidebar; F3 joined: call bar listed B speaking and A muted; slacktui's own PipeWire playback stream carried the tone, −29.8 dB at 440 Hz vs −77.5 dB at 2 kHz; B's roster showed A `muted: true`; F3 left and B's roster dropped A) + UNIT (resampler, mixdown, roster rules, huddle tracking). **Microphone capture NOT verified live** (not recording the user's room); the send path itself is verified with `ctl huddle-media --tone`. | 4be3870 |
@@ -126,13 +127,12 @@ Tests: `cargo test` → slack-core 9, huddle 33, slacktui 134, all passing. `car
 
 ## Next (in order, each as a small, separately verified step)
 
-**NEXT UP: D10 — a conversation's notification level back to "default".** F6 → Notifications sets a
-per-conversation level (everything / mentions / nothing) but cannot reset it: Slack refuses `default` the
-way we send it (see `../notes/notifications.md`). Find in the web client how its "Use default settings"
-choice is saved (the pref key and value it writes — perhaps removing the channel's entry from
-`all_notifications_prefs` or a `desktop: "default"` per-channel value via `users.prefs.setNotifications`),
-implement it as a fourth choice, unit-test, verify live on #social as A (read back with `ctl api
-users.prefs.get`) and restore the original setting.
+**NEXT UP: D11 — other workspaces: unread badges and notifications while not shown.** Only the shown
+workspace is connected; the others are silent until Alt+1…9. Design first (keep it light): per other
+workspace a background RTM connection (or periodic `client.counts`) that tracks unread/mention totals and
+raises desktop notifications with the same rules, shown as badges next to the workspace name in the
+sidebar title / status bar. Check what the profile has (the test profile has one workspace per account —
+a second workspace may be needed: ask the user before creating anything). Verify what can be verified.
 
 The roadmap (items 1–15) is complete. Queue from the user (2026-10-18), in this order; run autonomously,
 one verified commit per step:
@@ -161,10 +161,9 @@ D. Queued by the agent on 2026-10-18 when the user said "queue next items as you
   D7. ~~Mark conversations with a draft in the sidebar~~ — done (✎).
   D8. ~~Snippets: check Slack's `snippet_type` list~~ — done (validated; the C++ note was wrong).
   D9. ~~Sections paging~~ — not needed (the page is the whole list; a warning if not).
-  D10. Notifications: let a conversation's level go back to "default" (find how the web client does it;
-       Slack refuses `default` in the way we send it) — NEXT.
+  D10. ~~Notifications: a conversation's level back to "default"~~ — done (`reset`/`default`).
   D11. Other workspaces: unread badges and notifications while not shown (a light background connection
-       per workspace), so Alt+1…9 is not the only way to notice them. Bigger; do last.
+       per workspace), so Alt+1…9 is not the only way to notice them. Bigger; do last — NEXT.
   Needs the user (not queued for autonomous work): an X11 screen-share test against Xvfb (`sudo apt install
   xvfb`); cross-compile checks for Windows/macOS (mingw-w64 / an SDK for the C dependencies); hearing echo
   cancellation live (explicit go-ahead and an explicitly named microphone).
@@ -221,7 +220,7 @@ Hard (huddles video; the user's real camera/screen must not be captured in tests
 - Huddles: roster departures follow the SDK rule (an AUDIO_STREAM_ID_INFO entry with neither attendee id nor muted = left), found when B kept A after A had left; microphone processing (echo cancellation, noise suppression, gain, speaking gate) is unit-tested with synthetic signals only — echo cancellation has not been heard live; no video or screen share.
 - `/upload` reads the whole file into memory and shows no progress; other `/commands` are not recognised (they are sent as text).
 - Thumbnails: only tested in kitty (sixel/iTerm2/half-block paths untested); a failed thumbnail leaves its reserved rows blank (no error text); GIFs show their first frame only.
-- Notifications: a click opens the conversation only on XDG desktops (Linux/BSD), only within 30 minutes, and does not raise the terminal window; a per-conversation level cannot be reset to "default" (Slack refuses `default`), only set to one of the three levels; the DND window length is computed modulo 24 h, so it can be off by an hour across a DST change.
+- Notifications: a click opens the conversation only on XDG desktops (Linux/BSD), only within 30 minutes, and does not raise the terminal window; the DND window length is computed modulo 24 h, so it can be off by an hour across a DST change.
 - A freshly opened kitty window does not report focus-out until it has had one focus-in, so right after launch an unfocused slacktui may think it is focused (harness quirk; normal use is unaffected once the window has been focused).
 - Workspaces: only the shown workspace is connected, so other workspaces show no unread badges or notifications until you switch; switching reloads everything (no per-workspace state is kept).
 - Profile pictures: bots and apps get none (only users); pictures are cached for the session only and not refreshed when someone changes theirs; sixel/iTerm2 not tried.

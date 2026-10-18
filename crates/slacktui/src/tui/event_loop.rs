@@ -1338,7 +1338,14 @@ impl App {
             }
             return;
         }
+        // A reset also drops the mute, which is put back after it.
+        let mut remute = false;
         let (name, value, channel) = match &change {
+            SlackChange::ConversationLevel { channel, level } if level == "default" => {
+                self.ws.notify.channels.remove(channel);
+                remute = self.ws.muted.contains(channel);
+                ("reset", "default".to_string(), Some(channel.clone()))
+            }
             SlackChange::ConversationLevel { channel, level } => {
                 self.ws.notify.channels.insert(channel.clone(), level.clone());
                 ("desktop", level.clone(), Some(channel.clone()))
@@ -1355,7 +1362,11 @@ impl App {
         };
         let (client, tx) = (self.client.clone(), self.net.clone());
         tokio::spawn(async move {
-            if let Err(e) = client.set_notification_pref(name, &value, channel.as_deref()).await {
+            let mut result = client.set_notification_pref(name, &value, channel.as_deref()).await;
+            if remute && result.is_ok() {
+                result = client.set_notification_pref("muted", "true", channel.as_deref()).await;
+            }
+            if let Err(e) = result {
                 let _ = tx.send(Net::Error(format!("saving the notification setting failed: {e}")));
                 if let Ok(prefs) = client.user_prefs().await {
                     let _ = tx.send(Net::Prefs(prefs));
