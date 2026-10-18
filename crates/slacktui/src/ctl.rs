@@ -96,6 +96,8 @@ pub enum Ctl {
     },
 }
 
+const ALL_TYPES: &str = "public_channel,private_channel,mpim,im";
+
 pub fn client(profile: &str, team: Option<&str>) -> Result<Client> {
     let p = Profile::load(profile)?;
     let ws = p.workspace(team).ok_or_else(|| anyhow!("profile '{profile}' has no such workspace"))?;
@@ -116,7 +118,7 @@ pub async fn resolve_channel(client: &Client, spec: &str) -> Result<String> {
         return Ok(client.open_dm(&[&u.id]).await?.id);
     }
     let name = spec.trim_start_matches('#');
-    let convs: Vec<Conversation> = client.conversations_list().await?;
+    let convs: Vec<Conversation> = client.conversations_list(ALL_TYPES).await?;
     convs.into_iter().find(|c| c.name == name).map(|c| c.id).ok_or_else(|| anyhow!("no channel {spec}"))
 }
 
@@ -128,7 +130,7 @@ pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
             println!("{} ({}) in {} ({}) — {}", a.user, a.user_id, a.team, a.team_id, a.url);
         }
         Ctl::Channels => {
-            for c in client.conversations_list().await? {
+            for c in client.conversations_list(ALL_TYPES).await? {
                 let kind = if c.is_im { "dm" } else if c.is_mpim { "group-dm" } else if c.is_private { "private" } else { "channel" };
                 let member = if c.is_dm() || c.is_member { ' ' } else { '-' };
                 println!("{:<12} {:<9} {member} {}", c.id, kind, if c.name.is_empty() { c.user.unwrap_or_default() } else { c.name });

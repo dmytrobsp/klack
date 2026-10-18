@@ -22,6 +22,8 @@ use super::terminal::TerminalGuard;
 /// Results of background API calls.
 enum Net {
     Boot { boot: Value, users: Vec<User>, counts: Option<Value> },
+    /// Public channels, including those we are not in.
+    Channels(Vec<slack_core::types::Conversation>),
     /// A page of history; `older` pages are prepended.
     History { channel: String, page: HistoryPage, older: bool },
     /// Our own message, as returned by chat.postMessage.
@@ -145,6 +147,10 @@ impl App {
     fn sync_current(&mut self) {
         let selected = self.sidebar.selected_id().map(String::from);
         if selected != self.current {
+            if self.ws.preview.is_some() && self.ws.preview != selected {
+                self.ws.preview = None;
+                self.sidebar.rebuild(&self.ws);
+            }
             self.current = selected.clone();
             self.messages.scroll = 0;
             self.messages.selected = None;
@@ -160,7 +166,7 @@ impl App {
 
     /// Mark the current conversation read up to its newest message.
     fn mark_current_read(&mut self) {
-        let Some(channel) = self.current.clone() else { return };
+        let Some(channel) = self.current.clone().filter(|c| !self.ws.is_outside(c)) else { return };
         let Some(latest) = self.ws.timelines.get(&channel).and_then(|t| t.messages.last()).map(|m| m.ts.clone()) else { return };
         if self.marked.get(&channel) == Some(&latest) {
             return;
@@ -514,8 +520,13 @@ impl App {
         }
     }
 
-    /// Show conversation `id` and put the cursor in the composer.
+    /// Show conversation `id` and put the cursor in the composer. A channel we are not in
+    /// is previewed.
     fn jump_to(&mut self, id: &str) {
+        if self.ws.is_outside(id) {
+            self.ws.preview = Some(id.to_string());
+            self.sidebar.rebuild(&self.ws);
+        }
         self.sidebar.select_id(id);
         self.focus = Focus::Composer;
     }
@@ -1238,7 +1249,17 @@ fn handle_net(app: &mut App, msg: Net) {
             app.loading = false;
             app.status.clear();
             app.subscribe_presence();
+            let (client, tx) = (app.client.clone(), app.net.clone());
+            tokio::spawn(async move {
+                match client.conversations_list("public_channel").await {
+                    Ok(list) => {
+                        let _ = tx.send(Net::Channels(list));
+                    }
+                    Err(e) => tracing::warn!("channel list failed: {e}"),
+                }
+            });
         }
+        Net::Channels(list) => app.ws.add_channels(list),
         Net::History { channel, page, older } => {
             let tl = app.ws.timelines.entry(channel).or_default();
             if older {
@@ -1448,6 +1469,8 @@ fn draw_composer(f: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &App,
         " Editing message · Enter save · Esc cancel ".to_string()
     } else if thread {
         format!(" Reply · [{}] also to channel (Alt+A) ", if app.broadcast { "x" } else { " " })
+    } else if app.current.as_deref().is_some_and(|c| app.ws.is_outside(c)) {
+        format!(" Previewing #{target} · /join to join ")
     } else {
         format!(" Message {target} ")
     };

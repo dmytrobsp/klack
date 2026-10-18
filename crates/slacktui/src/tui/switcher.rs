@@ -71,13 +71,16 @@ impl Switcher {
     }
 }
 
-/// Conversations in the sidebar, plus people without a DM; ranked against `query`
-/// (unread first when the query is empty).
+/// Conversations in the sidebar, plus channels we are not in and people without a DM when
+/// searching; ranked against `query` (unread first when the query is empty). A query
+/// starting with `#` lists channels only, so `#` alone browses every channel.
 pub fn entries(ws: &Workspace, query: &str) -> Vec<Entry> {
+    let channels_only = query.trim_start().starts_with('#');
     let q = query.trim().trim_start_matches(['#', '@']).to_lowercase();
     let (channels, dms) = ws.sidebar();
     let mut out: Vec<(u8, Entry)> = Vec::new();
     let mut dm_users = std::collections::HashSet::new();
+    let dms = if channels_only { vec![] } else { dms };
     for id in channels.iter().chain(&dms) {
         let Some(c) = ws.conversations.get(id) else { continue };
         if let Some(u) = &c.user {
@@ -90,7 +93,14 @@ pub fn entries(ws: &Workspace, query: &str) -> Vec<Entry> {
         let detail = if c.is_im { "direct message".into() } else if c.is_mpim { "group message".into() } else if c.is_private { "private channel".into() } else { String::new() };
         out.push((r, Entry { label, detail, target: Target::Conversation(id.clone()), unread }));
     }
-    if !q.is_empty() {
+    if !q.is_empty() || channels_only {
+        for c in ws.conversations.values().filter(|c| !c.is_dm() && !c.is_member && !c.is_archived && !channels.contains(&c.id)) {
+            let Some(r) = (if q.is_empty() { Some(2) } else { rank(&q, &[&c.name]) }) else { continue };
+            let members = c.num_members.map(|n| format!(" · {n} member{}", if n == 1 { "" } else { "s" })).unwrap_or_default();
+            out.push((r + 2, Entry { label: format!("#{}", c.name), detail: format!("not a member{members}"), target: Target::Conversation(c.id.clone()), unread: false }));
+        }
+    }
+    if !q.is_empty() && !channels_only {
         for u in ws.users.values().filter(|u| !u.deleted && !u.is_bot && u.id != ws.self_id && !dm_users.contains(&u.id)) {
             let real = u.real_name.clone().unwrap_or_default();
             if let Some(r) = rank(&q, &[u.display(), &u.name, &real]) {
@@ -133,5 +143,17 @@ mod tests {
         assert_eq!(entries(&w, "bob")[0].target, Target::Conversation("D1".into()));
         let carol = entries(&w, "car");
         assert_eq!(carol[0].target, Target::User("U3".into()));
+    }
+
+    #[test]
+    fn channels_we_are_not_in() {
+        let mut w = ws();
+        w.conversations.insert("C3".into(), Conversation { id: "C3".into(), name: "design".into(), is_channel: true, num_members: Some(4), ..Default::default() });
+        assert!(entries(&w, "").iter().all(|e| e.target != Target::Conversation("C3".into())), "not listed without a query");
+        let found = entries(&w, "desi");
+        assert_eq!((found[0].label.as_str(), found[0].detail.as_str()), ("#design", "not a member · 4 members"));
+        let browse: Vec<_> = entries(&w, "#").into_iter().map(|e| e.label).collect();
+        assert_eq!(browse, vec!["#random", "#general", "#design"], "channels only: unread, members, then the rest");
+        assert!(entries(&w, "#bob").is_empty(), "no people or DMs after #");
     }
 }

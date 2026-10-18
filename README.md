@@ -40,7 +40,7 @@ Press **F1** (or `?`) in the app for the full list. The essentials:
 | Key | |
 |---|---|
 | Tab / Shift+Tab | move between sidebar, messages, composer, thread, reply box |
-| Alt+↑ / Alt+↓, Ctrl+K | previous / next conversation, jump to any conversation or person |
+| Alt+↑ / Alt+↓, Ctrl+K | previous / next conversation, jump to any conversation or person (`#` lists every channel, including ones you are not in) |
 | Ctrl+F | search messages |
 | F2 | conversation details: about, members, pins |
 | F3 / F4 | join or leave the huddle / mute or unmute |

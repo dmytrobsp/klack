@@ -73,6 +73,8 @@ pub struct Workspace {
     pub dnd: Dnd,
     /// Active huddles: channel → (room id, participant user ids).
     pub huddles: HashMap<String, (String, Vec<String>)>,
+    /// A channel we are not in, shown in the sidebar while it is being looked at.
+    pub preview: Option<String>,
 }
 
 /// Do Not Disturb, as `dnd.info` / `dnd_updated` report it (times in epoch seconds).
@@ -183,7 +185,8 @@ impl Workspace {
 
     /// Sidebar order: channels (alphabetical), then DMs (open ones), Slackbot last.
     pub fn sidebar(&self) -> (Vec<String>, Vec<String>) {
-        let mut channels: Vec<&Conversation> = self.conversations.values().filter(|c| !c.is_dm() && c.is_member && !c.is_archived).collect();
+        let shown = |c: &Conversation| c.is_member || self.preview.as_deref() == Some(c.id.as_str());
+        let mut channels: Vec<&Conversation> = self.conversations.values().filter(|c| !c.is_dm() && shown(c) && !c.is_archived).collect();
         channels.sort_by_key(|c| c.name.to_lowercase());
         let mut dms: Vec<&Conversation> = self
             .conversations
@@ -214,6 +217,24 @@ impl Workspace {
         if let Some(prefs) = boot["prefs"]["muted_channels"].as_str() {
             self.muted = prefs.split(',').filter(|s| !s.is_empty()).map(String::from).collect();
         }
+    }
+
+    /// Add channels from `conversations.list` that boot did not report (public channels we
+    /// are not in); known ones keep their boot data.
+    pub fn add_channels(&mut self, list: Vec<Conversation>) {
+        for c in list.into_iter().filter(|c| !c.is_dm()) {
+            match self.conversations.get_mut(&c.id) {
+                Some(known) => known.num_members = known.num_members.or(c.num_members),
+                None => {
+                    self.conversations.insert(c.id.clone(), c);
+                }
+            }
+        }
+    }
+
+    /// A public channel we are not a member of.
+    pub fn is_outside(&self, id: &str) -> bool {
+        self.conversations.get(id).is_some_and(|c| !c.is_dm() && !c.is_member)
     }
 
     /// Apply `client.counts` unread state.
@@ -295,6 +316,22 @@ mod tests {
         let daily = Dnd::from_json(&serde_json::json!({"dnd_enabled":true,"next_dnd_start_ts":1792270800,"next_dnd_end_ts":1792389600}));
         assert!(!daily.active(1792326040.0), "15:20 is outside 00:00–09:00");
         assert!(daily.active(1792270800.0 + 86_400.0 + 3.0 * 3600.0), "03:00 the next night is inside");
+    }
+
+    #[test]
+    fn previewed_channel_is_in_the_sidebar() {
+        let mut ws = Workspace::default();
+        ws.conversations.insert("C1".into(), Conversation { id: "C1".into(), name: "mine".into(), is_channel: true, is_member: true, ..Default::default() });
+        ws.add_channels(vec![
+            Conversation { id: "C1".into(), name: "mine".into(), is_channel: true, num_members: Some(3), ..Default::default() },
+            Conversation { id: "C2".into(), name: "other".into(), is_channel: true, ..Default::default() },
+        ]);
+        assert!(ws.conversations["C1"].is_member, "boot data is kept");
+        assert_eq!(ws.conversations["C1"].num_members, Some(3));
+        assert!(ws.is_outside("C2") && !ws.is_outside("C1"));
+        assert_eq!(ws.sidebar().0, vec!["C1"]);
+        ws.preview = Some("C2".into());
+        assert_eq!(ws.sidebar().0, vec!["C1", "C2"]);
     }
 
     #[test]

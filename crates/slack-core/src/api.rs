@@ -102,12 +102,14 @@ impl Client {
 
     // ---- conversations --------------------------------------------------------------
 
-    pub async fn conversations_list(&self) -> Result<Vec<Conversation>> {
+    /// Every conversation of `types` (e.g. `public_channel,im`) that is not archived. Public
+    /// channels come back whether or not we are a member.
+    pub async fn conversations_list(&self, types: &str) -> Result<Vec<Conversation>> {
         let mut out = Vec::new();
         let mut cursor = String::new();
         loop {
             let mut params: Params = vec![
-                ("types", "public_channel,private_channel,mpim,im".into()),
+                ("types", types.into()),
                 ("exclude_archived", "true".into()),
                 ("limit", "999".into()),
             ];
