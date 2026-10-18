@@ -13,6 +13,7 @@ use slack_core::types::{HistoryPage, User};
 use tokio::sync::mpsc;
 
 use super::composer::{Composer, KeyOutcome};
+use super::keymap::{Action, Context, Keymap, Lookup};
 use super::messages::MessagePane;
 use super::picker::EmojiPicker;
 use super::sidebar::Sidebar;
@@ -89,6 +90,10 @@ enum Focus {
 }
 
 struct App {
+    /// Key bindings (defaults plus keys.toml).
+    keys: Keymap,
+    /// Problems found in keys.toml, shown once the workspace has loaded.
+    key_warnings: Vec<String>,
     /// The profile's workspaces (labels) and which one this is.
     workspaces: Vec<String>,
     workspace: usize,
@@ -117,7 +122,7 @@ struct App {
     /// Open quick switcher (Ctrl+K).
     switcher: Option<super::switcher::Switcher>,
     /// Key help overlay is open.
-    help: bool,
+    help: Option<super::help::Help>,
     /// Open video player.
     player: Option<super::video::Player>,
     /// Whole terminal area on the last draw (to size video frames).
@@ -946,6 +951,19 @@ impl App {
         }
     }
 
+    /// The global action of a key press, if any.
+    fn global(&self, k: &crossterm::event::KeyEvent) -> Option<Action> {
+        self.action_in(Context::Global, k)
+    }
+
+    /// The action of a key press in `context`, if any.
+    fn action_in(&self, context: Context, k: &crossterm::event::KeyEvent) -> Option<Action> {
+        match self.keys.lookup(context, &[], super::keymap::Key::from_event(k)) {
+            Lookup::Action(a) => Some(a),
+            Lookup::Pending | Lookup::None => None,
+        }
+    }
+
     /// Leave this workspace for workspace `index` of the profile.
     fn switch_workspace(&mut self, index: usize) {
         if index >= self.workspaces.len() {
@@ -1204,6 +1222,10 @@ pub async fn run(profile: slack_core::session::Profile, team: Option<&str>) -> R
     let start = profile.workspace(team).ok_or_else(|| anyhow::anyhow!("no such workspace in this profile"))?;
     let mut index = sessions.iter().position(|s| s.team_id == start.team_id && s.user_id == start.user_id).unwrap_or(0);
     let labels = workspace_labels(&sessions);
+    let keymap = super::keymap::load_user();
+    for w in &keymap.1 {
+        tracing::warn!("{w}");
+    }
     tokio::task::spawn_blocking(super::highlight::warm_up);
     let (_guard, mut terminal) = TerminalGuard::enter()?;
     // Query the terminal before the event stream starts reading stdin.
@@ -1212,7 +1234,7 @@ pub async fn run(profile: slack_core::session::Profile, team: Option<&str>) -> R
     let mut events = EventStream::new();
     loop {
         let client = Client::new(sessions[index].clone())?;
-        let (next, kept_media, kept_clipboard) = run_workspace(client, (labels.clone(), index), &mut terminal, &mut events, media, clipboard).await?;
+        let (next, kept_media, kept_clipboard) = run_workspace(client, (labels.clone(), index), &keymap, &mut terminal, &mut events, media, clipboard).await?;
         (media, clipboard) = (kept_media, kept_clipboard);
         match next {
             Some(i) => index = i,
@@ -1236,6 +1258,7 @@ fn workspace_labels(sessions: &[slack_core::session::WorkspaceSession]) -> Vec<S
 async fn run_workspace(
     client: Client,
     workspaces: (Vec<String>, usize),
+    keymap: &(Keymap, Vec<String>),
     terminal: &mut super::terminal::Tui,
     events: &mut EventStream,
     mut media: super::media::Media,
@@ -1247,13 +1270,15 @@ async fn run_workspace(
     media.thumbs.clear();
     let team_name = if workspaces.0.len() > 1 { format!("{}/{} {}", workspaces.1 + 1, workspaces.0.len(), workspaces.0[workspaces.1]) } else { client.session.team_name.clone() };
     let mut app = App {
+        keys: keymap.0.clone(),
+        key_warnings: keymap.1.clone(),
         workspaces: workspaces.0,
         workspace: workspaces.1,
         switch_to: None,
         media,
         viewer: None,
         snippet: None,
-        help: false,
+        help: None,
         switcher: None,
         search: None,
         details: None,
@@ -1349,11 +1374,20 @@ async fn run_workspace(
 /// Returns false to quit.
 fn handle_terminal(app: &mut App, ev: Event) -> bool {
     match ev {
-        Event::Key(k) if k.kind != KeyEventKind::Release && app.help => {
-            if k.code == KeyCode::Char('q') && k.modifiers.contains(KeyModifiers::CONTROL) {
+        Event::Key(k) if k.kind != KeyEventKind::Release && app.help.is_some() => {
+            if app.global(&k) == Some(Action::Quit) {
                 return false;
             }
-            app.help = false;
+            let action = app.action_in(Context::Help, &k);
+            let Some(h) = app.help.as_mut() else { return true };
+            match action {
+                Some(Action::Up) => h.scroll_by(-1),
+                Some(Action::Down) => h.scroll_by(1),
+                Some(Action::PageUp) => h.scroll_by(-h.page()),
+                Some(Action::PageDown) => h.scroll_by(h.page()),
+                Some(Action::Close) => app.help = None,
+                _ => {}
+            }
         }
         Event::Key(k) if k.kind != KeyEventKind::Release && app.switcher.is_some() => {
             let len = app.switcher.as_ref().map(|s| s.entries(&app.ws).len()).unwrap_or(0);
@@ -1414,7 +1448,7 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
                 _ => {}
             }
         }
-        Event::Key(k) if k.kind != KeyEventKind::Release && k.code == KeyCode::F(5) => app.open_activity(),
+        Event::Key(k) if k.kind != KeyEventKind::Release && app.global(&k) == Some(Action::Activity) => app.open_activity(),
         Event::Key(k) if k.kind != KeyEventKind::Release && app.profile.is_some() => {
             let Some(card) = app.profile.as_mut() else { return true };
             match k.code {
@@ -1454,9 +1488,9 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
                 _ => {}
             }
         }
-        Event::Key(k) if k.kind != KeyEventKind::Release && k.code == KeyCode::F(2) => app.open_details(),
-        Event::Key(k) if k.kind != KeyEventKind::Release && k.code == KeyCode::F(3) => app.toggle_huddle(),
-        Event::Key(k) if k.kind != KeyEventKind::Release && k.code == KeyCode::F(4) => {
+        Event::Key(k) if k.kind != KeyEventKind::Release && app.global(&k) == Some(Action::Details) => app.open_details(),
+        Event::Key(k) if k.kind != KeyEventKind::Release && app.global(&k) == Some(Action::Huddle) => app.toggle_huddle(),
+        Event::Key(k) if k.kind != KeyEventKind::Release && app.global(&k) == Some(Action::Mute) => {
             if let Some(call) = app.call.as_mut() {
                 if let Err(e) = call.toggle_mute() {
                     app.status = format!("microphone: {e}");
@@ -1478,17 +1512,19 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
                 _ => {}
             }
         }
-        Event::Key(k) if k.kind != KeyEventKind::Release && k.code == KeyCode::Char('f') && k.modifiers.contains(KeyModifiers::CONTROL) => {
+        Event::Key(k) if k.kind != KeyEventKind::Release && app.global(&k) == Some(Action::Search) => {
             app.search = Some(super::search::Search::default());
         }
-        Event::Key(k) if k.kind != KeyEventKind::Release && k.code == KeyCode::Char('k') && k.modifiers.contains(KeyModifiers::CONTROL) => {
+        Event::Key(k) if k.kind != KeyEventKind::Release && app.global(&k) == Some(Action::Switcher) => {
             app.switcher = Some(super::switcher::Switcher::default());
         }
         Event::Key(k)
             if k.kind != KeyEventKind::Release
-                && (k.code == KeyCode::F(1) || k.code == KeyCode::Char('?') && matches!(app.focus, Focus::Sidebar | Focus::Messages | Focus::Thread)) =>
+                && (app.global(&k) == Some(Action::Help)
+                    || app.focus == Focus::Sidebar && app.action_in(Context::Sidebar, &k) == Some(Action::Help)
+                    || matches!(app.focus, Focus::Messages | Focus::Thread) && app.action_in(Context::Messages, &k) == Some(Action::Help)) =>
         {
-            app.help = true;
+            app.help = Some(super::help::Help::default());
         }
         Event::Key(k) if k.kind != KeyEventKind::Release && app.player.is_some() => {
             let Some(p) = app.player.as_mut() else { return true };
@@ -1590,54 +1626,48 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
             }
         }
         Event::Key(k) if k.kind != KeyEventKind::Release => {
-            let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
-            let alt = k.modifiers.contains(KeyModifiers::ALT);
-            // Global keys.
-            match k.code {
-                KeyCode::Char('q') if ctrl => return false,
-                KeyCode::Char(c @ '1'..='9') if alt => {
-                    app.switch_workspace(c as usize - '1' as usize);
-                    return true;
+            if let Some(action) = app.global(&k) {
+                match action {
+                    Action::Quit => return false,
+                    Action::Workspace1 => app.switch_workspace(0),
+                    Action::Workspace2 => app.switch_workspace(1),
+                    Action::Workspace3 => app.switch_workspace(2),
+                    Action::Workspace4 => app.switch_workspace(3),
+                    Action::Workspace5 => app.switch_workspace(4),
+                    Action::Workspace6 => app.switch_workspace(5),
+                    Action::Workspace7 => app.switch_workspace(6),
+                    Action::Workspace8 => app.switch_workspace(7),
+                    Action::Workspace9 => app.switch_workspace(8),
+                    Action::PrevConversation => app.sidebar.move_by(-1),
+                    Action::NextConversation => app.sidebar.move_by(1),
+                    Action::ScrollUp => {
+                        app.messages.scroll_up(app.messages.area.height.saturating_sub(3) as usize);
+                        app.maybe_load_older();
+                    }
+                    Action::ScrollDown => app.messages.scroll_down(app.messages.area.height.saturating_sub(3) as usize),
+                    Action::FocusNext | Action::FocusPrev => {
+                        let order = app.focus_order();
+                        let pos = order.iter().position(|f| *f == app.focus).unwrap_or(0);
+                        let step = if action == Action::FocusNext { 1 } else { order.len() - 1 };
+                        app.focus = order[(pos + step) % order.len()];
+                    }
+                    _ => {}
                 }
-                KeyCode::Up if alt => {
-                    app.sidebar.move_by(-1);
-                    return true;
-                }
-                KeyCode::Down if alt => {
-                    app.sidebar.move_by(1);
-                    return true;
-                }
-                KeyCode::PageUp => {
-                    app.messages.scroll_up(app.messages.area.height.saturating_sub(3) as usize);
-                    app.maybe_load_older();
-                    return true;
-                }
-                KeyCode::PageDown => {
-                    app.messages.scroll_down(app.messages.area.height.saturating_sub(3) as usize);
-                    return true;
-                }
-                KeyCode::Tab | KeyCode::BackTab => {
-                    let order = app.focus_order();
-                    let pos = order.iter().position(|f| *f == app.focus).unwrap_or(0);
-                    let step = if k.code == KeyCode::Tab { 1 } else { order.len() - 1 };
-                    app.focus = order[(pos + step) % order.len()];
-                    return true;
-                }
-                _ => {}
+                return true;
             }
             match app.focus {
-                Focus::Sidebar => match k.code {
-                    KeyCode::Up | KeyCode::Char('k') => app.sidebar.move_by(-1),
-                    KeyCode::Down | KeyCode::Char('j') => app.sidebar.move_by(1),
-                    KeyCode::Home | KeyCode::Char('g') => app.sidebar.move_by(isize::MIN / 2),
-                    KeyCode::End | KeyCode::Char('G') => app.sidebar.move_by(isize::MAX / 2),
-                    KeyCode::Enter | KeyCode::Char('i') | KeyCode::Esc => app.focus = Focus::Composer,
-                    KeyCode::Char('*') => {
+                Focus::Sidebar => match app.action_in(Context::Sidebar, &k) {
+                    Some(Action::Up) => app.sidebar.move_by(-1),
+                    Some(Action::Down) => app.sidebar.move_by(1),
+                    Some(Action::Top) => app.sidebar.move_by(isize::MIN / 2),
+                    Some(Action::Bottom) => app.sidebar.move_by(isize::MAX / 2),
+                    Some(Action::Open) => app.focus = Focus::Composer,
+                    Some(Action::Star) => {
                         if let Some(id) = app.sidebar.selected_id().map(String::from) {
                             app.toggle_star(id);
                         }
                     }
-                    KeyCode::Char('m') => match app.sidebar.selected_id().map(String::from) {
+                    Some(Action::MoveToSection) => match app.sidebar.selected_id().map(String::from) {
                         Some(id) if app.ws.is_outside(&id) => app.status = "join the channel to file it in a section".into(),
                         Some(id) => app.mover = Some(super::sections::MovePicker::new(&app.ws, id)),
                         None => {}
@@ -1651,49 +1681,50 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
                         _ => app.current.as_ref().and_then(|c| app.ws.timelines.get(c)),
                     };
                     let order: Vec<String> = timeline.map(|t| super::messages::shown_messages(t, in_thread).map(|m| m.ts.clone()).collect()).unwrap_or_default();
+                    let action = app.action_in(Context::Messages, &k);
                     let pane = if in_thread { &mut app.thread_pane } else { &mut app.messages };
-                    match k.code {
-                        KeyCode::Up | KeyCode::Char('k') => {
+                    match action {
+                        Some(Action::Up) => {
                             pane.move_selection(&order, -1);
                             if !in_thread && order.first() == app.messages.selected.as_ref() {
                                 app.maybe_load_older();
                             }
                         }
-                        KeyCode::Down | KeyCode::Char('j') => pane.move_selection(&order, 1),
-                        KeyCode::Home | KeyCode::Char('g') => pane.move_selection(&order, isize::MIN / 2),
-                        KeyCode::End | KeyCode::Char('G') => pane.move_selection(&order, isize::MAX / 2),
-                        KeyCode::Esc if in_thread => app.close_thread(),
-                        KeyCode::Char('i') if in_thread => app.focus = Focus::ThreadComposer,
-                        KeyCode::Esc | KeyCode::Char('i') => app.focus = Focus::Composer,
-                        KeyCode::Enter if !in_thread => {
+                        Some(Action::Down) => pane.move_selection(&order, 1),
+                        Some(Action::Top) => pane.move_selection(&order, isize::MIN / 2),
+                        Some(Action::Bottom) => pane.move_selection(&order, isize::MAX / 2),
+                        Some(Action::Back) if in_thread => app.close_thread(),
+                        Some(Action::Type) if in_thread => app.focus = Focus::ThreadComposer,
+                        Some(Action::Back | Action::Type) => app.focus = Focus::Composer,
+                        Some(Action::OpenThread) if !in_thread => {
                             if let Some(ts) = app.messages.selected.clone() {
                                 app.open_thread(&ts);
                             }
                         }
-                        KeyCode::Char('r') => {
+                        Some(Action::React) => {
                             if let (Some(channel), Some(ts)) = (app.current.clone(), app.selected_ts()) {
                                 app.picker = Some((EmojiPicker::default(), channel, ts));
                             }
                         }
-                        KeyCode::Char('e') => {
+                        Some(Action::Edit) => {
                             if let Some(ts) = app.selected_ts() {
                                 app.start_edit(&ts, in_thread);
                             }
                         }
-                        KeyCode::Char('y') => {
+                        Some(Action::Copy) => {
                             if let Some(ts) = app.selected_ts() {
                                 app.copy_text(&ts);
                             }
                         }
-                        KeyCode::Char('P') => {
+                        Some(Action::Pin) => {
                             if let Some(ts) = app.selected_ts() {
                                 app.toggle_pin(&ts);
                             }
                         }
-                        KeyCode::Char('H') => {
+                        Some(Action::ThreadHuddle) => {
                             let target = app.selected_ts().and_then(|ts| app.current.clone().map(|c| (c, ts)));
                             match target {
-                                _ if app.call.is_some() => app.status = "leave the current huddle first (F3)".into(),
+                                _ if app.call.is_some() => app.status = "leave the current huddle first".into(),
                                 Some((channel, ts)) => {
                                     // A reply's huddle belongs to its thread.
                                     let root = app.ws.find_message(&channel, &ts).and_then(|m| m.thread_ts.clone()).unwrap_or(ts);
@@ -1702,29 +1733,29 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
                                 None => {}
                             }
                         }
-                        KeyCode::Char('u') => {
+                        Some(Action::Profile) => {
                             let m = app.selected_ts().and_then(|ts| app.current.as_deref().and_then(|c| app.ws.find_message(c, &ts)));
                             match m.map(super::profile::people_in).and_then(super::profile::ProfileCard::new) {
                                 Some(card) => app.profile = Some(card),
                                 None => app.status = "no person on this message".into(),
                             }
                         }
-                        KeyCode::Char('s') => {
+                        Some(Action::Save) => {
                             if let Some(ts) = app.selected_ts() {
                                 app.save_files(&ts);
                             }
                         }
-                        KeyCode::Char('o') => {
+                        Some(Action::Open) => {
                             if let Some(ts) = app.selected_ts() {
                                 app.open_viewer(&ts);
                             }
                         }
-                        KeyCode::Char('Y') => {
+                        Some(Action::CopyLink) => {
                             if let Some(ts) = app.selected_ts() {
                                 app.copy_permalink(&ts);
                             }
                         }
-                        KeyCode::Char('d') => {
+                        Some(Action::Delete) => {
                             if let Some(ts) = app.selected_ts() {
                                 app.ask_delete(&ts);
                             }
@@ -1734,7 +1765,7 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
                 }
                 Focus::Composer | Focus::ThreadComposer => {
                     let thread = app.focus == Focus::ThreadComposer;
-                    if thread && alt && k.code == KeyCode::Char('a') {
+                    if thread && app.action_in(Context::Composer, &k) == Some(Action::AlsoToChannel) {
                         app.broadcast = !app.broadcast;
                         return true;
                     }
@@ -1838,7 +1869,11 @@ fn handle_net(app: &mut App, msg: Net) {
             }
             app.sidebar.rebuild(&app.ws);
             app.loading = false;
-            app.status.clear();
+            app.status = match app.key_warnings.as_slice() {
+                [] => String::new(),
+                [one] => one.clone(),
+                [first, rest @ ..] => format!("{first} (and {} more key problems, see the log)", rest.len()),
+            };
             app.subscribe_presence();
             for user in app.ws.unknown_dm_users() {
                 let (client, tx) = (app.client.clone(), app.net.clone());
@@ -2133,10 +2168,12 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     if let Some(m) = &app.mover {
         m.draw(f, body, &app.ws);
     }
-    if app.help {
-        super::help::draw(f, body);
+    if let Some(h) = app.help.as_mut() {
+        h.draw(f, body, &app.keys);
     }
-    f.render_widget(Paragraph::new(format!(" {live} · {info} · F1 help · Tab focus · Alt+↑↓ channel · Ctrl+Q quit")), status);
+    let hint = |a: Action, what: &str| app.keys.first_key(Context::Global, a).map(|k| format!(" · {k} {what}")).unwrap_or_default();
+    let hints = [hint(Action::Help, "help"), hint(Action::FocusNext, "focus"), hint(Action::Switcher, "jump"), hint(Action::Quit, "quit")].concat();
+    f.render_widget(Paragraph::new(format!(" {live} · {info}{hints}")), status);
 }
 
 fn draw_confirm(f: &mut ratatui::Frame, area: ratatui::layout::Rect, question: &str) {

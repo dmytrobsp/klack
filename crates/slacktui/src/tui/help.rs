@@ -1,86 +1,109 @@
-//! Key reference overlay (F1 or `?`).
+//! Key reference overlay (F1 or `?`), drawn from the key bindings in effect.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
+use super::keymap::{ACTIONS, Context, Keymap};
 use super::text::DIM;
 
-/// (section, [(keys, what they do)])
-pub const KEYS: &[(&str, &[(&str, &str)])] = &[
-    ("Everywhere", &[
-        ("Tab / Shift+Tab", "move focus between panes"),
-        ("Alt+↑ / Alt+↓", "previous / next conversation"),
-        ("Ctrl+K", "jump to a conversation or person (# alone: every channel)"),
-        ("Ctrl+F", "search messages"),
-        ("F5", "activity: mentions, reactions, threads (Enter opens)"),
-        ("F2", "conversation details: about, members (Enter: profile), pins"),
-        ("F3 / F4", "join or leave the huddle / mute or unmute"),
-        ("PgUp / PgDn", "scroll messages"),
-        ("Alt+1 … Alt+9", "switch to the profile's workspace 1 … 9 (/workspace lists them)"),
-        ("F1 or ?", "this help"),
-        ("Ctrl+Q", "quit"),
-    ]),
-    ("Sidebar", &[
-        ("↑↓ j k g G · Enter", "choose a conversation · type in it"),
-        ("*", "star / unstar"),
-        ("m", "move to a section (or a new one)"),
-    ]),
-    ("Messages and thread", &[
-        ("↑↓ j k g G", "select a message"),
-        ("Enter", "open its thread"),
-        ("r", "add a reaction"),
-        ("e / d", "edit / delete your message"),
-        ("y / Y", "copy text / link"),
-        ("o", "open image, play video, or view a snippet"),
-        ("s", "save attachments"),
-        ("P", "pin / unpin"),
-        ("H", "start or join a huddle in this message's thread"),
-        ("u", "profile card: author, ←/→ people mentioned; Enter message, h huddle"),
-        ("i", "type (in the thread: reply)"),
-        ("Esc", "back to the composer (in the thread: close it)"),
-    ]),
-    ("Composer", &[
-        ("Enter", "send (Alt/Shift+Enter or Ctrl+J: new line)"),
-        ("↑ in an empty composer", "edit your last message"),
-        ("@ # :", "mention, channel, emoji (Tab/Enter to insert)"),
-        ("Alt+B / I / S / C", "bold, italic, strike, code"),
-        ("Ctrl+W / U / A / E", "delete word / line, line start / end"),
-        ("/upload <path> [text]", "upload a file"),
-        ("/join [#channel]", "join a channel (default: the one previewed)"),
-        ("/leave", "leave the current channel"),
-        ("/dm @a [@b…]", "open a DM, or a group DM with several people"),
-        ("/snippet [lang] [title]", "post the following lines as a snippet"),
-        ("/star · /section rename|delete", "star this conversation · rename / delete its section"),
-        ("/status [:e:] [text] [for 30m|today]", "set your status · /status clear"),
-        ("/away · /active · /dnd 30m|off", "appear away / active · pause notifications"),
-        ("/create[-private] <name>", "create a channel"),
-        ("Alt+A (reply box)", "also send the reply to the channel"),
-        ("Esc", "cancel an edit, else leave the composer"),
-    ]),
-    ("Viewer and player", &[("← → h l", "previous / next image"), ("Space / p", "pause video"), ("↑↓ PgUp PgDn g G · y", "scroll / copy a snippet"), ("Esc / q", "close")]),
+/// Slash commands typed into a composer (not key bindings).
+pub const COMMANDS: &[(&str, &str)] = &[
+    ("/upload <path> [text]", "upload a file"),
+    ("/snippet [lang] [title]", "post the following lines as a snippet"),
+    ("/join [#channel] · /leave", "join (default: the previewed channel) · leave this channel"),
+    ("/create[-private] <name>", "create a channel"),
+    ("/dm @a [@b…]", "open a DM, or a group DM with several people"),
+    ("/star · /section rename|delete", "star this conversation · rename / delete its section"),
+    ("/status [:e:] [text] [for 30m|today]", "set your status · /status clear"),
+    ("/away · /active · /dnd 30m|off", "appear away / active · pause notifications"),
+    ("/workspace [name]", "list the profile's workspaces or switch"),
 ];
 
-pub fn draw(f: &mut Frame, area: Rect) {
-    let width = 76.min(area.width);
-    let rows: u16 = KEYS.iter().map(|(_, k)| k.len() as u16 + 2).sum::<u16>() + 2;
-    let [popup] = Layout::horizontal([Constraint::Length(width)]).flex(Flex::Center).areas(area);
-    let [popup] = Layout::vertical([Constraint::Length(rows.min(area.height))]).flex(Flex::Center).areas(popup);
-    f.render_widget(Clear, popup);
-    let mut lines = Vec::new();
-    for (section, keys) in KEYS {
-        lines.push(Line::styled(*section, Style::default().add_modifier(Modifier::BOLD)));
-        for (k, what) in *keys {
-            lines.push(Line::from(vec![Span::styled(format!("  {k:<24}"), Style::default().fg(Color::Rgb(0x61, 0xaf, 0xef))), Span::raw(*what)]));
-        }
-        lines.push(Line::raw(""));
+#[derive(Debug, Default)]
+pub struct Help {
+    pub scroll: usize,
+    /// Rows shown on the last draw (for paging and clamping).
+    pub height: usize,
+    lines: usize,
+}
+
+impl Help {
+    pub fn scroll_by(&mut self, delta: isize) {
+        let max = self.lines.saturating_sub(self.height);
+        self.scroll = (self.scroll as isize + delta).clamp(0, max as isize) as usize;
     }
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Rgb(0x61, 0xaf, 0xef)))
-        .title(" Keys ")
-        .title_bottom(Line::styled(" any key closes ", Style::default().fg(DIM)).right_aligned());
-    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).block(block), popup);
+
+    pub fn page(&self) -> isize {
+        self.height.saturating_sub(2).max(1) as isize
+    }
+
+    pub fn draw(&mut self, f: &mut Frame, area: Rect, keys: &Keymap) {
+        let width = 92.min(area.width);
+        let [popup] = Layout::horizontal([Constraint::Length(width)]).flex(Flex::Center).areas(area);
+        let [popup] = Layout::vertical([Constraint::Length(area.height.saturating_sub(2).max(5))]).flex(Flex::Center).areas(popup);
+        f.render_widget(Clear, popup);
+        let lines = lines(keys);
+        self.lines = lines.len();
+        self.height = popup.height.saturating_sub(2) as usize;
+        self.scroll_by(0);
+        let close = keys.keys_label(Context::Help, "close");
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Rgb(0x61, 0xaf, 0xef)))
+            .title(" Keys ")
+            .title_bottom(Line::styled(format!(" ↑↓ PgUp PgDn scroll · {close} close · rebind in keys.toml "), Style::default().fg(DIM)).right_aligned());
+        f.render_widget(Paragraph::new(lines).scroll((self.scroll as u16, 0)).block(block), popup);
+    }
+}
+
+fn row(keys: String, what: &str) -> Line<'static> {
+    Line::from(vec![Span::styled(format!("  {keys:<30} "), Style::default().fg(Color::Rgb(0x61, 0xaf, 0xef))), Span::raw(what.to_string())])
+}
+
+/// Every context's bindings, then the slash commands.
+pub fn lines(keys: &Keymap) -> Vec<Line<'static>> {
+    let mut out = Vec::new();
+    for context in Context::ALL {
+        out.push(Line::styled(context.title(), Style::default().add_modifier(Modifier::BOLD)));
+        for info in ACTIONS.iter().filter(|a| a.context == context) {
+            // Workspaces 2…9 are listed as one row.
+            if info.name.starts_with("workspace_") && info.name != "workspace_1" {
+                continue;
+            }
+            let mut label = keys.keys_label(context, info.name);
+            if info.name == "workspace_1" {
+                label = format!("{label} … {}", keys.keys_label(context, "workspace_9"));
+            }
+            let label = if label.is_empty() { "(unbound)".to_string() } else { label };
+            let what = if info.name == "workspace_1" { "switch to the profile's workspace 1 … 9" } else { info.description };
+            out.push(row(label, what));
+        }
+        out.push(Line::raw(""));
+    }
+    out.push(Line::styled("Commands (type in a composer)", Style::default().add_modifier(Modifier::BOLD)));
+    out.extend(COMMANDS.iter().map(|(c, what)| row(c.to_string(), what)));
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn text(lines: &[Line]) -> Vec<String> {
+        lines.iter().map(|l| l.spans.iter().map(|s| s.content.to_string()).collect::<String>()).collect()
+    }
+
+    #[test]
+    fn help_follows_the_bindings() {
+        let (map, _) = Keymap::load("[messages]\nreact = \"R\"\npin = []\n");
+        let rows = text(&lines(&map));
+        let react = rows.iter().find(|r| r.contains("add a reaction")).unwrap();
+        assert!(react.trim_start().starts_with("R "), "{react}");
+        assert!(rows.iter().any(|r| r.contains("(unbound)") && r.contains("pin")));
+        assert!(rows.iter().any(|r| r.contains("Alt+1 … Alt+9")));
+        assert!(!rows.iter().any(|r| r.contains("workspace 2")), "one row for all workspaces");
+    }
 }

@@ -62,6 +62,24 @@ Press **F1** (or `?`) in the app for the full list. The essentials:
 | `/snippet [lang] [title]` + lines | post the lines after the command (Alt+Enter) as a text snippet |
 | Ctrl+Q | quit |
 
+### Rebinding keys
+
+Put your own bindings in `~/.config/slacktui/keys.toml` (macOS: `~/Library/Application Support/io.github.rslack.slacktui/`,
+Windows: `%APPDATA%\rslack\slacktui\config\`). Each table is a context and each entry replaces an action's
+default keys; F1 lists every context and action name, and shows the keys in effect.
+
+```toml
+[global]
+jump_to = ["ctrl+p", "ctrl+k"]
+[messages]
+react = "R"
+pin = []            # unbound
+```
+
+Keys are written like `ctrl+k`, `alt+up`, `shift+tab`, `G`, `f5`, `space`, `pageup`. Plain
+characters cannot be bound where you type (global, composer, search fields). Problems are shown
+in the status bar at startup, and the default stays in place for any entry that has one.
+
 ## Huddles
 
 F3 joins (or starts) the huddle of the conversation you are in, and `H` on a message starts (or

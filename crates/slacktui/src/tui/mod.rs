@@ -11,6 +11,7 @@ pub mod event_loop;
 pub mod files;
 pub mod help;
 pub mod highlight;
+pub mod keymap;
 pub mod live;
 pub mod media;
 pub mod messages;
