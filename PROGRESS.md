@@ -110,25 +110,32 @@ Tests: `cargo test` → slack-core 9, huddle 26, slacktui 124, all passing. `car
 
 ## Next (in order, each as a small, separately verified step)
 
-**The roadmap (items 1–15) is complete.** New queue from the user (2026-10-18), in this order; run
-autonomously, one verified commit per step:
+**NEXT UP: C1 — answer keyframe requests (PLI/FIR) on our video senders.** Today the camera, test
+camera and screen share only send a keyframe every 2 s (and once when media connects); a receiver that
+joins or loses packets waits up to 2 s. webrtc-rs delivers inbound RTCP to the app only if an interceptor
+marks it `Attribute::DeliverToApplication` (see the `TrackLocalEvent::OnRtcpPacket` docs and the webrtc-rs
+`rtcp-processing` example); on PLI/FIR set the session's keyframe flag (`VideoSink::keyframe_wanted`), which
+the encoders already honour. Verify by logging received PLIs while A joins B's running `--video-test` and
+checking the first picture arrives well under 2 s.
 
-A. Never verified live (first):
-  A1. ~~Older-history paging~~ — done (LIVE, #history-paging).
-  A2. ~~Others' edits, deletes, thread replies, typing~~ — done (LIVE; thread typing fixed).
-  A3. ~~Edit/delete rollback~~ — edit LIVE; delete not reproducible (see gaps); found and fixed two bugs.
-  A4. ~~OSC 52 as the primary copy path~~ — done (LIVE).
-  A5. ~~Thumbnails, video and long snippets in the thread pane~~ — done (LIVE; thumbnails fixed).
-  A6. ~~Video off but staying; cancelling the picker; the "Your screen" title~~ — done (LIVE).
-B. Huddle tiling (user's request; choices made by Claude):
-  B1. ~~Subtle speaking indicator~~ — done (lit border, 🔇 in the title).
-  B2. ~~Tiles shrink as people join; overflow scrolls with markers~~ — done.
-  B3. ~~Screen shares get a stage~~ — done.
-  B4. ~~Select and maximize any tile~~ — done.
-C. Then: answer keyframe requests (PLI); echo cancellation; clicking a notification jumps to the
-   conversation; keep thread drafts; clear status-bar messages on a timer; search paging; camera/screen
-   capture on X11/macOS/Windows (written only, untestable here). VP8/VP9 are not needed: with slacktui in the call the meeting's
-receive-codec intersection is H.264 CB and real clients send that (verified with the web client).
+The roadmap (items 1–15) is complete. Queue from the user (2026-10-18), in this order; run autonomously,
+one verified commit per step:
+
+A. ~~Never verified live~~ — done: A1 older-history paging; A2 others' edits/deletes/thread replies/typing
+   (thread typing fixed); A3 edit rollback (delete not reproducible; two bugs fixed); A4 OSC 52; A5 media in
+   the thread pane (thumbnails fixed); A6 video off but staying, cancelling the picker, "Your screen".
+B. ~~Huddle tiling~~ — done: B1 lit-border speaking indicator; B2 tiles shrink and scroll with markers;
+   B3 a stage for screen shares; B4 select and maximize any tile.
+C. Then, in this order:
+  C1. Answer keyframe requests (PLI/FIR) — NEXT (see above).
+  C2. Echo cancellation for the microphone (unit-test with synthetic signals only — never the real mic).
+  C3. Clicking a desktop notification jumps to the conversation.
+  C4. Keep thread drafts (closing the pane or switching channel clears the reply box today).
+  C5. Clear status-bar messages on a timer.
+  C6. Search paging (only the first 50 matches today).
+  C7. Camera/screen capture on X11, macOS and Windows (write only — untestable here; say so).
+VP8/VP9 decoding is not needed: with slacktui in the call the meeting's receive-codec intersection is
+H.264 CB and real clients send that (verified with the web client).
 
 The original roadmap is done. On 2026-10-18 the user asked for the missing features below, in this
 order (agreed after an audit; item 12 added later the same day; run autonomously, one verified commit per step). Where a Slack endpoint is
