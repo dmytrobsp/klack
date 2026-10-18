@@ -65,6 +65,9 @@ pub enum Ctl {
         /// Send a synthetic camera: a moving test pattern (640×360, 15 fps, H.264).
         #[arg(long)]
         video_test: bool,
+        /// With --video-test: switch the camera off after this many seconds and stay.
+        #[arg(long)]
+        video_for: Option<u64>,
         /// Save others' video into this folder: a PNG per person every 2 seconds.
         #[arg(long)]
         record_video: Option<std::path::PathBuf>,
@@ -254,7 +257,7 @@ pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
             }
             sig.close().await;
         }
-        Ctl::HuddleMedia { channel, seconds, tone, record, mic, video_test, record_video, share_test, camera, share_screen } => {
+        Ctl::HuddleMedia { channel, seconds, tone, record, mic, video_test, video_for, record_video, share_test, camera, share_screen } => {
             // Resolve the camera before joining, so a wrong name fails early.
             let mut camera = match camera {
                 Some(wanted) => Some(huddle::camera::find_camera(&huddle::camera::list_cameras(), &wanted)?),
@@ -271,9 +274,13 @@ pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
             let sink = session.pcm_sink();
             let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             let sent = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+            // The test camera has its own stop, so it can end while the session stays.
+            let camera_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             if video_test {
-                spawn_test_video(session.video_sink(), stop.clone(), sent.clone())?;
+                spawn_test_video(session.video_sink(), camera_stop.clone(), sent.clone())?;
             }
+            let video_off = tokio::time::sleep(std::time::Duration::from_secs(video_for.filter(|_| video_test).unwrap_or(u64::MAX / 4)));
+            tokio::pin!(video_off);
             // The screen share is a second attendee that only sends video.
             let share = share.map(|c| Session::start(c, Options { muted: true, send_video: true, receive_video: false }));
             let share = match share {
@@ -334,6 +341,11 @@ pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
             loop {
                 tokio::select! {
                     _ = &mut deadline => break,
+                    _ = &mut video_off, if !camera_stop.load(std::sync::atomic::Ordering::Relaxed) && video_for.is_some() => {
+                        camera_stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                        session.set_camera(false);
+                        println!("camera off (staying in the huddle)");
+                    }
                     _ = tick.tick() => {
                         if let Some(hz) = tone {
                             let frame: Vec<i16> = (0..FRAME_SAMPLES).map(|i| (((phase + i as u64) as f64 * hz * std::f64::consts::TAU / SAMPLE_RATE as f64).sin() * 1500.0) as i16).collect();
@@ -380,6 +392,7 @@ pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
                 }
             }
             stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            camera_stop.store(true, std::sync::atomic::Ordering::Relaxed);
             drop(capture);
             drop(screen);
             if video_test || share_test || share_screen || camera.is_some() {

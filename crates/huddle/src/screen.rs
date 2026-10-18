@@ -41,13 +41,20 @@ impl ScreenCapture {
 
         let proxy = Screencast::new().await.context("no screen-cast portal")?;
         let session = proxy.create_session(Default::default()).await?;
+        // Cancelling the desktop's picker surfaces as different portal errors (Hyprland's
+        // reports an invalid session); say what happened, keep the details in the log.
+        let not_started = |e: ashpd::Error| {
+            tracing::warn!("screen share portal: {e}");
+            anyhow!("not started (cancelled, or refused by the desktop)")
+        };
         proxy
             .select_sources(
                 &session,
                 SelectSourcesOptions::default().set_cursor_mode(CursorMode::Embedded).set_sources(SourceType::Monitor | SourceType::Window).set_multiple(false).set_persist_mode(PersistMode::DoNot),
             )
-            .await?;
-        let streams = proxy.start(&session, None, Default::default()).await?.response().map_err(|e| anyhow!("screen sharing was not started: {e}"))?;
+            .await
+            .map_err(not_started)?;
+        let streams = proxy.start(&session, None, Default::default()).await.map_err(not_started)?.response().map_err(not_started)?;
         let stream = streams.streams().first().ok_or_else(|| anyhow!("nothing was chosen to share"))?;
         let node = stream.pipe_wire_node_id();
         let kind = stream.source_type().map_or("screen".to_string(), |t| format!("{t:?}").to_lowercase());
