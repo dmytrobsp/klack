@@ -108,6 +108,8 @@ struct App {
     workspaces: Vec<String>,
     /// Unread state of the other workspaces (polled in the background).
     others: super::others::Badges,
+    /// A notification clicked in another workspace, opened once this one has booted.
+    open_after: super::others::OpenAfter,
     workspace: usize,
     /// Leave this workspace for another (index into `workspaces`).
     switch_to: Option<usize>,
@@ -1108,6 +1110,16 @@ impl App {
         }
     }
 
+    /// Open what a clicked notification is about: the message (or thread reply), or the
+    /// conversation.
+    fn open_target(&mut self, target: super::notify::Target) {
+        tracing::debug!(?target, "notification clicked");
+        match target.ts {
+            Some(ts) => self.open_hit(super::search::Hit { channel: target.channel, ts, thread_ts: target.thread_ts, user: None, text: String::new() }),
+            None => self.jump_to(&target.channel),
+        }
+    }
+
     /// What clicking a desktop notification about `target` does: open it here (a click
     /// after switching workspace finds this session gone and does nothing).
     fn on_click(&self, target: super::notify::Target) -> Box<dyn FnOnce() + Send> {
@@ -1835,6 +1847,9 @@ pub async fn run(profile: slack_core::session::Profile, team: Option<&str>) -> R
     let badges: super::others::Badges = Default::default();
     let wake = std::sync::Arc::new(tokio::sync::Notify::new());
     super::others::spawn(sessions.clone(), shown.clone(), badges.clone(), wake.clone());
+    let (clicks_tx, mut clicks) = mpsc::unbounded_channel();
+    super::others::spawn_watchers(sessions.clone(), labels.clone(), shown.clone(), clicks_tx);
+    let open_after: super::others::OpenAfter = Default::default();
 
     for w in &keymap.1 {
         tracing::warn!("{w}");
@@ -1866,7 +1881,7 @@ pub async fn run(profile: slack_core::session::Profile, team: Option<&str>) -> R
         // Keys may have been rebound in the preferences meanwhile.
         let mut keymap = super::keymap::load_user();
         keymap.1.extend(settings_problem);
-        let (next, kept_media, kept_clipboard) = run_workspace(client, (labels.clone(), index, badges.clone()), &keymap, &settings, &mut terminal, &mut events, media, clipboard).await?;
+        let (next, kept_media, kept_clipboard) = run_workspace(client, (labels.clone(), index, badges.clone(), open_after.clone()), &mut clicks, &keymap, &settings, &mut terminal, &mut events, media, clipboard).await?;
         (media, clipboard) = (kept_media, kept_clipboard);
         match next {
             Some(i) => index = i,
@@ -1889,7 +1904,8 @@ fn workspace_labels(sessions: &[slack_core::session::WorkspaceSession]) -> Vec<S
 /// One workspace until quit (None) or a switch (Some(index)); hands back what outlives it.
 async fn run_workspace(
     client: Client,
-    workspaces: (Vec<String>, usize, super::others::Badges),
+    workspaces: (Vec<String>, usize, super::others::Badges, super::others::OpenAfter),
+    clicks: &mut mpsc::UnboundedReceiver<super::others::Click>,
     keymap: &(Keymap, Vec<String>),
     settings: &super::settings::Settings,
     terminal: &mut super::terminal::Tui,
@@ -1909,6 +1925,7 @@ async fn run_workspace(
         workspaces: workspaces.0,
         workspace: workspaces.1,
         others: workspaces.2,
+        open_after: workspaces.3,
         switch_to: None,
         media,
         viewer: None,
@@ -1986,6 +2003,14 @@ async fn run_workspace(
                 app.refresh_completion();
             }
             Some(msg) = net_rx.recv() => handle_net(&mut app, msg),
+            Some((index, target)) = clicks.recv() => {
+                if index == app.workspace {
+                    app.open_target(target);
+                } else {
+                    *app.open_after.lock().unwrap_or_else(|e| e.into_inner()) = Some((index, target));
+                    app.switch_workspace(index);
+                }
+            }
             Some(ev) = rtm.events.recv() => handle_rtm(&mut app, ev),
             Some(ev) = async {
                 match app.call.as_mut() {
@@ -2578,13 +2603,7 @@ fn handle_rtm(app: &mut App, ev: slack_core::rtm::RtmEvent) {
 
 fn handle_net(app: &mut App, msg: Net) {
     match msg {
-        Net::NotificationClicked(target) => {
-            tracing::debug!(?target, "notification clicked");
-            match target.ts {
-                Some(ts) => app.open_hit(super::search::Hit { channel: target.channel, ts, thread_ts: target.thread_ts, user: None, text: String::new() }),
-                None => app.jump_to(&target.channel),
-            }
-        }
+        Net::NotificationClicked(target) => app.open_target(target),
         Net::Boot { boot, users, counts } => {
             for u in users {
                 app.ws.users.insert(u.id.clone(), u);
@@ -2601,6 +2620,10 @@ fn handle_net(app: &mut App, msg: Net) {
                 [first, rest @ ..] => format!("{first} (and {} more key problems, see the log)", rest.len()),
             };
             app.subscribe_presence();
+            let after = app.open_after.lock().unwrap_or_else(|e| e.into_inner()).take_if(|(i, _)| *i == app.workspace);
+            if let Some((_, target)) = after {
+                app.open_target(target);
+            }
             for user in app.ws.unknown_dm_users() {
                 let (client, tx) = (app.client.clone(), app.net.clone());
                 tokio::spawn(async move {

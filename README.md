@@ -34,7 +34,8 @@ Sessions are saved per profile in `~/.config/slacktui/<profile>/session.json` (o
 permissions). Use `--profile NAME` to keep several accounts apart. Signing in to more workspaces
 with the same profile adds them to it: inside the app, `Alt+1 … Alt+9` switches between them
 and `/workspace [name]` lists them or switches by name. The status bar notes unread messages in the
-others ("Alt+2 @3": three unread DMs or mentions there; "Alt+2 •": something unread), checked every 30 s.
+others ("Alt+2 @3": three unread DMs or mentions there; "Alt+2 •": something unread), checked every 30 s,
+and their desktop notifications still arrive (titled with the workspace); clicking one switches there.
 
 ## Keys
 

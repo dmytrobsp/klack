@@ -1,5 +1,6 @@
-//! Unread state of the profile's other workspaces (only the shown one is connected): polled
-//! with `client.counts` and shown in the status bar after the shown workspace's counts.
+//! The profile's other workspaces (only the shown one has the UI): their unread state, polled
+//! with `client.counts` and shown in the status bar, and their desktop notifications, from a
+//! headless watcher per workspace (boot data + RTM, the same notification rules).
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -57,6 +58,70 @@ pub fn spawn(sessions: Vec<WorkspaceSession>, shown: Arc<AtomicUsize>, badges: B
             }
         }
     });
+}
+
+/// A click on a notification from workspace `.0`.
+pub type Click = (usize, super::notify::Target);
+
+/// Where a click from another workspace leads once that workspace has booted.
+pub type OpenAfter = Arc<Mutex<Option<Click>>>;
+
+/// Start a headless watcher for every workspace of a profile with several; each notifies
+/// only while its workspace is not the shown one (that one notifies itself).
+pub fn spawn_watchers(sessions: Vec<WorkspaceSession>, labels: Vec<String>, shown: Arc<AtomicUsize>, clicks: tokio::sync::mpsc::UnboundedSender<Click>) {
+    if sessions.len() < 2 {
+        return;
+    }
+    for (index, (session, label)) in sessions.into_iter().zip(labels).enumerate() {
+        let (shown, clicks) = (shown.clone(), clicks.clone());
+        tokio::spawn(async move {
+            if let Err(e) = watch(index, session, label, shown, clicks).await {
+                tracing::warn!("watching workspace {}: {e}", index + 1);
+            }
+        });
+    }
+}
+
+async fn watch(index: usize, session: WorkspaceSession, label: String, shown: Arc<AtomicUsize>, clicks: tokio::sync::mpsc::UnboundedSender<Click>) -> anyhow::Result<()> {
+    use super::state::{Dnd, Workspace};
+    let client = Client::new(session)?;
+    let (boot, users) = tokio::join!(client.user_boot(), client.users_list());
+    let mut ws = Workspace::default();
+    for u in users? {
+        ws.users.insert(u.id.clone(), u);
+    }
+    ws.apply_boot(&boot?);
+    let mut rtm = slack_core::rtm::spawn(client.clone());
+    while let Some(ev) = rtm.events.recv().await {
+        let slack_core::rtm::RtmEvent::Event(v) = ev else { continue };
+        let fx = super::live::apply(&mut ws, &v, None);
+        if shown.load(Ordering::Relaxed) == index {
+            continue;
+        }
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64();
+        if ws.dnd.stale(now) {
+            match client.call_raw("dnd.info", &[]).await {
+                Ok(d) => ws.dnd = Dnd::from_json(&d),
+                Err(e) => tracing::debug!("dnd.info of workspace {}: {e}", index + 1),
+            }
+        }
+        let note = match (&fx.incoming, &fx.huddle_started) {
+            (Some((channel, m)), _) => super::notify::notification(&ws, channel, m, false, now).map(|n| (n, super::notify::Target::message(channel, m))),
+            (None, Some((channel, user))) => super::notify::huddle_notification(&ws, channel, user, false, now, &format!("Alt+{}, then F3,", index + 1))
+                .map(|n| (n, super::notify::Target { channel: channel.clone(), ts: None, thread_ts: None })),
+            _ => None,
+        };
+        let Some(((title, body), target)) = note else { continue };
+        let (settings, _) = super::settings::load();
+        tracing::debug!(workspace = index + 1, channel = target.channel, "notification from another workspace");
+        if settings.notifications.desktop {
+            let clicks = clicks.clone();
+            super::notify::show(format!("{title} · {label}"), body, &settings, Some(Box::new(move || {
+                let _ = clicks.send((index, target));
+            })));
+        }
+    }
+    Ok(())
 }
 
 /// The status bar's note on the other workspaces: " · Alt+2 @3" for something needing
