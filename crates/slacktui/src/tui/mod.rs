@@ -6,6 +6,7 @@ pub mod composer;
 pub mod event_loop;
 pub mod live;
 pub mod messages;
+pub mod notify;
 pub mod picker;
 pub mod sidebar;
 pub mod state;

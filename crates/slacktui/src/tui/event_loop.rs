@@ -45,6 +45,8 @@ enum Focus {
 }
 
 struct App {
+    /// The terminal window has focus (focus-change reporting).
+    terminal_focused: bool,
     /// Open @/#/: suggestion list.
     completion: Option<super::autocomplete::Completion>,
     /// Suggestions closed with Esc for this (composer, token start) until the token changes.
@@ -449,6 +451,7 @@ pub async fn run(client: Client) -> Result<()> {
     spawn_boot(client.clone(), net_tx.clone());
     let mut rtm = slack_core::rtm::spawn(client.clone());
     let mut app = App {
+        terminal_focused: true,
         completion: None,
         completion_dismissed: None,
         composer_area: Default::default(),
@@ -684,6 +687,10 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
                 }
             }
         }
+        Event::FocusGained | Event::FocusLost => {
+            app.terminal_focused = matches!(ev, Event::FocusGained);
+            tracing::debug!(focused = app.terminal_focused, "terminal focus");
+        }
         Event::Paste(text) if app.focus == Focus::Composer => app.composer.insert_str(&text.replace("\r\n", "\n")),
         Event::Paste(text) if app.focus == Focus::ThreadComposer => app.thread_composer.insert_str(&text.replace("\r\n", "\n")),
         Event::Mouse(m) => match m.kind {
@@ -724,6 +731,19 @@ fn handle_rtm(app: &mut App, ev: slack_core::rtm::RtmEvent) {
             let fx = super::live::apply(&mut app.ws, &v, app.current.as_deref());
             if fx.rebuild_sidebar {
                 app.sidebar.rebuild(&app.ws);
+            }
+            if let Some((channel, m)) = fx.incoming {
+                let in_view = if m.is_reply() {
+                    app.thread.as_ref().is_some_and(|(c, t)| *c == channel && m.thread_ts.as_ref() == Some(t))
+                } else {
+                    app.current.as_deref() == Some(channel.as_str())
+                };
+                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64();
+                let note = super::notify::notification(&app.ws, &channel, &m, app.terminal_focused && in_view, now);
+                tracing::debug!(channel, ts = m.ts, in_view, focused = app.terminal_focused, dnd = ?app.ws.dnd, notify = note.is_some(), "incoming message");
+                if let Some((title, body)) = note {
+                    super::notify::show(title, body);
+                }
             }
         }
     }

@@ -135,6 +135,7 @@ pub fn apply(ws: &mut Workspace, ev: &Value, current: Option<&str>) -> Effects {
                 c.last_read = ev["ts"].as_str().map(String::from);
             }
         }
+        "dnd_updated" => ws.dnd = super::state::Dnd::from_json(&ev["dnd_status"]),
         "presence_change" => {
             let active = ev["presence"] == "active";
             let users: Vec<String> = match ev["users"].as_array() {
