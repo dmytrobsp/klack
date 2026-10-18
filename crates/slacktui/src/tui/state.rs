@@ -160,9 +160,15 @@ impl Workspace {
         if c.is_im {
             c.user.as_deref().map(|u| self.user_name(u)).unwrap_or_else(|| c.id.clone())
         } else if c.is_mpim {
-            // mpdm-alice--bob-1 → alice, bob
+            // mpdm-me--alice--bob-1 → Alice, Bob (without ourselves, display names where known)
+            let me = self.users.get(&self.self_id).map(|u| u.name.as_str());
             let core = c.name.trim_start_matches("mpdm-").trim_end_matches("-1");
-            core.split("--").collect::<Vec<_>>().join(", ")
+            let names: Vec<String> = core
+                .split("--")
+                .filter(|h| Some(*h) != me)
+                .map(|h| self.users.values().find(|u| u.name == h).map(|u| u.display().to_string()).unwrap_or_else(|| h.to_string()))
+                .collect();
+            names.join(", ")
         } else {
             c.name.clone()
         }
@@ -336,8 +342,13 @@ mod tests {
 
     #[test]
     fn mpim_label() {
-        let ws = Workspace::default();
+        let mut ws = Workspace { self_id: "UME".into(), ..Default::default() };
         let c = Conversation { is_mpim: true, name: "mpdm-alice--bob--carol-1".into(), ..Default::default() };
         assert_eq!(ws.conversation_label(&c), "alice, bob, carol");
+        ws.users.insert("UME".into(), User { id: "UME".into(), name: "alice".into(), ..Default::default() });
+        let mut bob = User { id: "U2".into(), name: "bob".into(), ..Default::default() };
+        bob.profile.display_name = "Bob B".into();
+        ws.users.insert("U2".into(), bob);
+        assert_eq!(ws.conversation_label(&c), "Bob B, carol", "without ourselves, display names where known");
     }
 }

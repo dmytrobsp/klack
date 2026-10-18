@@ -251,7 +251,7 @@ impl App {
         if c.is_empty() {
             return;
         }
-        match super::commands::parse(&c.text()) {
+        match super::commands::parse(&c.text(), &c.to_mrkdwn()) {
             Some(Ok(cmd)) => {
                 c.push_history(c.text());
                 c.clear();
@@ -305,6 +305,7 @@ impl App {
                 Some(_) => self.confirm = Some(Confirm::Leave(channel)),
                 None => {}
             },
+            Command::Dm(people) => self.open_group(people),
             Command::Create { name, private } => {
                 self.status = format!("creating #{name}…");
                 let (client, tx) = (self.client.clone(), self.net.clone());
@@ -312,6 +313,48 @@ impl App {
                     let _ = tx.send(match client.create_channel(&name, private).await {
                         Ok(channel) => Net::Joined { channel, created: true },
                         Err(e) => Net::Error(format!("creating #{name} failed: {e}")),
+                    });
+                });
+            }
+        }
+    }
+
+    /// `/dm`: the DM with one person, or a group DM with several.
+    fn open_group(&mut self, people: Vec<super::commands::Recipient>) {
+        use super::commands::Recipient;
+        let mut ids = Vec::new();
+        for p in people {
+            let id = match p {
+                Recipient::Id(id) => Some(id),
+                Recipient::Name(name) => {
+                    let name = name.to_lowercase();
+                    let live = || self.ws.users.values().filter(|u| !u.deleted);
+                    live().find(|u| u.name.to_lowercase() == name).or_else(|| live().find(|u| u.display().to_lowercase() == name)).map(|u| u.id.clone())
+                }
+            };
+            match id {
+                Some(id) if id == self.ws.self_id || ids.contains(&id) => {}
+                Some(id) => ids.push(id),
+                None => {
+                    self.status = "no such person (use @ to pick from the list)".into();
+                    return;
+                }
+            }
+        }
+        match ids.len() {
+            0 => self.status = "name someone besides yourself".into(),
+            1 => self.open_dm_with(ids.remove(0)),
+            _ => {
+                self.status = "opening the group DM…".into();
+                let (client, tx) = (self.client.clone(), self.net.clone());
+                tokio::spawn(async move {
+                    let users: Vec<&str> = ids.iter().map(String::as_str).collect();
+                    let _ = tx.send(match client.open_dm(&users).await {
+                        Ok(mut c) => {
+                            c.is_mpim = true;
+                            Net::DmOpened(c)
+                        }
+                        Err(e) => Net::Error(format!("opening the group DM failed: {e}")),
                     });
                 });
             }

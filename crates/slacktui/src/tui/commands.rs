@@ -9,9 +9,39 @@ pub enum Command {
     Join(Option<String>),
     Leave,
     Create { name: String, private: bool },
+    /// Open a DM, or a group DM with several people.
+    Dm(Vec<Recipient>),
 }
 
-pub fn parse(text: &str) -> Option<Result<Command, String>> {
+#[derive(Debug, PartialEq, Eq)]
+pub enum Recipient {
+    /// An autocompleted mention.
+    Id(String),
+    /// A typed handle or display name without spaces.
+    Name(String),
+}
+
+/// Most people in a group DM besides yourself (Slack allows nine in all).
+pub const MAX_GROUP: usize = 8;
+
+/// Parse a composer's contents. `mrkdwn` is the same text with autocompleted mentions as
+/// `<@U…>`, which `/dm` needs because display names may contain spaces.
+pub fn parse(text: &str, mrkdwn: &str) -> Option<Result<Command, String>> {
+    if let Some(rest) = mrkdwn.trim().strip_prefix("/dm").filter(|r| r.is_empty() || r.starts_with(char::is_whitespace)) {
+        let people: Vec<Recipient> = rest
+            .split(|c: char| c.is_whitespace() || c == ',')
+            .filter(|t| !t.is_empty())
+            .map(|t| match t.strip_prefix("<@").and_then(|t| t.strip_suffix('>')) {
+                Some(id) => Recipient::Id(id.to_string()),
+                None => Recipient::Name(t.trim_start_matches('@').to_string()),
+            })
+            .collect();
+        return Some(match people.len() {
+            0 => Err("usage: /dm @person [@person…]".into()),
+            n if n > MAX_GROUP => Err(format!("a group DM can have at most {MAX_GROUP} other people")),
+            _ => Ok(Command::Dm(people)),
+        });
+    }
     if let Some(upload) = parse_upload(text) {
         return Some(upload.map(Command::Upload));
     }
@@ -37,6 +67,22 @@ pub fn parse(text: &str) -> Option<Result<Command, String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parse(text: &str) -> Option<Result<Command, String>> {
+        super::parse(text, text)
+    }
+
+    #[test]
+    fn dm_recipients() {
+        assert_eq!(
+            super::parse("/dm @Ann Lee @bob", "/dm <@U1> @bob"),
+            Some(Ok(Command::Dm(vec![Recipient::Id("U1".into()), Recipient::Name("bob".into())])))
+        );
+        assert_eq!(parse("/dm bob,carol"), Some(Ok(Command::Dm(vec![Recipient::Name("bob".into()), Recipient::Name("carol".into())]))));
+        assert!(matches!(parse("/dm"), Some(Err(_))));
+        assert!(matches!(parse("/dm a b c d e f g h i"), Some(Err(_))));
+        assert_eq!(parse("/dmx"), None);
+    }
 
     #[test]
     fn commands() {
