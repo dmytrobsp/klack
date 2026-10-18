@@ -106,6 +106,12 @@ Medium:
 13. Preferences menu: availability, notifications (per-channel all/mentions/nothing, keywords), VIP, appearance (theme/colours, compact mode), messages & media (inline images/video on/off, emoji style), language & region (time zone, 12/24 h, date format; i18n scaffolding), audio & video (devices). Save to a config file; Slack-side prefs via `users.prefs.*`.
 
 Hard (huddles video; the user's real camera/screen must not be captured in tests without them):
+Added by the user on 2026-10-18 (after item 13, before the video items):
+13b. Notification sounds: an optional, configurable sound with desktop notifications (on/off, which sound, maybe per kind).
+13c. Huddle threads: from a huddle, view and post in the huddle's thread (`thread_root_ts`).
+13d. Huddle mic activity: a live speaking/level indicator for every participant and for yourself.
+13e. VIP on the profile card: always visible (VIP or not), with a design pass — e.g. a "VIP" label in the card's top-right border.
+13f. Extended mouse support: hover highlight/shading, right-click context menus (messages, sidebar entries, …).
 14. View other participants' webcam and screen share (receive video over WebRTC, decode, draw like the video player).
 15. Send your own webcam, then screen share (camera capture, VP8/H.264 encode; Wayland needs the screen-cast portal + PipeWire).
 
