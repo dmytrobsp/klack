@@ -237,6 +237,10 @@ impl App {
     /// Follow the sidebar selection into the message pane.
     fn sync_current(&mut self) {
         let selected = self.sidebar.selected_id().map(String::from);
+        // On a folded section's header the conversation stays as it was.
+        if selected.is_none() && self.sidebar.selected_folded().is_some() {
+            return;
+        }
         if selected != self.current {
             if self.ws.preview.is_some() && self.ws.preview != selected {
                 self.ws.preview = None;
@@ -779,7 +783,9 @@ impl App {
             Action::Down => self.sidebar.move_by(1),
             Action::Top => self.sidebar.move_by(isize::MIN / 2),
             Action::Bottom => self.sidebar.move_by(isize::MAX / 2),
+            Action::Open if self.sidebar.selected_folded().is_some() => self.sidebar.toggle_selected_fold(&self.ws, self.current.as_deref()),
             Action::Open => self.focus = Focus::Composer,
+            Action::FoldSection => self.sidebar.toggle_selected_fold(&self.ws, self.current.as_deref()),
             Action::Star => {
                 if let Some(id) = self.sidebar.selected_id().map(String::from) {
                     self.toggle_star(id);
@@ -1074,7 +1080,7 @@ impl App {
         if self.current.as_deref() == Some(hit.channel.as_str()) {
             self.show_hit(hit);
         } else {
-            self.sidebar.select_id(&hit.channel);
+            self.sidebar.select_id(&self.ws, &hit.channel);
             self.pending_hit = Some(hit);
         }
     }
@@ -1154,7 +1160,7 @@ impl App {
             self.ws.preview = Some(id.to_string());
             self.sidebar.rebuild(&self.ws);
         }
-        self.sidebar.select_id(id);
+        self.sidebar.select_id(&self.ws, id);
         self.focus = Focus::Composer;
     }
 
@@ -2107,7 +2113,7 @@ async fn run_workspace(
             settings: settings.clone(),
             ..Default::default()
         },
-        sidebar: Sidebar::default(),
+        sidebar: Sidebar::for_account(&client.session.team_id, &client.session.user_id),
         messages: MessagePane::default(),
         current: None,
         status: "loading workspace…".into(),
@@ -2598,8 +2604,8 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
                     Action::Workspace7 => app.switch_workspace(6),
                     Action::Workspace8 => app.switch_workspace(7),
                     Action::Workspace9 => app.switch_workspace(8),
-                    Action::PrevConversation => app.sidebar.move_by(-1),
-                    Action::NextConversation => app.sidebar.move_by(1),
+                    Action::PrevConversation => app.sidebar.move_by_conversation(-1),
+                    Action::NextConversation => app.sidebar.move_by_conversation(1),
                     Action::ScrollUp => {
                         app.messages.scroll_up(app.messages.area.height.saturating_sub(3) as usize);
                         app.maybe_load_older();
@@ -2691,6 +2697,8 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
                     app.accept_completion();
                 } else if app.huddle_view.as_mut().is_some_and(|v| v.click(m.column, m.row)) {
                     app.focus = Focus::Huddle;
+                } else if let Some(name) = app.sidebar.header_at(m.column, m.row) {
+                    app.sidebar.toggle_fold_keeping(&app.ws, &name, app.current.as_deref());
                 } else if app.sidebar.click(m.column, m.row) {
                     app.focus = Focus::Composer;
                 } else if app.messages.click(m.column, m.row) {

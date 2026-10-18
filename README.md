@@ -87,6 +87,7 @@ workspace account in `drafts/<team>-<user>.json` under the local data folder
 | `/status [:emoji:] [text] [for 30m\|2h\|today]` · `/status clear` | set or clear your status |
 | `/away` · `/active` · `/dnd 30m` · `/dnd off` | appear away / active · pause or resume notifications |
 | `*` · `m` (sidebar) | star / unstar · move to a section (or a new one); `/section rename <name>` · `/section delete` (each section's name heads a rule, with a blank row between sections — none in compact mode) |
+| `Space` / `z` (sidebar), click a header | fold / unfold the section: folded, only "▸ name" shows, with the number of its conversations with unread messages and a badge for mentions; Enter on it unfolds too, and going to a conversation inside (Ctrl+K, search, a notification) unfolds it. Kept per workspace account in `sidebar/<team>-<user>.json` under the local data folder |
 | F2 | conversation details: about, members, pins |
 | F3 / F4 / F7 / F8 / F9 / F10 | join or leave the huddle / mute or unmute / open the huddle's thread / huddle view / camera on or off / share your screen or stop |
 | F6 | preferences (also `/prefs`): availability, appearance, messages, region, notifications, audio, keys |

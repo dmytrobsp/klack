@@ -322,6 +322,7 @@ pub enum Action {
     Open,
     Star,
     MoveToSection,
+    FoldSection,
     OpenThread,
     Back,
     Type,
@@ -420,6 +421,7 @@ actions! {
         Open "open" "type in the chosen conversation" ["enter", "i", "esc"]
         Star "star" "star / unstar" ["*"]
         MoveToSection "move_to_section" "move to a section (or a new one)" ["m"]
+        FoldSection "fold_section" "fold / unfold the section (folded: what is unread in it)" ["space", "z"]
         Help "help" "this help" ["?"]
     }
     Messages {
@@ -751,7 +753,7 @@ pub fn hints_for(context: Context) -> &'static [(Action, &'static str)] {
     use Action::*;
     match context {
         Context::Global => &[(Switcher, "jump"), (Search, "search"), (FocusNext, "focus")],
-        Context::Sidebar => &[(Open, "open"), (Star, "star"), (MoveToSection, "section")],
+        Context::Sidebar => &[(Open, "open"), (Star, "star"), (MoveToSection, "section"), (FoldSection, "fold")],
         Context::Messages => &[(OpenThread, "thread"), (React, "react"), (Edit, "edit"), (Profile, "profile"), (Open, "open"), (Back, "back")],
         Context::Composer => &[(Send, "send"), (Newline, "new line"), (Leave, "leave")],
         Context::Completion => &[(Accept, "insert"), (Dismiss, "close")],
