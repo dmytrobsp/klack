@@ -128,7 +128,8 @@ rising arpeggio when you join, and while you are in a huddle a short "pop" when 
 falling pair when someone leaves. A huddle invitation (someone starts one in a DM with you) rings — a
 soft trill every few seconds, with "📞 X invites you to a huddle" in the status bar — until you join (F3,
 from any conversation), decline (Shift+F3), the huddle ends, or it has rung for the set time (30 s); then,
-if "Then decline it on Slack" is on, it is declined for you.
+if "Then decline it on Slack" is on, it is declined for you. When you have been the only one in a
+huddle for a while (300 s by default, adjustable), a quiet melody loops until someone joins or you leave.
 
 F6 → Audio also has the huddle volume, the notification sound volume, a microphone gain, a
 speaking threshold (quieter microphone input is sent as silence, held open 300 ms after you

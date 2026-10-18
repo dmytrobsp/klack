@@ -29,11 +29,15 @@ pub struct Huddle {
     pub ring_sound: String,
     pub ring_timeout_secs: u32,
     pub auto_decline: bool,
+    /// When you have been the only one in a huddle for `alone_secs`, a quiet melody (from
+    /// `sound::ALONE_SOUNDS`) loops until someone joins or you leave.
+    pub alone_sound: String,
+    pub alone_secs: u32,
 }
 
 impl Default for Huddle {
     fn default() -> Self {
-        Huddle { join_sound: "rise".into(), someone_joined: "pop".into(), someone_left: "fall".into(), ring_sound: "ring".into(), ring_timeout_secs: 30, auto_decline: false }
+        Huddle { join_sound: "rise".into(), someone_joined: "pop".into(), someone_left: "fall".into(), ring_sound: "ring".into(), ring_timeout_secs: 30, auto_decline: false, alone_sound: "lullaby".into(), alone_secs: 300 }
     }
 }
 

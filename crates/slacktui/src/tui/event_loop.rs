@@ -2054,6 +2054,15 @@ async fn run_workspace(
     loop {
         app.expire_status(std::time::Instant::now());
         app.ring_tick();
+        // Alone in the huddle for a while: a quiet melody loops until someone joins.
+        let s = &app.ws.settings;
+        let wait = Duration::from_secs(s.huddle.alone_secs.max(1) as u64);
+        let (name, device, volume) = (s.huddle.alone_sound.clone(), super::settings::Settings::device(huddle::devices::OUTPUT_ENV, &s.audio.output), s.audio.sound_volume * super::prefs::ALONE_VOLUME / 100);
+        if let Some(call) = app.call.as_mut().filter(|c| c.connected) {
+            if call.alone_tick(wait, || super::sound::play_looping(&name, device, volume)) {
+                tracing::debug!("alone in the huddle: reminder loops");
+            }
+        }
         terminal.draw(|f| draw(f, &mut app))?;
         app.request_thumbs();
         app.request_activity_messages();

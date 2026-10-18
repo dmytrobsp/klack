@@ -12,6 +12,22 @@ pub const HUDDLE_SOUNDS: &[&str] = &["off", "rise", "pop", "fall", "chime", "pin
 /// The choices for a ringing huddle invitation (played every few seconds).
 pub const RING_SOUNDS: &[&str] = &["off", "ring", "chime", "ping", "knock"];
 
+/// The choices for the reminder when you are alone in a huddle.
+pub const ALONE_SOUNDS: &[&str] = &["off", "lullaby", "chime"];
+
+/// A soft note: slow attack, long gentle decay (for melodies).
+fn soft(hz: f32, ms: u32, volume: f32) -> Vec<f32> {
+    let n = (RATE * ms as f32 / 1000.0) as usize;
+    (0..n)
+        .map(|i| {
+            let t = i as f32 / RATE;
+            let attack = (i as f32 / (RATE * 0.03)).min(1.0);
+            let decay = (-t * 1000.0 / ms as f32 * 2.5).exp();
+            ((2.0 * PI * hz * t).sin() + 0.3 * (4.0 * PI * hz * t).sin()) / 1.3 * attack * decay * volume
+        })
+        .collect()
+}
+
 const RATE: f32 = huddle::session::SAMPLE_RATE as f32;
 
 /// A decaying sine burst of `ms` milliseconds.
@@ -44,6 +60,17 @@ pub fn samples(name: &str) -> Vec<i16> {
         "fall" => [tone(698.46, 110, 0.25), tone(466.16, 220, 0.25)].concat(),
         // A huddle invitation: a soft two-note trill.
         "ring" => (0..6).flat_map(|i| tone(if i % 2 == 0 { 659.25 } else { 830.61 }, 60, 0.28)).collect(),
+        // Alone in a huddle for a while (looped): two slow, quiet pentatonic phrases (~9 s).
+        "lullaby" => {
+            let phrase = |notes: &[(f32, u32)]| notes.iter().flat_map(|(hz, ms)| soft(*hz, *ms, 0.22)).collect::<Vec<f32>>();
+            [
+                phrase(&[(523.25, 420), (659.25, 420), (783.99, 420), (880.0, 640), (783.99, 420), (659.25, 420), (523.25, 1000)]),
+                silence(500),
+                phrase(&[(587.33, 420), (659.25, 420), (783.99, 420), (1046.5, 640), (880.0, 420), (783.99, 420), (659.25, 1100)]),
+                silence(900),
+            ]
+            .concat()
+        }
         _ => vec![],
     };
     f.into_iter().map(|s| (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16).collect()
@@ -59,12 +86,59 @@ pub fn play(name: &str, device: Option<String>, volume: u32) {
     std::thread::spawn(move || match huddle::devices::Speaker::start(device) {
         Ok(mut speaker) => {
             speaker.volume().set(volume as f32 / 100.0);
-            speaker.play(&samples);
+            // The speaker queues at most 0.5 s: feed longer sounds in 100 ms parts, two ahead.
+            let part = RATE as usize / 10;
+            for (i, chunk) in samples.chunks(part).enumerate() {
+                speaker.play(chunk);
+                if i >= 2 {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+            }
             // Let it drain before the stream is dropped.
-            std::thread::sleep(std::time::Duration::from_millis(samples.len() as u64 * 1000 / RATE as u64 + 250));
+            std::thread::sleep(std::time::Duration::from_millis(450));
         }
         Err(e) => tracing::warn!("notification sound: {e}"),
     });
+}
+
+/// A sound playing over and over until this is dropped.
+pub struct Looping(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for Looping {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Play a built-in sound in a loop (None for `off`/`system`), fed like [`play`].
+pub fn play_looping(name: &str, device: Option<String>, volume: u32) -> Option<Looping> {
+    let samples = samples(name);
+    if samples.is_empty() {
+        return None;
+    }
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stopped = stop.clone();
+    std::thread::spawn(move || match huddle::devices::Speaker::start(device) {
+        Ok(mut speaker) => {
+            speaker.volume().set(volume as f32 / 100.0);
+            let part = RATE as usize / 10;
+            let mut ahead = 0;
+            'outer: loop {
+                for chunk in samples.chunks(part) {
+                    if stopped.load(std::sync::atomic::Ordering::Relaxed) {
+                        break 'outer;
+                    }
+                    speaker.play(chunk);
+                    ahead += 1;
+                    if ahead > 2 {
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    }
+                }
+            }
+        }
+        Err(e) => tracing::warn!("looping sound: {e}"),
+    });
+    Some(Looping(stop))
 }
 
 /// The notification server's sound name for "system".
@@ -94,5 +168,9 @@ mod tests {
             let s = samples(name);
             assert!(!s.is_empty() && s.len() < huddle::session::SAMPLE_RATE as usize / 2, "{name}: audible and short");
         }
+        let lullaby = samples("lullaby");
+        let secs = lullaby.len() as f32 / RATE;
+        let peak = lullaby.iter().map(|s| s.unsigned_abs()).max().unwrap();
+        assert!((8.0..11.0).contains(&secs) && (2_000..9_000).contains(&peak), "two quiet phrases of ~9 s: {secs} s, peak {peak}");
     }
 }

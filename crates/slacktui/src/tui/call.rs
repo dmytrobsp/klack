@@ -41,6 +41,11 @@ pub struct Call {
     /// People who joined / left since the last [`Call::take_roster_changes`].
     joined: usize,
     left: usize,
+    /// Since when we are the only person here, and the melody looping since the wait ran out
+    /// (stopped when someone joins or the call ends).
+    alone_since: Option<std::time::Instant>,
+    alone_loop: Option<super::sound::Looping>,
+    alone_started: bool,
     sink: PcmSink,
     /// Open only while unmuted, so a muted call never touches the microphone.
     mic: Option<Microphone>,
@@ -196,6 +201,9 @@ impl Call {
             connected_at: None,
             joined: 0,
             left: 0,
+            alone_since: None,
+            alone_loop: None,
+            alone_started: false,
             sink,
             mic: None,
             speaker_error,
@@ -298,6 +306,12 @@ impl Call {
                     self.left += left;
                 }
                 self.roster = roster;
+                let alone = self.roster.iter().all(|p| p.attendee_id == self.self_attendee);
+                if !alone {
+                    (self.alone_since, self.alone_loop, self.alone_started) = (None, None, false);
+                } else if self.alone_since.is_none() {
+                    self.alone_since = Some(std::time::Instant::now());
+                }
             }
             SessionEvent::Levels(l) => self.levels = l.into_iter().collect(),
             SessionEvent::Error(e) => tracing::warn!("huddle: {e}"),
@@ -307,6 +321,16 @@ impl Call {
             SessionEvent::Ended => return true,
         }
         false
+    }
+
+    /// Start looping `sound` once we have been alone for `wait` (once per time alone).
+    pub fn alone_tick(&mut self, wait: std::time::Duration, sound: impl FnOnce() -> Option<super::sound::Looping>) -> bool {
+        if self.alone_started || !alone_long_enough(self.alone_since, std::time::Instant::now(), wait) {
+            return false;
+        }
+        self.alone_started = true;
+        self.alone_loop = sound();
+        true
     }
 
     /// People who joined and left since the last call (for the huddle sounds).
@@ -414,6 +438,11 @@ impl Call {
 /// After connecting, roster changes this soon are the people already there arriving.
 const ROSTER_SETTLE: std::time::Duration = std::time::Duration::from_secs(3);
 
+/// Whether we have been alone (since `since`) for at least `wait`.
+fn alone_long_enough(since: Option<std::time::Instant>, now: std::time::Instant, wait: std::time::Duration) -> bool {
+    since.is_some_and(|s| now.duration_since(s) >= wait)
+}
+
 /// How many people (other than `me`) joined and left between two rosters.
 fn roster_changes(old: &[Participant], new: &[Participant], me: &str) -> (usize, usize) {
     let had = |r: &[Participant], id: &str| r.iter().any(|p| p.attendee_id == id);
@@ -424,6 +453,16 @@ fn roster_changes(old: &[Participant], new: &[Participant], me: &str) -> (usize,
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn alone_reminders() {
+        let t0 = std::time::Instant::now();
+        let m = |s: u64| t0 + std::time::Duration::from_secs(s);
+        let wait = std::time::Duration::from_secs(300);
+        assert!(!super::alone_long_enough(None, m(1000), wait), "not alone");
+        assert!(!super::alone_long_enough(Some(t0), m(299), wait));
+        assert!(super::alone_long_enough(Some(t0), m(300), wait), "after the wait");
+    }
+
     #[test]
     fn roster_changes_count_others() {
         // Shaped like the real rosters (attendee ids, `<team>-<room>-<user>`).
