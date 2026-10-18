@@ -9,6 +9,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
 use super::settings::Settings;
+use super::state::{LEVELS, Workspace, level_label};
 use super::text::DIM;
 
 /// Day-separator formats offered (strftime).
@@ -23,6 +24,12 @@ pub enum Field {
     Clock24,
     DateFormat,
     Desktop,
+    /// Slack: the level for the conversation on screen.
+    ConversationLevel,
+    /// Slack: the default level for channels.
+    ChannelDefault,
+    /// Slack: words that notify like a mention.
+    Keywords,
     Input,
     Output,
 }
@@ -31,7 +38,7 @@ pub const CATEGORIES: &[(&str, &[Field])] = &[
     ("Appearance", &[Field::Compact]),
     ("Messages & media", &[Field::InlineImages, Field::Avatars, Field::EmojiAsNames]),
     ("Language & region", &[Field::Clock24, Field::DateFormat]),
-    ("Notifications", &[Field::Desktop]),
+    ("Notifications", &[Field::Desktop, Field::ConversationLevel, Field::ChannelDefault, Field::Keywords]),
     ("Audio", &[Field::Input, Field::Output]),
 ];
 
@@ -45,12 +52,16 @@ impl Field {
             Field::Clock24 => "24-hour clock",
             Field::DateFormat => "Date format",
             Field::Desktop => "Desktop notifications",
+            Field::ConversationLevel => "This conversation notifies about",
+            Field::ChannelDefault => "Channels notify about (default)",
+            Field::Keywords => "Keywords",
             Field::Input => "Microphone",
             Field::Output => "Speaker",
         }
     }
 
-    pub fn value(self, s: &Settings) -> String {
+    pub fn value(self, ws: &Workspace, current: Option<&str>) -> String {
+        let s = &ws.settings;
         let yes = |b: bool| if b { "on" } else { "off" }.to_string();
         let device = |d: &Option<String>| d.clone().unwrap_or_else(|| "system default".into());
         match self {
@@ -61,6 +72,17 @@ impl Field {
             Field::Clock24 => yes(s.region.clock_24h),
             Field::DateFormat => Local::now().format(&s.region.date_format).to_string(),
             Field::Desktop => yes(s.notifications.desktop),
+            Field::ConversationLevel => match current {
+                Some(c) => {
+                    let mpim = ws.conversations.get(c).is_some_and(|c| c.is_mpim);
+                    let own = ws.notify.channels.contains_key(c);
+                    format!("{}{}", level_label(ws.notify.level(c, mpim)), if own { "" } else { " (default)" })
+                }
+                None => "no conversation open".into(),
+            },
+            Field::ChannelDefault => level_label(&ws.notify.global).into(),
+            Field::Keywords if ws.notify.keywords.is_empty() => "none".into(),
+            Field::Keywords => ws.notify.keywords.join(", "),
             Field::Input => device(&s.audio.input),
             Field::Output => device(&s.audio.output),
         }
@@ -88,14 +110,31 @@ impl Field {
                 s.region.date_format = DATE_FORMATS[i].into();
             }
             Field::Desktop => s.notifications.desktop ^= true,
+            // Slack-side: see `Prefs::change`.
+            Field::ConversationLevel | Field::ChannelDefault | Field::Keywords => {}
             Field::Input => s.audio.input = next(&s.audio.input, &devices.0),
             Field::Output => s.audio.output = next(&s.audio.output, &devices.1),
         }
     }
 }
 
+/// A change to make on Slack (applied locally at once by the caller).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SlackChange {
+    ConversationLevel { channel: String, level: String },
+    ChannelDefault(String),
+    Keywords(String),
+}
+
+fn next_level(level: &str) -> String {
+    let i = LEVELS.iter().position(|l| *l == level).map_or(0, |i| (i + 1) % LEVELS.len());
+    LEVELS[i].to_string()
+}
+
 #[derive(Debug, Default)]
 pub struct Prefs {
+    /// Text being typed into a field (keywords).
+    pub editing: Option<String>,
     pub category: usize,
     pub selected: usize,
     /// Audio devices as ids (listed when the menu opens; only names, nothing is opened).
@@ -124,14 +163,38 @@ impl Prefs {
         self.selected = (self.selected as isize + delta).clamp(0, self.fields().len() as isize - 1) as usize;
     }
 
-    /// Change the selected setting; the caller applies and saves `s`.
-    pub fn change(&mut self, s: &mut Settings) {
-        if let Some(f) = self.fields().get(self.selected) {
-            f.change(s, &self.devices);
+    /// Change the selected setting: local ones in `ws.settings` (the caller saves them),
+    /// Slack-side ones returned for the caller to send. A text field starts editing first.
+    pub fn change(&mut self, ws: &mut Workspace, current: Option<&str>) -> Option<SlackChange> {
+        let field = *self.fields().get(self.selected)?;
+        match field {
+            Field::ConversationLevel => {
+                let channel = current?.to_string();
+                let mpim = ws.conversations.get(&channel).is_some_and(|c| c.is_mpim);
+                let level = next_level(ws.notify.level(&channel, mpim));
+                Some(SlackChange::ConversationLevel { channel, level })
+            }
+            Field::ChannelDefault => Some(SlackChange::ChannelDefault(next_level(&ws.notify.global))),
+            Field::Keywords => match self.editing.take() {
+                Some(text) => Some(SlackChange::Keywords(text.split(',').map(str::trim).filter(|k| !k.is_empty()).collect::<Vec<_>>().join(","))),
+                None => {
+                    self.editing = Some(ws.notify.keywords.join(", "));
+                    None
+                }
+            },
+            f => {
+                f.change(&mut ws.settings, &self.devices);
+                None
+            }
         }
     }
 
-    pub fn draw(&self, f: &mut Frame, area: Rect, s: &Settings) {
+    /// Whether the selected field is kept on Slack (nothing to save locally).
+    pub fn on_slack(&self) -> bool {
+        matches!(self.fields().get(self.selected), Some(Field::ConversationLevel | Field::ChannelDefault | Field::Keywords))
+    }
+
+    pub fn draw(&self, f: &mut Frame, area: Rect, ws: &Workspace, current: Option<&str>) {
         let [popup] = Layout::horizontal([Constraint::Length(84.min(area.width))]).flex(Flex::Center).areas(area);
         let [popup] = Layout::vertical([Constraint::Length(18.min(area.height))]).flex(Flex::Center).areas(popup);
         f.render_widget(Clear, popup);
@@ -161,8 +224,16 @@ impl Prefs {
         let mut rows: Vec<Line> = Vec::new();
         let label_w = self.fields().iter().map(|f| f.label().chars().count()).max().unwrap_or(0) + 2;
         for (n, field) in self.fields().iter().enumerate() {
-            let line = Line::from(vec![Span::raw(format!(" {:<label_w$}", field.label())), Span::styled(field.value(s), Style::default().fg(Color::Rgb(0x98, 0xc3, 0x79)))]);
+            let value = match (&self.editing, n == self.selected) {
+                (Some(text), true) => format!("{text}▏"),
+                _ => field.value(ws, current),
+            };
+            let line = Line::from(vec![Span::raw(format!(" {:<label_w$}", field.label())), Span::styled(value, Style::default().fg(Color::Rgb(0x98, 0xc3, 0x79)))]);
             rows.push(if n == self.selected { line.style(highlight) } else { line });
+        }
+        if CATEGORIES[self.category].0 == "Notifications" {
+            rows.push(Line::raw(""));
+            rows.push(Line::styled(" The last three are kept on Slack. Keywords: comma-separated.", Style::default().fg(DIM)));
         }
         if CATEGORIES[self.category].0 == "Audio" {
             rows.push(Line::raw(""));
@@ -170,7 +241,7 @@ impl Prefs {
         }
         rows.push(Line::raw(""));
         rows.push(Line::styled(" Keys are set in keys.toml (F1 lists them).", Style::default().fg(DIM)));
-        rows.push(Line::styled(" Kept on Slack: status (/status, /away, /dnd).", Style::default().fg(DIM)));
+        rows.push(Line::styled(" Your status: /status, /away, /dnd.", Style::default().fg(DIM)));
         f.render_widget(Paragraph::new(rows).wrap(Wrap { trim: false }), right);
     }
 }
@@ -197,6 +268,24 @@ mod tests {
             })
             .collect();
         assert_eq!(steps, vec![Some("hw:0".into()), Some("hw:1".into()), None], "default → each device → default");
+    }
+
+    #[test]
+    fn slack_side_changes() {
+        let mut ws = Workspace::default();
+        let mut p = Prefs { category: 3, ..Default::default() };
+        p.selected = 1;
+        assert_eq!(p.change(&mut ws, Some("C1")), Some(SlackChange::ConversationLevel { channel: "C1".into(), level: "nothing".into() }), "mentions (default) → nothing");
+        assert_eq!(p.change(&mut ws, None), None, "no conversation, no change");
+        p.selected = 2;
+        assert_eq!(p.change(&mut ws, None), Some(SlackChange::ChannelDefault("nothing".into())));
+        p.selected = 3;
+        ws.notify.keywords = vec!["a".into()];
+        assert_eq!(p.change(&mut ws, None), None, "Enter starts editing");
+        assert_eq!(p.editing.as_deref(), Some("a"));
+        p.editing = Some(" deploy ,, release notes ".into());
+        assert_eq!(p.change(&mut ws, None), Some(SlackChange::Keywords("deploy,release notes".into())));
+        assert!(p.editing.is_none() && p.on_slack());
     }
 
     #[test]

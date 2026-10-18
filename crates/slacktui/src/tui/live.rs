@@ -168,6 +168,14 @@ pub fn apply(ws: &mut Workspace, ev: &Value, current: Option<&str>) -> Effects {
             }
         }
         "dnd_updated" => ws.dnd = super::state::Dnd::from_json(&ev["dnd_status"]),
+        "pref_change" => {
+            if let Some(name) = ev["name"].as_str() {
+                let mut prefs = serde_json::Map::new();
+                prefs.insert(name.to_string(), ev["value"].clone());
+                ws.apply_prefs(&Value::Object(prefs));
+                fx.rebuild_sidebar = true;
+            }
+        }
         "manual_presence_change" => {
             let self_id = ws.self_id.clone();
             ws.presence.insert(self_id, ev["presence"] != "away");
@@ -360,6 +368,19 @@ mod tests {
         assert_eq!(t.messages.len(), 1);
         assert_eq!(t.messages[0].reply_count, 1);
         assert_eq!(t.messages[0].latest_reply.as_deref(), Some("11.0"));
+    }
+
+    #[test]
+    fn pref_change_events() {
+        let mut w = ws();
+        // Captured with `ctl listen` (trimmed).
+        apply(&mut w, &json!({"name":"all_notifications_prefs","type":"pref_change","value":"{\"channels\":{\"C6\":{\"muted\":true,\"temp_mute_expiration_ts\":0},\"C1\":{\"desktop\":\"everything\"}},\"global\":{\"global_desktop\":\"everything\",\"global_keywords\":\"deploy\"}}"}), None);
+        assert_eq!(w.notify.level("C1", false), "everything");
+        assert!(w.muted.contains("C6"));
+        assert_eq!(w.notify.keywords, vec!["deploy"]);
+        w.vip.insert("U2".into());
+        apply(&mut w, &json!({"event_ts":"1792335553.041700","name":"vip_users","type":"pref_change","value":""}), None);
+        assert!(w.vip.is_empty());
     }
 
     #[test]

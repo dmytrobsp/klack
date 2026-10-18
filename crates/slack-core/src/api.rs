@@ -263,6 +263,25 @@ impl Client {
         }
     }
 
+    /// `users.prefs.get` (the `prefs` object).
+    pub async fn user_prefs(&self) -> Result<Value> {
+        self.call_field("users.prefs.get", "prefs", &[]).await
+    }
+
+    /// A notification pref: for one conversation (`desktop`, `muted`, …) or global
+    /// (`global_desktop`, `global_keywords`, …); see ../notes/notifications.md.
+    pub async fn set_notification_pref(&self, name: &str, value: &str, channel: Option<&str>) -> Result<()> {
+        let mut params: Params = vec![("name", name.into()), ("value", value.into()), ("global", channel.is_none().to_string())];
+        if let Some(c) = channel {
+            params.push(("channel_id", c.into()));
+        }
+        self.call_raw("users.prefs.setNotifications", &params).await.map(|_| ())
+    }
+
+    pub async fn set_pref(&self, name: &str, value: &str) -> Result<()> {
+        self.call_raw("users.prefs.set", &[("name", name.into()), ("value", value.into())]).await.map(|_| ())
+    }
+
     pub async fn set_presence(&self, away: bool) -> Result<()> {
         self.call_raw("users.setPresence", &[("presence", if away { "away" } else { "auto" }.into())]).await.map(|_| ())
     }

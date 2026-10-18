@@ -144,7 +144,7 @@ pub enum Context {
     Profile,
     Activity,
     Mover,
-    SectionName,
+    TextField,
     Snippet,
     Viewer,
     Player,
@@ -167,7 +167,7 @@ impl Context {
         Context::Profile,
         Context::Activity,
         Context::Mover,
-        Context::SectionName,
+        Context::TextField,
         Context::Snippet,
         Context::Viewer,
         Context::Player,
@@ -191,7 +191,7 @@ impl Context {
             Context::Profile => "profile",
             Context::Activity => "activity",
             Context::Mover => "move_to_section",
-            Context::SectionName => "section_name",
+            Context::TextField => "text_field",
             Context::Snippet => "snippet",
             Context::Viewer => "image_viewer",
             Context::Player => "video_player",
@@ -216,7 +216,7 @@ impl Context {
             Context::Profile => "Profile card",
             Context::Activity => "Activity",
             Context::Mover => "Move to section",
-            Context::SectionName => "New section name",
+            Context::TextField => "Text fields (new section name, keywords)",
             Context::Snippet => "Snippet view",
             Context::Viewer => "Image viewer",
             Context::Player => "Video player",
@@ -229,7 +229,7 @@ impl Context {
     /// Typing goes into a text field here, so plain characters cannot be bound (in the
     /// global context they would be eaten in the composer).
     pub fn types_text(self) -> bool {
-        matches!(self, Context::Global | Context::Composer | Context::Switcher | Context::Search | Context::Picker | Context::SectionName)
+        matches!(self, Context::Global | Context::Composer | Context::Switcher | Context::Search | Context::Picker | Context::TextField)
     }
 
     fn from_name(name: &str) -> Option<Context> {
@@ -469,9 +469,9 @@ actions! {
         Bottom "bottom" "last choice" ["end", "G"]
         Open "choose" "move there (New section…: name it)" ["enter"]
     }
-    SectionName {
-        Open "create" "create the section and move there" ["enter"]
-        Close "cancel" "back to the list" ["esc"]
+    TextField {
+        Open "done" "done (create the section / save)" ["enter"]
+        Close "cancel" "cancel" ["esc"]
         Erase "erase" "delete a character" ["backspace"]
     }
     Snippet {
@@ -686,7 +686,7 @@ pub fn hints_for(context: Context) -> &'static [(Action, &'static str)] {
         Context::Profile => &[(Open, "message"), (Huddle, "huddle"), (NextTab, "next person"), (Close, "close")],
         Context::Activity => &[(Open, "open"), (Refresh, "refresh"), (Close, "close")],
         Context::Mover => &[(Open, "move"), (Close, "close")],
-        Context::SectionName => &[(Open, "create"), (Close, "back")],
+        Context::TextField => &[(Open, "done"), (Close, "cancel")],
         Context::Snippet => &[(PageDown, "page"), (Copy, "copy"), (Close, "close")],
         Context::Viewer => &[(NextTab, "next"), (Close, "close")],
         Context::Player => &[(Pause, "pause"), (Close, "stop")],

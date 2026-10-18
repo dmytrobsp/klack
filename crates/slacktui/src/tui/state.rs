@@ -81,6 +81,73 @@ pub struct Workspace {
     pub sections: Vec<Section>,
     /// Local preferences (settings.toml).
     pub settings: super::settings::Settings,
+    /// Slack-side notification preferences.
+    pub notify: NotifyPrefs,
+    /// People marked VIP.
+    pub vip: std::collections::HashSet<String>,
+}
+
+/// Desktop notification levels: `everything`, `mentions_dms` ("just mentions") or `nothing`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NotifyPrefs {
+    /// Default for channels.
+    pub global: String,
+    /// Default for group DMs.
+    pub group_dms: String,
+    /// Per-conversation overrides.
+    pub channels: HashMap<String, String>,
+    /// Words that notify like a mention.
+    pub keywords: Vec<String>,
+}
+
+impl Default for NotifyPrefs {
+    fn default() -> Self {
+        NotifyPrefs { global: "mentions_dms".into(), group_dms: "everything".into(), channels: HashMap::new(), keywords: vec![] }
+    }
+}
+
+pub const LEVELS: [&str; 3] = ["everything", "mentions_dms", "nothing"];
+
+pub fn level_label(level: &str) -> &'static str {
+    match level {
+        "everything" => "all new messages",
+        "nothing" => "nothing",
+        _ => "mentions and DMs",
+    }
+}
+
+impl NotifyPrefs {
+    /// From `all_notifications_prefs`; also returns the muted conversations.
+    pub fn from_json(v: &Value) -> (NotifyPrefs, std::collections::HashSet<String>) {
+        let g = &v["global"];
+        let text = |k: &str, default: &str| g[k].as_str().filter(|s| !s.is_empty()).unwrap_or(default).to_string();
+        let mut channels = HashMap::new();
+        let mut muted = std::collections::HashSet::new();
+        for (id, c) in v["channels"].as_object().into_iter().flatten() {
+            if let Some(level) = c["desktop"].as_str().filter(|l| !l.is_empty() && *l != "default") {
+                channels.insert(id.clone(), level.to_string());
+            }
+            if c["muted"].as_bool() == Some(true) {
+                muted.insert(id.clone());
+            }
+        }
+        let keywords = g["global_keywords"].as_str().unwrap_or_default().split(',').map(str::trim).filter(|k| !k.is_empty()).map(String::from).collect();
+        (NotifyPrefs { global: text("global_desktop", "mentions_dms"), group_dms: text("global_mpdm_desktop", "everything"), channels, keywords }, muted)
+    }
+
+    /// The level in effect for a conversation (DMs always count as direct).
+    pub fn level(&self, channel: &str, is_mpim: bool) -> &str {
+        self.channels.get(channel).map(String::as_str).unwrap_or(if is_mpim { &self.group_dms } else { &self.global })
+    }
+
+    /// The first keyword in `text` (whole words, any case).
+    pub fn keyword_in(&self, text: &str) -> Option<&str> {
+        let words: Vec<String> = text.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-').filter(|w| !w.is_empty()).map(str::to_lowercase).collect();
+        self.keywords.iter().map(String::as_str).find(|k| {
+            let k = k.to_lowercase();
+            if k.contains(' ') { text.to_lowercase().contains(&k) } else { words.contains(&k) }
+        })
+    }
 }
 
 /// A sidebar section. `kind` is Slack's type: `standard` (made by the user), `stars`,
@@ -377,8 +444,26 @@ impl Workspace {
         }
         self.dnd = Dnd::from_json(&boot["dnd"]);
         self.starred = boot["starred"].as_array().into_iter().flatten().filter_map(|s| s.as_str()).map(String::from).collect();
-        if let Some(prefs) = boot["prefs"]["muted_channels"].as_str() {
-            self.muted = prefs.split(',').filter(|s| !s.is_empty()).map(String::from).collect();
+        self.apply_prefs(&boot["prefs"]);
+    }
+
+    /// Apply user prefs (boot, or a `pref_change`): notification levels, keywords, mutes, VIPs.
+    pub fn apply_prefs(&mut self, prefs: &Value) {
+        let all = match &prefs["all_notifications_prefs"] {
+            Value::String(s) => serde_json::from_str(s).unwrap_or(Value::Null),
+            v => v.clone(),
+        };
+        if !all.is_null() {
+            let (notify, muted) = NotifyPrefs::from_json(&all);
+            self.notify = notify;
+            self.muted = muted;
+        }
+        // Older workspaces keep mutes here.
+        if let Some(list) = prefs["muted_channels"].as_str() {
+            self.muted.extend(list.split(',').filter(|s| !s.is_empty()).map(String::from));
+        }
+        if let Some(list) = prefs["vip_users"].as_str() {
+            self.vip = list.split(',').filter(|s| !s.is_empty()).map(String::from).collect();
         }
     }
 
@@ -559,6 +644,22 @@ mod tests {
             ws.conversations.insert(id.into(), Conversation { id: id.into(), is_im: true, user: Some(user.into()), ..Default::default() });
         }
         assert_eq!(ws.unknown_dm_users(), vec!["USLACK"]);
+    }
+
+    #[test]
+    fn notification_prefs_from_slack() {
+        // Real all_notifications_prefs after setting #social to mentions and muting C2.
+        let v = serde_json::json!({"channels":{"C1":{"desktop":"mentions_dms"},"C2":{"muted":true,"temp_mute_expiration_ts":0}},
+            "global":{"global_desktop":"everything","global_keywords":"deploy, release notes","global_mpdm_desktop":"everything"}});
+        let mut ws = Workspace::default();
+        ws.apply_prefs(&serde_json::json!({"all_notifications_prefs": v.to_string(), "vip_users": "U2,U3"}));
+        assert_eq!(ws.notify.level("C1", false), "mentions_dms");
+        assert_eq!(ws.notify.level("C9", false), "everything");
+        assert!(ws.muted.contains("C2") && !ws.muted.contains("C1"));
+        assert_eq!(ws.notify.keyword_in("Time to DEPLOY!"), Some("deploy"));
+        assert_eq!(ws.notify.keyword_in("redeployment"), None, "whole words only");
+        assert_eq!(ws.notify.keyword_in("see the Release Notes"), Some("release notes"));
+        assert_eq!(ws.vip.len(), 2);
     }
 
     #[test]

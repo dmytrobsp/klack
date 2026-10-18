@@ -17,10 +17,17 @@ pub fn notification(ws: &Workspace, channel: &str, m: &Message, viewing: bool, n
         return None;
     }
     let conv = ws.conversations.get(channel);
-    let is_dm = conv.is_some_and(|c| c.is_dm());
+    let is_im = conv.is_some_and(|c| c.is_im);
     let in_my_thread = m.is_reply()
         && m.thread_ts.as_deref().and_then(|t| ws.find_message(channel, t)).is_some_and(|p| p.user.as_deref() == Some(ws.self_id.as_str()) || p.reply_users.contains(&ws.self_id));
-    if !(is_dm || mentions_me(ws, m) || in_my_thread) {
+    let mentioned = mentions_me(ws, m) || ws.notify.keyword_in(&m.text).is_some();
+    let wanted = match ws.notify.level(channel, conv.is_some_and(|c| c.is_mpim)) {
+        "nothing" => false,
+        // Every top-level message; replies only where we take part.
+        "everything" => is_im || mentioned || in_my_thread || !m.is_reply(),
+        _ => is_im || mentioned || in_my_thread || conv.is_some_and(|c| c.is_mpim),
+    };
+    if !wanted {
         return None;
     }
     let author = ws.author(m);
@@ -107,6 +114,22 @@ mod tests {
         assert!(notification(&w, "D1", &msg("U2", "after dnd"), false, 150.0).is_some());
         w.muted.insert("C1".into());
         assert!(notification(&w, "C1", &msg("U2", "<@UME>"), false, 150.0).is_none());
+    }
+
+    #[test]
+    fn levels_and_keywords() {
+        let mut w = ws();
+        w.notify.keywords = vec!["deploy".into()];
+        assert!(notification(&w, "C1", &msg("U2", "we deploy at 5"), false, 0.0).is_some(), "a keyword counts as a mention");
+        w.notify.channels.insert("C1".into(), "everything".into());
+        assert!(notification(&w, "C1", &msg("U2", "plain chatter"), false, 0.0).is_some());
+        let mut reply = msg("U2", "a reply elsewhere");
+        reply.thread_ts = Some("1.0".into());
+        assert!(notification(&w, "C1", &reply, false, 0.0).is_none(), "everything: not every reply");
+        w.notify.channels.insert("C1".into(), "nothing".into());
+        assert!(notification(&w, "C1", &msg("U2", "hey <@UME>"), false, 0.0).is_none());
+        w.notify.global = "nothing".into();
+        assert!(notification(&w, "D1", &msg("U2", "hi"), false, 0.0).is_none(), "nothing silences DMs too");
     }
 
     #[test]

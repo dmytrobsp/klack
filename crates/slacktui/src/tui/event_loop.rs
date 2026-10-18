@@ -57,6 +57,8 @@ enum Net {
     FileDone(String),
     /// `dnd.info` asked again after the known quiet-hours window ended.
     Dnd(Value),
+    /// User prefs fetched again.
+    Prefs(Value),
     /// The activity feed.
     ActivityFeed(Result<Value, String>),
     /// A message an activity item is about.
@@ -928,6 +930,44 @@ impl App {
         });
     }
 
+    /// Enter in the preferences: change a local setting (and save the file) or send a
+    /// Slack-side one (applied here at once; on failure the prefs are fetched again).
+    fn change_preference(&mut self) {
+        use super::prefs::SlackChange;
+        let current = self.current.clone();
+        let Some(p) = self.prefs.as_mut() else { return };
+        let on_slack = p.on_slack();
+        let change = p.change(&mut self.ws, current.as_deref());
+        if !on_slack {
+            p.saved = Some(super::settings::save(&self.ws.settings).map(|path| path.display().to_string()));
+            return;
+        }
+        let Some(change) = change else { return };
+        let (name, value, channel) = match &change {
+            SlackChange::ConversationLevel { channel, level } => {
+                self.ws.notify.channels.insert(channel.clone(), level.clone());
+                ("desktop", level.clone(), Some(channel.clone()))
+            }
+            SlackChange::ChannelDefault(level) => {
+                self.ws.notify.global = level.clone();
+                ("global_desktop", level.clone(), None)
+            }
+            SlackChange::Keywords(words) => {
+                self.ws.notify.keywords = words.split(',').filter(|w| !w.is_empty()).map(String::from).collect();
+                ("global_keywords", words.clone(), None)
+            }
+        };
+        let (client, tx) = (self.client.clone(), self.net.clone());
+        tokio::spawn(async move {
+            if let Err(e) = client.set_notification_pref(name, &value, channel.as_deref()).await {
+                let _ = tx.send(Net::Error(format!("saving the notification setting failed: {e}")));
+                if let Ok(prefs) = client.user_prefs().await {
+                    let _ = tx.send(Net::Prefs(prefs));
+                }
+            }
+        });
+    }
+
     /// F5: open the activity view and load the feed.
     fn open_activity(&mut self) {
         self.activity = Some(super::activity::Activity::default());
@@ -966,12 +1006,12 @@ impl App {
     fn active_contexts(&self) -> Vec<Context> {
         let overlay = if self.help.is_some() {
             Some(Context::Help)
-        } else if self.prefs.is_some() {
-            Some(Context::Preferences)
+        } else if let Some(p) = &self.prefs {
+            Some(if p.editing.is_some() { Context::TextField } else { Context::Preferences })
         } else if self.switcher.is_some() {
             Some(Context::Switcher)
         } else if let Some(m) = &self.mover {
-            Some(if m.naming.is_some() { Context::SectionName } else { Context::Mover })
+            Some(if m.naming.is_some() { Context::TextField } else { Context::Mover })
         } else if self.activity.is_some() {
             Some(Context::Activity)
         } else if self.profile.is_some() {
@@ -1482,6 +1522,23 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
                 _ => {}
             }
         }
+        Event::Key(k) if k.kind != KeyEventKind::Release && app.prefs.as_ref().is_some_and(|p| p.editing.is_some()) => {
+            let action = app.action_in(Context::TextField, &k);
+            let Some(p) = app.prefs.as_mut() else { return true };
+            match (action, p.editing.as_mut()) {
+                (Some(Action::Close), _) => p.editing = None,
+                (Some(Action::Erase), Some(text)) => {
+                    text.pop();
+                }
+                (Some(Action::Open), _) => app.change_preference(),
+                (_, Some(text)) => {
+                    if let (KeyCode::Char(c), true) = (k.code, Key::from_event(&k).is_text()) {
+                        text.push(c);
+                    }
+                }
+                _ => {}
+            }
+        }
         Event::Key(k) if k.kind != KeyEventKind::Release && app.prefs.is_some() => {
             let action = app.action_in(Context::Preferences, &k);
             let Some(p) = app.prefs.as_mut() else { return true };
@@ -1491,10 +1548,7 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
                 Some(Action::Down) => p.move_by(1),
                 Some(Action::PrevTab) => p.switch_category(-1),
                 Some(Action::NextTab) => p.switch_category(1),
-                Some(Action::Open) => {
-                    p.change(&mut app.ws.settings);
-                    p.saved = Some(super::settings::save(&app.ws.settings).map(|path| path.display().to_string()));
-                }
+                Some(Action::Open) => app.change_preference(),
                 _ => {}
             }
         }
@@ -1524,7 +1578,7 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
         }
         Event::Key(k) if k.kind != KeyEventKind::Release && app.mover.is_some() => {
             let naming = app.mover.as_ref().is_some_and(|m| m.naming.is_some());
-            let action = app.action_in(if naming { Context::SectionName } else { Context::Mover }, &k);
+            let action = app.action_in(if naming { Context::TextField } else { Context::Mover }, &k);
             let Some(m) = app.mover.as_mut() else { return true };
             let on_new = *m.choice() == super::sections::Choice::New;
             match (&mut m.naming, action) {
@@ -2146,6 +2200,7 @@ fn handle_net(app: &mut App, msg: Net) {
                 Err(e) => app.status = format!("cannot play video: {e}"),
             }
         }
+        Net::Prefs(v) => app.ws.apply_prefs(&v),
         Net::Dnd(v) => {
             app.ws.dnd = super::state::Dnd::from_json(&v);
             // An answer that is already out of date is not asked again.
@@ -2297,7 +2352,7 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         m.draw(f, body, &app.ws);
     }
     if let Some(p) = &app.prefs {
-        p.draw(f, body, &app.ws.settings);
+        p.draw(f, body, &app.ws, app.current.as_deref());
     }
     if let Some(h) = app.help.as_mut() {
         h.draw(f, body, &app.keys);
