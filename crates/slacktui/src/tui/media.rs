@@ -21,6 +21,27 @@ pub enum Thumb {
 pub struct Media {
     pub picker: Picker,
     pub thumbs: HashMap<String, Thumb>,
+    /// Draw profile pictures next to author names (real graphics only; `SLACKTUI_AVATARS=0` turns them off).
+    pub avatars: bool,
+}
+
+/// An avatar is two cells wide and one tall (about square).
+pub const AVATAR_SIZE: (u16, u16) = (2, 1);
+pub const AVATAR_PREFIX: &str = "avatar:";
+
+/// A Slack-hosted picture for `user`, as a pseudo file for the thumbnail cache. Gravatar
+/// URLs are replaced by their `d=` fallback (Slack's default picture), so no third party is
+/// contacted; anything not on `slack-edge.com` is skipped.
+pub fn avatar_file(user: &slack_core::types::User) -> Option<File> {
+    let url = slack_core::reqwest::Url::parse(user.profile.image_48.as_deref()?).ok()?;
+    let slack_hosted = |u: &slack_core::reqwest::Url| u.scheme() == "https" && u.host_str().is_some_and(|h| h == "slack-edge.com" || h.ends_with(".slack-edge.com"));
+    let url = if slack_hosted(&url) {
+        url
+    } else {
+        let fallback = url.query_pairs().find(|(k, _)| k == "d").and_then(|(_, v)| slack_core::reqwest::Url::parse(&v).ok())?;
+        slack_hosted(&fallback).then_some(fallback)?
+    };
+    Some(File { id: format!("{AVATAR_PREFIX}{}", user.id), mimetype: "image/png".into(), thumb_360: Some(url.to_string()), ..Default::default() })
 }
 
 impl Media {
@@ -32,7 +53,8 @@ impl Media {
             Picker::halfblocks()
         });
         tracing::info!(protocol = ?picker.protocol_type(), font = ?picker.font_size(), "terminal graphics");
-        Media { picker, thumbs: HashMap::new() }
+        let avatars = picker.protocol_type() != ratatui_image::picker::ProtocolType::Halfblocks && std::env::var("SLACKTUI_AVATARS").map_or(true, |v| v != "0");
+        Media { picker, thumbs: HashMap::new(), avatars }
     }
 
     /// Cells to reserve under an image file's line, or None for non-images.
@@ -63,7 +85,12 @@ pub fn thumb_cells(file: &File, font: FontSize, max_cols: u16, max_rows: u16) ->
 pub async fn load_thumb(client: slack_core::Client, picker: Picker, file: File, size: (u16, u16)) -> anyhow::Result<SlicedProtocol> {
     let px_width = size.0 as u32 * picker.font_size().width as u32;
     let url = file.preview_url(px_width).ok_or_else(|| anyhow::anyhow!("no preview"))?.to_string();
-    let bytes = client.download(&url).await?;
+    let bytes = if file.id.starts_with(AVATAR_PREFIX) {
+        // Public CDN pictures: fetched without the session.
+        client.http().get(&url).send().await?.error_for_status()?.bytes().await?.to_vec()
+    } else {
+        client.download(&url).await?
+    };
     tokio::task::spawn_blocking(move || {
         let img = image::load_from_memory(&bytes)?;
         Ok(SlicedProtocol::new(&picker, img, Some(Size::new(size.0, size.1)))?)
@@ -77,6 +104,23 @@ mod tests {
 
     fn image(w: Option<u64>, h: Option<u64>) -> File {
         File { mimetype: "image/png".into(), thumb_360: Some("https://x/t.png".into()), original_w: w, original_h: h, ..Default::default() }
+    }
+
+    #[test]
+    fn avatars_only_from_slack() {
+        let user = |url: &str| {
+            let mut u = slack_core::types::User { id: "U1".into(), ..Default::default() };
+            u.profile.image_48 = Some(url.into());
+            u
+        };
+        let own = avatar_file(&user("https://avatars.slack-edge.com/2026-10-18/1_48.png")).unwrap();
+        assert_eq!((own.id.as_str(), own.thumb_360.as_deref()), ("avatar:U1", Some("https://avatars.slack-edge.com/2026-10-18/1_48.png")));
+        // Real default: a Gravatar URL with Slack's picture as the fallback.
+        let gravatar = "https://secure.gravatar.com/avatar/9aca10.jpg?s=48&d=https%3A%2F%2Fa.slack-edge.com%2Fdf10d%2Fimg%2Favatars%2Fava_0010-48.png";
+        assert_eq!(avatar_file(&user(gravatar)).unwrap().thumb_360.as_deref(), Some("https://a.slack-edge.com/df10d/img/avatars/ava_0010-48.png"));
+        assert!(avatar_file(&user("https://secure.gravatar.com/avatar/x.jpg?s=48&d=identicon")).is_none());
+        assert!(avatar_file(&user("https://evil.example/slack-edge.com/a.png")).is_none());
+        assert!(avatar_file(&user("https://notslack-edge.com/a.png")).is_none());
     }
 
     #[test]

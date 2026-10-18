@@ -8,3 +8,5 @@ pub mod session;
 pub mod types;
 
 pub use api::Client;
+/// The HTTP client crate, for callers that handle URLs.
+pub use reqwest;

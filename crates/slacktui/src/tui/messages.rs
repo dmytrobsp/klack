@@ -19,6 +19,8 @@ use super::text::{self, DIM};
 #[derive(Debug, Clone)]
 pub struct ImageSlot {
     pub line: usize,
+    /// Column after the gutter (avatars sit before the author name).
+    pub col: u16,
     pub file: File,
     pub size: (u16, u16),
 }
@@ -105,7 +107,7 @@ impl MessagePane {
         let width = inner.width.saturating_sub(1 + GUTTER) as usize;
         let thumb_size = |file: &File| media.thumb_size(file);
         let (mut lines, mut owners, mut slots) = match timeline {
-            Some(t) if t.loaded || !t.messages.is_empty() => build_lines_owned(ws, t, width, self.thread, &thumb_size),
+            Some(t) if t.loaded || !t.messages.is_empty() => build_lines_owned(ws, t, width, self.thread, &thumb_size, media.avatars),
             Some(_) => (vec![Line::styled("Loading messages…", Style::default().fg(DIM))], vec![None], vec![]),
             None => (vec![], vec![], vec![]),
         };
@@ -180,7 +182,7 @@ impl MessagePane {
             }
             match media.thumbs.get(&slot.file.id) {
                 Some(Thumb::Ready(proto)) => {
-                    let position = SignedPosition { x: 0, y: top as i16 };
+                    let position = SignedPosition { x: slot.col as i16, y: top as i16 };
                     let beside = Rect { x: inner.x + GUTTER, width: inner.width.saturating_sub(GUTTER), ..inner };
                     f.render_widget(SlicedImage::new(proto, position), beside);
                 }
@@ -254,11 +256,11 @@ pub fn shown_messages(t: &Timeline, thread: bool) -> impl Iterator<Item = &Messa
 /// Render every message in the timeline, oldest first.
 #[cfg(test)]
 pub fn build_lines(ws: &Workspace, t: &Timeline, width: usize) -> Vec<Line<'static>> {
-    build_lines_owned(ws, t, width, false, &|_| None).0
+    build_lines_owned(ws, t, width, false, &|_| None, false).0
 }
 
 /// Lines plus the ts of the message each line belongs to.
-pub fn build_lines_owned(ws: &Workspace, t: &Timeline, width: usize, thread: bool, thumb_size: ThumbSize) -> (Vec<Line<'static>>, Vec<Option<String>>, Vec<ImageSlot>) {
+pub fn build_lines_owned(ws: &Workspace, t: &Timeline, width: usize, thread: bool, thumb_size: ThumbSize, avatars: bool) -> (Vec<Line<'static>>, Vec<Option<String>>, Vec<ImageSlot>) {
     let mut out: Vec<Line<'static>> = Vec::new();
     let mut owners: Vec<Option<String>> = Vec::new();
     let mut slots: Vec<ImageSlot> = Vec::new();
@@ -291,10 +293,15 @@ pub fn build_lines_owned(ws: &Workspace, t: &Timeline, width: usize, thread: boo
         let grouped = prev.is_some_and(|p| p.user == m.user && p.bot_id == m.bot_id && ts - p.time() < GROUP_WINDOW && !is_system(p));
         if !grouped {
             let color = m.user.as_deref().map(text::user_color).unwrap_or(Color::Gray);
-            out.push(Line::from(vec![
+            let mut header = vec![
                 Span::styled(ws.author(m), Style::default().fg(color).add_modifier(Modifier::BOLD)),
                 Span::styled(format!("  {}", time_label(ts)), Style::default().fg(DIM)),
-            ]));
+            ];
+            if let Some(file) = m.user.as_deref().and_then(|u| ws.users.get(u)).and_then(super::media::avatar_file).filter(|_| avatars) {
+                slots.push(ImageSlot { line: out.len(), col: 0, file, size: super::media::AVATAR_SIZE });
+                header.insert(0, Span::raw(" ".repeat(super::media::AVATAR_SIZE.0 as usize + 1)));
+            }
+            out.push(Line::from(header));
         }
         let base = out.len();
         let (body, body_slots) = message_body(ws, m, width, !thread, thumb_size);
@@ -367,7 +374,7 @@ pub fn message_body(ws: &Workspace, m: &Message, width: usize, summary: bool, th
             out.extend(snippet_preview(file, width));
         }
         if let Some(size) = thumb_size(file).filter(|(cols, _)| (*cols as usize) <= width) {
-            slots.push(ImageSlot { line: out.len(), file: file.clone(), size });
+            slots.push(ImageSlot { line: out.len(), col: 0, file: file.clone(), size });
             out.extend(std::iter::repeat_n(Line::raw(""), size.1 as usize));
         }
     }
@@ -415,12 +422,30 @@ mod tests {
     }
 
     #[test]
+    fn avatar_before_the_author() {
+        let mut ws = Workspace::default();
+        let mut bob = slack_core::types::User { id: "U2".into(), name: "bob".into(), ..Default::default() };
+        bob.profile.image_48 = Some("https://avatars.slack-edge.com/x_48.png".into());
+        ws.users.insert("U2".into(), bob);
+        let mut t = Timeline { loaded: true, ..Default::default() };
+        t.upsert(msg("1.0", "U2", "one"));
+        t.upsert(msg("2.0", "U2", "two"));
+        let (lines, _, slots) = build_lines_owned(&ws, &t, 40, false, &|_| None, true);
+        let header = plain(&lines).into_iter().position(|l| l.contains("bob")).unwrap();
+        assert!(plain(&lines)[header].starts_with("   bob"), "room for the picture");
+        assert_eq!(slots.len(), 1, "grouped messages share one header and one picture");
+        assert_eq!((slots[0].line, slots[0].col, slots[0].size, slots[0].file.id.as_str()), (header, 0, (2, 1), "avatar:U2"));
+        let (_, _, none) = build_lines_owned(&ws, &t, 40, false, &|_| None, false);
+        assert!(none.is_empty());
+    }
+
+    #[test]
     fn own_messages_get_the_gutter_bar() {
         let ws = Workspace { self_id: "UME".into(), ..Default::default() };
         let mut t = Timeline { loaded: true, ..Default::default() };
         t.upsert(msg("1.0", "U2", "theirs"));
         t.upsert(msg("2.0", "UME", "mine\ntwo lines"));
-        let (mut lines, owners, _) = build_lines_owned(&ws, &t, 40, false, &|_| None);
+        let (mut lines, owners, _) = build_lines_owned(&ws, &t, 40, false, &|_| None, false);
         let own = ["2.0"].into_iter().collect();
         add_gutter(&mut lines, &owners, &own);
         let rows = plain(&lines);
@@ -448,7 +473,7 @@ mod tests {
         let mut join = msg("1000.0", "U1", "joined");
         join.subtype = Some("channel_join".into());
         let t = Timeline { messages: vec![join, msg("1010.0", "U2", "hello")], loaded: true, ..Default::default() };
-        let (lines, owners, _) = build_lines_owned(&ws, &t, 60, false, &|_| None);
+        let (lines, owners, _) = build_lines_owned(&ws, &t, 60, false, &|_| None, false);
         let p = plain(&lines);
         assert_eq!(p.iter().filter(|l| l.contains('─')).count(), 1, "{p:?}");
         assert_eq!(owners[0], None, "the day separator belongs to no message");
@@ -460,13 +485,13 @@ mod tests {
         let mut m = msg("1000.0", "U1", "look");
         m.files = vec![File { id: "F1".into(), name: "cat.png".into(), mimetype: "image/png".into(), ..Default::default() }];
         let t = Timeline { messages: vec![m], loaded: true, ..Default::default() };
-        let (lines, _, slots) = build_lines_owned(&ws, &t, 40, false, &|f| (f.id == "F1").then_some((20, 3)));
+        let (lines, _, slots) = build_lines_owned(&ws, &t, 40, false, &|f| (f.id == "F1").then_some((20, 3)), false);
         // day separator, header, "look", file line, 3 reserved rows
         assert_eq!(lines.len(), 7);
         assert_eq!(slots.len(), 1);
         assert_eq!((slots[0].line, slots[0].size), (4, (20, 3)));
         // Too narrow for the thumbnail: text only.
-        let (narrow, _, none) = build_lines_owned(&ws, &t, 10, false, &|_| Some((20, 3)));
+        let (narrow, _, none) = build_lines_owned(&ws, &t, 10, false, &|_| Some((20, 3)), false);
         assert!(none.is_empty() && narrow.len() < 7);
     }
 
@@ -488,7 +513,7 @@ mod tests {
         let mut reply = msg("1001.0", "U2", "reply");
         reply.thread_ts = Some("1000.0".into());
         let t = Timeline { messages: vec![parent, reply], loaded: true, ..Default::default() };
-        let (lines, owners, _) = build_lines_owned(&ws, &t, 30, true, &|_| None);
+        let (lines, owners, _) = build_lines_owned(&ws, &t, 30, true, &|_| None, false);
         let p = plain(&lines);
         assert_eq!(owners[2], None, "the replies rule belongs to no message");
         assert_eq!(p[1], "parent", "{p:?}");

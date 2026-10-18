@@ -84,6 +84,7 @@ No video, screen sharing, echo cancellation or noise suppression yet.
 |---|---|
 | `SLACKTUI_LOG` | log filter, e.g. `slacktui=debug` (log file: `~/.cache/slacktui/<profile>/slacktui.log`) |
 | `SLACKTUI_DOWNLOAD_DIR` | where `s` saves attachments (default: your downloads folder) |
+| `SLACKTUI_AVATARS=0` | no profile pictures next to names (they are also off on terminals without real graphics) |
 
 ## Scripting
 
