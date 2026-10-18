@@ -137,6 +137,8 @@ struct App {
     search: Option<super::search::Search>,
     /// A search hit to select once its conversation is shown.
     pending_hit: Option<super::search::Hit>,
+    /// A message (channel, top-level ts) older than the loaded history, being paged back to.
+    seeking: Option<(String, String)>,
     /// What was typed in conversations (by id) and threads (by thread key) you left.
     drafts: std::collections::HashMap<String, super::composer::Draft>,
     /// Open quick switcher (Ctrl+K).
@@ -1055,6 +1057,9 @@ impl App {
     }
 
     fn show_hit(&mut self, hit: super::search::Hit) {
+        let top = hit.thread_ts.clone().unwrap_or_else(|| hit.ts.clone());
+        self.seeking = Some((hit.channel.clone(), top));
+        self.continue_seek();
         match hit.thread_ts {
             Some(parent) => {
                 self.messages.selected = Some(parent.clone());
@@ -1065,6 +1070,38 @@ impl App {
                 self.messages.selected = Some(hit.ts);
                 self.focus = Focus::Messages;
             }
+        }
+    }
+
+    /// Page the history back until the message being sought is loaded (the selection then
+    /// shows it); stop at the beginning of the conversation or when it is no longer shown.
+    fn continue_seek(&mut self) {
+        let Some((channel, ts)) = self.seeking.clone() else { return };
+        if self.current.as_deref() != Some(channel.as_str()) {
+            // Not shown yet (the conversation is being switched to) or left: wait, or drop it.
+            if self.pending_hit.is_none() {
+                self.seeking = None;
+            }
+            return;
+        }
+        let Some(tl) = self.ws.timelines.get(&channel) else { return };
+        if !tl.loaded || tl.loading {
+            return;
+        }
+        let found = tl.index_of(&ts).is_some();
+        let older = tl.messages.first().is_some_and(|m| seek_older(&ts, &m.ts));
+        let (has_more, n) = (tl.has_more, tl.messages.len());
+        if found || !older {
+            self.seeking = None;
+            if self.status.starts_with("looking for the message") {
+                self.status.clear();
+            }
+        } else if has_more {
+            self.status = format!("looking for the message… ({n} loaded)");
+            self.load_history(&channel, true);
+        } else {
+            self.seeking = None;
+            self.status = "that message is no longer in this conversation's history".into();
         }
     }
 
@@ -1743,6 +1780,15 @@ fn spawn_boot(client: Client, tx: mpsc::UnboundedSender<Net>) {
     });
 }
 
+/// Whether a message at `ts` lies before the oldest loaded one (`first`): Slack timestamps
+/// compare as numbers.
+fn seek_older(ts: &str, first: &str) -> bool {
+    match (ts.parse::<f64>(), first.parse::<f64>()) {
+        (Ok(a), Ok(b)) => a < b,
+        _ => false,
+    }
+}
+
 /// Keep what is typed in `composer` as the draft for `key` (or forget the old draft when
 /// nothing is typed), leaving the composer empty.
 fn stash(drafts: &mut std::collections::HashMap<String, super::composer::Draft>, key: &str, composer: &mut super::composer::Composer) {
@@ -1849,6 +1895,7 @@ async fn run_workspace(
         presence_subscribed: false,
         call: None,
         pending_hit: None,
+        seeking: None,
         drafts: Default::default(),
         player: None,
         screen: Default::default(),
@@ -2589,6 +2636,7 @@ fn handle_net(app: &mut App, msg: Net) {
                     tl.upsert(m);
                 }
             }
+            app.continue_seek();
         }
         Net::Posted { channel, message } => super::live::add_message(&mut app.ws, &channel, &message),
         Net::Replies { channel, ts, page } => {
@@ -2928,6 +2976,15 @@ fn draw_composer(f: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &App,
 #[cfg(test)]
 mod tests {
     use slack_core::session::WorkspaceSession;
+
+    #[test]
+    fn seeking_older_messages() {
+        use super::seek_older;
+        assert!(seek_older("1792344000.000100", "1792344759.290079"));
+        assert!(!seek_older("1792344759.290079", "1792344759.290079"), "the oldest loaded one is there");
+        assert!(!seek_older("1792349999.000000", "1792344759.290079"), "newer: not paged for");
+        assert!(!seek_older("x", "1.0"));
+    }
 
     #[test]
     fn status_messages_expire() {
