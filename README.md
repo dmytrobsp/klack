@@ -144,7 +144,8 @@ screen or a window, through the screen-cast portal, read with GStreamer's `pipew
 `gst-launch-1.0` and the GStreamer PipeWire plugin must be installed). Elsewhere there is no picker
 and F10 shares the **whole** screen through `ffmpeg`: `x11grab` in an X11 session, the main screen
 via AVFoundation on macOS (the terminal needs the Screen Recording permission), the desktop via
-`gdigrab` on Windows. Only the Wayland portal has been tried; the others are written but untested.
+`gdigrab` on Windows. The Wayland portal and X11 (against a virtual Xvfb display) have been tried;
+macOS and Windows are written but untested.
 
 ## Other settings
 
