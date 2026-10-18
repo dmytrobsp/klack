@@ -11,6 +11,12 @@ pub enum Command {
     Create { name: String, private: bool },
     /// Open a DM, or a group DM with several people.
     Dm(Vec<Recipient>),
+    /// Star or unstar the current conversation.
+    Star,
+    /// Rename the section holding the current conversation.
+    SectionRename(String),
+    /// Delete the section holding the current conversation.
+    SectionDelete,
     /// Post the lines after `/snippet [lang] [title]` as a text snippet.
     Snippet { lang: String, title: String, body: String },
 }
@@ -65,6 +71,12 @@ pub fn parse(text: &str, mrkdwn: &str) -> Option<Result<Command, String>> {
     Some(match word {
         "/join" if rest.contains(char::is_whitespace) => Err("usage: /join [#channel]".into()),
         "/join" => Ok(Command::Join(Some(rest.trim_start_matches('#').to_string()).filter(|n| !n.is_empty()))),
+        "/star" if rest.is_empty() => Ok(Command::Star),
+        "/section" => match rest.split_once(char::is_whitespace).unwrap_or((rest, "")) {
+            ("rename", name) if !name.trim().is_empty() => Ok(Command::SectionRename(name.trim().to_string())),
+            ("delete", "") => Ok(Command::SectionDelete),
+            _ => Err("usage: /section rename <name> · /section delete (m in the sidebar moves a conversation)".into()),
+        },
         "/leave" if rest.is_empty() => Ok(Command::Leave),
         "/leave" => Err("/leave leaves the current channel; it takes no arguments".into()),
         "/create" | "/create-private" => {
@@ -121,6 +133,11 @@ mod tests {
         assert_eq!(parse("/create-private x"), Some(Ok(Command::Create { name: "x".into(), private: true })));
         assert!(matches!(parse("/create  "), Some(Err(_))));
         assert!(matches!(parse("/upload a.png hi"), Some(Ok(Command::Upload(_)))));
+        assert_eq!(parse("/star"), Some(Ok(Command::Star)));
+        assert_eq!(parse("/section rename  Side projects "), Some(Ok(Command::SectionRename("Side projects".into()))));
+        assert_eq!(parse("/section delete"), Some(Ok(Command::SectionDelete)));
+        assert!(matches!(parse("/section rename"), Some(Err(_))));
+        assert!(matches!(parse("/section"), Some(Err(_))));
         assert_eq!(parse("/shrug"), None);
         assert_eq!(parse("/joinx"), None);
         assert_eq!(parse("hello /join"), None);

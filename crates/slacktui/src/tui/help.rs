@@ -21,6 +21,11 @@ pub const KEYS: &[(&str, &[(&str, &str)])] = &[
         ("F1 or ?", "this help"),
         ("Ctrl+Q", "quit"),
     ]),
+    ("Sidebar", &[
+        ("↑↓ j k g G · Enter", "choose a conversation · type in it"),
+        ("*", "star / unstar"),
+        ("m", "move to a section (or a new one)"),
+    ]),
     ("Messages and thread", &[
         ("↑↓ j k g G", "select a message"),
         ("Enter", "open its thread"),
@@ -45,6 +50,7 @@ pub const KEYS: &[(&str, &[(&str, &str)])] = &[
         ("/leave", "leave the current channel"),
         ("/dm @a [@b…]", "open a DM, or a group DM with several people"),
         ("/snippet [lang] [title]", "post the following lines as a snippet"),
+        ("/star · /section rename|delete", "star this conversation · rename / delete its section"),
         ("/create[-private] <name>", "create a channel"),
         ("Alt+A (reply box)", "also send the reply to the channel"),
         ("Esc", "cancel an edit, else leave the composer"),

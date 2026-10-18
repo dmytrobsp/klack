@@ -17,6 +17,7 @@ pub mod notify;
 pub mod picker;
 pub mod profile;
 pub mod search;
+pub mod sections;
 pub mod sidebar;
 pub mod snippet;
 pub mod state;

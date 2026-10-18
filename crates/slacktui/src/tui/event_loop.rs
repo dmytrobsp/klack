@@ -30,6 +30,8 @@ enum Net {
     Joined { channel: slack_core::types::Conversation, created: bool },
     /// We left a channel.
     Left(String),
+    /// Starring or unstarring failed: put the old state back.
+    StarFailed { channel: String, starred: bool, error: String },
     /// A page of history; `older` pages are prepended.
     History { channel: String, page: HistoryPage, older: bool },
     /// Our own message, as returned by chat.postMessage.
@@ -66,6 +68,7 @@ enum Net {
 enum Confirm {
     Delete { channel: String, ts: String },
     Leave(String),
+    DeleteSection { id: String, name: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,6 +89,8 @@ struct App {
     details: Option<super::details::Details>,
     /// Open profile card.
     profile: Option<super::profile::ProfileCard>,
+    /// Open "move to section" picker.
+    mover: Option<super::sections::MovePicker>,
     /// Join the huddle of the DM with this person once it is open.
     huddle_after_open: Option<String>,
     /// Open search overlay (Ctrl+F).
@@ -316,6 +321,15 @@ impl App {
                 None => {}
             },
             Command::Dm(people) => self.open_group(people),
+            Command::Star => self.toggle_star(channel),
+            Command::SectionRename(name) => match self.ws.section_of(&channel).map(|s| s.id.clone()) {
+                Some(id) => self.rename_section(id, name),
+                None => self.status = "this conversation is not in a section of yours (m in the sidebar)".into(),
+            },
+            Command::SectionDelete => match self.ws.section_of(&channel) {
+                Some(s) => self.confirm = Some(Confirm::DeleteSection { id: s.id.clone(), name: s.name.clone() }),
+                None => self.status = "this conversation is not in a section of yours".into(),
+            },
             Command::Snippet { lang, title, body } => {
                 let name = if title.is_empty() { "snippet".to_string() } else { title };
                 self.status = format!("posting {name}…");
@@ -381,6 +395,111 @@ impl App {
                 });
             }
         }
+    }
+
+    /// Star or unstar a conversation (optimistic, then `stars.add/remove`).
+    fn toggle_star(&mut self, channel: String) {
+        if self.ws.is_outside(&channel) {
+            self.status = "join the channel to star it".into();
+            return;
+        }
+        let star = !self.ws.starred.contains(&channel);
+        if star {
+            self.ws.starred.insert(channel.clone());
+        } else {
+            self.ws.starred.remove(&channel);
+        }
+        self.sidebar.rebuild(&self.ws);
+        self.status = format!("{} {}", if star { "starred" } else { "unstarred" }, self.ws.channel_label(&channel));
+        let (client, tx) = (self.client.clone(), self.net.clone());
+        tokio::spawn(async move {
+            if let Err(e) = client.star_channel(&channel, star).await {
+                let _ = tx.send(Net::StarFailed { channel, starred: !star, error: e.to_string() });
+            }
+        });
+    }
+
+    /// Act on the move picker's choice (or create the named section and move there).
+    fn finish_move(&mut self) {
+        use super::sections::Choice;
+        let Some(picker) = self.mover.take() else { return };
+        let channel = picker.channel.clone();
+        let from = self.ws.section_of(&channel).map(|s| s.id.clone());
+        let (client, tx) = (self.client.clone(), self.net.clone());
+        if let Some(name) = picker.naming.as_ref().map(|n| n.trim().to_string()) {
+            if name.is_empty() {
+                self.status = "a section needs a name".into();
+                return;
+            }
+            self.status = format!("creating the section {name}…");
+            tokio::spawn(async move {
+                let result = async {
+                    let id = client.create_section(&name).await?;
+                    client.move_to_section(&channel, from.as_deref(), Some(&id)).await
+                }
+                .await;
+                let _ = tx.send(match result {
+                    Ok(()) => Net::FileDone(format!("moved to the new section {name}")),
+                    Err(e) => Net::Error(format!("creating the section failed: {e}")),
+                });
+            });
+            return;
+        }
+        let to = match picker.choice() {
+            Choice::NoSection => None,
+            Choice::Section { id, .. } => Some(id.clone()),
+            Choice::New => return,
+        };
+        if to == from {
+            return;
+        }
+        match &to {
+            Some(id) => self.ws.place_in_section(id, std::slice::from_ref(&channel)),
+            None => {
+                if let Some(f) = &from {
+                    self.ws.remove_from_section(f, std::slice::from_ref(&channel));
+                }
+            }
+        }
+        self.sidebar.rebuild(&self.ws);
+        tokio::spawn(async move {
+            if let Err(e) = client.move_to_section(&channel, from.as_deref(), to.as_deref()).await {
+                let _ = tx.send(Net::Error(format!("moving failed: {e}")));
+                if let Ok(v) = client.channel_sections().await {
+                    let _ = tx.send(Net::Sections(v));
+                }
+            }
+        });
+    }
+
+    fn rename_section(&mut self, id: String, name: String) {
+        if let Some(s) = self.ws.sections.iter_mut().find(|s| s.id == id) {
+            s.name = name.clone();
+        }
+        self.sidebar.rebuild(&self.ws);
+        let (client, tx) = (self.client.clone(), self.net.clone());
+        tokio::spawn(async move {
+            if let Err(e) = client.rename_section(&id, &name).await {
+                let _ = tx.send(Net::Error(format!("renaming failed: {e}")));
+                if let Ok(v) = client.channel_sections().await {
+                    let _ = tx.send(Net::Sections(v));
+                }
+            }
+        });
+    }
+
+    fn delete_section(&mut self, id: String) {
+        self.ws.remove_section(&id);
+        self.sidebar.rebuild(&self.ws);
+        let (client, tx) = (self.client.clone(), self.net.clone());
+        tokio::spawn(async move {
+            if let Err(e) = client.delete_section(&id).await {
+                let _ = tx.send(Net::Error(format!("deleting the section failed: {e}")));
+                if let Ok(v) = client.channel_sections().await {
+                    let _ = tx.send(Net::Sections(v));
+                }
+            }
+        });
     }
 
     fn join_channel(&mut self, channel: String) {
@@ -969,6 +1088,7 @@ pub async fn run(client: Client) -> Result<()> {
         search: None,
         details: None,
         profile: None,
+        mover: None,
         huddle_after_open: None,
         presence_subscribed: false,
         call: None,
@@ -1076,6 +1196,26 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
                     sw.query.push(c);
                     sw.selected = 0;
                 }
+                _ => {}
+            }
+        }
+        Event::Key(k) if k.kind != KeyEventKind::Release && app.mover.is_some() => {
+            let Some(m) = app.mover.as_mut() else { return true };
+            let on_new = *m.choice() == super::sections::Choice::New;
+            match (&mut m.naming, k.code) {
+                (_, KeyCode::Char('q')) if k.modifiers.contains(KeyModifiers::CONTROL) => return false,
+                (Some(_), KeyCode::Esc) => m.naming = None,
+                (Some(name), KeyCode::Backspace) => {
+                    name.pop();
+                }
+                (Some(name), KeyCode::Char(c)) if !k.modifiers.contains(KeyModifiers::CONTROL) => name.push(c),
+                (None, KeyCode::Esc | KeyCode::Char('q')) => app.mover = None,
+                (None, KeyCode::Up | KeyCode::Char('k')) => m.move_by(-1),
+                (None, KeyCode::Down | KeyCode::Char('j')) => m.move_by(1),
+                (None, KeyCode::Home | KeyCode::Char('g')) => m.move_by(isize::MIN / 2),
+                (None, KeyCode::End | KeyCode::Char('G')) => m.move_by(isize::MAX / 2),
+                (None, KeyCode::Enter) if on_new => m.naming = Some(String::new()),
+                (_, KeyCode::Enter) => app.finish_move(),
                 _ => {}
             }
         }
@@ -1198,6 +1338,7 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
                 match confirm {
                     Confirm::Delete { channel, ts } => app.delete(channel, ts),
                     Confirm::Leave(channel) => app.leave_channel(channel),
+                    Confirm::DeleteSection { id, .. } => app.delete_section(id),
                 }
             }
         }
@@ -1291,6 +1432,16 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
                     KeyCode::Home | KeyCode::Char('g') => app.sidebar.move_by(isize::MIN / 2),
                     KeyCode::End | KeyCode::Char('G') => app.sidebar.move_by(isize::MAX / 2),
                     KeyCode::Enter | KeyCode::Char('i') | KeyCode::Esc => app.focus = Focus::Composer,
+                    KeyCode::Char('*') => {
+                        if let Some(id) = app.sidebar.selected_id().map(String::from) {
+                            app.toggle_star(id);
+                        }
+                    }
+                    KeyCode::Char('m') => match app.sidebar.selected_id().map(String::from) {
+                        Some(id) if app.ws.is_outside(&id) => app.status = "join the channel to file it in a section".into(),
+                        Some(id) => app.mover = Some(super::sections::MovePicker::new(&app.ws, id)),
+                        None => {}
+                    },
                     _ => {}
                 },
                 Focus::Messages | Focus::Thread => {
@@ -1509,6 +1660,15 @@ fn handle_net(app: &mut App, msg: Net) {
             app.sidebar.rebuild(&app.ws);
             app.jump_to(&id);
         }
+        Net::StarFailed { channel, starred, error } => {
+            if starred {
+                app.ws.starred.insert(channel);
+            } else {
+                app.ws.starred.remove(&channel);
+            }
+            app.sidebar.rebuild(&app.ws);
+            app.status = format!("starring failed: {error}");
+        }
         Net::Left(id) => {
             if let Some(c) = app.ws.conversations.get_mut(&id) {
                 c.is_member = false;
@@ -1685,6 +1845,7 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     match &app.confirm {
         Some(Confirm::Delete { .. }) => draw_confirm(f, main, "Delete this message? y / n"),
         Some(Confirm::Leave(channel)) => draw_confirm(f, main, &format!("Leave #{}? y / n", app.ws.channel_label(channel))),
+        Some(Confirm::DeleteSection { name, .. }) => draw_confirm(f, main, &format!("Delete the section {name}? y / n")),
         None => {}
     }
     if let Some(v) = app.viewer.as_mut() {
@@ -1710,6 +1871,9 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     }
     if let Some(card) = &app.profile {
         card.draw(f, body, &app.ws);
+    }
+    if let Some(m) = &app.mover {
+        m.draw(f, body, &app.ws);
     }
     if app.help {
         super::help::draw(f, body);
