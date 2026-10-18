@@ -168,6 +168,8 @@ pub struct Message {
     pub client_msg_id: Option<String>,
     pub bot_profile: Option<Value>,
     pub hidden: bool,
+    /// Conversations this message is pinned in.
+    pub pinned_to: Vec<String>,
 }
 
 impl Message {

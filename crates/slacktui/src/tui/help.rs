@@ -28,6 +28,7 @@ pub const KEYS: &[(&str, &[(&str, &str)])] = &[
         ("y / Y", "copy text / link"),
         ("o", "open image or play video"),
         ("s", "save attachments"),
+        ("P", "pin / unpin"),
         ("i", "type (in the thread: reply)"),
         ("Esc", "back to the composer (in the thread: close it)"),
     ]),

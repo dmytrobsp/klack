@@ -227,6 +227,11 @@ impl Client {
         self.call_field("chat.getPermalink", "permalink", &[("channel", channel.into()), ("message_ts", ts.into())]).await
     }
 
+    pub async fn pin(&self, channel: &str, ts: &str, add: bool) -> Result<()> {
+        let method = if add { "pins.add" } else { "pins.remove" };
+        self.call_raw(method, &[("channel", channel.into()), ("timestamp", ts.into())]).await.map(|_| ())
+    }
+
     pub async fn pins(&self, channel: &str) -> Result<Value> {
         self.call_raw("pins.list", &[("channel", channel.into())]).await
     }

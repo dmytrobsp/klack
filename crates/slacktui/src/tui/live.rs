@@ -135,6 +135,18 @@ pub fn apply(ws: &mut Workspace, ev: &Value, current: Option<&str>) -> Effects {
                 c.last_read = ev["ts"].as_str().map(String::from);
             }
         }
+        "pin_added" | "pin_removed" => {
+            let added = ev["type"] == "pin_added";
+            let item = &ev["item"];
+            let channel = item["channel"].as_str().or(ev["channel_id"].as_str()).unwrap_or_default().to_string();
+            let ts = item["message"]["ts"].as_str().unwrap_or_default().to_string();
+            for m in ws.copies_mut(&channel, &ts) {
+                m.pinned_to.retain(|c| *c != channel);
+                if added {
+                    m.pinned_to.push(channel.clone());
+                }
+            }
+        }
         "dnd_updated" => ws.dnd = super::state::Dnd::from_json(&ev["dnd_status"]),
         "presence_change" => {
             let active = ev["presence"] == "active";
@@ -293,6 +305,16 @@ mod tests {
         assert_eq!(t.messages.len(), 1);
         assert_eq!(t.messages[0].reply_count, 1);
         assert_eq!(t.messages[0].latest_reply.as_deref(), Some("11.0"));
+    }
+
+    #[test]
+    fn pin_events_mark_messages() {
+        let mut w = ws();
+        apply(&mut w, &json!({"type":"message","channel":"C1","user":"U2","text":"pin me","ts":"10.0"}), Some("C1"));
+        apply(&mut w, &json!({"type":"pin_added","user":"U2","channel_id":"C1","item":{"type":"message","channel":"C1","message":{"ts":"10.0"}}}), Some("C1"));
+        assert_eq!(w.timelines["C1"].messages[0].pinned_to, vec!["C1".to_string()]);
+        apply(&mut w, &json!({"type":"pin_removed","user":"U2","channel_id":"C1","item":{"type":"message","channel":"C1","message":{"ts":"10.0"}}}), Some("C1"));
+        assert!(w.timelines["C1"].messages[0].pinned_to.is_empty());
     }
 
     #[test]

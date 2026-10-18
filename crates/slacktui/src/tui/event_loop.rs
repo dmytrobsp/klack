@@ -544,6 +544,25 @@ impl App {
         });
     }
 
+    /// Pin or unpin message `ts` in the current conversation (optimistic, then the API).
+    fn toggle_pin(&mut self, ts: &str) {
+        let Some(channel) = self.current.clone() else { return };
+        let Some(pinned) = self.ws.find_message(&channel, ts).map(|m| m.pinned_to.contains(&channel)) else { return };
+        for m in self.ws.copies_mut(&channel, ts) {
+            m.pinned_to.retain(|c| *c != channel);
+            if !pinned {
+                m.pinned_to.push(channel.clone());
+            }
+        }
+        self.status = if pinned { "unpinned".into() } else { "pinned".into() };
+        let (client, tx, ts) = (self.client.clone(), self.net.clone(), ts.to_string());
+        tokio::spawn(async move {
+            if let Err(e) = client.pin(&channel, &ts, !pinned).await {
+                let _ = tx.send(Net::Error(format!("pin failed: {e}")));
+            }
+        });
+    }
+
     /// Open the details overlay for the current conversation and load its tabs.
     fn open_details(&mut self) {
         let Some(channel) = self.current.clone() else { return };
@@ -1022,6 +1041,11 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
                         KeyCode::Char('y') => {
                             if let Some(ts) = app.selected_ts() {
                                 app.copy_text(&ts);
+                            }
+                        }
+                        KeyCode::Char('P') => {
+                            if let Some(ts) = app.selected_ts() {
+                                app.toggle_pin(&ts);
                             }
                         }
                         KeyCode::Char('s') => {

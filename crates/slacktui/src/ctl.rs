@@ -30,6 +30,13 @@ pub enum Ctl {
         #[arg(long)]
         thread: Option<String>,
     },
+    /// Pin (or with --remove unpin) a message.
+    Pin {
+        channel: String,
+        ts: String,
+        #[arg(long)]
+        remove: bool,
+    },
     /// Add a reaction.
     React { channel: String, ts: String, emoji: String },
     /// Upload a file.
@@ -110,6 +117,10 @@ pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
             let m = client.post_message(&id, &text, thread.as_deref(), false).await?;
             println!("{}", m.ts);
         }
+        Ctl::Pin { channel, ts, remove } => {
+            let id = resolve_channel(&client, &channel).await?;
+            client.pin(&id, &ts, !remove).await?;
+        }
         Ctl::React { channel, ts, emoji } => {
             let id = resolve_channel(&client, &channel).await?;
             client.react(&id, &ts, emoji.trim_matches(':'), true).await?;
@@ -141,5 +152,6 @@ pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
 
 /// ` [:name: by U1,U2]…` for a printed message.
 fn reactions(m: &slack_core::types::Message) -> String {
-    m.reactions.iter().map(|r| format!(" [:{}: by {}]", r.name, r.users.join(","))).collect()
+    let pinned = if m.pinned_to.is_empty() { "" } else { " [pinned]" };
+    m.reactions.iter().map(|r| format!(" [:{}: by {}]", r.name, r.users.join(","))).collect::<String>() + pinned
 }

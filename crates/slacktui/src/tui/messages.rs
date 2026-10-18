@@ -282,6 +282,9 @@ pub fn message_body(ws: &Workspace, m: &Message, width: usize, summary: bool, th
             _ => body.push(Line::from(Span::styled("(edited)", Style::default().fg(DIM)))),
         }
     }
+    if !m.pinned_to.is_empty() {
+        out.push(Line::styled("📌 pinned", Style::default().fg(Color::Rgb(0xe5, 0xc0, 0x7b))));
+    }
     if summary && m.subtype.as_deref() == Some("thread_broadcast") {
         out.push(Line::styled("↳ replied to a thread", Style::default().fg(DIM)));
     }
