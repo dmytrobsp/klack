@@ -61,7 +61,7 @@ Remaining dead-code warnings: `Composer::cursor/is_multiline`, `Sidebar::select_
 ## Next (in order, each as a small, separately verified step)
 
 The original roadmap is done. On 2026-10-18 the user asked for the missing features below, in this
-order (agreed after an audit; run autonomously, one verified commit per step). Where a Slack endpoint is
+order (agreed after an audit; item 12 added later the same day; run autonomously, one verified commit per step). Where a Slack endpoint is
 not a documented public method, confirm it from the web client bundles first (see `../notes/huddles.md`
 for how the bundles are fetched and searched).
 
@@ -79,11 +79,12 @@ Easy (standard API or a small client endpoint):
 Medium:
 10. Profile pictures in the message list (small kitty/sixel images, cached).
 11. Multiple workspaces: switch inside the app (profile already stores several).
-12. Preferences menu: availability, notifications (per-channel all/mentions/nothing, keywords), VIP, appearance (theme/colours, compact mode), messages & media (inline images/video on/off, emoji style), language & region (time zone, 12/24 h, date format; i18n scaffolding), audio & video (devices). Save to a config file; Slack-side prefs via `users.prefs.*`.
+12. Remappable keys (added by the user on 2026-10-18): every keystroke in the app is an action that can be rebound, both in a config file and from the preferences menu (item 13); support a prefix/leader key (e.g. `Ctrl+X` then a key, like tmux/vim chords) with a pending-chord indicator. The F1 help panel and a *contextual* help bar (the status-bar hints should follow the focused pane/overlay, not be fixed) must show the user's actual bindings. Needs a central action registry replacing the hard-coded `KeyCode` matches in `event_loop.rs`; detect conflicts; keep the defaults identical to today.
+13. Preferences menu: availability, notifications (per-channel all/mentions/nothing, keywords), VIP, appearance (theme/colours, compact mode), messages & media (inline images/video on/off, emoji style), language & region (time zone, 12/24 h, date format; i18n scaffolding), audio & video (devices). Save to a config file; Slack-side prefs via `users.prefs.*`.
 
 Hard (huddles video; the user's real camera/screen must not be captured in tests without them):
-13. View other participants' webcam and screen share (receive video over WebRTC, decode, draw like the video player).
-14. Send your own webcam, then screen share (camera capture, VP8/H.264 encode; Wayland needs the screen-cast portal + PipeWire).
+14. View other participants' webcam and screen share (receive video over WebRTC, decode, draw like the video player).
+15. Send your own webcam, then screen share (camera capture, VP8/H.264 encode; Wayland needs the screen-cast portal + PipeWire).
 
 ## Known gaps / not verified
 
