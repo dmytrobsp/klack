@@ -449,14 +449,14 @@ impl Call {
             piece("🔇 muted".into(), Style::default())
         } else {
             let (level, open) = (f32::from_bits(self.mic_level.load(std::sync::atomic::Ordering::Relaxed)), self.mic_open.load(std::sync::atomic::Ordering::Relaxed));
-            Piece { spans: vec![Span::styled("🎙 live ", green.add_modifier(Modifier::BOLD)), Span::styled(meter(level), if open { green } else { dim })], avatar: None }
+            Piece { spans: vec![Span::styled("🎙\u{fe0f} live ", green.add_modifier(Modifier::BOLD)), Span::styled(meter(level), if open { green } else { dim })], avatar: None }
         };
         state.push(mic);
         state.push(if self.camera_on() { piece("📹 camera on".into(), green) } else { piece("camera off".into(), dim) });
         if self.is_sharing() {
-            state.push(piece("🖥 sharing your screen".into(), green));
+            state.push(piece("🖥\u{fe0f} sharing your screen".into(), green));
         } else if let Some((_, user)) = self.shares.first() {
-            state.push(piece(format!("🖥 {} is sharing", truncate(&ws.person_label(user), SPEAKER_NAME)), Style::default()));
+            state.push(piece(format!("🖥\u{fe0f} {} is sharing", truncate(&ws.person_label(user), SPEAKER_NAME)), Style::default()));
         }
         if let Some(e) = &self.speaker_error {
             state.push(piece(format!("no sound: {e}"), Style::default().fg(p.danger)));

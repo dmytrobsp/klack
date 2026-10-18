@@ -431,7 +431,7 @@ impl HuddleView {
     #[allow(clippy::too_many_arguments)]
     fn draw_share(&mut self, f: &mut Frame, rect: Rect, call: &Call, share: &str, user: &str, ws: &Workspace, media: &Media, selected: bool) {
         let accent = Style::default().fg(super::theme::p().accent);
-        let title = if user == ws.self_id { " 🖥 Your screen ".to_string() } else { format!(" 🖥 {}'s screen ", ws.person_label(user)) };
+        let title = if user == ws.self_id { " 🖥\u{fe0f} Your screen ".to_string() } else { format!(" 🖥\u{fe0f} {}'s screen ", ws.person_label(user)) };
         let title_style = if selected { accent.add_modifier(Modifier::BOLD | Modifier::REVERSED) } else { accent.add_modifier(Modifier::BOLD) };
         let kind = if selected { BorderType::Double } else { BorderType::Plain };
         let block = Block::default().borders(Borders::ALL).border_type(kind).border_style(accent).title(Span::styled(title, title_style));

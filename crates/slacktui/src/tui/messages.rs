@@ -434,9 +434,9 @@ pub fn message_body(ws: &Workspace, m: &Message, width: usize, summary: bool, th
     }
     for file in &m.files {
         let icon = if file.is_image() {
-            "🖼 "
+            "🖼\u{fe0f} "
         } else if file.is_video() {
-            "🎞 "
+            "🎞\u{fe0f} "
         } else if file.is_audio() {
             "🎵 "
         } else {
@@ -542,6 +542,18 @@ mod tests {
         // Real values for a 3-line file ending in a newline.
         let trailing = File { mode: "snippet".into(), preview: Some("a\nb\nc\n".into()), lines: Some(4), lines_more: Some(0), ..Default::default() };
         assert_eq!(plain(&snippet_preview(&trailing, 20)).len(), 3);
+    }
+
+    #[test]
+    fn icons_are_two_cells_everywhere() {
+        // Narrow by Unicode, but drawn two cells wide by emoji fonts (kitty paints the glyph over
+        // the following space); with the emoji selector both sides count two.
+        use unicode_width::UnicodeWidthStr;
+        for icon in ["🖼\u{fe0f}", "🎞\u{fe0f}", "🖥\u{fe0f}", "🎙\u{fe0f}"] {
+            assert_eq!(icon.width(), 2, "{icon:?}");
+            assert_eq!(ratatui::text::Span::raw(icon).width(), 2, "{icon:?}");
+        }
+        assert_eq!("🖼".width(), 1, "without the selector: one cell");
     }
 
     #[test]
