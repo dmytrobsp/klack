@@ -5,7 +5,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, Borders, Paragraph};
 
 use super::keymap::{ACTIONS, Action, Context, Keymap};
 
@@ -104,7 +104,7 @@ impl Menu {
         let x = self.at.0.min(screen.right().saturating_sub(width));
         let y = self.at.1.min(screen.bottom().saturating_sub(height));
         self.area = Rect { x, y, width, height };
-        f.render_widget(Clear, self.area);
+        super::media::clear_popup(f, self.area);
         let lines: Vec<Line> = self
             .items
             .iter()

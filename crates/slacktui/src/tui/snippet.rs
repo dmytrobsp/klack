@@ -4,7 +4,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, Borders, Paragraph};
 use slack_core::types::File;
 
 
@@ -46,7 +46,7 @@ impl SnippetView {
     }
 
     pub fn draw(&mut self, f: &mut Frame, area: Rect) {
-        f.render_widget(Clear, area);
+        super::media::clear_popup(f, area);
         let name = if self.file.title.is_empty() { &self.file.name } else { &self.file.title };
         let lang = super::highlight::language(&self.file).unwrap_or(&self.file.pretty_type);
         let lang = if lang.is_empty() { String::new() } else { format!(" · {lang}") };

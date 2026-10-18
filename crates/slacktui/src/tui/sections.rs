@@ -4,7 +4,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, Borders, Paragraph};
 
 use super::state::Workspace;
 
@@ -46,7 +46,7 @@ impl MovePicker {
         let rows = self.choices.len() as u16 + 2 + u16::from(self.naming.is_some());
         let [popup] = Layout::horizontal([Constraint::Length(44.min(area.width))]).flex(Flex::Center).areas(area);
         let [popup] = Layout::vertical([Constraint::Length(rows.min(area.height))]).flex(Flex::Center).areas(popup);
-        f.render_widget(Clear, popup);
+        super::media::clear_popup(f, popup);
         let c = ws.conversations.get(&self.channel);
         let name = c.map(|c| if c.is_dm() { ws.conversation_label(c) } else { format!("#{}", c.name) }).unwrap_or_default();
         let current = ws.section_of(&self.channel).map(|s| s.id.as_str());

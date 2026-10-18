@@ -4,7 +4,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, Borders, Paragraph};
 
 use super::composer::Trigger;
 use super::picker::EmojiPicker;
@@ -130,7 +130,7 @@ impl Completion {
 /// Draw the list just above `anchor` (the composer box).
 pub fn draw(f: &mut Frame, anchor: Rect, c: &Completion) {
     let area = popup_area(anchor, c.items.len());
-    f.render_widget(Clear, area);
+    super::media::clear_popup(f, area);
     let block = Block::default().borders(Borders::ALL).border_style(Style::default().fg(super::theme::p().accent)).title(" Suggestions ");
     let lines: Vec<Line> = c
         .items

@@ -13,7 +13,7 @@ use image::{DynamicImage, RgbImage};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect, Size};
 use ratatui::style::Style;
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui_image::picker::Picker;
 use ratatui_image::protocol::Protocol;
 use ratatui_image::{Image, Resize};
@@ -201,7 +201,7 @@ impl Player {
     }
 
     pub fn draw(&mut self, f: &mut Frame, area: Rect, picker: &Picker) {
-        f.render_widget(Clear, area);
+        super::media::clear_popup(f, area);
         let clock = |s: f64| format!("{}:{:02}", s as u64 / 60, s as u64 % 60);
         let total = self.duration.map(|d| format!(" / {}", clock(d))).unwrap_or_default();
         let state = if self.finished {

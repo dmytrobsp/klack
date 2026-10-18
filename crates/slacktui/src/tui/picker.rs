@@ -4,7 +4,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, Borders, Paragraph};
 
 
 /// Emoji people reach for most; shown first when the query is empty.
@@ -68,7 +68,7 @@ impl EmojiPicker {
     pub fn draw(&self, f: &mut Frame, area: Rect, custom: &[String]) {
         let [popup] = Layout::horizontal([Constraint::Length(44)]).flex(Flex::Center).areas(area);
         let [popup] = Layout::vertical([Constraint::Length(16)]).flex(Flex::Center).areas(popup);
-        f.render_widget(Clear, popup);
+        super::media::clear_popup(f, popup);
         let block = Block::default().borders(Borders::ALL).border_style(Style::default().fg(super::theme::p().accent)).title(format!(" {} ", super::i18n::tr("Add reaction")));
         let inner = block.inner(popup);
         f.render_widget(block, popup);

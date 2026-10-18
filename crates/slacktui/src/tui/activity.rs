@@ -8,7 +8,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, Borders, Paragraph};
 use serde_json::Value;
 use slack_core::format;
 use slack_core::types::Message;
@@ -124,7 +124,7 @@ impl Activity {
     pub fn draw(&mut self, f: &mut Frame, area: Rect, ws: &Workspace) {
         let [popup] = Layout::horizontal([Constraint::Length(90.min(area.width))]).flex(Flex::Center).areas(area);
         let [popup] = Layout::vertical([Constraint::Length(30.min(area.height))]).flex(Flex::Center).areas(popup);
-        f.render_widget(Clear, popup);
+        super::media::clear_popup(f, popup);
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(super::theme::p().accent))

@@ -90,6 +90,44 @@ pub fn thumb_cells(file: &File, font: FontSize, max_cols: u16, max_rows: u16) ->
     Some((cols, rows))
 }
 
+/// The kitty protocol draws a picture with these placeholder cells (ratatui-image's
+/// `PLACEHOLDER`); only the first cell of each row says which row and column it is (with
+/// diacritics), the ones after it are numbered from their left neighbour.
+const PLACEHOLDER: char = '\u{10EEEE}';
+
+/// Clear `area` for a popup, and the picture cells it cuts off: each cell shows its own slice of
+/// a picture, so the cell left of the popup would be a stray half (an avatar's), and the cells
+/// right of it lose their numbering and show the wrong slice.
+pub fn clear_popup(f: &mut ratatui::Frame, area: ratatui::layout::Rect) {
+    f.render_widget(ratatui::widgets::Clear, area);
+    let buf = f.buffer_mut();
+    let screen = buf.area;
+    for y in area.top()..area.bottom().min(screen.bottom()) {
+        if let Some(x) = area.left().checked_sub(1).filter(|x| *x >= screen.left()) {
+            blank_picture_cell(&mut buf[(x, y)]);
+        }
+        let mut x = area.right();
+        while x < screen.right() && is_continuation(buf[(x, y)].symbol()) {
+            blank_picture_cell(&mut buf[(x, y)]);
+            x += 1;
+        }
+    }
+}
+
+/// A placeholder numbered from its left neighbour (no diacritics after it).
+fn is_continuation(symbol: &str) -> bool {
+    symbol.split_once(PLACEHOLDER).is_some_and(|(_, marks)| marks.is_empty())
+}
+
+/// Turn a picture cell into a blank, keeping anything sent before the placeholder (the first
+/// cell carries the picture itself, sent only once).
+fn blank_picture_cell(cell: &mut ratatui::buffer::Cell) {
+    if let Some((before, _)) = cell.symbol().split_once(PLACEHOLDER) {
+        let blank = format!("{before} ");
+        cell.set_symbol(&blank);
+    }
+}
+
 /// Download, decode and encode a thumbnail for `file` at `size` cells (blocking parts run
 /// off the UI task). The error's outermost context says what failed in a few words
 /// ([`short_reason`]); the rest is the detail for the log.
@@ -122,6 +160,46 @@ mod tests {
 
     fn image(w: Option<u64>, h: Option<u64>) -> File {
         File { mimetype: "image/png".into(), thumb_360: Some("https://x/t.png".into()), original_w: w, original_h: h, ..Default::default() }
+    }
+
+    #[test]
+    fn popups_cut_pictures_cleanly() {
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+        // Two rows of a picture 6 cells wide as ratatui-image writes them: the first cell of a
+        // row numbered (and the very first carrying the picture), the rest bare placeholders.
+        let mut buf = Buffer::empty(Rect::new(0, 0, 10, 2));
+        for y in 0..2u16 {
+            for x in 0..6u16 {
+                let symbol = match (x, y) {
+                    (0, 0) => "\x1b_Gdata\x1b\\\u{10EEEE}\u{305}\u{305}".to_string(),
+                    (0, _) => "\u{10EEEE}\u{30D}\u{305}".to_string(),
+                    _ => "\u{10EEEE}".to_string(),
+                };
+                buf[(x, y)].set_symbol(&symbol);
+            }
+        }
+        let backend = ratatui::backend::TestBackend::new(10, 2);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                *f.buffer_mut() = buf.clone();
+                // A popup over cells 2..4 of both rows.
+                clear_popup(f, Rect::new(2, 0, 2, 2));
+                let b = f.buffer_mut();
+                assert!(b[(0, 0)].symbol().contains('\u{10EEEE}'), "further left: untouched");
+                assert_eq!(b[(1, 0)].symbol(), " ", "the half beside the popup is blanked");
+                assert_eq!(b[(4, 1)].symbol(), " ");
+                assert_eq!(b[(5, 1)].symbol(), " ", "the unnumbered rest is blanked");
+                assert_eq!(b[(6, 1)].symbol(), " ", "past the picture: nothing to do");
+            })
+            .unwrap();
+        // The cell carrying the picture keeps it when blanked.
+        let mut cell = ratatui::buffer::Cell::default();
+        cell.set_symbol("\x1b_Gdata\x1b\\\u{10EEEE}\u{305}");
+        blank_picture_cell(&mut cell);
+        assert_eq!(cell.symbol(), "\x1b_Gdata\x1b\\ ");
+        assert!(is_continuation("\u{10EEEE}") && !is_continuation("\u{10EEEE}\u{305}") && !is_continuation("a"));
     }
 
     #[test]

@@ -5,7 +5,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 use super::keymap::{ACTIONS, Keymap};
 use super::settings::Settings;
@@ -529,7 +529,7 @@ impl Prefs {
     pub fn draw(&mut self, f: &mut Frame, area: Rect, ws: &Workspace, current: Option<&str>, keys: &Keymap) {
         let [popup] = Layout::horizontal([Constraint::Length(84.min(area.width))]).flex(Flex::Center).areas(area);
         let [popup] = Layout::vertical([Constraint::Length(22.min(area.height))]).flex(Flex::Center).areas(popup);
-        f.render_widget(Clear, popup);
+        super::media::clear_popup(f, popup);
         let saved = match &self.saved {
             Some(Ok(path)) => format!(" saved to {path} "),
             Some(Err(e)) => format!(" not saved: {e} "),

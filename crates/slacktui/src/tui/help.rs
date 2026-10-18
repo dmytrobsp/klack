@@ -4,7 +4,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, Borders, Paragraph};
 
 use super::i18n::tr;
 use super::keymap::{ACTIONS, Context, Keymap};
@@ -45,7 +45,7 @@ impl Help {
         let width = 92.min(area.width);
         let [popup] = Layout::horizontal([Constraint::Length(width)]).flex(Flex::Center).areas(area);
         let [popup] = Layout::vertical([Constraint::Length(area.height.saturating_sub(2).max(5))]).flex(Flex::Center).areas(popup);
-        f.render_widget(Clear, popup);
+        super::media::clear_popup(f, popup);
         let lines = lines(keys);
         self.lines = lines.len();
         self.height = popup.height.saturating_sub(2) as usize;

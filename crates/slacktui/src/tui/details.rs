@@ -4,7 +4,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Tabs, Wrap};
+use ratatui::widgets::{Block, Borders, Paragraph, Tabs, Wrap};
 use slack_core::types::{Conversation, Message};
 
 use super::state::Workspace;
@@ -56,7 +56,7 @@ impl Details {
     pub fn draw(&self, f: &mut Frame, area: Rect, ws: &Workspace) {
         let [popup] = Layout::horizontal([Constraint::Length(80.min(area.width))]).flex(Flex::Center).areas(area);
         let [popup] = Layout::vertical([Constraint::Length(26.min(area.height))]).flex(Flex::Center).areas(popup);
-        f.render_widget(Clear, popup);
+        super::media::clear_popup(f, popup);
         let conv = self.info.as_ref().or_else(|| ws.conversations.get(&self.channel));
         let name = conv.map(|c| if c.is_dm() { ws.conversation_label(c) } else { format!("#{}", c.name) }).unwrap_or_else(|| self.channel.clone());
         let block = Block::default()

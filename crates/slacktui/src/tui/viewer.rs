@@ -4,7 +4,7 @@ use image::DynamicImage;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect, Size};
 use ratatui::style::Style;
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui_image::picker::Picker;
 use ratatui_image::protocol::Protocol;
 use ratatui_image::{Image, Resize};
@@ -59,7 +59,7 @@ impl Viewer {
     }
 
     pub fn draw(&mut self, f: &mut Frame, area: Rect, picker: &Picker) {
-        f.render_widget(Clear, area);
+        super::media::clear_popup(f, area);
         let file = self.file().clone();
         let name = if file.title.is_empty() { file.name.clone() } else { file.title.clone() };
         let count = if self.files.len() > 1 { format!(" · {}/{}", self.index + 1, self.files.len()) } else { String::new() };

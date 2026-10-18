@@ -7,7 +7,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use slack_core::format::{Block as Doc, Inline};
 use slack_core::types::{Message, User};
 
@@ -36,7 +36,7 @@ impl ProfileCard {
     pub fn draw(&self, f: &mut Frame, area: Rect, ws: &Workspace) {
         let [popup] = Layout::horizontal([Constraint::Length(56.min(area.width))]).flex(Flex::Center).areas(area);
         let [popup] = Layout::vertical([Constraint::Length(15.min(area.height))]).flex(Flex::Center).areas(popup);
-        f.render_widget(Clear, popup);
+        super::media::clear_popup(f, popup);
         let keys = if self.people.len() > 1 { format!(" {}/{} in this message ", self.index + 1, self.people.len()) } else { String::new() };
         let block = Block::default()
             .borders(Borders::ALL)
