@@ -141,6 +141,8 @@ struct App {
     huddle_after_open: Option<String>,
     /// A huddle that ended before it connected was joined again (once).
     rejoined: bool,
+    /// What the open composers held at the last look, since when, and whether that is saved.
+    autosave: (Option<super::composer::Draft>, Option<super::composer::Draft>, std::time::Instant, bool),
     /// Open search overlay (Ctrl+F).
     search: Option<super::search::Search>,
     /// A search hit to select once its conversation is shown.
@@ -1914,6 +1916,19 @@ fn seek_older(ts: &str, first: &str) -> bool {
 }
 
 impl App {
+    /// Save the drafts once what is typed has not changed for [`DRAFT_SAVE_DELAY`], so a crash
+    /// loses at most the last moments of typing.
+    fn autosave_drafts(&mut self) {
+        let now = (self.composer.draft(), self.thread_composer.draft());
+        let (typed, thread_typed, since, saved) = &self.autosave;
+        if (&now.0, &now.1) != (typed, thread_typed) {
+            self.autosave = (now.0, now.1, std::time::Instant::now(), false);
+        } else if draft_save_due(*saved, since.elapsed()) {
+            self.save_drafts();
+            self.autosave.3 = true;
+        }
+    }
+
     /// Save the drafts, with what is in the open composers, for the next run.
     fn save_drafts(&self) {
         let mut drafts = self.drafts.clone();
@@ -1925,6 +1940,14 @@ impl App {
         }
         super::drafts::save(&self.client.session.team_id, &self.client.session.user_id, &drafts);
     }
+}
+
+/// How long typing must pause before the drafts are saved.
+const DRAFT_SAVE_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Whether unsaved typing that has not changed for `quiet` is due to be saved.
+fn draft_save_due(saved: bool, quiet: std::time::Duration) -> bool {
+    !saved && quiet >= DRAFT_SAVE_DELAY
 }
 
 /// Keep what is typed in `composer` as the draft for `key` (or forget the old draft when
@@ -2046,6 +2069,7 @@ async fn run_workspace(
         mover: None,
         huddle_after_open: None,
         rejoined: false,
+        autosave: (None, None, std::time::Instant::now(), true),
         presence_subscribed: false,
         call: None,
         pending_hit: None,
@@ -2176,6 +2200,7 @@ async fn run_workspace(
             break;
         }
         app.sync_current();
+        app.autosave_drafts();
         if app.current.as_ref().and_then(|c| app.ws.timelines.get(c)).is_some_and(|t| t.loaded) {
             app.mark_current_read();
         }
@@ -3222,6 +3247,15 @@ fn draw_composer(f: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &App,
 #[cfg(test)]
 mod tests {
     use slack_core::session::WorkspaceSession;
+
+    #[test]
+    fn drafts_save_after_a_pause() {
+        use super::{DRAFT_SAVE_DELAY, draft_save_due};
+        let ms = std::time::Duration::from_millis;
+        assert!(!draft_save_due(false, ms(500)), "still typing");
+        assert!(draft_save_due(false, DRAFT_SAVE_DELAY), "a pause");
+        assert!(!draft_save_due(true, ms(60_000)), "already saved");
+    }
 
     #[test]
     fn rejoining_a_huddle_that_ended_at_once() {
