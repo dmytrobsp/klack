@@ -117,11 +117,11 @@ Tests: `cargo test` → slack-core 9, huddle 33, slacktui 128, all passing. `car
 
 ## Next (in order, each as a small, separately verified step)
 
-**NEXT UP: queue C is done — ask the user what comes next.** Leftovers worth offering: a search hit older
-than the loaded history should page the history back until it is found (search paging makes such hits
-easy to reach); an X11 screen-share test against Xvfb (`sudo apt install xvfb`); cross-compile checks for
-Windows/macOS (needs mingw-w64 / an SDK for the C dependencies); hearing echo cancellation live (needs the
-user's explicit go-ahead and an explicitly named microphone).
+**NEXT UP: D1 — open search hits older than the loaded history.** Today such a hit opens the
+conversation with nothing selected. Load older history pages (the same `conversations.history` paging
+the message pane uses when scrolling up) until the hit's ts (or its thread parent) is in the timeline,
+then select and scroll to it; give up at the beginning of the conversation with a status. Verify live
+with "paging test message 2" in #history-paging (three pages back).
 
 The roadmap (items 1–15) is complete. Queue from the user (2026-10-18), in this order; run autonomously,
 one verified commit per step:
@@ -139,6 +139,24 @@ C. Then, in this order:
   C5. ~~Clear status-bar messages on a timer~~ — done (8 s; "…" statuses stay).
   C6. ~~Search paging~~ — done (pages of 50 as you move down).
   C7. ~~Camera/screen capture on X11, macOS and Windows~~ — written, not run (see the C7 row).
+D. Queued by the agent on 2026-10-18 when the user said "queue next items as you deem fit" (from the
+   known gaps, small and testable here first; run autonomously, one verified commit per step):
+  D1. Search hits older than the loaded history: page back until found, then select it — NEXT.
+  D2. `@here` / `@channel` / `@everyone` are offered by autocomplete in DMs; offer them in channels only.
+  D3. Highlight the message being edited while the composer has focus.
+  D4. The reply box title clips "(Alt+A)" when the thread pane is narrow; shorten it to fit.
+  D5. Day separators in the thread pane (a thread spanning days shows only times).
+  D6. Autocomplete: complete on a mouse click on a suggestion.
+  D7. Mark conversations that have a draft in the sidebar (✎), now that drafts exist (C4).
+  D8. Snippets: check Slack's `snippet_type` list so an unknown type is not silently stored as C++.
+  D9. Sections: read every page of a section's `channel_ids_page` (only the first today).
+  D10. Notifications: let a conversation's level go back to "default" (find how the web client does it;
+       Slack refuses `default` in the way we send it).
+  D11. Other workspaces: unread badges and notifications while not shown (a light background connection
+       per workspace), so Alt+1…9 is not the only way to notice them. Bigger; do last.
+  Needs the user (not queued for autonomous work): an X11 screen-share test against Xvfb (`sudo apt install
+  xvfb`); cross-compile checks for Windows/macOS (mingw-w64 / an SDK for the C dependencies); hearing echo
+  cancellation live (explicit go-ahead and an explicitly named microphone).
 VP8/VP9 decoding is not needed: with slacktui in the call the meeting's receive-codec intersection is
 H.264 CB and real clients send that (verified with the web client).
 
