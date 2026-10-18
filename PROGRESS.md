@@ -158,6 +158,11 @@ F. Agreed with the user on 2026-10-19 after queue E ("proceed with proposed orde
       F3f (NEXT) scrolling cost with a large channel (synthetic timeline, measure `build_lines`).
   F4. Added by the user on 2026-10-19: the sidebar's sections (Starred, Channels, Direct messages and
       custom sections) should be more clearly separated from each other.
+  F5. Added by the user on 2026-10-19: the message pane (and probably other scrolling panes: thread
+      pane, sidebar, huddle tiles, preferences, help, search) has no scroll indicator, so you cannot tell
+      where you are — add one (a scrollbar or position marker). Note from F3f: the message pane builds only
+      the newest messages it needs, so its position should come from the message index (and the loaded vs
+      "more on Slack" history), not from a total line count.
 
 The roadmap (items 1–15) is complete. Queue from the user (2026-10-18), in this order; run autonomously,
 one verified commit per step:
