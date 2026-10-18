@@ -95,6 +95,6 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Some(Command::Ctl { cmd }) => ctl::run(&cli.profile, cli.team.as_deref(), cmd).await,
-        None => tui::event_loop::run(ctl::client(&cli.profile, cli.team.as_deref())?).await,
+        None => tui::event_loop::run(slack_core::session::Profile::load(&cli.profile)?, cli.team.as_deref()).await,
     }
 }

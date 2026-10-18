@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 pub const USER_AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Slack/4.52.178 Chrome/152.0.7977.130 Electron/44.4.5 Safari/537.36 Sonic Slack_SSB/4.52.178";
 
 /// Credentials for one workspace.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct WorkspaceSession {
     pub team_id: String,
     pub team_name: String,

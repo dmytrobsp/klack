@@ -19,6 +19,7 @@ pub const KEYS: &[(&str, &[(&str, &str)])] = &[
         ("F2", "conversation details: about, members (Enter: profile), pins"),
         ("F3 / F4", "join or leave the huddle / mute or unmute"),
         ("PgUp / PgDn", "scroll messages"),
+        ("Alt+1 … Alt+9", "switch to the profile's workspace 1 … 9 (/workspace lists them)"),
         ("F1 or ?", "this help"),
         ("Ctrl+Q", "quit"),
     ]),

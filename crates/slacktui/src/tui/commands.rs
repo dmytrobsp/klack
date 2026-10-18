@@ -13,6 +13,8 @@ pub enum Command {
     Dm(Vec<Recipient>),
     /// Star or unstar the current conversation.
     Star,
+    /// List the profile's workspaces, or switch to the one matching the name.
+    Workspace(Option<String>),
     /// Set your status (empty emoji and text clear it).
     Status { emoji: String, text: String, expiry: Expiry },
     /// Appear away (true) or active.
@@ -131,6 +133,7 @@ pub fn parse(text: &str, mrkdwn: &str) -> Option<Result<Command, String>> {
         "/join" if rest.contains(char::is_whitespace) => Err("usage: /join [#channel]".into()),
         "/join" => Ok(Command::Join(Some(rest.trim_start_matches('#').to_string()).filter(|n| !n.is_empty()))),
         "/star" if rest.is_empty() => Ok(Command::Star),
+        "/workspace" => Ok(Command::Workspace(Some(rest.to_string()).filter(|r| !r.is_empty()))),
         "/status" => parse_status(rest),
         "/away" if rest.is_empty() => Ok(Command::Away(true)),
         "/active" | "/back" if rest.is_empty() => Ok(Command::Away(false)),
@@ -221,6 +224,8 @@ mod tests {
         assert!(matches!(parse("/create  "), Some(Err(_))));
         assert!(matches!(parse("/upload a.png hi"), Some(Ok(Command::Upload(_)))));
         assert_eq!(parse("/star"), Some(Ok(Command::Star)));
+        assert_eq!(parse("/workspace"), Some(Ok(Command::Workspace(None))));
+        assert_eq!(parse("/workspace acme corp"), Some(Ok(Command::Workspace(Some("acme corp".into())))));
         assert_eq!(parse("/section rename  Side projects "), Some(Ok(Command::SectionRename("Side projects".into()))));
         assert_eq!(parse("/section delete"), Some(Ok(Command::SectionDelete)));
         assert!(matches!(parse("/section rename"), Some(Err(_))));

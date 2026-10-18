@@ -87,6 +87,11 @@ enum Focus {
 }
 
 struct App {
+    /// The profile's workspaces (labels) and which one this is.
+    workspaces: Vec<String>,
+    workspace: usize,
+    /// Leave this workspace for another (index into `workspaces`).
+    switch_to: Option<usize>,
     /// The huddle we are in.
     call: Option<super::call::Call>,
     /// Presence subscription sent on the current RTM connection.
@@ -332,6 +337,17 @@ impl App {
             },
             Command::Dm(people) => self.open_group(people),
             Command::Star => self.toggle_star(channel),
+            Command::Workspace(None) => {
+                let list: Vec<String> = self.workspaces.iter().enumerate().map(|(n, w)| format!("{}{} {w}", if n == self.workspace { "▸" } else { "" }, n + 1)).collect();
+                self.status = format!("workspaces (Alt+number): {}", list.join(" · "));
+            }
+            Command::Workspace(Some(name)) => {
+                let name = name.to_lowercase();
+                match self.workspaces.iter().position(|w| w.to_lowercase().contains(&name)) {
+                    Some(i) => self.switch_workspace(i),
+                    None => self.status = format!("no workspace matching '{name}' in this profile"),
+                }
+            }
             Command::Status { emoji, text, expiry } => {
                 use super::commands::Expiry;
                 let now = chrono::Local::now();
@@ -928,6 +944,19 @@ impl App {
         }
     }
 
+    /// Leave this workspace for workspace `index` of the profile.
+    fn switch_workspace(&mut self, index: usize) {
+        if index >= self.workspaces.len() {
+            self.status = format!("there is no workspace {} (this profile has {})", index + 1, self.workspaces.len());
+        } else if index == self.workspace {
+            self.status = format!("already in {}", self.workspaces[index]);
+        } else if self.call.is_some() {
+            self.status = "leave the huddle first (F3)".into();
+        } else {
+            self.switch_to = Some(index);
+        }
+    }
+
     /// Profile card `h`: a huddle in the DM with `user`.
     fn huddle_with(&mut self, user: String) {
         if user == self.ws.self_id {
@@ -1166,15 +1195,59 @@ fn spawn_boot(client: Client, tx: mpsc::UnboundedSender<Net>) {
     });
 }
 
-pub async fn run(client: Client) -> Result<()> {
-    let (net_tx, mut net_rx) = mpsc::unbounded_channel();
-    spawn_boot(client.clone(), net_tx.clone());
-    let mut rtm = slack_core::rtm::spawn(client.clone());
+/// Run the app on the profile's workspace `team` (or its default); Alt+1…9 and `/workspace`
+/// switch to another of the profile's workspaces without leaving the terminal.
+pub async fn run(profile: slack_core::session::Profile, team: Option<&str>) -> Result<()> {
+    let sessions = profile.workspaces.clone();
+    let start = profile.workspace(team).ok_or_else(|| anyhow::anyhow!("no such workspace in this profile"))?;
+    let mut index = sessions.iter().position(|s| s.team_id == start.team_id && s.user_id == start.user_id).unwrap_or(0);
+    let labels = workspace_labels(&sessions);
     tokio::task::spawn_blocking(super::highlight::warm_up);
     let (_guard, mut terminal) = TerminalGuard::enter()?;
     // Query the terminal before the event stream starts reading stdin.
-    let media = super::media::Media::detect();
+    let mut media = super::media::Media::detect();
+    let mut clipboard = super::clipboard::Clipboard::default();
+    let mut events = EventStream::new();
+    loop {
+        let client = Client::new(sessions[index].clone())?;
+        let (next, kept_media, kept_clipboard) = run_workspace(client, (labels.clone(), index), &mut terminal, &mut events, media, clipboard).await?;
+        (media, clipboard) = (kept_media, kept_clipboard);
+        match next {
+            Some(i) => index = i,
+            None => break,
+        }
+    }
+    clipboard.hand_off();
+    Ok(())
+}
+
+/// How each workspace is named in the app: the team, plus the account when one team is
+/// signed in more than once.
+fn workspace_labels(sessions: &[slack_core::session::WorkspaceSession]) -> Vec<String> {
+    sessions
+        .iter()
+        .map(|s| if sessions.iter().filter(|o| o.team_id == s.team_id).count() > 1 { format!("{} · {}", s.team_name, s.user_name) } else { s.team_name.clone() })
+        .collect()
+}
+
+/// One workspace until quit (None) or a switch (Some(index)); hands back what outlives it.
+async fn run_workspace(
+    client: Client,
+    workspaces: (Vec<String>, usize),
+    terminal: &mut super::terminal::Tui,
+    events: &mut EventStream,
+    mut media: super::media::Media,
+    clipboard: super::clipboard::Clipboard,
+) -> Result<(Option<usize>, super::media::Media, super::clipboard::Clipboard)> {
+    let (net_tx, mut net_rx) = mpsc::unbounded_channel();
+    spawn_boot(client.clone(), net_tx.clone());
+    let mut rtm = slack_core::rtm::spawn(client.clone());
+    media.thumbs.clear();
+    let team_name = if workspaces.0.len() > 1 { format!("{}/{} {}", workspaces.1 + 1, workspaces.0.len(), workspaces.0[workspaces.1]) } else { client.session.team_name.clone() };
     let mut app = App {
+        workspaces: workspaces.0,
+        workspace: workspaces.1,
+        switch_to: None,
         media,
         viewer: None,
         snippet: None,
@@ -1201,7 +1274,7 @@ pub async fn run(client: Client) -> Result<()> {
         thread_pane: MessagePane::thread(),
         thread_composer: Composer::default(),
         broadcast: false,
-        clipboard: Default::default(),
+        clipboard,
         confirm: None,
         picker: None,
         rtm_commands: rtm.commands.clone(),
@@ -1213,7 +1286,7 @@ pub async fn run(client: Client) -> Result<()> {
         client: client.clone(),
         net: net_tx.clone(),
         ws: Workspace {
-            team_name: client.session.team_name.clone(),
+            team_name,
             self_id: client.session.user_id.clone(),
             ..Default::default()
         },
@@ -1224,7 +1297,6 @@ pub async fn run(client: Client) -> Result<()> {
         loading: true,
     };
 
-    let mut events = EventStream::new();
     let mut tick = tokio::time::interval(Duration::from_millis(500));
     let mut video_tick = tokio::time::interval(Duration::from_millis(40));
     loop {
@@ -1260,13 +1332,16 @@ pub async fn run(client: Client) -> Result<()> {
                 }
             }
         }
+        if app.switch_to.is_some() {
+            break;
+        }
         app.sync_current();
         if app.current.as_ref().and_then(|c| app.ws.timelines.get(c)).is_some_and(|t| t.loaded) {
             app.mark_current_read();
         }
     }
-    app.clipboard.hand_off();
-    Ok(())
+    let App { switch_to, media, clipboard, .. } = app;
+    Ok((switch_to, media, clipboard))
 }
 
 /// Returns false to quit.
@@ -1518,6 +1593,10 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
             // Global keys.
             match k.code {
                 KeyCode::Char('q') if ctrl => return false,
+                KeyCode::Char(c @ '1'..='9') if alt => {
+                    app.switch_workspace(c as usize - '1' as usize);
+                    return true;
+                }
                 KeyCode::Up if alt => {
                     app.sidebar.move_by(-1);
                     return true;
@@ -2091,5 +2170,20 @@ fn draw_composer(f: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &App,
     f.render_widget(Paragraph::new(text).wrap(ratatui::widgets::Wrap { trim: false }).scroll((skip, 0)).block(block), area);
     if focused {
         f.set_cursor_position((inner.x + col, inner.y + row - skip));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use slack_core::session::WorkspaceSession;
+
+    fn session(team_id: &str, team: &str, user: &str) -> WorkspaceSession {
+        WorkspaceSession { team_id: team_id.into(), team_name: team.into(), user_name: user.into(), ..Default::default() }
+    }
+
+    #[test]
+    fn workspace_labels_name_the_account_when_a_team_repeats() {
+        let labels = super::workspace_labels(&[session("T1", "acme", "ann"), session("T2", "beta", "ann"), session("T1", "acme", "bob")]);
+        assert_eq!(labels, vec!["acme · ann", "beta", "acme · bob"]);
     }
 }
