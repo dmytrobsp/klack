@@ -47,6 +47,11 @@ pub enum Field {
     Pause,
     Input,
     Output,
+    HuddleVolume,
+    SoundVolume,
+    MicGain,
+    SpeakingThreshold,
+    NoiseSuppression,
 }
 
 /// Pause lengths offered, in minutes (0: not paused).
@@ -58,8 +63,26 @@ pub const CATEGORIES: &[(&str, &[Field])] = &[
     ("Messages & media", &[Field::InlineImages, Field::Avatars, Field::EmojiAsNames]),
     ("Language & region", &[Field::Clock24, Field::DateFormat, Field::TimeZone, Field::Language]),
     ("Notifications", &[Field::Desktop, Field::Sound, Field::ConversationLevel, Field::ChannelDefault, Field::Keywords, Field::Vips]),
-    ("Audio", &[Field::Input, Field::Output]),
+    ("Audio", &[Field::Input, Field::Output, Field::HuddleVolume, Field::SoundVolume, Field::MicGain, Field::SpeakingThreshold, Field::NoiseSuppression]),
 ];
+
+/// Volumes offered, in percent.
+pub const VOLUMES: &[u32] = &[0, 10, 25, 50, 75, 100, 125, 150, 200];
+/// Microphone gains offered, in percent.
+pub const GAINS: &[u32] = &[25, 50, 75, 100, 125, 150, 200, 300, 400];
+/// Speaking thresholds offered, in dBFS (None: off).
+pub const THRESHOLDS: &[Option<i32>] = &[None, Some(-60), Some(-55), Some(-50), Some(-45), Some(-40), Some(-35), Some(-30), Some(-25), Some(-20)];
+
+/// The next value up (or down) in `list` from `current`, which need not be in it; at the
+/// end it wraps to the start if `wrap`, else stays.
+fn step<T: PartialOrd + Copy>(list: &[T], current: T, up: bool, wrap: bool) -> T {
+    let found = if up { list.iter().find(|v| **v > current) } else { list.iter().rev().find(|v| **v < current) };
+    match found {
+        Some(v) => *v,
+        None if wrap && up => list[0],
+        None => current,
+    }
+}
 
 impl Field {
     pub fn label(self) -> String {
@@ -93,6 +116,11 @@ impl Field {
             Field::Pause => "Pause notifications",
             Field::Input => "Microphone",
             Field::Output => "Speaker",
+            Field::HuddleVolume => "Huddle volume",
+            Field::SoundVolume => "Notification sound volume",
+            Field::MicGain => "Microphone gain",
+            Field::SpeakingThreshold => "Speaking threshold",
+            Field::NoiseSuppression => "Noise suppression",
         }
     }
 
@@ -157,7 +185,26 @@ impl Field {
             }
             Field::Input => device(&s.audio.input),
             Field::Output => device(&s.audio.output),
+            Field::HuddleVolume => format!("{}%", s.audio.huddle_volume),
+            Field::SoundVolume => format!("{}%", s.audio.sound_volume),
+            Field::MicGain => format!("{}%", s.audio.mic_gain),
+            Field::SpeakingThreshold => s.audio.speaking_threshold_db.map_or("off".into(), |d| format!("{d} dB")),
+            Field::NoiseSuppression => yes(s.audio.noise_suppression),
         }
+    }
+
+    /// Raise or lower a value with steps (volumes, gain, threshold); false for other fields.
+    /// `wrap`: past the top, start again at the bottom (Enter cycles that way).
+    pub fn adjust(self, s: &mut Settings, up: bool, wrap: bool) -> bool {
+        let a = &mut s.audio;
+        match self {
+            Field::HuddleVolume => a.huddle_volume = step(VOLUMES, a.huddle_volume, up, wrap),
+            Field::SoundVolume => a.sound_volume = step(VOLUMES, a.sound_volume, up, wrap),
+            Field::MicGain => a.mic_gain = step(GAINS, a.mic_gain, up, wrap),
+            Field::SpeakingThreshold => a.speaking_threshold_db = step(THRESHOLDS, a.speaking_threshold_db, up, wrap),
+            _ => return false,
+        }
+        true
     }
 
     /// Toggle, or step to the next choice; `devices` are (inputs, outputs) as device ids.
@@ -193,12 +240,16 @@ impl Field {
                 let i = sounds.iter().position(|x| *x == s.notifications.sound).map_or(0, |i| (i + 1) % sounds.len());
                 s.notifications.sound = sounds[i].into();
                 // Let the user hear it.
-                super::sound::play(sounds[i], Settings::device(huddle::devices::OUTPUT_ENV, &s.audio.output));
+                super::sound::play(sounds[i], Settings::device(huddle::devices::OUTPUT_ENV, &s.audio.output), s.audio.sound_volume);
             }
             // Slack-side: see `Prefs::change`.
             Field::ConversationLevel | Field::ChannelDefault | Field::Keywords | Field::Vips | Field::Status | Field::Away | Field::Pause | Field::Leader | Field::Binding(_) => {}
             Field::Input => s.audio.input = next(&s.audio.input, &devices.0),
             Field::Output => s.audio.output = next(&s.audio.output, &devices.1),
+            Field::NoiseSuppression => s.audio.noise_suppression ^= true,
+            Field::HuddleVolume | Field::SoundVolume | Field::MicGain | Field::SpeakingThreshold => {
+                self.adjust(s, true, true);
+            }
         }
     }
 }
@@ -225,6 +276,7 @@ pub fn translatable() -> Vec<String> {
     let all = [
         Field::Theme, Field::Compact, Field::InlineImages, Field::Avatars, Field::EmojiAsNames, Field::Clock24, Field::DateFormat, Field::TimeZone, Field::Language, Field::Desktop, Field::Sound,
         Field::ConversationLevel, Field::ChannelDefault, Field::Keywords, Field::Vips, Field::Status, Field::Away, Field::Pause, Field::Input, Field::Output,
+        Field::HuddleVolume, Field::SoundVolume, Field::MicGain, Field::SpeakingThreshold, Field::NoiseSuppression,
     ];
     CATEGORIES.iter().map(|c| c.0).chain(["Keys", LEADER_LABEL]).chain(all.iter().map(|f| f.fixed_label())).map(String::from).collect()
 }
@@ -433,7 +485,9 @@ impl Prefs {
         }
         if self.category_name() == "Audio" {
             rows.push(Line::raw(""));
-            rows.push(Line::styled(" SLACKTUI_AUDIO_INPUT / _OUTPUT, when set, win over these.", Style::default().fg(super::theme::p().dim)));
+            rows.push(Line::styled(" + / - (or Enter) change the levels; a huddle you are in follows at once.", Style::default().fg(super::theme::p().dim)));
+            rows.push(Line::styled(" Below the speaking threshold the microphone sends silence.", Style::default().fg(super::theme::p().dim)));
+            rows.push(Line::styled(" SLACKTUI_AUDIO_INPUT / _OUTPUT, when set, win over the devices.", Style::default().fg(super::theme::p().dim)));
         }
         f.render_widget(Paragraph::new(rows).wrap(Wrap { trim: false }), right);
     }
@@ -461,6 +515,30 @@ mod tests {
             })
             .collect();
         assert_eq!(steps, vec![Some("hw:0".into()), Some("hw:1".into()), None], "default → each device → default");
+    }
+
+    #[test]
+    fn audio_levels_step() {
+        let mut s = Settings::default();
+        assert!(Field::HuddleVolume.adjust(&mut s, true, false));
+        assert_eq!(s.audio.huddle_volume, 125);
+        s.audio.huddle_volume = 200;
+        Field::HuddleVolume.adjust(&mut s, true, false);
+        assert_eq!(s.audio.huddle_volume, 200, "+ stops at the top");
+        Field::HuddleVolume.change(&mut s, &Default::default());
+        assert_eq!(s.audio.huddle_volume, 0, "Enter wraps around");
+        Field::HuddleVolume.adjust(&mut s, false, false);
+        assert_eq!(s.audio.huddle_volume, 0, "- stops at the bottom");
+        s.audio.mic_gain = 90;
+        Field::MicGain.adjust(&mut s, false, false);
+        assert_eq!(s.audio.mic_gain, 75, "a hand-edited value steps to its neighbour");
+        Field::SpeakingThreshold.adjust(&mut s, true, false);
+        assert_eq!(s.audio.speaking_threshold_db, Some(-60), "off → the lowest threshold");
+        Field::SpeakingThreshold.adjust(&mut s, false, false);
+        assert_eq!(s.audio.speaking_threshold_db, None);
+        Field::NoiseSuppression.change(&mut s, &Default::default());
+        assert!(s.audio.noise_suppression);
+        assert!(!Field::Compact.adjust(&mut s, true, false), "not a level");
     }
 
     #[test]

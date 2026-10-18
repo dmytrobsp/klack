@@ -1136,6 +1136,29 @@ impl App {
         }
     }
 
+    /// +/- in the preferences: step a level up or down, save it and apply it.
+    fn adjust_preference(&mut self, up: bool) {
+        let Some(p) = self.prefs.as_mut() else { return };
+        let Some(field) = p.selected_field() else { return };
+        if field.adjust(&mut self.ws.settings, up, false) {
+            p.saved = Some(super::settings::save(&self.ws.settings).map(|path| path.display().to_string()));
+            self.audio_changed(Some(field));
+        }
+    }
+
+    /// After an audio setting changed: the call follows at once; a new notification volume
+    /// is played so it can be heard.
+    fn audio_changed(&mut self, field: Option<super::prefs::Field>) {
+        if let Some(call) = &self.call {
+            call.set_audio(&self.ws.settings.audio);
+        }
+        if field == Some(super::prefs::Field::SoundVolume) {
+            let s = &self.ws.settings;
+            let name = if super::sound::samples(&s.notifications.sound).is_empty() { "chime" } else { s.notifications.sound.as_str() };
+            super::sound::play(name, super::settings::Settings::device(huddle::devices::OUTPUT_ENV, &s.audio.output), s.audio.sound_volume);
+        }
+    }
+
     /// Enter in the preferences: change a local setting (and save the file) or send a
     /// Slack-side one (applied here at once; on failure the prefs are fetched again).
     fn change_preference(&mut self) {
@@ -1144,12 +1167,14 @@ impl App {
         let Some(p) = self.prefs.as_mut() else { return };
         let on_slack = p.on_slack();
         p.saved = None;
+        let field = p.selected_field();
         let change = p.change(&mut self.ws, current.as_deref());
         if !on_slack {
             // A refused value (e.g. an unknown time zone) keeps its message and is not saved.
             if p.saved.is_none() && p.editing.is_none() {
                 p.saved = Some(super::settings::save(&self.ws.settings).map(|path| path.display().to_string()));
             }
+            self.audio_changed(field);
             return;
         }
         let Some(change) = change else { return };
@@ -1865,6 +1890,8 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
                 Some(Action::PrevTab) => p.switch_category(-1),
                 Some(Action::NextTab) => p.switch_category(1),
                 Some(Action::Open) => app.change_preference(),
+                Some(Action::Increase) => app.adjust_preference(true),
+                Some(Action::Decrease) => app.adjust_preference(false),
                 Some(Action::Unbind) => match p.selected_field() {
                     Some(super::prefs::Field::Binding(i)) => {
                         let info = &super::keymap::ACTIONS[i];
@@ -2427,7 +2454,7 @@ fn handle_net(app: &mut App, msg: Net) {
                     super::settings::Settings::device(huddle::devices::INPUT_ENV, &audio.input),
                     super::settings::Settings::device(huddle::devices::OUTPUT_ENV, &audio.output),
                 );
-                let mut call = super::call::Call::start(channel, creds, devices);
+                let mut call = super::call::Call::start(channel, creds, devices, audio);
                 call.thread = thread;
                 app.call = Some(call);
                 app.status.clear();

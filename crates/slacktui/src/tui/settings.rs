@@ -79,13 +79,36 @@ impl Default for Notifications {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Audio {
     /// Microphone and speaker (part of a device id or name); `SLACKTUI_AUDIO_INPUT` /
     /// `SLACKTUI_AUDIO_OUTPUT` win over these.
     pub input: Option<String>,
     pub output: Option<String>,
+    /// Huddle playback volume, in percent.
+    pub huddle_volume: u32,
+    /// Notification sound volume, in percent.
+    pub sound_volume: u32,
+    /// Microphone gain, in percent.
+    pub mic_gain: u32,
+    /// The microphone sends silence while quieter than this (dBFS); unset: always on.
+    pub speaking_threshold_db: Option<i32>,
+    /// RNNoise noise suppression on the microphone.
+    pub noise_suppression: bool,
+}
+
+impl Default for Audio {
+    fn default() -> Self {
+        Audio { input: None, output: None, huddle_volume: 100, sound_volume: 100, mic_gain: 100, speaking_threshold_db: None, noise_suppression: false }
+    }
+}
+
+impl Audio {
+    /// How the microphone is processed in a huddle.
+    pub fn mic_config(&self) -> huddle::devices::MicConfig {
+        huddle::devices::MicConfig { gain: self.mic_gain as f32 / 100.0, gate_db: self.speaking_threshold_db.map(|d| d as f32), suppress_noise: self.noise_suppression }
+    }
 }
 
 impl Settings {
@@ -153,6 +176,17 @@ mod tests {
         let mut s = Settings::default();
         s.appearance.compact = true;
         s.audio.output = Some("USB".into());
+        s.audio.speaking_threshold_db = Some(-45);
         assert_eq!(Settings::parse(&s.to_toml()).unwrap(), s);
+    }
+
+    #[test]
+    fn audio_defaults_and_mic_config() {
+        let s = Settings::parse("[audio]\nmic_gain = 150\n").unwrap();
+        assert_eq!((s.audio.huddle_volume, s.audio.sound_volume, s.audio.speaking_threshold_db, s.audio.noise_suppression), (100, 100, None, false));
+        let cfg = s.audio.mic_config();
+        assert_eq!((cfg.gain, cfg.gate_db, cfg.suppress_noise), (1.5, None, false));
+        let s = Settings::parse("[audio]\nspeaking_threshold_db = -40\nnoise_suppression = true\n").unwrap();
+        assert_eq!(s.audio.mic_config(), huddle::devices::MicConfig { gain: 1.0, gate_db: Some(-40.0), suppress_noise: true });
     }
 }

@@ -37,14 +37,15 @@ pub fn samples(name: &str) -> Vec<i16> {
 }
 
 /// Play a built-in sound without blocking (no-op for `off`/`system`). `device`: part of an
-/// output device's name, None for the default.
-pub fn play(name: &str, device: Option<String>) {
+/// output device's name, None for the default; `volume` in percent.
+pub fn play(name: &str, device: Option<String>, volume: u32) {
     let samples = samples(name);
     if samples.is_empty() {
         return;
     }
     std::thread::spawn(move || match huddle::devices::Speaker::start(device) {
         Ok(mut speaker) => {
+            speaker.volume().set(volume as f32 / 100.0);
             speaker.play(&samples);
             // Let it drain before the stream is dropped.
             std::thread::sleep(std::time::Duration::from_millis(samples.len() as u64 * 1000 / RATE as u64 + 250));

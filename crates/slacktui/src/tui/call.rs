@@ -1,7 +1,7 @@
 //! The huddle you are in: session state, audio devices and the call bar.
 
 
-use huddle::devices::{Microphone, Speaker};
+use huddle::devices::{MicConfig, MicProcessor, Microphone, Speaker, Volume};
 use huddle::session::{Participant, PcmSink, Session, SessionEvent};
 use huddle::signaling::Credentials;
 use ratatui::Frame;
@@ -24,6 +24,12 @@ pub struct Call {
     pub levels: std::collections::HashMap<String, f32>,
     /// Our own microphone level while unmuted (f32 bits), measured locally.
     mic_level: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    /// Whether the speaking threshold lets our microphone through.
+    mic_open: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Gain, threshold and noise suppression, read by the microphone for each frame.
+    mic_config: std::sync::Arc<std::sync::Mutex<MicConfig>>,
+    /// Playback volume of the meeting (None without a speaker).
+    volume: Option<Volume>,
     pub muted: bool,
     pub connected: bool,
     sink: PcmSink,
@@ -43,35 +49,66 @@ pub fn meter(level: f32) -> String {
 impl Call {
     /// Start the session (muted) and play the meeting's audio on the default output.
     /// `devices`: (microphone, speaker) names, None for the system default.
-    pub fn start(channel: String, creds: Credentials, devices: (Option<String>, Option<String>)) -> Call {
+    pub fn start(channel: String, creds: Credentials, devices: (Option<String>, Option<String>), audio_settings: &super::settings::Audio) -> Call {
         let mut session = Session::start(creds, true);
         let sink = session.pcm_sink();
         let (_, empty) = tokio::sync::mpsc::unbounded_channel();
         let mut audio = std::mem::replace(&mut session.audio, empty);
-        let speaker_error = match Speaker::start(devices.1) {
+        let (volume, speaker_error) = match Speaker::start(devices.1) {
             Ok(mut speaker) => {
+                let volume = speaker.volume();
                 tokio::spawn(async move {
                     while let Some(frame) = audio.recv().await {
                         speaker.play(&frame);
                     }
                 });
-                None
+                (Some(volume), None)
             }
             Err(e) => {
                 tracing::warn!("no speaker: {e}");
-                Some(e.to_string())
+                (None, Some(e.to_string()))
             }
         };
-        Call { channel, thread: None, input: devices.0, session, roster: Vec::new(), levels: Default::default(), mic_level: Default::default(), muted: true, connected: false, sink, mic: None, speaker_error }
+        let call = Call {
+            channel,
+            thread: None,
+            input: devices.0,
+            session,
+            roster: Vec::new(),
+            levels: Default::default(),
+            mic_level: Default::default(),
+            mic_open: Default::default(),
+            mic_config: Default::default(),
+            volume,
+            muted: true,
+            connected: false,
+            sink,
+            mic: None,
+            speaker_error,
+        };
+        call.set_audio(audio_settings);
+        call
+    }
+
+    /// Apply the volume and microphone settings to the running call.
+    pub fn set_audio(&self, audio: &super::settings::Audio) {
+        if let Some(v) = &self.volume {
+            v.set(audio.huddle_volume as f32 / 100.0);
+        }
+        *self.mic_config.lock().unwrap_or_else(|e| e.into_inner()) = audio.mic_config();
     }
 
     /// Toggle the microphone; opening it can fail (no device, no permission).
     pub fn toggle_mute(&mut self) -> anyhow::Result<()> {
         if self.muted {
             let sink = self.sink.clone();
-            let level = self.mic_level.clone();
-            self.mic = Some(Microphone::start(self.input.clone(), move |frame| {
-                level.store(huddle::devices::frame_level(&frame).to_bits(), std::sync::atomic::Ordering::Relaxed);
+            let (level, open, config) = (self.mic_level.clone(), self.mic_open.clone(), self.mic_config.clone());
+            let mut processor = MicProcessor::new();
+            self.mic = Some(Microphone::start(self.input.clone(), move |mut frame| {
+                let cfg = *config.lock().unwrap_or_else(|e| e.into_inner());
+                let (l, o) = processor.process(&mut frame, &cfg);
+                level.store(l.to_bits(), std::sync::atomic::Ordering::Relaxed);
+                open.store(o, std::sync::atomic::Ordering::Relaxed);
                 sink.send(frame)
             })?);
             self.muted = false;
@@ -116,7 +153,9 @@ impl Call {
             let me = p.user_id() == ws.self_id;
             // Our own level comes from the microphone at once; others' from the meeting.
             let level = if me && !self.muted { f32::from_bits(self.mic_level.load(std::sync::atomic::Ordering::Relaxed)) } else { self.levels.get(&p.attendee_id).copied().unwrap_or(0.0) };
-            let speaking = level >= huddle::session::SPEAKING;
+            // Below the speaking threshold nothing is sent, so we are not speaking.
+            let gated = me && !self.muted && !self.mic_open.load(std::sync::atomic::Ordering::Relaxed);
+            let speaking = level >= huddle::session::SPEAKING && !gated;
             let style = if speaking { green.add_modifier(Modifier::BOLD) } else { Style::default() };
             spans.push(Span::styled(ws.person_label(p.user_id()), style));
             if p.muted || (me && self.muted) {

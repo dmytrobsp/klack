@@ -288,6 +288,8 @@ pub enum Action {
     HuddleThread,
     Unbind,
     Reset,
+    Increase,
+    Decrease,
     Vip,
     Preferences,
     PrevConversation,
@@ -547,6 +549,8 @@ actions! {
         Open "change" "change the setting (Keys: press the new key next)" ["enter", "space"]
         Unbind "unbind" "Keys: remove the action's keys" ["delete", "backspace"]
         Reset "reset" "Keys: back to the default keys" ["r"]
+        Increase "increase" "raise a level (volumes, gain, threshold)" ["+", "="]
+        Decrease "decrease" "lower a level" ["-"]
         Close "close" "close" ["esc", "q", "f6"]
     }
     Menu {

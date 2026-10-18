@@ -66,7 +66,7 @@ pub fn huddle_notification(ws: &Workspace, channel: &str, user: &str, in_it: boo
 /// Show a desktop notification without blocking the UI, with the sound from the settings.
 pub fn show(title: String, body: String, settings: &super::settings::Settings) {
     let sound = settings.notifications.sound.clone();
-    super::sound::play(&sound, super::settings::Settings::device(huddle::devices::OUTPUT_ENV, &settings.audio.output));
+    super::sound::play(&sound, super::settings::Settings::device(huddle::devices::OUTPUT_ENV, &settings.audio.output), settings.audio.sound_volume);
     tokio::task::spawn_blocking(move || {
         let mut n = notify_rust::Notification::new();
         n.appname("slacktui").summary(&title).body(&body);

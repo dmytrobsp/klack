@@ -101,13 +101,18 @@ Pick audio devices with `SLACKTUI_AUDIO_INPUT` / `SLACKTUI_AUDIO_OUTPUT` (part o
 name from `slacktui ctl audio-devices`). A device that is named but missing is an error; there is
 no silent fallback.
 
-No video, screen sharing, echo cancellation or noise suppression yet.
+F6 → Audio also has the huddle volume, the notification sound volume, a microphone gain, a
+speaking threshold (quieter microphone input is sent as silence, held open 300 ms after you
+stop so words are not cut) and noise suppression (RNNoise via `nnnoiseless`). `+`/`-` (or Enter)
+step the levels, and a huddle you are in follows at once.
+
+No video, screen sharing or echo cancellation yet.
 
 ## Other settings
 
 | Variable | |
 |---|---|
-| (F6 or `/prefs`) | preferences: theme, compact list, thumbnails, profile pictures, emoji as names, 12/24 h clock, date format, time zone, language, desktop notifications and sound, microphone and speaker — saved in `settings.toml` next to `keys.toml` |
+| (F6 or `/prefs`) | preferences: theme, compact list, thumbnails, profile pictures, emoji as names, 12/24 h clock, date format, time zone, language, desktop notifications and sound, microphone and speaker, volumes, microphone gain, speaking threshold, noise suppression — saved in `settings.toml` next to `keys.toml` |
 | `SLACKTUI_LOG` | log filter, e.g. `slacktui=debug` (log file: `~/.cache/slacktui/<profile>/slacktui.log`) |
 | `SLACKTUI_DOWNLOAD_DIR` | where `s` saves attachments (default: your downloads folder) |
 | `SLACKTUI_AVATARS=0` | no profile pictures next to names (they are also off on terminals without real graphics) |
