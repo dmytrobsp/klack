@@ -33,7 +33,14 @@ pub const AVATAR_PREFIX: &str = "avatar:";
 /// URLs are replaced by their `d=` fallback (Slack's default picture), so no third party is
 /// contacted; anything not on `slack-edge.com` is skipped.
 pub fn avatar_file(user: &slack_core::types::User) -> Option<File> {
-    let url = slack_core::reqwest::Url::parse(user.profile.image_48.as_deref()?).ok()?;
+    avatar_file_sized(user, false)
+}
+
+/// [`avatar_file`], or with `large` the 192-pixel picture (for the huddle view; cached
+/// under its own id, since cache entries are encoded for one size).
+pub fn avatar_file_sized(user: &slack_core::types::User, large: bool) -> Option<File> {
+    let source = if large { user.profile.image_192.as_deref().or(user.profile.image_48.as_deref()) } else { user.profile.image_48.as_deref() };
+    let url = slack_core::reqwest::Url::parse(source?).ok()?;
     let slack_hosted = |u: &slack_core::reqwest::Url| u.scheme() == "https" && u.host_str().is_some_and(|h| h == "slack-edge.com" || h.ends_with(".slack-edge.com"));
     let url = if slack_hosted(&url) {
         url
@@ -41,7 +48,8 @@ pub fn avatar_file(user: &slack_core::types::User) -> Option<File> {
         let fallback = url.query_pairs().find(|(k, _)| k == "d").and_then(|(_, v)| slack_core::reqwest::Url::parse(&v).ok())?;
         slack_hosted(&fallback).then_some(fallback)?
     };
-    Some(File { id: format!("{AVATAR_PREFIX}{}", user.id), mimetype: "image/png".into(), thumb_360: Some(url.to_string()), ..Default::default() })
+    let id = if large { format!("{AVATAR_PREFIX}{}@192", user.id) } else { format!("{AVATAR_PREFIX}{}", user.id) };
+    Some(File { id, mimetype: "image/png".into(), thumb_360: Some(url.to_string()), ..Default::default() })
 }
 
 impl Media {
@@ -121,6 +129,11 @@ mod tests {
         assert!(avatar_file(&user("https://secure.gravatar.com/avatar/x.jpg?s=48&d=identicon")).is_none());
         assert!(avatar_file(&user("https://evil.example/slack-edge.com/a.png")).is_none());
         assert!(avatar_file(&user("https://notslack-edge.com/a.png")).is_none());
+        // The large picture has its own cache id; without one the small picture is used.
+        let mut u = user("https://avatars.slack-edge.com/2026-10-18/1_48.png");
+        assert_eq!(avatar_file_sized(&u, true).unwrap().id, "avatar:U1@192");
+        u.profile.image_192 = Some("https://avatars.slack-edge.com/2026-10-18/1_192.png".into());
+        assert_eq!(avatar_file_sized(&u, true).unwrap().thumb_360.as_deref(), Some("https://avatars.slack-edge.com/2026-10-18/1_192.png"));
     }
 
     #[test]

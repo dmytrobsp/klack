@@ -137,10 +137,26 @@ impl Call {
         false
     }
 
-    /// `keys`: the mute and huddle keys, for the hint.
-    pub fn draw(&self, f: &mut Frame, area: Rect, ws: &Workspace, keys: (&str, &str, &str)) {
+    /// Where the huddle is: "#social", a DM partner, with " · thread" for a thread's huddle.
+    pub fn place(&self, ws: &Workspace) -> String {
         let place = ws.conversations.get(&self.channel).map(|c| if c.is_dm() { ws.conversation_label(c) } else { format!("#{}", c.name) }).unwrap_or_else(|| self.channel.clone());
-        let place = if self.thread.is_some() { format!("{place} · thread") } else { place };
+        if self.thread.is_some() { format!("{place} · thread") } else { place }
+    }
+
+    /// A participant's (level, speaking, muted, gated): our own level comes from the
+    /// microphone at once, others' from the meeting; `gated`: our microphone is below the
+    /// speaking threshold, so nothing is sent.
+    pub fn participant_state(&self, p: &Participant, self_id: &str) -> (f32, bool, bool, bool) {
+        let me = p.user_id() == self_id;
+        let level = if me && !self.muted { f32::from_bits(self.mic_level.load(std::sync::atomic::Ordering::Relaxed)) } else { self.levels.get(&p.attendee_id).copied().unwrap_or(0.0) };
+        let gated = me && !self.muted && !self.mic_open.load(std::sync::atomic::Ordering::Relaxed);
+        let muted = p.muted || (me && self.muted);
+        (level, level >= huddle::session::SPEAKING && !gated && !muted, muted, gated)
+    }
+
+    /// `keys`: the mute, huddle, thread and view keys, for the hint.
+    pub fn draw(&self, f: &mut Frame, area: Rect, ws: &Workspace, keys: (&str, &str, &str, &str)) {
+        let place = self.place(ws);
         let green = Style::default().fg(super::theme::p().own);
         let mut spans = vec![Span::styled(format!(" 🎧 {place} "), green.add_modifier(Modifier::BOLD))];
         if !self.connected {
@@ -150,23 +166,18 @@ impl Call {
             if n > 0 {
                 spans.push(Span::raw(", "));
             }
-            let me = p.user_id() == ws.self_id;
-            // Our own level comes from the microphone at once; others' from the meeting.
-            let level = if me && !self.muted { f32::from_bits(self.mic_level.load(std::sync::atomic::Ordering::Relaxed)) } else { self.levels.get(&p.attendee_id).copied().unwrap_or(0.0) };
-            // Below the speaking threshold nothing is sent, so we are not speaking.
-            let gated = me && !self.muted && !self.mic_open.load(std::sync::atomic::Ordering::Relaxed);
-            let speaking = level >= huddle::session::SPEAKING && !gated;
+            let (level, speaking, muted, _) = self.participant_state(p, &ws.self_id);
             let style = if speaking { green.add_modifier(Modifier::BOLD) } else { Style::default() };
             spans.push(Span::styled(ws.person_label(p.user_id()), style));
-            if p.muted || (me && self.muted) {
+            if muted {
                 spans.push(Span::styled(" 🔇", Style::default().fg(super::theme::p().dim)));
             } else {
                 spans.push(Span::styled(format!(" {}", meter(level)), if speaking { green } else { Style::default().fg(super::theme::p().dim) }));
             }
         }
-        let (mute, leave, thread) = keys;
+        let (mute, leave, thread, view) = keys;
         let mic = if self.muted { format!("🔇 muted · {mute} unmute") } else { format!("🎙 live · {mute} mute") };
-        spans.push(Span::styled(format!("  ·  {mic} · {thread} thread · {leave} leave"), Style::default().fg(super::theme::p().dim)));
+        spans.push(Span::styled(format!("  ·  {mic} · {view} view · {thread} thread · {leave} leave"), Style::default().fg(super::theme::p().dim)));
         if let Some(e) = &self.speaker_error {
             spans.push(Span::styled(format!(" · no sound: {e}"), Style::default().fg(super::theme::p().danger)));
         }

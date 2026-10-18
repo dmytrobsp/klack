@@ -117,6 +117,10 @@ struct App {
     menu: Option<super::menu::Menu>,
     /// Open preferences (F6).
     prefs: Option<super::prefs::Prefs>,
+    /// The huddle view (F8), shown in place of the messages while Some.
+    huddle_view: Option<super::huddle_view::HuddleView>,
+    /// Where the call bar was drawn (a click toggles the huddle view).
+    call_bar_area: ratatui::layout::Rect,
     /// Open activity view (F5).
     activity: Option<super::activity::Activity>,
     /// Open "move to section" picker.
@@ -1042,6 +1046,20 @@ impl App {
         }
     }
 
+    /// F8: show the huddle view in place of the messages, or the messages again.
+    fn toggle_huddle_view(&mut self) {
+        if self.huddle_view.take().is_some() {
+            self.focus = Focus::Composer;
+        } else if self.call.is_some() {
+            self.huddle_view = Some(Default::default());
+            if matches!(self.focus, Focus::Messages | Focus::Composer) {
+                self.focus = Focus::Sidebar;
+            }
+        } else {
+            self.status = format!("not in a huddle ({} joins this conversation's)", self.keys.first_key(Context::Global, Action::Huddle).unwrap_or_default());
+        }
+    }
+
     /// F3: join (or start) the huddle of the current conversation, or leave the one we are in.
     fn toggle_huddle(&mut self) {
         if let Some(call) = self.call.as_mut() {
@@ -1573,7 +1591,8 @@ impl App {
 
     /// Start loading thumbnails that were on screen but not cached yet.
     fn request_thumbs(&mut self) {
-        let wanted: Vec<_> = self.messages.wanted.drain(..).chain(self.thread_pane.wanted.drain(..)).collect();
+        let view = self.huddle_view.as_mut().map(|v| std::mem::take(&mut v.wanted)).unwrap_or_default();
+        let wanted: Vec<_> = self.messages.wanted.drain(..).chain(self.thread_pane.wanted.drain(..)).chain(view).collect();
         for (file, size) in wanted {
             if self.media.thumbs.contains_key(&file.id) {
                 continue;
@@ -1590,7 +1609,8 @@ impl App {
 
     /// Focus order for Tab: left to right, top to bottom.
     fn focus_order(&self) -> Vec<Focus> {
-        let mut order = vec![Focus::Sidebar, Focus::Messages, Focus::Composer];
+        // The huddle view stands in for the messages and the composer.
+        let mut order = if self.huddle_view.is_some() { vec![Focus::Sidebar] } else { vec![Focus::Sidebar, Focus::Messages, Focus::Composer] };
         if self.thread.is_some() {
             order.extend([Focus::Thread, Focus::ThreadComposer]);
         }
@@ -1714,6 +1734,8 @@ async fn run_workspace(
         profile: None,
         activity: None,
         prefs: None,
+        huddle_view: None,
+        call_bar_area: Default::default(),
         menu: None,
         dnd_refreshing: false,
         mover: None,
@@ -2031,6 +2053,7 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
         Event::Key(k) if k.kind != KeyEventKind::Release && app.global(&k) == Some(Action::Details) => app.open_details(),
         Event::Key(k) if k.kind != KeyEventKind::Release && app.global(&k) == Some(Action::Huddle) => app.toggle_huddle(),
         Event::Key(k) if k.kind != KeyEventKind::Release && app.global(&k) == Some(Action::HuddleThread) => app.open_huddle_thread(),
+        Event::Key(k) if k.kind != KeyEventKind::Release && app.global(&k) == Some(Action::HuddleView) => app.toggle_huddle_view(),
         Event::Key(k) if k.kind != KeyEventKind::Release && app.global(&k) == Some(Action::Mute) => {
             if let Some(call) = app.call.as_mut() {
                 if let Err(e) = call.toggle_mute() {
@@ -2251,6 +2274,8 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
                     app.focus = Focus::Messages;
                 } else if app.thread.is_some() && app.thread_pane.click(m.column, m.row) {
                     app.focus = Focus::Thread;
+                } else if app.call.is_some() && app.call_bar_area.contains((m.column, m.row).into()) {
+                    app.toggle_huddle_view();
                 }
             }
             MouseEventKind::ScrollUp if app.sidebar.area.contains((m.column, m.row).into()) => app.sidebar.move_by(-1),
@@ -2551,11 +2576,18 @@ fn handle_net(app: &mut App, msg: Net) {
 
 fn draw(f: &mut ratatui::Frame, app: &mut App) {
     app.screen = f.area();
+    // The huddle view goes with the call, and gives way once the messages or the composer
+    // get the focus (opening a conversation, replying, …).
+    if app.call.is_none() || matches!(app.focus, Focus::Messages | Focus::Composer) {
+        app.huddle_view = None;
+    }
     let call_rows = if app.call.is_some() { 1 } else { 0 };
     let [body, call_bar, status] = Layout::vertical([Constraint::Min(1), Constraint::Length(call_rows), Constraint::Length(1)]).areas(f.area());
+    app.call_bar_area = call_bar;
+    let key = |a| app.keys.first_key(Context::Global, a).unwrap_or_default();
+    let call_keys = (key(Action::Mute), key(Action::Huddle), key(Action::HuddleThread), key(Action::HuddleView));
     if let Some(call) = &app.call {
-        let key = |a| app.keys.first_key(Context::Global, a).unwrap_or_default();
-        call.draw(f, call_bar, &app.ws, (&key(Action::Mute), &key(Action::Huddle), &key(Action::HuddleThread)));
+        call.draw(f, call_bar, &app.ws, (&call_keys.0, &call_keys.1, &call_keys.2, &call_keys.3));
     }
     let side_w = (body.width / 4).clamp(18, 32);
     let [side, main] = Layout::horizontal([Constraint::Length(side_w), Constraint::Min(10)]).areas(body);
@@ -2576,15 +2608,23 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         draw_composer(f, comp, app, true);
     }
 
-    let inner_w = main.width.saturating_sub(2) as usize;
-    let composer_h = app.composer.rows(inner_w).clamp(1, 8) + 2;
-    let [msgs, comp] = Layout::vertical([Constraint::Min(3), Constraint::Length(composer_h)]).areas(main);
-    let current = app.current.clone();
-    let timeline = current.as_deref().and_then(|c| app.ws.timelines.get(c));
-    let title = current.as_deref().map(|c| app.ws.channel_label(c)).unwrap_or_default();
-    app.messages.draw(f, msgs, &app.ws, &title, timeline, app.focus == Focus::Messages, &app.media);
-    app.composer_area = comp;
-    draw_composer(f, comp, app, false);
+    if let (Some(view), Some(call)) = (app.huddle_view.as_mut(), &app.call) {
+        // Nothing of the message pane is on screen, so the mouse must not find it.
+        app.messages.area = Default::default();
+        app.messages.hover = None;
+        app.composer_area = Default::default();
+        view.draw(f, main, call, &app.ws, &app.media, (&call_keys.0, &call_keys.1, &call_keys.2, &call_keys.3));
+    } else {
+        let inner_w = main.width.saturating_sub(2) as usize;
+        let composer_h = app.composer.rows(inner_w).clamp(1, 8) + 2;
+        let [msgs, comp] = Layout::vertical([Constraint::Min(3), Constraint::Length(composer_h)]).areas(main);
+        let current = app.current.clone();
+        let timeline = current.as_deref().and_then(|c| app.ws.timelines.get(c));
+        let title = current.as_deref().map(|c| app.ws.channel_label(c)).unwrap_or_default();
+        app.messages.draw(f, msgs, &app.ws, &title, timeline, app.focus == Focus::Messages, &app.media);
+        app.composer_area = comp;
+        draw_composer(f, comp, app, false);
+    }
     if let Some(c) = &app.completion {
         super::autocomplete::draw(f, if c.thread { app.thread_composer_area } else { app.composer_area }, c);
     }

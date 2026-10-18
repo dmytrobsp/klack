@@ -12,6 +12,7 @@ pub mod event_loop;
 pub mod files;
 pub mod help;
 pub mod highlight;
+pub mod huddle_view;
 pub mod i18n;
 pub mod keymap;
 pub mod live;

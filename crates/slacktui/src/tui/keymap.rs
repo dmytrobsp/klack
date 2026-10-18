@@ -286,6 +286,7 @@ pub enum Action {
     Mute,
     Activity,
     HuddleThread,
+    HuddleView,
     Unbind,
     Reset,
     Increase,
@@ -382,6 +383,7 @@ actions! {
         Huddle "huddle" "join or leave the huddle" ["f3"]
         Mute "mute" "mute or unmute in the huddle" ["f4"]
         HuddleThread "huddle_thread" "open the huddle's thread (yours, or this conversation's)" ["f7"]
+        HuddleView "huddle_view" "show or hide the huddle view (in place of the messages)" ["f8"]
         Activity "activity" "mentions, reactions, threads" ["f5"]
         Preferences "preferences" "preferences" ["f6"]
         PrevConversation "previous_conversation" "previous conversation" ["alt+up"]

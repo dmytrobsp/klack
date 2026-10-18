@@ -50,7 +50,7 @@ Press **F1** (or `?`) in the app for the full list. The essentials:
 | `/away` · `/active` · `/dnd 30m` · `/dnd off` | appear away / active · pause or resume notifications |
 | `*` · `m` (sidebar) | star / unstar · move to a section (or a new one); `/section rename <name>` · `/section delete` |
 | F2 | conversation details: about, members, pins |
-| F3 / F4 / F7 | join or leave the huddle / mute or unmute / open the huddle's thread |
+| F3 / F4 / F7 / F8 | join or leave the huddle / mute or unmute / open the huddle's thread / huddle view |
 | F6 | preferences (also `/prefs`): availability, appearance, messages, region, notifications, audio, keys |
 | Enter (on a message) | open its thread |
 | r · e · d · y · Y · o · s · P | react · edit · delete · copy text · copy link · open image/video/snippet · save files · pin |
@@ -90,8 +90,11 @@ in the status bar at startup, and the default stays in place for any entry that 
 F3 joins (or starts) the huddle of the conversation you are in, and `H` on a message starts (or
 joins) a huddle in that message's thread; you join **muted**, and the
 microphone is only opened while you are unmuted (F4). The call bar shows who is there, who is
-speaking and who is muted. Someone starting a huddle in a DM with you sends a desktop
-notification.
+speaking and who is muted. F8 (or a click on the call bar) shows the huddle view in place of
+the messages: a tile per participant with their picture, speaking meter and mute state (tiles
+grow when there is room), the call's keys and your audio settings; F8 again, or opening a
+conversation, brings the messages back. Someone starting a huddle in a DM with you sends a
+desktop notification.
 
 Under the hood a huddle is an Amazon Chime SDK meeting: `rooms.join` hands out the meeting
 credentials, `crates/huddle` speaks Chime's signaling protocol and runs WebRTC audio (webrtc-rs,
