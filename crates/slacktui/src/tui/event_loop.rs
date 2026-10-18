@@ -28,6 +28,8 @@ enum Net {
     Posted { channel: String, message: slack_core::types::Message },
     /// All replies of a thread (parent first).
     Replies { channel: String, ts: String, page: HistoryPage },
+    /// Result of a file save or upload, shown in the status bar.
+    FileDone(String),
     /// A full-size image for the viewer.
     FullImage { id: String, result: Result<image::DynamicImage, String> },
     /// A thumbnail finished loading.
@@ -199,6 +201,19 @@ impl App {
         let c = self.composer_for(thread);
         if c.is_empty() {
             return;
+        }
+        match super::files::parse_upload(&c.text()) {
+            Some(Ok(cmd)) => {
+                c.push_history(c.text());
+                c.clear();
+                self.upload(channel, cmd, thread_ts);
+                return;
+            }
+            Some(Err(e)) => {
+                self.status = e;
+                return;
+            }
+            None => {}
         }
         let text = c.to_mrkdwn();
         c.push_history(c.text());
@@ -413,6 +428,47 @@ impl App {
         let Some(c) = self.completion.take() else { return };
         let Some(s) = c.items.get(c.selected) else { return };
         self.composer_for(c.thread).complete(c.start, &format!("{} ", s.replacement), s.id.as_deref());
+    }
+
+    /// Upload a local file to `channel` (or a thread) with an optional message.
+    fn upload(&mut self, channel: String, cmd: super::files::UploadCommand, thread_ts: Option<String>) {
+        let name = cmd.path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "file".into());
+        self.status = format!("uploading {name}…");
+        let (client, tx) = (self.client.clone(), self.net.clone());
+        tokio::spawn(async move {
+            let result = async {
+                let bytes = tokio::fs::read(&cmd.path).await.map_err(|e| anyhow::anyhow!("{}: {e}", cmd.path.display()))?;
+                let message = super::composer::escape_text(&cmd.message);
+                client.upload(&channel, &name, bytes, Some(&message), thread_ts.as_deref()).await
+            }
+            .await;
+            let _ = tx.send(Net::FileDone(match result {
+                Ok(_) => format!("uploaded {name}"),
+                Err(e) => format!("upload failed: {e}"),
+            }));
+        });
+    }
+
+    /// Save the attachments of message `ts` to the downloads folder.
+    fn save_files(&mut self, ts: &str) {
+        let Some(channel) = self.current.clone() else { return };
+        let files = self.ws.find_message(&channel, ts).map(|m| m.files.clone()).unwrap_or_default();
+        if files.is_empty() {
+            self.status = "no files in this message".into();
+            return;
+        }
+        let dir = super::files::download_dir();
+        self.status = format!("saving {} file(s) to {}…", files.len(), dir.display());
+        for file in files {
+            let (client, tx, dir) = (self.client.clone(), self.net.clone(), dir.clone());
+            tokio::spawn(async move {
+                let name = file.name.clone();
+                let _ = tx.send(Net::FileDone(match super::files::save(client, file, dir).await {
+                    Ok(path) => format!("saved {}", path.display()),
+                    Err(e) => format!("saving {name} failed: {e}"),
+                }));
+            });
+        }
     }
 
     /// Open the viewer on the images of message `ts` in the current conversation.
@@ -715,6 +771,11 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
                                 app.copy_text(&ts);
                             }
                         }
+                        KeyCode::Char('s') => {
+                            if let Some(ts) = app.selected_ts() {
+                                app.save_files(&ts);
+                            }
+                        }
                         KeyCode::Char('o') => {
                             if let Some(ts) = app.selected_ts() {
                                 app.open_viewer(&ts);
@@ -852,6 +913,7 @@ fn handle_net(app: &mut App, msg: Net) {
             tl.loaded = true;
             tl.loading = false;
         }
+        Net::FileDone(message) => app.status = message,
         Net::FullImage { id, result } => {
             if let Some(v) = app.viewer.as_mut() {
                 v.set_image(&id, result);

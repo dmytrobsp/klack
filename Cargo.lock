@@ -3838,6 +3838,7 @@ dependencies = [
  "chrono",
  "clap",
  "crossterm",
+ "directories",
  "emojis",
  "futures-util",
  "image",
