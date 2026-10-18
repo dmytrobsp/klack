@@ -565,42 +565,82 @@ impl Prefs {
         } else if self.selected >= self.scroll + room {
             self.scroll = self.selected + 1 - room;
         }
+        // Each setting keeps to one row: a long value is cut (from the left while typing, so the
+        // cursor stays in view).
+        let value_w = (right.width as usize).saturating_sub(label_w + 1);
         for (n, field) in fields.iter().enumerate().skip(self.scroll).take(room) {
+            let typing = self.editing.is_some() && n == self.selected;
             let value = match (&self.editing, &self.capturing, n == self.selected) {
                 (Some(text), _, true) => format!("{text}▏"),
                 (_, Some(seq), true) if seq.is_empty() => "press the new key…".into(),
                 (_, Some(seq), true) => format!("{} …", super::keymap::sequence_label(seq)),
                 _ => field.value(ws, current, keys),
             };
-            let label: String = field.label().chars().take(label_w.saturating_sub(1)).collect();
+            let value = fit(&value, value_w, typing);
+            let label = fit(&field.label(), label_w.saturating_sub(1), false);
             let line = Line::from(vec![Span::raw(format!(" {label:<label_w$}")), Span::styled(value, Style::default().fg(super::theme::p().good))]);
             rows.push(if n == self.selected { line.style(highlight) } else { line });
         }
-        if self.category_name() == "Keys" {
-            rows.push(Line::raw(""));
-            rows.push(Line::styled(" Enter, then press the key (Leader first for a chord). Delete unbinds, r resets.", Style::default().fg(super::theme::p().dim)));
+        let hints: &[&str] = match self.category_name() {
+            "Keys" => &["Enter, then press the key (Leader first for a chord). Delete unbinds, r resets."],
+            "Availability" => &["Status: \":emoji: text for 30m\" (or today); empty clears."],
+            "Notifications" => &["All but the first are kept on Slack. Keywords: comma-separated."],
+            "Audio & video" => &[
+                "+ / - (or Enter) change the levels; a huddle you are in follows at once.",
+                "Below the speaking threshold the microphone sends silence.",
+                "SLACKTUI_AUDIO_INPUT / _OUTPUT, when set, win over the devices.",
+            ],
+            _ => &[],
+        };
+        let shown = rows.len() as u16;
+        f.render_widget(Paragraph::new(rows), right);
+        // The hints under a blank row, wrapped at words and indented like the rows.
+        let below = Rect { x: right.x + 1, y: right.y + shown + 1, width: right.width.saturating_sub(1), height: right.height.saturating_sub(shown + 1) };
+        if !hints.is_empty() && below.height > 0 {
+            let dim = Style::default().fg(super::theme::p().dim);
+            f.render_widget(Paragraph::new(hints.iter().map(|h| Line::styled(*h, dim)).collect::<Vec<_>>()).wrap(Wrap { trim: true }), below);
         }
-        if self.category_name() == "Availability" {
-            rows.push(Line::raw(""));
-            rows.push(Line::styled(" Status: \":emoji: text for 30m\" (or today); empty clears.", Style::default().fg(super::theme::p().dim)));
+    }
+}
+
+/// `text` cut to `room` cells with "…": its start kept, or with `tail` its end.
+fn fit(text: &str, room: usize, tail: bool) -> String {
+    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+    if text.width() <= room {
+        return text.to_string();
+    }
+    let mut kept = Vec::new();
+    let mut used = 1;
+    let chars: Box<dyn Iterator<Item = char>> = if tail { Box::new(text.chars().rev()) } else { Box::new(text.chars()) };
+    for c in chars {
+        let w = c.width().unwrap_or(0);
+        if used + w > room {
+            break;
         }
-        if self.category_name() == "Notifications" {
-            rows.push(Line::raw(""));
-            rows.push(Line::styled(" All but the first are kept on Slack. Keywords: comma-separated.", Style::default().fg(super::theme::p().dim)));
-        }
-        if self.category_name() == "Audio & video" {
-            rows.push(Line::raw(""));
-            rows.push(Line::styled(" + / - (or Enter) change the levels; a huddle you are in follows at once.", Style::default().fg(super::theme::p().dim)));
-            rows.push(Line::styled(" Below the speaking threshold the microphone sends silence.", Style::default().fg(super::theme::p().dim)));
-            rows.push(Line::styled(" SLACKTUI_AUDIO_INPUT / _OUTPUT, when set, win over the devices.", Style::default().fg(super::theme::p().dim)));
-        }
-        f.render_widget(Paragraph::new(rows).wrap(Wrap { trim: false }), right);
+        used += w;
+        kept.push(c);
+    }
+    if tail {
+        std::iter::once('…').chain(kept.into_iter().rev()).collect()
+    } else {
+        kept.into_iter().chain(['…']).take(room).collect()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn long_values_fit_one_row() {
+        let device = "alsa_output.usb-HP__Inc_HyperX_Cloud_Alpha_Wireless_00000001-00.analog-stereo";
+        assert_eq!(fit(device, 20, false), "alsa_output.usb-HP_…");
+        assert_eq!(fit("short", 20, false), "short");
+        assert_eq!(fit(&format!("{device}▏"), 12, true), "…log-stereo▏", "typing: the end with the cursor");
+        assert_eq!(fit("日本語のテキスト", 7, false), "日本語…", "wide characters count two cells");
+        assert_eq!(fit("abc", 0, false), "");
+        assert_eq!(fit("abcdef", 1, false), "…");
+    }
 
     #[test]
     fn changing_values() {
