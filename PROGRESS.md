@@ -113,6 +113,7 @@ Added by the user on 2026-10-18 (after item 13, before the video items):
 13d. Huddle mic activity: a live speaking/level indicator for every participant and for yourself.
 13e. VIP on the profile card: always visible (VIP or not), with a design pass — e.g. a "VIP" label in the card's top-right border.
 13f. Extended mouse support: hover highlight/shading, right-click context menus (messages, sidebar entries, …).
+13g. Custom themes as files: create, share and import themes (a theme file with the palette's colours, e.g. `themes/<name>.toml` next to settings.toml), listed in F6 → Appearance next to the built-in dark/light/terminal.
 14. View other participants' webcam and screen share (receive video over WebRTC, decode, draw like the video player).
 15. Send your own webcam, then screen share (camera capture, VP8/H.264 encode; Wayland needs the screen-cast portal + PipeWire).
 
