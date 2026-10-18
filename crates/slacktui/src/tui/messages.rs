@@ -129,7 +129,8 @@ impl MessagePane {
         }
         if let Some(t) = timeline {
             let own: std::collections::HashSet<&str> = t.messages.iter().filter(|m| m.user.as_deref() == Some(ws.self_id.as_str()) && !is_system(m)).map(|m| m.ts.as_str()).collect();
-            add_gutter(&mut lines, &owners, &own);
+            let system: std::collections::HashSet<&str> = t.messages.iter().filter(|m| is_system(m)).map(|m| m.ts.as_str()).collect();
+            add_gutter(&mut lines, &owners, &own, &system);
         }
         // Highlight the selected message's rows.
         let highlight = Style::default().bg(Color::Rgb(0x2c, 0x3e, 0x5c));
@@ -198,30 +199,37 @@ const SNIPPET_PREVIEW: usize = 5;
 
 /// A snippet's first lines in a code box (clipped, not wrapped), then how many are left.
 fn snippet_preview(file: &File, width: usize) -> Vec<Line<'static>> {
-    let bar = Span::styled("│ ", Style::default().fg(text::QUOTE_BAR));
     let mut out: Vec<Line<'static>> = super::highlight::preview(file, Style::default().fg(text::CODE_FG))
         .into_iter()
         .take(SNIPPET_PREVIEW)
-        .map(|spans| {
-            let mut line = vec![bar.clone()];
-            line.extend(super::highlight::clip_spans(spans, width.saturating_sub(2)));
-            Line::from(line)
-        })
+        .map(|spans| Line::from(super::highlight::clip_spans(spans, width.saturating_sub(2))))
         .collect();
     let shown = out.len() as u64;
     // Slack's own count first: `lines` includes a trailing newline as a line.
     let more = file.lines_more.or(file.lines.map(|n| n.saturating_sub(shown))).unwrap_or(0);
     if more > 0 {
-        out.push(Line::from(vec![bar, Span::styled(format!("+{more} more line{} · o to view", if more == 1 { "" } else { "s" }), Style::default().fg(DIM))]));
+        let note = Span::styled(format!("+{more} more line{} · o to view", if more == 1 { "" } else { "s" }), Style::default().fg(DIM));
+        out.push(Line::from(super::highlight::clip_spans(vec![note], width.saturating_sub(2))));
     }
-    out
+    text::shaded(out, width)
 }
 
-/// Prefix every line with the gutter: a bar on rows of messages in `own`, else blank.
-fn add_gutter(lines: &mut [Line<'static>], owners: &[Option<String>], own: &std::collections::HashSet<&str>) {
+/// Prefix every line with the gutter, which marks where each message starts (`•`, or a
+/// heavier `▌` for your own) and runs a bar down your own messages (`own`); system
+/// messages get no marker.
+fn add_gutter(lines: &mut [Line<'static>], owners: &[Option<String>], own: &std::collections::HashSet<&str>, system: &std::collections::HashSet<&str>) {
+    let mut previous: Option<&str> = None;
     for (line, owner) in lines.iter_mut().zip(owners.iter().chain(std::iter::repeat(&None))) {
-        let mine = owner.as_deref().is_some_and(|ts| own.contains(ts));
-        let gutter = if mine { Span::styled("▎ ", Style::default().fg(OWN_BAR)) } else { Span::raw("  ") };
+        let owner = owner.as_deref();
+        let first = owner.is_some() && owner != previous;
+        previous = owner;
+        let mine = owner.is_some_and(|ts| own.contains(ts));
+        let gutter = match (mine, first) {
+            (true, true) => Span::styled("▌ ", Style::default().fg(OWN_BAR)),
+            (true, false) => Span::styled("▎ ", Style::default().fg(OWN_BAR)),
+            (false, true) if !owner.is_some_and(|ts| system.contains(ts)) => Span::styled("• ", Style::default().fg(DIM)),
+            _ => Span::raw("  "),
+        };
         line.spans.insert(0, gutter);
     }
 }
@@ -292,6 +300,11 @@ pub fn build_lines_owned(ws: &Workspace, t: &Timeline, width: usize, thread: boo
         }
         let grouped = prev.is_some_and(|p| p.user == m.user && p.bot_id == m.bot_id && ts - p.time() < GROUP_WINDOW && !is_system(p));
         if !grouped {
+            // A blank row between author groups.
+            if prev.is_some() {
+                out.push(Line::raw(""));
+                owners.resize(out.len(), None);
+            }
             let color = m.user.as_deref().map(text::user_color).unwrap_or(Color::Gray);
             let mut header = vec![
                 Span::styled(ws.author(m), Style::default().fg(color).add_modifier(Modifier::BOLD)),
@@ -413,9 +426,10 @@ mod tests {
     fn snippet_preview_is_clipped_and_counted() {
         let f = File { mode: "snippet".into(), preview: Some("fn main() {\n\tlet a_very_long_name = 1;\n}".into()), lines: Some(9), ..Default::default() };
         let rows = plain(&snippet_preview(&f, 20));
-        assert_eq!(rows, vec!["│ fn main() {", "│     let a_very_lo…", "│ }", "│ +6 more lines · o to view"]);
+        assert_eq!(rows, vec![" fn main() {        ", "     let a_very_lo… ", " }                  ", " +6 more lines · o… "], "a shaded box, every row as wide");
+        assert!(snippet_preview(&f, 20).iter().all(|l| l.spans.iter().all(|s| s.style.bg == Some(text::CODE_BG))));
         let short = File { mode: "snippet".into(), preview: Some("one".into()), lines: Some(1), ..Default::default() };
-        assert_eq!(plain(&snippet_preview(&short, 20)), vec!["│ one"]);
+        assert_eq!(plain(&snippet_preview(&short, 20)), vec![" one "]);
         // Real values for a 3-line file ending in a newline.
         let trailing = File { mode: "snippet".into(), preview: Some("a\nb\nc\n".into()), lines: Some(4), lines_more: Some(0), ..Default::default() };
         assert_eq!(plain(&snippet_preview(&trailing, 20)).len(), 3);
@@ -440,19 +454,26 @@ mod tests {
     }
 
     #[test]
-    fn own_messages_get_the_gutter_bar() {
+    fn gutter_marks_message_starts_and_own_messages() {
         let ws = Workspace { self_id: "UME".into(), ..Default::default() };
         let mut t = Timeline { loaded: true, ..Default::default() };
         t.upsert(msg("1.0", "U2", "theirs"));
-        t.upsert(msg("2.0", "UME", "mine\ntwo lines"));
+        t.upsert(msg("2.0", "U2", "theirs again"));
+        t.upsert(msg("3.0", "UME", "mine\ntwo lines"));
         let (mut lines, owners, _) = build_lines_owned(&ws, &t, 40, false, &|_| None, false);
-        let own = ["2.0"].into_iter().collect();
-        add_gutter(&mut lines, &owners, &own);
+        let own = ["3.0"].into_iter().collect();
+        add_gutter(&mut lines, &owners, &own, &Default::default());
         let rows = plain(&lines);
-        assert!(rows.iter().all(|r| r.starts_with("▎ ") || r.starts_with("  ")), "every row has the gutter: {rows:?}");
-        let marked: Vec<&String> = rows.iter().filter(|r| r.starts_with('▎')).collect();
-        assert_eq!(marked.len(), 3, "header and both lines of our message: {rows:?}");
-        assert!(marked.iter().all(|r| !r.contains("theirs")));
+        assert!(rows.iter().all(|r| ["▌ ", "▎ ", "• ", "  "].iter().any(|g| r.starts_with(g))), "every row has the gutter: {rows:?}");
+        // U2's header, then the start of U2's grouped second message.
+        let bullets: Vec<&String> = rows.iter().filter(|r| r.starts_with('•')).collect();
+        assert_eq!(bullets.len(), 2, "{rows:?}");
+        assert!(bullets[1].contains("theirs again"), "a grouped message still shows where it starts: {rows:?}");
+        let mine: Vec<&String> = rows.iter().filter(|r| r.starts_with('▌') || r.starts_with('▎')).collect();
+        assert_eq!(mine.len(), 3, "header and both lines of our message: {rows:?}");
+        assert!(mine[0].starts_with('▌') && mine[1].starts_with('▎'));
+        let blank = rows.iter().position(|r| r.trim().is_empty()).expect("a blank row between the two authors");
+        assert!(rows[blank + 1].contains("UME") || rows[blank + 1].contains("You") || rows[blank + 1].starts_with('▌'), "{rows:?}");
     }
 
     #[test]
@@ -460,11 +481,12 @@ mod tests {
         let ws = Workspace::default();
         let t = Timeline { messages: vec![msg("1000.0", "U1", "first"), msg("1010.0", "U1", "second"), msg("1020.0", "U2", "third")], loaded: true, ..Default::default() };
         let p = plain(&build_lines(&ws, &t, 60));
-        // day separator, U1 header, first, second, U2 header, third
-        assert_eq!(p.len(), 6, "{p:?}");
+        // day separator, U1 header, first, second, blank row between authors, U2 header, third
+        assert_eq!(p.len(), 7, "{p:?}");
         assert_eq!(p[2], "first");
         assert_eq!(p[3], "second");
-        assert!(p[4].starts_with("U2"));
+        assert_eq!(p[4], "");
+        assert!(p[5].starts_with("U2"));
     }
 
     #[test]

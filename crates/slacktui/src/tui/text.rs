@@ -12,6 +12,25 @@ pub const LINK: Color = Color::Rgb(0x5d, 0xa9, 0xf6);
 pub const CODE_FG: Color = Color::Rgb(0xe8, 0x91, 0x2d);
 pub const DIM: Color = Color::Rgb(0x8a, 0x8a, 0x8a);
 pub const QUOTE_BAR: Color = Color::Rgb(0x6e, 0x6e, 0x6e);
+/// Background of code blocks and snippets.
+pub const CODE_BG: Color = Color::Rgb(0x2b, 0x2f, 0x3a);
+
+/// Lines drawn as a shaded box: one column of padding on each side, every row filled to
+/// the widest line (at most `width`), so code stands apart from message text.
+pub fn shaded(lines: Vec<Line<'static>>, width: usize) -> Vec<Line<'static>> {
+    let bg = Style::default().bg(CODE_BG);
+    let inner = lines.iter().map(Line::width).max().unwrap_or(0).min(width.saturating_sub(2));
+    lines
+        .into_iter()
+        .map(|line| {
+            let pad = inner.saturating_sub(line.width()) + 1;
+            let mut spans = vec![Span::styled(" ", bg)];
+            spans.extend(line.spans.into_iter().map(|s| Span::styled(s.content, s.style.patch(bg))));
+            spans.push(Span::styled(" ".repeat(pad), bg));
+            Line::from(spans)
+        })
+        .collect()
+}
 
 /// Stable per-user colour for author names.
 pub fn user_color(id: &str) -> Color {
@@ -205,10 +224,8 @@ pub fn render_blocks(ws: &Workspace, blocks: &[Block], width: usize) -> Vec<Line
             }
             Block::Code(code) => {
                 let st = Style::default().fg(CODE_FG);
-                let bar = Span::styled("│ ", Style::default().fg(QUOTE_BAR));
-                for line in code.lines() {
-                    out.extend(wrap(vec![Span::styled(line.to_string(), st)], width, vec![bar.clone()], vec![bar.clone()]));
-                }
+                let rows: Vec<Line<'static>> = code.lines().flat_map(|line| wrap(vec![Span::styled(line.to_string(), st)], width.saturating_sub(2), vec![], vec![])).collect();
+                out.extend(shaded(rows, width));
             }
             Block::List { ordered, indent, items } => {
                 let pad = "  ".repeat(*indent as usize);
