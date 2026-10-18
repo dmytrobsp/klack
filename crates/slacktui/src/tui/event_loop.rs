@@ -942,6 +942,7 @@ pub async fn run(client: Client) -> Result<()> {
     let (net_tx, mut net_rx) = mpsc::unbounded_channel();
     spawn_boot(client.clone(), net_tx.clone());
     let mut rtm = slack_core::rtm::spawn(client.clone());
+    tokio::task::spawn_blocking(super::highlight::warm_up);
     let (_guard, mut terminal) = TerminalGuard::enter()?;
     // Query the terminal before the event stream starts reading stdin.
     let media = super::media::Media::detect();
@@ -1574,7 +1575,7 @@ fn handle_net(app: &mut App, msg: Net) {
         }
         Net::SnippetText { id, result } => {
             if let Some(v) = app.snippet.as_mut().filter(|v| v.file.id == id) {
-                v.text = Some(result);
+                v.set_text(result);
             }
         }
         Net::FullImage { id, result } => {

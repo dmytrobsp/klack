@@ -197,11 +197,14 @@ const SNIPPET_PREVIEW: usize = 5;
 /// A snippet's first lines in a code box (clipped, not wrapped), then how many are left.
 fn snippet_preview(file: &File, width: usize) -> Vec<Line<'static>> {
     let bar = Span::styled("│ ", Style::default().fg(text::QUOTE_BAR));
-    let preview = file.preview.as_deref().unwrap_or_default().replace('\t', "    ");
-    let mut out: Vec<Line<'static>> = preview
-        .lines()
+    let mut out: Vec<Line<'static>> = super::highlight::preview(file, Style::default().fg(text::CODE_FG))
+        .into_iter()
         .take(SNIPPET_PREVIEW)
-        .map(|l| Line::from(vec![bar.clone(), Span::styled(text::clip(l, width.saturating_sub(2)), Style::default().fg(text::CODE_FG))]))
+        .map(|spans| {
+            let mut line = vec![bar.clone()];
+            line.extend(super::highlight::clip_spans(spans, width.saturating_sub(2)));
+            Line::from(line)
+        })
         .collect();
     let shown = out.len() as u64;
     // Slack's own count first: `lines` includes a trailing newline as a line.
