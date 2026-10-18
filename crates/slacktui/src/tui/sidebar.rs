@@ -122,6 +122,7 @@ impl Sidebar {
         let border = if focused { Style::default().fg(super::theme::p().accent) } else { Style::default().fg(super::theme::p().dim) };
         let title = format!(" {} ", ws.team_name);
         f.render_widget(Paragraph::new(lines).block(Block::default().borders(Borders::ALL).border_style(border).title(title)), area);
+        super::scroll::indicator(f, area, self.offset, height.min(self.items.len().saturating_sub(self.offset)), self.items.len(), border);
     }
 }
 

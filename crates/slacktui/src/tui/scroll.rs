@@ -4,25 +4,49 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
-use ratatui::widgets::{Scrollbar, ScrollbarOrientation, ScrollbarState};
+
+/// The thumb is never shorter than this (when the track allows), however long the content.
+pub const MIN_THUMB: usize = 2;
 
 /// Draw the indicator over the right border of the bordered `area`: items `first..first + shown`
 /// of `total` are on screen (lines, messages, entries — whatever the pane counts in).
 pub fn indicator(f: &mut Frame, area: Rect, first: usize, shown: usize, total: usize, border: Style) {
-    if total <= shown || shown == 0 || area.height < 3 || area.width < 2 {
+    if area.height < 3 || area.width < 2 {
         return;
     }
     // Between the corners of the border.
-    let track = Rect { x: area.right() - 1, y: area.y + 1, width: 1, height: area.height - 2 };
-    let mut state = ScrollbarState::new(total - shown + 1).position(first.min(total - shown)).viewport_content_length(shown);
-    let bar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
-        .begin_symbol(None)
-        .end_symbol(None)
-        .track_symbol(Some("│"))
-        .track_style(border)
-        .thumb_symbol("┃")
-        .thumb_style(Style::default().fg(super::theme::p().strong));
-    f.render_stateful_widget(bar, track, &mut state);
+    let (x, top, track) = (area.right() - 1, area.y + 1, (area.height - 2) as usize);
+    let Some((start, len)) = thumb(track, first, shown, total) else { return };
+    let buf = f.buffer_mut();
+    for i in 0..track {
+        let cell = &mut buf[(x, top + i as u16)];
+        if (start..start + len).contains(&i) {
+            cell.set_symbol("┃").set_style(Style::default().fg(super::theme::p().strong));
+        } else {
+            cell.set_symbol("│").set_style(border);
+        }
+    }
+}
+
+/// Where the thumb goes on a track of `track` cells: (first cell, length), or None when
+/// everything fits. Its length follows the part on screen but is at least [`MIN_THUMB`]; it
+/// touches the top only at the top and the bottom only at the end.
+fn thumb(track: usize, first: usize, shown: usize, total: usize) -> Option<(usize, usize)> {
+    if total <= shown || shown == 0 || track == 0 {
+        return None;
+    }
+    let len = ((shown * track + total / 2) / total).max(MIN_THUMB).min(track);
+    let (room, last) = (track - len, total - shown);
+    let first = first.min(last);
+    // Rounded, but off the ends unless really there.
+    let mut start = (first * room + last / 2) / last;
+    if first > 0 && start == 0 && room > 0 {
+        start = 1;
+    }
+    if first < last && start == room && room > 0 {
+        start = room - 1;
+    }
+    Some((start, len))
 }
 
 #[cfg(test)]
@@ -48,9 +72,20 @@ mod tests {
         assert_eq!(column(0, 10, 10), "┐││││││││││┘", "everything fits: just the border");
         assert_eq!(column(0, 5, 10), "┐┃┃┃┃┃│││││┘", "the top half");
         assert_eq!(column(5, 5, 10), "┐│││││┃┃┃┃┃┘", "the bottom half");
-        assert_eq!(column(0, 1, 100), "┐┃│││││││││┘", "a small thumb stays one cell");
-        assert_eq!(column(9, 1, 100), "┐│┃││││││││┘", "9 % down: the second of ten cells");
-        assert_eq!(column(99, 1, 100), "┐│││││││││┃┘", "at the end");
+        assert_eq!(column(0, 1, 100), "┐┃┃││││││││┘", "never shorter than the minimum");
+        assert_eq!(column(99, 1, 100), "┐││││││││┃┃┘", "at the end");
+        assert_eq!(column(1, 1, 100), "┐│┃┃│││││││┘", "one step down leaves the top");
+        assert_eq!(column(98, 1, 100), "┐│││││││┃┃│┘", "one step short of the end leaves the bottom");
         assert_eq!(column(500, 10, 100), column(90, 10, 100), "past the end: at the end");
+    }
+
+    #[test]
+    fn thumb_sizes() {
+        use super::{MIN_THUMB, thumb};
+        assert_eq!(thumb(10, 0, 10, 10), None);
+        assert_eq!(thumb(10, 0, 1, 10_000), Some((0, MIN_THUMB)));
+        assert_eq!(thumb(1, 0, 1, 10_000), Some((0, 1)), "a one-cell track: one cell");
+        assert_eq!(thumb(20, 5, 10, 20), Some((5, 10)), "proportional when large enough");
+        assert_eq!(thumb(0, 0, 1, 2), None);
     }
 }
