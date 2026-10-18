@@ -44,7 +44,7 @@ impl Completion {
 }
 
 /// Rank: 0 = prefix of the first field, 1 = prefix of a word in any field, 2 = substring.
-fn rank(q: &str, fields: &[&str]) -> Option<u8> {
+pub fn rank(q: &str, fields: &[&str]) -> Option<u8> {
     let fields: Vec<String> = fields.iter().map(|f| f.to_lowercase()).collect();
     if fields.first().is_some_and(|f| f.starts_with(q)) {
         Some(0)

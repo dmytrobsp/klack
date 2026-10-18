@@ -13,6 +13,7 @@ pub mod notify;
 pub mod picker;
 pub mod sidebar;
 pub mod state;
+pub mod switcher;
 pub mod terminal;
 pub mod video;
 pub mod viewer;

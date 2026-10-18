@@ -28,6 +28,8 @@ enum Net {
     Posted { channel: String, message: slack_core::types::Message },
     /// All replies of a thread (parent first).
     Replies { channel: String, ts: String, page: HistoryPage },
+    /// A DM opened from the quick switcher.
+    DmOpened(slack_core::types::Conversation),
     /// A video downloaded to a temporary file, ready to play.
     VideoReady { title: String, result: Result<std::path::PathBuf, String> },
     /// Result of a file save or upload, shown in the status bar.
@@ -53,6 +55,8 @@ enum Focus {
 }
 
 struct App {
+    /// Open quick switcher (Ctrl+K).
+    switcher: Option<super::switcher::Switcher>,
     /// Key help overlay is open.
     help: bool,
     /// Open video player.
@@ -438,6 +442,35 @@ impl App {
         self.composer_for(c.thread).complete(c.start, &format!("{} ", s.replacement), s.id.as_deref());
     }
 
+    /// Show conversation `id` and put the cursor in the composer.
+    fn jump_to(&mut self, id: &str) {
+        self.sidebar.select_id(id);
+        self.focus = Focus::Composer;
+    }
+
+    /// Act on the quick switcher's highlighted entry.
+    fn switch(&mut self) {
+        let Some(sw) = self.switcher.take() else { return };
+        let Some(entry) = sw.entries(&self.ws).into_iter().nth(sw.selected) else { return };
+        match entry.target {
+            super::switcher::Target::Conversation(id) => self.jump_to(&id),
+            super::switcher::Target::User(user) => {
+                self.status = format!("opening a DM with {}…", entry.label);
+                let (client, tx) = (self.client.clone(), self.net.clone());
+                tokio::spawn(async move {
+                    let _ = tx.send(match client.open_dm(&[&user]).await {
+                        Ok(mut c) => {
+                            c.is_im = true;
+                            c.user.get_or_insert(user);
+                            Net::DmOpened(c)
+                        }
+                        Err(e) => Net::Error(format!("opening the DM failed: {e}")),
+                    });
+                });
+            }
+        }
+    }
+
     /// Upload a local file to `channel` (or a thread) with an optional message.
     fn upload(&mut self, channel: String, cmd: super::files::UploadCommand, thread_ts: Option<String>) {
         let name = cmd.path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "file".into());
@@ -580,6 +613,7 @@ pub async fn run(client: Client) -> Result<()> {
         media,
         viewer: None,
         help: false,
+        switcher: None,
         player: None,
         screen: Default::default(),
         terminal_focused: true,
@@ -655,6 +689,29 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
                 return false;
             }
             app.help = false;
+        }
+        Event::Key(k) if k.kind != KeyEventKind::Release && app.switcher.is_some() => {
+            let len = app.switcher.as_ref().map(|s| s.entries(&app.ws).len()).unwrap_or(0);
+            let Some(sw) = app.switcher.as_mut() else { return true };
+            match k.code {
+                KeyCode::Esc => app.switcher = None,
+                KeyCode::Up => sw.move_by(-1, len),
+                KeyCode::Down | KeyCode::Tab => sw.move_by(1, len),
+                KeyCode::Enter => app.switch(),
+                KeyCode::Backspace => {
+                    sw.query.pop();
+                    sw.selected = 0;
+                }
+                KeyCode::Char('q') if k.modifiers.contains(KeyModifiers::CONTROL) => return false,
+                KeyCode::Char(c) if !k.modifiers.contains(KeyModifiers::CONTROL) => {
+                    sw.query.push(c);
+                    sw.selected = 0;
+                }
+                _ => {}
+            }
+        }
+        Event::Key(k) if k.kind != KeyEventKind::Release && k.code == KeyCode::Char('k') && k.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.switcher = Some(super::switcher::Switcher::default());
         }
         Event::Key(k)
             if k.kind != KeyEventKind::Release
@@ -964,6 +1021,13 @@ fn handle_net(app: &mut App, msg: Net) {
             tl.loading = false;
         }
         Net::FileDone(message) => app.status = message,
+        Net::DmOpened(c) => {
+            let id = c.id.clone();
+            app.ws.conversations.entry(id.clone()).or_insert(c);
+            app.sidebar.rebuild(&app.ws);
+            app.status.clear();
+            app.jump_to(&id);
+        }
         Net::VideoReady { title, result } => {
             let font = app.media.picker.font_size();
             let max_px = (app.screen.width.saturating_sub(2) as u32 * font.width as u32, app.screen.height.saturating_sub(3) as u32 * font.height as u32);
@@ -1063,6 +1127,9 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     let live = if app.connected { "● live" } else { "○ connecting" };
     let (unread, mentions) = app.ws.total_unread();
     let info = if app.status.is_empty() { format!("{unread} unread · {mentions} mentions") } else { app.status.clone() };
+    if let Some(sw) = &app.switcher {
+        sw.draw(f, body, &app.ws);
+    }
     if app.help {
         super::help::draw(f, body);
     }

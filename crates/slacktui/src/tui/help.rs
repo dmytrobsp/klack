@@ -13,6 +13,7 @@ pub const KEYS: &[(&str, &[(&str, &str)])] = &[
     ("Everywhere", &[
         ("Tab / Shift+Tab", "move focus between panes"),
         ("Alt+↑ / Alt+↓", "previous / next conversation"),
+        ("Ctrl+K", "jump to a conversation or person"),
         ("PgUp / PgDn", "scroll messages"),
         ("F1 or ?", "this help"),
         ("Ctrl+Q", "quit"),
