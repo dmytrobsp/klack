@@ -31,9 +31,9 @@ background is in `../REPORT.md` and `../notes/`.
 | `ctl replies <chan> <ts>`; `ctl history`/`replies` print reactions | done | LIVE | d0c1620 |
 | Autocomplete in both composers: `@user` (display/handle/real name; prefix, then word, then substring) plus `@here/@channel/@everyone`, `#channel`, `:emoji:` (picker ranking, custom emoji); popup above the composer; ↑↓ move, Tab/Enter insert, Esc dismisses until the token changes; mentions are sent as `<@U…>`/`<#C…>`/`<!here>` | done | LIVE (sent `hi @Dmytro Dudnyk see #social it works :tada:` — B read back `<@U0C9YM9J3RR> … <#C0CA4NBM998> … :tada:`; `@dmytro.d` completed in the thread box and arrived as `<@U…>`; Esc dismissal checked) + UNIT (ranking, specials, channels, emoji) | 2d609d0 |
 | Desktop notifications (notify-rust): DMs/group DMs, mentions incl. @here/@channel/@everyone, replies in threads you started or replied to; quiet for own/system messages, muted channels, DND (snooze + daily schedule, live `dnd_updated`), and the conversation/thread on screen while the terminal is focused (focus-change reporting) | done | LIVE (D-Bus `Notify` calls captured with `dbus-monitor`: DM elsewhere → "Dmytro"; #social without mention → none; with mention → "Dmytro in #social"; DM on screen + focused → none; same but unfocused → notified; reply in own thread → "Dmytro (thread)") + UNIT (decision rules, DND windows) | 56bda27 |
-| Inline image thumbnails: terminal graphics detected at startup (`Picker::from_query_stdio`, half-block fallback); rows reserved from `original_w/h` (≤ 36×10 cells, no upscaling) so nothing jumps; thumbnails fetched lazily when on screen (`thumb_*` with the session cookie), decoded/encoded off the UI task, cached per file; drawn with `SlicedImage` so partly scrolled images are clipped | done | LIVE (kitty: B's 800×500 PNG shown under its file line; clipped correctly after scrolling; no remnants after switching conversation) + UNIT (sizing, reserved rows) | see git log |
+| Inline image thumbnails: terminal graphics detected at startup (`Picker::from_query_stdio`, half-block fallback); rows reserved from `original_w/h` (≤ 36×10 cells, no upscaling) so nothing jumps; thumbnails fetched lazily when on screen (`thumb_*` with the session cookie), decoded/encoded off the UI task, cached per file; drawn with `SlicedImage` so partly scrolled images are clipped | done | LIVE (kitty: B's 800×500 PNG shown under its file line; clipped correctly after scrolling; no remnants after switching conversation) + UNIT (sizing, reserved rows) | a113b72 |
 
-Tests: `cargo test` → slack-core 8, slacktui 40, all passing. `cargo build` has no errors.
+Tests: `cargo test` → slack-core 8, slacktui 41, all passing. `cargo build` has no errors.
 Remaining dead-code warnings: `Composer::cursor/is_multiline`, `Sidebar::select_id`, `Workspace::team_id`.
 
 ## Next (in order, each as a small, separately verified step)
@@ -58,7 +58,6 @@ Remaining dead-code warnings: `Composer::cursor/is_multiline`, `Sidebar::select_
 - The clipboard hand-off needs the terminal to outlive slacktui: with `kitty -e slacktui` the whole kitty instance exits and the copy is lost.
 - The thread pane has no day separators, so a thread spanning several days shows only times.
 - Key hints for `e`/`d`/`r`/`y`/`Y` are not shown anywhere yet (help overlay is in "Next").
-- Reaction chips with VS16 emoji (❤️) sometimes render with an extra blank cell (`[❤  1]`), and stale characters appear on nearby rows (`appear]instantly`): ratatui and kitty disagree on the width. Seen in several screenshots; not fixed yet.
 - `@here/@channel/@everyone` are offered in DMs too.
 - Thumbnails: only tested in kitty (sixel/iTerm2/half-block paths untested); not tested inside the thread pane; a failed thumbnail leaves its reserved rows blank (no error text); GIFs show their first frame only.
 - Notifications: clicking one does nothing (no jump to the conversation); per-channel notification preferences (all/mentions/nothing) and keyword alerts are not honoured; muted channels come from boot prefs only (no live pref updates); the daily DND schedule can be off by an hour across a DST change.
@@ -66,6 +65,8 @@ Remaining dead-code warnings: `Composer::cursor/is_multiline`, `Sidebar::select_
 - Autocomplete does not complete on a mouse click.
 
 ## Bug log
+
+- VS16 emoji (❤️) shifted the rest of their row by one column (`[❤  1]`) and left stale characters after scrolling or switching conversation. Reproduced in isolation with a two-frame ratatui program in kitty. Cause: ratatui-core 0.1.2 re-emits the emoji's trailing cell right after it; the crossterm backend sees an adjacent cell and skips the cursor move, but the terminal had already advanced two columns. Fixed with a backend wrapper (`terminal::WideSafe`) that drops writes into columns covered by the wide character just written. Test `covered_columns_are_dropped`; the same live scenario is clean now.
 
 - Notifications never fired: `dnd.info` reports the *next start* and *next end* separately (today 00:00 and tomorrow 09:00 for a daily 00:00–09:00 schedule), and reading them as one span made DND look active for 33 h. Found with a debug log of each notification decision; now read as a daily schedule. Test `dnd_windows` uses the real values.
 
