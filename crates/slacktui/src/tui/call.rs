@@ -16,6 +16,8 @@ use super::text::DIM;
 
 pub struct Call {
     pub channel: String,
+    /// The thread the huddle was started in, if any.
+    pub thread: Option<String>,
     pub session: Session,
     pub roster: Vec<Participant>,
     /// Attendee ids currently speaking.
@@ -50,7 +52,7 @@ impl Call {
                 Some(e.to_string())
             }
         };
-        Call { channel, session, roster: Vec::new(), speaking: HashSet::new(), muted: true, connected: false, sink, mic: None, speaker_error }
+        Call { channel, thread: None, session, roster: Vec::new(), speaking: HashSet::new(), muted: true, connected: false, sink, mic: None, speaker_error }
     }
 
     /// Toggle the microphone; opening it can fail (no device, no permission).
@@ -86,6 +88,7 @@ impl Call {
 
     pub fn draw(&self, f: &mut Frame, area: Rect, ws: &Workspace) {
         let place = ws.conversations.get(&self.channel).map(|c| if c.is_dm() { ws.conversation_label(c) } else { format!("#{}", c.name) }).unwrap_or_else(|| self.channel.clone());
+        let place = if self.thread.is_some() { format!("{place} · thread") } else { place };
         let green = Style::default().fg(Color::Rgb(0x2b, 0xac, 0x76));
         let mut spans = vec![Span::styled(format!(" 🎧 {place} "), green.add_modifier(Modifier::BOLD))];
         if !self.connected {

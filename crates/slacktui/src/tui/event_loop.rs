@@ -45,7 +45,7 @@ enum Net {
     /// Search results for a query.
     SearchDone { query: String, result: Result<serde_json::Value, String> },
     /// Huddle credentials from `rooms.join`.
-    HuddleJoined { channel: String, result: Result<huddle::signaling::Credentials, String> },
+    HuddleJoined { channel: String, thread: Option<String>, result: Result<huddle::signaling::Credentials, String> },
     /// A DM opened from the quick switcher.
     DmOpened(slack_core::types::Conversation),
     /// A video downloaded to a temporary file, ready to play.
@@ -858,21 +858,27 @@ impl App {
             return;
         }
         if let Some(channel) = self.current.clone() {
-            self.join_huddle(channel);
+            self.join_huddle(channel, None);
         }
     }
 
-    fn join_huddle(&mut self, channel: String) {
+    /// Join or start the huddle of `channel`, or of the thread under message `thread`
+    /// (`rooms.join` with `thread_ts`, as the web client's "Start huddle in thread").
+    fn join_huddle(&mut self, channel: String, thread: Option<String>) {
         self.status = "joining the huddle…".into();
         let (client, tx) = (self.client.clone(), self.net.clone());
         tokio::spawn(async move {
             let result = async {
-                let v = client.call_raw("rooms.join", &[("channel_id", channel.clone())]).await?;
+                let mut params = vec![("channel_id", channel.clone())];
+                if let Some(t) = &thread {
+                    params.push(("thread_ts", t.clone()));
+                }
+                let v = client.call_raw("rooms.join", &params).await?;
                 huddle::signaling::Credentials::from_rooms_join(&v)
             }
             .await
             .map_err(|e| e.to_string());
-            let _ = tx.send(Net::HuddleJoined { channel, result });
+            let _ = tx.send(Net::HuddleJoined { channel, thread, result });
         });
     }
 
@@ -930,7 +936,7 @@ impl App {
             self.status = "leave the current huddle first (F3)".into();
         } else if let Some(id) = self.ws.conversations.values().find(|c| c.is_im && c.user.as_deref() == Some(user.as_str())).map(|c| c.id.clone()) {
             self.jump_to(&id);
-            self.join_huddle(id);
+            self.join_huddle(id, None);
         } else {
             self.huddle_after_open = Some(user.clone());
             self.open_dm_with(user);
@@ -1603,6 +1609,18 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
                                 app.toggle_pin(&ts);
                             }
                         }
+                        KeyCode::Char('H') => {
+                            let target = app.selected_ts().and_then(|ts| app.current.clone().map(|c| (c, ts)));
+                            match target {
+                                _ if app.call.is_some() => app.status = "leave the current huddle first (F3)".into(),
+                                Some((channel, ts)) => {
+                                    // A reply's huddle belongs to its thread.
+                                    let root = app.ws.find_message(&channel, &ts).and_then(|m| m.thread_ts.clone()).unwrap_or(ts);
+                                    app.join_huddle(channel, Some(root));
+                                }
+                                None => {}
+                            }
+                        }
                         KeyCode::Char('u') => {
                             let m = app.selected_ts().and_then(|ts| app.current.as_deref().and_then(|c| app.ws.find_message(c, &ts)));
                             match m.map(super::profile::people_in).and_then(super::profile::ProfileCard::new) {
@@ -1841,9 +1859,11 @@ fn handle_net(app: &mut App, msg: Net) {
                 }
             }
         }
-        Net::HuddleJoined { channel, result } => match result {
+        Net::HuddleJoined { channel, thread, result } => match result {
             Ok(creds) if app.call.is_none() => {
-                app.call = Some(super::call::Call::start(channel, creds));
+                let mut call = super::call::Call::start(channel, creds);
+                call.thread = thread;
+                app.call = Some(call);
                 app.status.clear();
             }
             Ok(_) => {}
@@ -1852,7 +1872,7 @@ fn handle_net(app: &mut App, msg: Net) {
         Net::DmOpened(c) => {
             let id = c.id.clone();
             if app.huddle_after_open.take().is_some_and(|u| c.user.as_deref() == Some(u.as_str())) && app.call.is_none() {
-                app.join_huddle(id.clone());
+                app.join_huddle(id.clone(), None);
             }
             app.ws.conversations.entry(id.clone()).or_insert(c);
             app.sidebar.rebuild(&app.ws);

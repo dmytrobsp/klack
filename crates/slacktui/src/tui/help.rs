@@ -36,6 +36,7 @@ pub const KEYS: &[(&str, &[(&str, &str)])] = &[
         ("o", "open image, play video, or view a snippet"),
         ("s", "save attachments"),
         ("P", "pin / unpin"),
+        ("H", "start or join a huddle in this message's thread"),
         ("u", "profile card: author, ←/→ people mentioned; Enter message, h huddle"),
         ("i", "type (in the thread: reply)"),
         ("Esc", "back to the composer (in the thread: close it)"),

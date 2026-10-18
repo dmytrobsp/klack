@@ -62,7 +62,8 @@ Press **F1** (or `?`) in the app for the full list. The essentials:
 
 ## Huddles
 
-F3 joins (or starts) the huddle of the conversation you are in; you join **muted**, and the
+F3 joins (or starts) the huddle of the conversation you are in, and `H` on a message starts (or
+joins) a huddle in that message's thread; you join **muted**, and the
 microphone is only opened while you are unmuted (F4). The call bar shows who is there, who is
 speaking and who is muted. Someone starting a huddle in a DM with you sends a desktop
 notification.
