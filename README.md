@@ -208,6 +208,10 @@ a TOML file in `themes/` next to `settings.toml`: `base = "dark"` plus any colou
 `klack ctl theme-template dark > sunset.toml`, edit it, and install it (checked first) with
 `klack ctl theme-import sunset.toml`; share themes by passing the file around.
 
+To tell workspaces apart at a glance, F6 → Appearance → Theme for this workspace gives the
+workspace you are in a theme of its own (it cycles through the themes and back to "(colour
+theme)"); `settings.toml` keeps it under `[appearance.workspace_themes]` by workspace id.
+
 ### Translations
 
 The interface can be translated: `klack ctl locale-template > ~/.config/klack/locales/de.toml`,

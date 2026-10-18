@@ -58,6 +58,8 @@ impl Timeline {
 #[derive(Debug, Default)]
 pub struct Workspace {
     pub team_name: String,
+    /// The workspace's id (`T…`).
+    pub team_id: String,
     pub self_id: String,
     pub users: HashMap<String, User>,
     pub conversations: BTreeMap<String, Conversation>,

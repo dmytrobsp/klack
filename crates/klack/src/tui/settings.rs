@@ -55,11 +55,21 @@ pub struct Appearance {
     pub compact: bool,
     /// Colour theme: dark, light or terminal (the terminal's own colours).
     pub theme: String,
+    /// A theme of its own for some workspaces (team id → theme), to tell them apart.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub workspace_themes: std::collections::BTreeMap<String, String>,
+}
+
+impl Appearance {
+    /// The theme for the workspace `team`.
+    pub fn theme_for(&self, team: &str) -> &str {
+        self.workspace_themes.get(team).unwrap_or(&self.theme)
+    }
 }
 
 impl Default for Appearance {
     fn default() -> Self {
-        Appearance { compact: false, theme: "dark".into() }
+        Appearance { compact: false, theme: "dark".into(), workspace_themes: Default::default() }
     }
 }
 

@@ -17,6 +17,7 @@ pub const DATE_FORMATS: &[&str] = &["%A, %B %-d", "%a %-d %b", "%d.%m.%Y", "%Y-%
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Field {
     Theme,
+    WorkspaceTheme,
     /// The leader key for chords.
     Leader,
     /// An action's keys (index into `keymap::ACTIONS`).
@@ -81,7 +82,7 @@ pub const PAUSES: &[u64] = &[0, 30, 60, 120, 480];
 
 pub const CATEGORIES: &[(&str, &[Field])] = &[
     ("Availability", &[Field::Status, Field::Away, Field::Pause]),
-    ("Appearance", &[Field::Theme, Field::Compact]),
+    ("Appearance", &[Field::Theme, Field::WorkspaceTheme, Field::Compact]),
     ("Messages & media", &[Field::InlineImages, Field::Avatars, Field::LargeAvatars, Field::Graphics, Field::EmojiAsNames]),
     ("Language & region", &[Field::Clock24, Field::DateFormat, Field::TimeZone, Field::Language]),
     ("Notifications", &[Field::Desktop, Field::Sound, Field::ConversationLevel, Field::ChannelDefault, Field::Keywords, Field::Vips]),
@@ -120,6 +121,7 @@ impl Field {
         match self {
             Field::Leader | Field::Binding(_) => "",
             Field::Theme => "Colour theme",
+            Field::WorkspaceTheme => "Theme for this workspace",
             Field::Compact => "Compact (no gaps between authors or sidebar sections)",
             Field::InlineImages => "Show image thumbnails",
             Field::Avatars => "Show profile pictures",
@@ -174,6 +176,7 @@ impl Field {
         match self {
             Field::Leader | Field::Binding(_) => String::new(),
             Field::Theme => s.appearance.theme.clone(),
+            Field::WorkspaceTheme => s.appearance.workspace_themes.get(&ws.team_id).cloned().unwrap_or_else(|| "(colour theme)".into()),
             Field::Compact => yes(s.appearance.compact),
             Field::InlineImages => yes(s.messages.inline_images),
             Field::Avatars => yes(s.messages.avatars),
@@ -268,7 +271,8 @@ impl Field {
             }
         };
         match self {
-            Field::TimeZone | Field::Language => {}
+            // Needs the workspace: in `Prefs::change`.
+            Field::TimeZone | Field::Language | Field::WorkspaceTheme => {}
             // Custom theme files are checked in `Prefs::change`.
             Field::Theme => {
                 s.appearance.theme = super::theme::next(&s.appearance.theme);
@@ -364,6 +368,15 @@ fn next_sound(current: &str) -> String {
     sounds[sounds.iter().position(|x| *x == current).map_or(0, |i| (i + 1) % sounds.len())].to_string()
 }
 
+/// A workspace's theme after `current` (None: the colour theme's) among `names`, ending with
+/// None again.
+fn theme_after(current: Option<&str>, names: &[String]) -> Option<String> {
+    match current {
+        None => names.first().cloned(),
+        Some(t) => names.iter().position(|n| n == t).and_then(|i| names.get(i + 1)).cloned(),
+    }
+}
+
 fn next_level(level: &str) -> String {
     let i = LEVELS.iter().position(|l| *l == level).map_or(0, |i| (i + 1) % LEVELS.len());
     LEVELS[i].to_string()
@@ -374,7 +387,7 @@ const LEADER_LABEL: &str = "Leader key (for chords such as Leader k)";
 /// Category names and fixed labels, for translation templates.
 pub fn translatable() -> Vec<String> {
     let all = [
-        Field::Theme, Field::Compact, Field::InlineImages, Field::Avatars, Field::LargeAvatars, Field::Graphics, Field::EmojiAsNames, Field::Clock24, Field::DateFormat, Field::TimeZone, Field::Language, Field::Desktop, Field::Sound,
+        Field::Theme, Field::WorkspaceTheme, Field::Compact, Field::InlineImages, Field::Avatars, Field::LargeAvatars, Field::Graphics, Field::EmojiAsNames, Field::Clock24, Field::DateFormat, Field::TimeZone, Field::Language, Field::Desktop, Field::Sound,
         Field::ConversationLevel, Field::ChannelDefault, Field::Keywords, Field::Vips, Field::Status, Field::Away, Field::Pause, Field::Input, Field::Output,
         Field::HuddleVolume, Field::SoundVolume, Field::MicGain, Field::SpeakingThreshold, Field::NoiseSuppression, Field::EchoCancellation, Field::Camera, Field::JoinSound, Field::SomeoneJoined, Field::SomeoneLeft, Field::RingSound, Field::RingTimeout, Field::AutoDecline, Field::AloneSound, Field::AloneSecs,
     ];
@@ -465,6 +478,30 @@ impl Prefs {
                     }
                 }
                 ws.settings.appearance.theme = name;
+                // This workspace may have a theme of its own.
+                let _ = super::theme::set(ws.settings.appearance.theme_for(&ws.team_id));
+                None
+            }
+            Field::WorkspaceTheme => {
+                // The colour theme's, then each theme (skipping files that do not load), then
+                // the colour theme's again.
+                let names = super::theme::names();
+                let mut next = theme_after(ws.settings.appearance.workspace_themes.get(&ws.team_id).map(String::as_str), &names);
+                while let Some(name) = &next {
+                    match super::theme::set(name) {
+                        Ok(()) => break,
+                        Err(e) => {
+                            self.saved = Some(Err(e));
+                            next = theme_after(Some(name), &names);
+                        }
+                    }
+                }
+                let themes = &mut ws.settings.appearance.workspace_themes;
+                match next {
+                    Some(name) => themes.insert(ws.team_id.clone(), name),
+                    None => themes.remove(&ws.team_id),
+                };
+                let _ = super::theme::set(ws.settings.appearance.theme_for(&ws.team_id));
                 None
             }
             Field::Camera => {
@@ -798,5 +835,32 @@ mod tests {
         p.switch_category(-1);
         p.move_by(10);
         assert_eq!(p.selected, p.fields().len() - 1);
+    }
+
+    #[test]
+    fn workspace_themes() {
+        let names: Vec<String> = ["dark", "light", "mine"].map(String::from).into();
+        let mut seen = vec![];
+        let mut t = None;
+        loop {
+            t = theme_after(t.as_deref(), &names);
+            seen.push(t.clone());
+            if t.is_none() {
+                break;
+            }
+        }
+        assert_eq!(seen, [Some("dark".into()), Some("light".into()), Some("mine".into()), None], "each theme, then the colour theme's again");
+        assert_eq!(theme_after(Some("gone"), &names), None, "a theme no longer there: back to the colour theme's");
+        let mut ws = Workspace { team_id: "T1".into(), ..Default::default() };
+        let p = Prefs { category: 1, selected: 1, ..Default::default() };
+        assert_eq!(p.selected_field(), Some(Field::WorkspaceTheme));
+        assert_eq!(Field::WorkspaceTheme.value(&ws, None, &Keymap::default()), "(colour theme)");
+        ws.settings.appearance.workspace_themes.insert("T1".into(), "light".into());
+        assert_eq!(Field::WorkspaceTheme.value(&ws, None, &Keymap::default()), "light");
+        assert_eq!((ws.settings.appearance.theme_for("T1"), ws.settings.appearance.theme_for("T2")), ("light", "dark"));
+        let text = toml::to_string(&ws.settings).unwrap();
+        assert!(text.contains("[appearance.workspace_themes]\nT1 = \"light\""), "{text}");
+        assert_eq!(Settings::parse(&text).unwrap().appearance.theme_for("T1"), "light");
+        assert!(!toml::to_string(&Settings::default()).unwrap().contains("workspace_themes"), "none: not written");
     }
 }

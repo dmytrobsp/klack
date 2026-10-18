@@ -2002,7 +2002,7 @@ pub async fn run(profile: slack_core::session::Profile, team: Option<&str>) -> R
         // Read again on every switch, so changes made in the preferences carry over.
         let (settings, settings_problem) = super::settings::load();
         let mut settings_problem = settings_problem;
-        if let Err(e) = super::theme::set(&settings.appearance.theme) {
+        if let Err(e) = super::theme::set(settings.appearance.theme_for(&sessions[index].team_id)) {
             settings_problem.get_or_insert(e);
         }
         if let Err(e) = super::clock::set(&settings.region.timezone) {
@@ -2109,6 +2109,7 @@ async fn run_workspace(
         net: net_tx.clone(),
         ws: Workspace {
             team_name,
+            team_id: client.session.team_id.clone(),
             self_id: client.session.user_id.clone(),
             settings: settings.clone(),
             ..Default::default()
