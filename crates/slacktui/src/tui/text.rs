@@ -225,6 +225,22 @@ pub fn render_blocks(ws: &Workspace, blocks: &[Block], width: usize) -> Vec<Line
 }
 
 /// Human-friendly byte size.
+/// `s` cut to `width` columns, ending in `…` when something was cut.
+pub fn clip(s: &str, width: usize) -> String {
+    if s.width() <= width {
+        return s.to_string();
+    }
+    let mut out = String::new();
+    for c in s.chars() {
+        if out.width() + unicode_width::UnicodeWidthChar::width(c).unwrap_or(0) + 1 > width {
+            break;
+        }
+        out.push(c);
+    }
+    out.push('…');
+    out
+}
+
 pub fn human_size(n: u64) -> String {
     const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
     let mut v = n as f64;

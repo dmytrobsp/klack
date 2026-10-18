@@ -48,6 +48,8 @@ enum Net {
     VideoReady { title: String, result: Result<std::path::PathBuf, String> },
     /// Result of a file save or upload, shown in the status bar.
     FileDone(String),
+    /// A snippet's full text for the snippet view.
+    SnippetText { id: String, result: Result<String, String> },
     /// A full-size image for the viewer.
     FullImage { id: String, result: Result<image::DynamicImage, String> },
     /// A thumbnail finished loading.
@@ -98,6 +100,8 @@ struct App {
     screen: ratatui::layout::Rect,
     /// Open image viewer.
     viewer: Option<super::viewer::Viewer>,
+    /// Open snippet view.
+    snippet: Option<super::snippet::SnippetView>,
     media: super::media::Media,
     /// The terminal window has focus (focus-change reporting).
     terminal_focused: bool,
@@ -798,7 +802,7 @@ impl App {
             let result = async {
                 let bytes = tokio::fs::read(&cmd.path).await.map_err(|e| anyhow::anyhow!("{}: {e}", cmd.path.display()))?;
                 let message = super::composer::escape_text(&cmd.message);
-                client.upload(&channel, &name, bytes, Some(&message), thread_ts.as_deref()).await
+                client.upload(&channel, &name, bytes, Some(&message), thread_ts.as_deref(), None).await
             }
             .await;
             let _ = tx.send(Net::FileDone(match result {
@@ -845,9 +849,23 @@ impl App {
             });
             return;
         }
+        let snippet = self.ws.find_message(&channel, ts).and_then(|m| m.files.iter().find(|f| f.is_snippet()).cloned());
+        if let Some(file) = snippet {
+            let (client, tx, id) = (self.client.clone(), self.net.clone(), file.id.clone());
+            let url = file.url_private_download.clone().or(file.url_private.clone());
+            self.snippet = Some(super::snippet::SnippetView::new(file));
+            tokio::spawn(async move {
+                let result = match url {
+                    Some(url) => client.download(&url).await.map(|b| String::from_utf8_lossy(&b).into_owned()).map_err(|e| e.to_string()),
+                    None => Err("no download URL".into()),
+                };
+                let _ = tx.send(Net::SnippetText { id, result });
+            });
+            return;
+        }
         let files: Vec<slack_core::types::File> = self.ws.find_message(&channel, ts).map(|m| m.files.iter().filter(|f| f.is_image()).cloned().collect()).unwrap_or_default();
         if files.is_empty() {
-            self.status = "no image in this message".into();
+            self.status = "no image, video or snippet in this message".into();
             return;
         }
         self.viewer = Some(super::viewer::Viewer::new(files, 0));
@@ -930,6 +948,7 @@ pub async fn run(client: Client) -> Result<()> {
     let mut app = App {
         media,
         viewer: None,
+        snippet: None,
         help: false,
         switcher: None,
         search: None,
@@ -1126,6 +1145,26 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
                 KeyCode::Char('q') if k.modifiers.contains(KeyModifiers::CONTROL) => return false,
                 KeyCode::Esc | KeyCode::Char('q') => app.player = None,
                 KeyCode::Char(' ') | KeyCode::Char('p') => p.toggle_pause(),
+                _ => {}
+            }
+        }
+        Event::Key(k) if k.kind != KeyEventKind::Release && app.snippet.is_some() => {
+            let Some(v) = app.snippet.as_mut() else { return true };
+            match k.code {
+                KeyCode::Char('q') if k.modifiers.contains(KeyModifiers::CONTROL) => return false,
+                KeyCode::Esc | KeyCode::Char('q') => app.snippet = None,
+                KeyCode::Up | KeyCode::Char('k') => v.scroll_by(-1),
+                KeyCode::Down | KeyCode::Char('j') => v.scroll_by(1),
+                KeyCode::PageUp => v.scroll_by(-v.page()),
+                KeyCode::PageDown | KeyCode::Char(' ') => v.scroll_by(v.page()),
+                KeyCode::Home | KeyCode::Char('g') => v.scroll_by(isize::MIN / 2),
+                KeyCode::End | KeyCode::Char('G') => v.scroll_by(isize::MAX / 2),
+                KeyCode::Char('y') => {
+                    if let Some(Ok(text)) = &v.text {
+                        let how = app.clipboard.copy(text);
+                        app.status = format!("copied the snippet to the {how}");
+                    }
+                }
                 _ => {}
             }
         }
@@ -1533,6 +1572,11 @@ fn handle_net(app: &mut App, msg: Net) {
                 Err(e) => app.status = format!("cannot play video: {e}"),
             }
         }
+        Net::SnippetText { id, result } => {
+            if let Some(v) = app.snippet.as_mut().filter(|v| v.file.id == id) {
+                v.text = Some(result);
+            }
+        }
         Net::FullImage { id, result } => {
             if let Some(v) = app.viewer.as_mut() {
                 v.set_image(&id, result);
@@ -1623,6 +1667,9 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     }
     if let Some(p) = app.player.as_mut() {
         p.draw(f, body, &app.media.picker);
+    }
+    if let Some(s) = app.snippet.as_mut() {
+        s.draw(f, body);
     }
     let live = if app.connected { "● live" } else { "○ connecting" };
     let (unread, mentions) = app.ws.total_unread();

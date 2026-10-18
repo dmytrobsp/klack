@@ -27,7 +27,7 @@ pub const KEYS: &[(&str, &[(&str, &str)])] = &[
         ("r", "add a reaction"),
         ("e / d", "edit / delete your message"),
         ("y / Y", "copy text / link"),
-        ("o", "open image or play video"),
+        ("o", "open image, play video, or view a snippet"),
         ("s", "save attachments"),
         ("P", "pin / unpin"),
         ("u", "profile card: author, ←/→ people mentioned; Enter message, h huddle"),
@@ -48,7 +48,7 @@ pub const KEYS: &[(&str, &[(&str, &str)])] = &[
         ("Alt+A (reply box)", "also send the reply to the channel"),
         ("Esc", "cancel an edit, else leave the composer"),
     ]),
-    ("Viewer and player", &[("← → h l", "previous / next image"), ("Space / p", "pause video"), ("Esc / q", "close")]),
+    ("Viewer and player", &[("← → h l", "previous / next image"), ("Space / p", "pause video"), ("↑↓ PgUp PgDn g G · y", "scroll / copy a snippet"), ("Esc / q", "close")]),
 ];
 
 pub fn draw(f: &mut Frame, area: Rect) {

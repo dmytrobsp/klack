@@ -274,10 +274,15 @@ impl Client {
         Ok(resp.bytes().await?.to_vec())
     }
 
-    /// Upload a file to a conversation (new external upload flow).
-    pub async fn upload(&self, channel: &str, filename: &str, bytes: Vec<u8>, comment: Option<&str>, thread_ts: Option<&str>) -> Result<String> {
+    /// Upload a file to a conversation (new external upload flow). With `snippet_type` (a
+    /// language such as `rust` or `text`) the file becomes a text snippet.
+    pub async fn upload(&self, channel: &str, filename: &str, bytes: Vec<u8>, comment: Option<&str>, thread_ts: Option<&str>, snippet_type: Option<&str>) -> Result<String> {
         let len = bytes.len();
-        let v = self.call_raw("files.getUploadURLExternal", &[("filename", filename.into()), ("length", len.to_string())]).await?;
+        let mut params: Params = vec![("filename", filename.into()), ("length", len.to_string())];
+        if let Some(t) = snippet_type {
+            params.push(("snippet_type", t.into()));
+        }
+        let v = self.call_raw("files.getUploadURLExternal", &params).await?;
         let upload_url = v["upload_url"].as_str().ok_or_else(|| anyhow!("no upload_url"))?.to_string();
         let file_id = v["file_id"].as_str().ok_or_else(|| anyhow!("no file_id"))?.to_string();
         let part = reqwest::multipart::Part::bytes(bytes).file_name(filename.to_string());

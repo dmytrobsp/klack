@@ -17,6 +17,7 @@ pub mod picker;
 pub mod profile;
 pub mod search;
 pub mod sidebar;
+pub mod snippet;
 pub mod state;
 pub mod switcher;
 pub mod terminal;

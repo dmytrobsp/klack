@@ -191,6 +191,27 @@ impl MessagePane {
     }
 }
 
+/// Lines of a snippet shown under its file line.
+const SNIPPET_PREVIEW: usize = 5;
+
+/// A snippet's first lines in a code box (clipped, not wrapped), then how many are left.
+fn snippet_preview(file: &File, width: usize) -> Vec<Line<'static>> {
+    let bar = Span::styled("│ ", Style::default().fg(text::QUOTE_BAR));
+    let preview = file.preview.as_deref().unwrap_or_default().replace('\t', "    ");
+    let mut out: Vec<Line<'static>> = preview
+        .lines()
+        .take(SNIPPET_PREVIEW)
+        .map(|l| Line::from(vec![bar.clone(), Span::styled(text::clip(l, width.saturating_sub(2)), Style::default().fg(text::CODE_FG))]))
+        .collect();
+    let shown = out.len() as u64;
+    // Slack's own count first: `lines` includes a trailing newline as a line.
+    let more = file.lines_more.or(file.lines.map(|n| n.saturating_sub(shown))).unwrap_or(0);
+    if more > 0 {
+        out.push(Line::from(vec![bar, Span::styled(format!("+{more} more line{} · o to view", if more == 1 { "" } else { "s" }), Style::default().fg(DIM))]));
+    }
+    out
+}
+
 /// Prefix every line with the gutter: a bar on rows of messages in `own`, else blank.
 fn add_gutter(lines: &mut [Line<'static>], owners: &[Option<String>], own: &std::collections::HashSet<&str>) {
     for (line, owner) in lines.iter_mut().zip(owners.iter().chain(std::iter::repeat(&None))) {
@@ -339,6 +360,9 @@ pub fn message_body(ws: &Workspace, m: &Message, width: usize, summary: bool, th
             Span::styled(name.clone(), Style::default().fg(text::LINK)),
             Span::styled(format!("  {}", text::human_size(file.size)), Style::default().fg(DIM)),
         ]));
+        if file.is_snippet() {
+            out.extend(snippet_preview(file, width));
+        }
         if let Some(size) = thumb_size(file).filter(|(cols, _)| (*cols as usize) <= width) {
             slots.push(ImageSlot { line: out.len(), file: file.clone(), size });
             out.extend(std::iter::repeat_n(Line::raw(""), size.1 as usize));
@@ -373,6 +397,18 @@ mod tests {
 
     fn plain(lines: &[Line]) -> Vec<String> {
         lines.iter().map(|l| l.spans.iter().map(|s| s.content.to_string()).collect()).collect()
+    }
+
+    #[test]
+    fn snippet_preview_is_clipped_and_counted() {
+        let f = File { mode: "snippet".into(), preview: Some("fn main() {\n\tlet a_very_long_name = 1;\n}".into()), lines: Some(9), ..Default::default() };
+        let rows = plain(&snippet_preview(&f, 20));
+        assert_eq!(rows, vec!["│ fn main() {", "│     let a_very_lo…", "│ }", "│ +6 more lines · o to view"]);
+        let short = File { mode: "snippet".into(), preview: Some("one".into()), lines: Some(1), ..Default::default() };
+        assert_eq!(plain(&snippet_preview(&short, 20)), vec!["│ one"]);
+        // Real values for a 3-line file ending in a newline.
+        let trailing = File { mode: "snippet".into(), preview: Some("a\nb\nc\n".into()), lines: Some(4), lines_more: Some(0), ..Default::default() };
+        assert_eq!(plain(&snippet_preview(&trailing, 20)).len(), 3);
     }
 
     #[test]

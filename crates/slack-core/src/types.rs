@@ -149,9 +149,17 @@ pub struct File {
     pub mp4: Option<String>,
     pub duration_ms: Option<u64>,
     pub mode: String,
+    /// First lines of a text snippet.
+    pub preview: Option<String>,
+    pub lines: Option<u64>,
+    pub lines_more: Option<u64>,
 }
 
 impl File {
+    pub fn is_snippet(&self) -> bool {
+        self.mode == "snippet"
+    }
+
     pub fn is_image(&self) -> bool {
         self.mimetype.starts_with("image/")
     }
