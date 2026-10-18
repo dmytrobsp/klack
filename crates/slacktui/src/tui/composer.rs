@@ -228,14 +228,65 @@ impl Composer {
         }
     }
 
-    /// Final mrkdwn for the API: autocompleted mentions become `<@U…>` / `<#C…>`.
+    /// Load a sent message (Slack mrkdwn) for editing message `ts`: `<@U…>`, `<#C…|name>`
+    /// and `<!here>` become `@display`, `#name` and `@here` and are registered as mentions;
+    /// links stay as they are and `&amp;`/`&lt;`/`&gt;` are unescaped.
+    pub fn load_for_edit(&mut self, ts: &str, text: &str, user_name: impl Fn(&str) -> String, channel_name: impl Fn(&str) -> String) {
+        self.clear();
+        let mut out = String::new();
+        let mut rest = text;
+        while let Some(pos) = rest.find('<') {
+            out.push_str(&slack_core::format::unescape(&rest[..pos]));
+            let Some(len) = rest[pos..].find('>') else {
+                rest = &rest[pos..];
+                break;
+            };
+            let inner = &rest[pos + 1..pos + len];
+            rest = &rest[pos + len + 1..];
+            let (target, label) = match inner.split_once('|') {
+                Some((t, l)) => (t, Some(l)),
+                None => (inner, None),
+            };
+            let mention = if let Some(id) = target.strip_prefix('@') {
+                Some((format!("@{}", label.map(String::from).unwrap_or_else(|| user_name(id))), id))
+            } else if let Some(id) = target.strip_prefix('#') {
+                Some((format!("#{}", label.map(String::from).unwrap_or_else(|| channel_name(id))), id))
+            } else if matches!(target, "!here" | "!channel" | "!everyone") {
+                Some((format!("@{}", &target[1..]), target))
+            } else {
+                None
+            };
+            match mention {
+                Some((display, id)) => {
+                    out.push_str(&display);
+                    self.mentions.push((display, id.to_string()));
+                }
+                None => {
+                    out.push('<');
+                    out.push_str(inner);
+                    out.push('>');
+                }
+            }
+        }
+        out.push_str(&slack_core::format::unescape(rest));
+        self.set(&out);
+        self.editing = Some(ts.to_string());
+    }
+
+    /// Final mrkdwn for the API: autocompleted mentions become `<@U…>` / `<#C…>` / `<!here>`.
     pub fn to_mrkdwn(&self) -> String {
         let mut text = self.text().trim_end().to_string();
         let mut mentions = self.mentions.clone();
         // Longest first so `@ann` does not clobber `@anna`.
         mentions.sort_by_key(|(display, _)| std::cmp::Reverse(display.len()));
         for (display, id) in mentions {
-            let replacement = if display.starts_with('#') { format!("<#{id}>") } else { format!("<@{id}>") };
+            let replacement = if display.starts_with('#') {
+                format!("<#{id}>")
+            } else if id.starts_with('!') {
+                format!("<{id}>")
+            } else {
+                format!("<@{id}>")
+            };
             text = replace_whole_token(&text, &display, &replacement);
         }
         // Slack expects these three escaped in text.
@@ -395,6 +446,16 @@ mod tests {
         let mut n = Composer::default();
         n.insert_str("email@x");
         assert_eq!(n.trigger(), None);
+    }
+
+    #[test]
+    fn load_for_edit_round_trips() {
+        let mut c = Composer::default();
+        let original = "hi <@U1> in <#C9|general> and <#C8>, <!here> &lt;b&gt; &amp; <https://x.y|site>";
+        c.load_for_edit("5.0", original, |id| if id == "U1" { "Anna Bee".into() } else { id.into() }, |id| if id == "C8" { "random".into() } else { id.into() });
+        assert_eq!(c.text(), "hi @Anna Bee in #general and #random, @here <b> & <https://x.y|site>");
+        assert_eq!(c.editing.as_deref(), Some("5.0"));
+        assert_eq!(c.to_mrkdwn(), "hi <@U1> in <#C9> and <#C8>, <!here> &lt;b&gt; &amp; <https://x.y|site>");
     }
 
     #[test]

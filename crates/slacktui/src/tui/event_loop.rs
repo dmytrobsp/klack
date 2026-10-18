@@ -26,6 +26,8 @@ enum Net {
     History { channel: String, page: HistoryPage, older: bool },
     /// Our own message, as returned by chat.postMessage.
     Posted { channel: String, message: slack_core::types::Message },
+    /// An optimistic change failed: put the original message back.
+    Restore { channel: String, message: slack_core::types::Message, error: String },
     Error(String),
 }
 
@@ -164,6 +166,54 @@ impl App {
                 Err(e) => Net::Error(format!("send failed: {e}")),
             };
             let _ = tx.send(msg);
+        });
+    }
+
+    /// Load our own message `ts` in the current conversation into the composer for editing.
+    fn start_edit(&mut self, ts: &str) {
+        let Some(channel) = self.current.clone() else { return };
+        let Some(m) = self.ws.timelines.get(&channel).and_then(|t| t.messages.iter().find(|m| m.ts == ts)) else { return };
+        if m.user.as_deref() != Some(self.ws.self_id.as_str()) {
+            self.status = "you can only edit your own messages".into();
+            return;
+        }
+        let ws = &self.ws;
+        let user_name = |id: &str| ws.user_name(id);
+        let channel_name = |id: &str| ws.channel_label(id);
+        self.composer.load_for_edit(ts, &m.text, user_name, channel_name);
+        self.messages.selected = Some(ts.to_string());
+        self.focus = Focus::Composer;
+        self.status.clear();
+    }
+
+    /// Our newest top-level message in the current conversation.
+    fn last_own_message(&self) -> Option<String> {
+        let t = self.ws.timelines.get(self.current.as_deref()?)?;
+        let own: Vec<&slack_core::types::Message> = super::messages::shown_messages(t).filter(|m| m.user.as_deref() == Some(self.ws.self_id.as_str()) && m.subtype.is_none()).collect();
+        own.last().map(|m| m.ts.clone())
+    }
+
+    /// Save the message being edited (optimistic, then chat.update).
+    fn save_edit(&mut self) {
+        let (Some(channel), Some(ts)) = (self.current.clone(), self.composer.editing.clone()) else { return };
+        if self.composer.is_empty() {
+            self.status = "empty edit: use d on the message to delete it".into();
+            return;
+        }
+        let text = self.composer.to_mrkdwn();
+        self.composer.clear();
+        let me = self.ws.self_id.clone();
+        let Some(msg) = self.ws.timelines.get_mut(&channel).and_then(|t| t.messages.iter_mut().find(|m| m.ts == ts)) else { return };
+        let original = msg.clone();
+        msg.text = text.clone();
+        msg.blocks.clear();
+        let now = format!("{:.6}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64());
+        msg.edited = Some(slack_core::types::Edited { user: me, ts: now });
+        let (client, tx) = (self.client.clone(), self.net.clone());
+        tokio::spawn(async move {
+            if let Err(e) = client.update_message(&channel, &ts, &text).await {
+                let _ = tx.send(Net::Restore { channel, message: original, error: format!("edit failed: {e}") });
+            }
         });
     }
 
@@ -344,15 +394,28 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
                                 app.picker = Some((EmojiPicker::default(), channel, ts));
                             }
                         }
+                        KeyCode::Char('e') => {
+                            if let Some(ts) = app.messages.selected.clone() {
+                                app.start_edit(&ts);
+                            }
+                        }
                         _ => {}
                     }
                 }
                 Focus::Composer => {
+                    if k.code == KeyCode::Up && app.composer.is_empty() && app.composer.editing.is_none() {
+                        if let Some(ts) = app.last_own_message() {
+                            app.start_edit(&ts);
+                            return true;
+                        }
+                    }
                     let c = &mut app.composer;
                     match k.code {
+                        KeyCode::Esc if c.editing.is_some() => c.clear(),
                         KeyCode::Esc => app.focus = Focus::Sidebar,
                         KeyCode::Enter if alt || shift => c.insert('\n'),
                         KeyCode::Char('j') if ctrl => c.insert('\n'),
+                        KeyCode::Enter if c.editing.is_some() => app.save_edit(),
                         KeyCode::Enter => app.send(),
                         KeyCode::Char('b') if alt => c.toggle_marker('*'),
                         KeyCode::Char('i') if alt => c.toggle_marker('_'),
@@ -456,6 +519,10 @@ fn handle_net(app: &mut App, msg: Net) {
         Net::Posted { channel, message } => {
             app.ws.timelines.entry(channel).or_default().upsert(message);
         }
+        Net::Restore { channel, message, error } => {
+            app.ws.timelines.entry(channel).or_default().upsert(message);
+            app.status = error;
+        }
         Net::Error(e) => {
             app.loading = false;
             app.status = e;
@@ -493,7 +560,8 @@ fn draw_composer(f: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &App)
     let border = if focused { Style::default().fg(Color::Rgb(0x61, 0xaf, 0xef)) } else { Style::default().fg(super::text::DIM) };
     let target = app.current.as_deref().map(|c| app.ws.channel_label(c)).unwrap_or_default();
     let typing = app.current.as_deref().map(|c| app.ws.typing_in(c)).unwrap_or_default();
-    let mut block = Block::default().borders(Borders::ALL).border_style(border).title(format!(" Message {target} "));
+    let title = if app.composer.editing.is_some() { " Editing message · Enter save · Esc cancel ".to_string() } else { format!(" Message {target} ") };
+    let mut block = Block::default().borders(Borders::ALL).border_style(border).title(title);
     if !typing.is_empty() {
         let who = if typing.len() == 1 { format!("{} is typing…", typing[0]) } else { format!("{} people are typing…", typing.len()) };
         block = block.title(ratatui::text::Line::styled(format!(" {who} "), Style::default().fg(super::text::DIM)).right_aligned());
