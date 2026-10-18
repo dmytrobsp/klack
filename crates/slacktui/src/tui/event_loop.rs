@@ -87,6 +87,8 @@ enum Confirm {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Focus {
     Sidebar,
+    /// The huddle view's tiles (while it is shown).
+    Huddle,
     Messages,
     Thread,
     ThreadComposer,
@@ -1060,9 +1062,7 @@ impl App {
             self.focus = Focus::Composer;
         } else if self.call.is_some() {
             self.huddle_view = Some(Default::default());
-            if matches!(self.focus, Focus::Messages | Focus::Composer) {
-                self.focus = Focus::Sidebar;
-            }
+            self.focus = Focus::Huddle;
         } else {
             self.status = format!("not in a huddle ({} joins this conversation's)", self.keys.first_key(Context::Global, Action::Huddle).unwrap_or_default());
         }
@@ -1366,6 +1366,7 @@ impl App {
                 }
                 out.push(match self.focus {
                     Focus::Sidebar => Context::Sidebar,
+                    Focus::Huddle => Context::Huddle,
                     Focus::Messages | Focus::Thread => Context::Messages,
                     Focus::Composer | Focus::ThreadComposer => Context::Composer,
                 });
@@ -1640,7 +1641,7 @@ impl App {
     /// Focus order for Tab: left to right, top to bottom.
     fn focus_order(&self) -> Vec<Focus> {
         // The huddle view stands in for the messages and the composer.
-        let mut order = if self.huddle_view.is_some() { vec![Focus::Sidebar] } else { vec![Focus::Sidebar, Focus::Messages, Focus::Composer] };
+        let mut order = if self.huddle_view.is_some() { vec![Focus::Sidebar, Focus::Huddle] } else { vec![Focus::Sidebar, Focus::Messages, Focus::Composer] };
         if self.thread.is_some() {
             order.extend([Focus::Thread, Focus::ThreadComposer]);
         }
@@ -2259,6 +2260,21 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
                         app.sidebar_action(action);
                     }
                 }
+                Focus::Huddle => {
+                    use super::huddle_view::Dir;
+                    let action = app.action_in(Context::Huddle, &k);
+                    if let Some(v) = app.huddle_view.as_mut() {
+                        match action {
+                            Some(Action::Up) => v.move_selection(Dir::Up),
+                            Some(Action::Down) => v.move_selection(Dir::Down),
+                            Some(Action::PrevTab) => v.move_selection(Dir::Left),
+                            Some(Action::NextTab) => v.move_selection(Dir::Right),
+                            Some(Action::Open) => v.toggle_maximize(),
+                            Some(Action::Close) if !v.back() => app.focus = Focus::Sidebar,
+                            _ => {}
+                        }
+                    }
+                }
                 Focus::Messages | Focus::Thread => {
                     if let Some(action) = app.action_in(Context::Messages, &k) {
                         app.message_action(action, app.focus == Focus::Thread);
@@ -2306,7 +2322,9 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
         Event::Mouse(m) if m.kind == MouseEventKind::Down(MouseButton::Right) => app.open_menu(m.column, m.row),
         Event::Mouse(m) => match m.kind {
             MouseEventKind::Down(MouseButton::Left) => {
-                if app.sidebar.click(m.column, m.row) {
+                if app.huddle_view.as_mut().is_some_and(|v| v.click(m.column, m.row)) {
+                    app.focus = Focus::Huddle;
+                } else if app.sidebar.click(m.column, m.row) {
                     app.focus = Focus::Composer;
                 } else if app.messages.click(m.column, m.row) {
                     app.focus = Focus::Messages;
@@ -2642,6 +2660,9 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     // get the focus (opening a conversation, replying, …).
     if app.call.is_none() || matches!(app.focus, Focus::Messages | Focus::Composer) {
         app.huddle_view = None;
+    }
+    if app.huddle_view.is_none() && app.focus == Focus::Huddle {
+        app.focus = Focus::Composer;
     }
     let call_rows = if app.call.is_some() { 1 } else { 0 };
     let [body, call_bar, status] = Layout::vertical([Constraint::Min(1), Constraint::Length(call_rows), Constraint::Length(1)]).areas(f.area());

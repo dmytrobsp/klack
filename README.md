@@ -91,9 +91,11 @@ F3 joins (or starts) the huddle of the conversation you are in, and `H` on a mes
 joins) a huddle in that message's thread; you join **muted**, and the
 microphone is only opened while you are unmuted (F4). The call bar shows who is there, who is
 speaking and who is muted. F8 (or a click on the call bar) shows the huddle view in place of
-the messages: a tile per participant with their picture, speaking meter and mute state (tiles
-grow when there is room), the call's keys and your audio settings; F8 again, or opening a
-conversation, brings the messages back. Someone starting a huddle in a DM with you sends a
+the messages: a tile per participant with their picture or video — the border lights up while
+they speak, 🔇 in the title when muted — that shrinks as people join and scrolls (mouse wheel,
+"▲/▼ N more") when they no longer fit; a screen share takes the stage with everyone else in a
+strip. Arrows select a tile, Enter (or a second click) maximizes it, Esc shows all tiles again
+and then leaves the tiles; F8 again, or opening a conversation, brings the messages back. Someone starting a huddle in a DM with you sends a
 desktop notification.
 
 Under the hood a huddle is an Amazon Chime SDK meeting: `rooms.join` hands out the meeting

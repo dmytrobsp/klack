@@ -30,6 +30,49 @@ pub struct HuddleView {
     pub scroll: usize,
     /// Where the tiles were drawn (the mouse wheel scrolls them).
     pub tiles_area: Rect,
+    /// The tiles in order (shares, then people) by attendee id, as last drawn.
+    order: Vec<String>,
+    /// Columns of the grid (or strip) last drawn, and whether a share had the stage.
+    cols: usize,
+    staged: bool,
+    /// Each tile on screen, for the mouse.
+    placed: Vec<(String, Rect)>,
+    /// The selected tile and the maximized one (attendee ids).
+    pub selected: Option<String>,
+    pub maximized: Option<String>,
+}
+
+/// A direction to move the selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Dir {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+/// The tile to select after moving `dir` from tile `i` of `len`, with `cols` columns; when
+/// `staged`, tile 0 is on the stage and the others in the strip below or beside it.
+pub fn navigate(len: usize, cols: usize, staged: bool, i: usize, dir: Dir) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    let cols = cols.max(1);
+    let last = len - 1;
+    let i = i.min(last);
+    match dir {
+        Dir::Left => i.saturating_sub(1),
+        Dir::Right => (i + 1).min(last),
+        // In the strip, tiles are counted from 1.
+        Dir::Up if staged => match i {
+            0 => 0,
+            k if k - 1 < cols => 0,
+            k => k - cols,
+        },
+        Dir::Down if staged => if i == 0 { 1.min(last) } else { (i + cols).min(last) },
+        Dir::Up => i.saturating_sub(cols),
+        Dir::Down => if i + cols <= last { i + cols } else { i },
+    }
 }
 
 /// Where tiles go: `tiles` are (tile index, rect); `above`/`below` count the tiles scrolled
@@ -194,9 +237,15 @@ pub fn picture_size(inner: Rect) -> Option<(u16, u16)> {
     STEPS.iter().rev().find(|s| **s <= fit).map(|h| (h * 2, *h))
 }
 
-/// A tile's border: lit (green, thick) while the person speaks.
-fn tile_block(title: Span<'static>, speaking: bool) -> Block<'static> {
-    let (style, kind) = if speaking { (Style::default().fg(super::theme::p().own).add_modifier(Modifier::BOLD), BorderType::Thick) } else { (Style::default().fg(super::theme::p().dim), BorderType::Plain) };
+/// A tile's border: lit (green, thick) while the person speaks, else accent when selected.
+fn tile_block(title: Span<'static>, speaking: bool, selected: bool) -> Block<'static> {
+    let (style, kind) = if speaking {
+        (Style::default().fg(super::theme::p().own).add_modifier(Modifier::BOLD), BorderType::Thick)
+    } else if selected {
+        (Style::default().fg(super::theme::p().accent), BorderType::Plain)
+    } else {
+        (Style::default().fg(super::theme::p().dim), BorderType::Plain)
+    };
     Block::default().borders(Borders::ALL).border_type(kind).border_style(style).title(title)
 }
 
@@ -224,47 +273,121 @@ impl HuddleView {
         let tiles_area = Rect { height: inner.height.saturating_sub(footer_h + 1), y: inner.y + 1, ..inner };
         let footer = Rect { y: inner.y + inner.height - footer_h, height: footer_h, ..inner };
 
-        // Screen shares first, then the people.
+        // Screen shares first, then the people; tiles are known by attendee id.
         let shares = call.shown_shares(&ws.self_id);
-        let tiles = shares.len() + call.roster.len();
+        self.order = shares.iter().map(|(a, _)| a.clone()).chain(call.roster.iter().map(|p| p.attendee_id.clone())).collect();
+        if self.selected.as_ref().is_some_and(|s| !self.order.contains(s)) {
+            self.selected = None;
+        }
+        if self.maximized.as_ref().is_some_and(|m| !self.order.contains(m)) {
+            self.maximized = None;
+        }
+        let tiles = self.order.len();
         self.tiles_area = tiles_area;
-        // A screen share takes the stage; everyone else goes into a strip beside or below it.
-        let (stage, strip) = if shares.is_empty() { (None, tiles_area) } else { let (s, r) = stage_split(tiles_area, tiles - 1); (Some(s), r) };
-        if let (Some(stage), Some((share, user))) = (stage, shares.first()) {
-            self.draw_share(f, stage, call, share, user, ws, media);
-        }
-        let first = usize::from(stage.is_some());
-        let grid = layout(tiles - first, strip, self.scroll);
-        self.scroll = grid.scroll;
-        for (n, rect) in &grid.tiles {
-            let n = n + first;
-            match shares.get(n) {
-                Some((share, user)) => self.draw_share(f, *rect, call, share, user, ws, media),
-                None => self.draw_tile(f, *rect, call, &call.roster[n - shares.len()], ws, media),
+        self.placed.clear();
+        if let Some(n) = self.maximized.as_ref().and_then(|m| self.order.iter().position(|k| k == m)) {
+            // One tile fills the view.
+            self.staged = false;
+            self.cols = 1;
+            self.draw_nth(f, n, tiles_area, &shares, call, ws, media);
+        } else {
+            // A screen share takes the stage; everyone else goes into a strip beside or below it.
+            let (stage, strip) = if shares.is_empty() { (None, tiles_area) } else { let (s, r) = stage_split(tiles_area, tiles - 1); (Some(s), r) };
+            if let Some(stage) = stage {
+                self.draw_nth(f, 0, stage, &shares, call, ws, media);
             }
-        }
-        let tiles_area = strip;
-        // Tiles scrolled out of view are counted above and below.
-        let marker = Style::default().fg(super::theme::p().accent).add_modifier(Modifier::BOLD);
-        if grid.above > 0 {
-            let top = Rect { height: 1.min(tiles_area.height), ..tiles_area };
-            f.render_widget(Paragraph::new(more_marker(true, grid.above)).style(marker).alignment(Alignment::Center), top);
-        }
-        if grid.below > 0 {
-            let bottom = Rect { y: tiles_area.y + tiles_area.height.saturating_sub(1), height: 1.min(tiles_area.height), ..tiles_area };
-            f.render_widget(Paragraph::new(more_marker(false, grid.below)).style(marker).alignment(Alignment::Center), bottom);
+            let first = usize::from(stage.is_some());
+            let mut grid = layout(tiles - first, strip, self.scroll);
+            // Keep the selected tile in view.
+            if let Some(i) = self.selected_index().filter(|i| *i >= first).map(|i| i - first) {
+                if !grid.tiles.iter().any(|(n, _)| *n == i) {
+                    grid = layout(tiles - first, strip, i / grid.cols.max(1));
+                }
+            }
+            self.scroll = grid.scroll;
+            self.staged = stage.is_some();
+            self.cols = grid.cols.max(1);
+            for (n, rect) in &grid.tiles {
+                self.draw_nth(f, n + first, *rect, &shares, call, ws, media);
+            }
+            // Tiles scrolled out of view are counted above and below.
+            let marker = Style::default().fg(super::theme::p().accent).add_modifier(Modifier::BOLD);
+            if grid.above > 0 {
+                let top = Rect { height: 1.min(strip.height), ..strip };
+                f.render_widget(Paragraph::new(more_marker(true, grid.above)).style(marker).alignment(Alignment::Center), top);
+            }
+            if grid.below > 0 {
+                let bottom = Rect { y: strip.y + strip.height.saturating_sub(1), height: 1.min(strip.height), ..strip };
+                f.render_widget(Paragraph::new(more_marker(false, grid.below)).style(marker).alignment(Alignment::Center), bottom);
+            }
         }
 
         let lines: Vec<Line> = texts.iter().map(|t| Line::styled(t.clone(), dim)).collect();
         f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), footer);
     }
 
-    fn draw_tile(&mut self, f: &mut Frame, rect: Rect, call: &Call, p: &huddle::session::Participant, ws: &Workspace, media: &Media) {
+    pub fn selected_index(&self) -> Option<usize> {
+        self.selected.as_ref().and_then(|s| self.order.iter().position(|k| k == s))
+    }
+
+    /// Move the selection (the first move selects the first tile).
+    pub fn move_selection(&mut self, dir: Dir) {
+        let next = match self.selected_index() {
+            Some(i) => navigate(self.order.len(), self.cols, self.staged, i, dir),
+            None => 0,
+        };
+        self.selected = self.order.get(next).cloned();
+    }
+
+    /// Maximize the selected tile (or the first), or show all tiles again.
+    pub fn toggle_maximize(&mut self) {
+        if self.maximized.take().is_none() {
+            self.maximized = self.selected.clone().or_else(|| self.order.first().cloned());
+            self.selected = self.maximized.clone();
+        }
+    }
+
+    /// Esc: all tiles again; false when nothing was maximized (the caller moves on).
+    pub fn back(&mut self) -> bool {
+        self.maximized.take().is_some()
+    }
+
+    /// A click: select the tile under the pointer, or maximize/restore it if it already was
+    /// selected; false when no tile is there.
+    pub fn click(&mut self, column: u16, row: u16) -> bool {
+        let Some(key) = self.placed.iter().find(|(_, r)| r.contains((column, row).into())).map(|(k, _)| k.clone()) else { return false };
+        if self.selected.as_deref() == Some(key.as_str()) {
+            self.toggle_maximize();
+        } else {
+            self.selected = Some(key);
+        }
+        true
+    }
+
+    /// Draw tile `n` of the order (a share or a person) into `rect`.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_nth(&mut self, f: &mut Frame, n: usize, rect: Rect, shares: &[(String, String)], call: &Call, ws: &Workspace, media: &Media) {
+        let Some(key) = self.order.get(n).cloned() else { return };
+        let selected = self.selected.as_deref() == Some(key.as_str());
+        match shares.get(n) {
+            Some((share, user)) => self.draw_share(f, rect, call, share, user, ws, media, selected),
+            None => {
+                if let Some(p) = call.roster.get(n - shares.len()) {
+                    self.draw_tile(f, rect, call, p, ws, media, selected);
+                }
+            }
+        }
+        self.placed.push((key, rect));
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_tile(&mut self, f: &mut Frame, rect: Rect, call: &Call, p: &huddle::session::Participant, ws: &Workspace, media: &Media, selected: bool) {
         let (_, speaking, muted, gated) = call.participant_state(p, &ws.self_id);
         let name = ws.person_label(p.user_id());
         // Below the speaking threshold our own name is dimmed: nothing is being sent.
         let title_style = if speaking { Style::default().fg(super::theme::p().own).add_modifier(Modifier::BOLD) } else if gated { Style::default().fg(super::theme::p().dim) } else { Style::default() };
-        let block = tile_block(Span::styled(tile_title(&name, muted), title_style), speaking);
+        let title_style = if selected { title_style.add_modifier(Modifier::REVERSED) } else { title_style };
+        let block = tile_block(Span::styled(tile_title(&name, muted), title_style), speaking, selected);
         let inner = block.inner(rect);
         f.render_widget(block, rect);
         if inner.height == 0 {
@@ -306,10 +429,12 @@ impl HuddleView {
 
     /// Someone's screen share: their name and the picture filling the tile.
     #[allow(clippy::too_many_arguments)]
-    fn draw_share(&mut self, f: &mut Frame, rect: Rect, call: &Call, share: &str, user: &str, ws: &Workspace, media: &Media) {
+    fn draw_share(&mut self, f: &mut Frame, rect: Rect, call: &Call, share: &str, user: &str, ws: &Workspace, media: &Media, selected: bool) {
         let accent = Style::default().fg(super::theme::p().accent);
         let title = if user == ws.self_id { " 🖥 Your screen ".to_string() } else { format!(" 🖥 {}'s screen ", ws.person_label(user)) };
-        let block = Block::default().borders(Borders::ALL).border_style(accent).title(Span::styled(title, accent.add_modifier(Modifier::BOLD)));
+        let title_style = if selected { accent.add_modifier(Modifier::BOLD | Modifier::REVERSED) } else { accent.add_modifier(Modifier::BOLD) };
+        let kind = if selected { BorderType::Double } else { BorderType::Plain };
+        let block = Block::default().borders(Borders::ALL).border_type(kind).border_style(accent).title(Span::styled(title, title_style));
         let inner = block.inner(rect);
         f.render_widget(block, rect);
         match call.video(share) {
@@ -398,6 +523,41 @@ mod tests {
         assert!(layout(0, area, 0).tiles.is_empty());
         // Too small for even one minimum row: still one row, never nothing.
         assert_eq!(layout(5, Rect::new(0, 0, 40, 5), 0).tiles.len(), 2);
+    }
+
+    #[test]
+    fn moving_between_tiles() {
+        // A 3-column grid of 7: 0 1 2 / 3 4 5 / 6.
+        assert_eq!(navigate(7, 3, false, 4, Dir::Up), 1);
+        assert_eq!(navigate(7, 3, false, 4, Dir::Down), 4, "nothing below 4 but no tile in that column: stay");
+        assert_eq!(navigate(7, 3, false, 3, Dir::Down), 6);
+        assert_eq!(navigate(7, 3, false, 0, Dir::Left), 0);
+        assert_eq!(navigate(7, 3, false, 6, Dir::Right), 6);
+        assert_eq!(navigate(7, 3, false, 2, Dir::Right), 3, "right wraps to the next row");
+        // With a share on the stage (0) and a 2-column strip: 1 2 / 3 4.
+        assert_eq!(navigate(5, 2, true, 0, Dir::Down), 1);
+        assert_eq!(navigate(5, 2, true, 2, Dir::Up), 0, "the strip's first row goes up to the stage");
+        assert_eq!(navigate(5, 2, true, 3, Dir::Up), 1);
+        assert_eq!(navigate(5, 2, true, 1, Dir::Down), 3);
+        assert_eq!(navigate(0, 3, false, 0, Dir::Down), 0);
+    }
+
+    #[test]
+    fn selecting_and_maximizing() {
+        let mut v = HuddleView { order: vec!["a".into(), "b".into(), "c".into()], cols: 3, ..Default::default() };
+        v.move_selection(Dir::Right);
+        assert_eq!(v.selected.as_deref(), Some("a"), "the first move selects the first tile");
+        v.move_selection(Dir::Right);
+        v.toggle_maximize();
+        assert_eq!(v.maximized.as_deref(), Some("b"));
+        assert!(v.back(), "Esc restores");
+        assert!(!v.back(), "then Esc leaves");
+        v.placed = vec![("a".into(), Rect::new(0, 0, 10, 5)), ("c".into(), Rect::new(10, 0, 10, 5))];
+        assert!(v.click(12, 2));
+        assert_eq!(v.selected.as_deref(), Some("c"));
+        assert!(v.click(12, 2), "a second click on it");
+        assert_eq!(v.maximized.as_deref(), Some("c"));
+        assert!(!v.click(50, 50), "nothing there");
     }
 
     #[test]

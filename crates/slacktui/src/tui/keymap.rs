@@ -185,10 +185,11 @@ pub enum Context {
     Help,
     Preferences,
     Menu,
+    Huddle,
 }
 
 impl Context {
-    pub const ALL: [Context; 20] = [
+    pub const ALL: [Context; 21] = [
         Context::Global,
         Context::Sidebar,
         Context::Messages,
@@ -209,6 +210,7 @@ impl Context {
         Context::Help,
         Context::Preferences,
         Context::Menu,
+        Context::Huddle,
     ];
 
     /// The table name in `keys.toml`.
@@ -234,6 +236,7 @@ impl Context {
             Context::Help => "help",
             Context::Preferences => "preferences",
             Context::Menu => "menu",
+            Context::Huddle => "huddle_view",
         }
     }
 
@@ -260,6 +263,7 @@ impl Context {
             Context::Help => "This help",
             Context::Preferences => "Preferences",
             Context::Menu => "Context menu (right-click)",
+            Context::Huddle => "Huddle view (F8)",
         }
     }
 
@@ -547,6 +551,14 @@ actions! {
     Confirm {
         Yes "yes" "confirm (any other key: no)" ["y", "Y"]
     }
+    Huddle {
+        Up "up" "the tile above" ["up", "k"]
+        Down "down" "the tile below" ["down", "j"]
+        PrevTab "left" "the tile to the left" ["left", "h"]
+        NextTab "right" "the tile to the right" ["right", "l"]
+        Open "maximize" "maximize the tile, or all tiles again" ["enter", "space", "f"]
+        Close "back" "all tiles again, or leave the tiles" ["esc"]
+    }
     Preferences {
         Up "up" "previous setting" ["up", "k"]
         Down "down" "next setting" ["down", "j"]
@@ -755,6 +767,7 @@ pub fn hints_for(context: Context) -> &'static [(Action, &'static str)] {
         Context::Help => &[(PageDown, "page"), (Close, "close")],
         Context::Preferences => &[(Open, "change"), (NextTab, "category"), (Close, "close")],
         Context::Menu => &[(Open, "choose"), (Close, "close")],
+        Context::Huddle => &[(Open, "maximize"), (NextTab, "next tile"), (Close, "back")],
     }
 }
 
