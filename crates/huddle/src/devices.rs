@@ -54,8 +54,8 @@ pub fn to_mono(data: &[f32], channels: usize) -> Vec<f32> {
 }
 
 /// Environment variables naming the devices to use (a case-insensitive part of the name).
-pub const INPUT_ENV: &str = "SLACKTUI_AUDIO_INPUT";
-pub const OUTPUT_ENV: &str = "SLACKTUI_AUDIO_OUTPUT";
+pub const INPUT_ENV: &str = "KLACK_AUDIO_INPUT";
+pub const OUTPUT_ENV: &str = "KLACK_AUDIO_OUTPUT";
 
 /// Does a device called `name` match the user's `wanted` text?
 pub fn name_matches(name: &str, wanted: &str) -> bool {

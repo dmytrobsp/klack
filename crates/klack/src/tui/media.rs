@@ -22,7 +22,7 @@ pub enum Thumb {
 pub struct Media {
     pub picker: Picker,
     pub thumbs: HashMap<String, Thumb>,
-    /// Draw profile pictures next to author names (real graphics only; `SLACKTUI_AVATARS=0` turns them off).
+    /// Draw profile pictures next to author names (real graphics only; `KLACK_AVATARS=0` turns them off).
     pub avatars: bool,
     /// What the terminal said it can do (for "auto").
     detected: ProtocolType,
@@ -32,7 +32,7 @@ pub struct Media {
 pub const GRAPHICS: &[&str] = &["auto", "kitty", "sixel", "iterm2", "halfblocks"];
 
 /// Overrides the graphics setting.
-pub const GRAPHICS_ENV: &str = "SLACKTUI_GRAPHICS";
+pub const GRAPHICS_ENV: &str = "KLACK_GRAPHICS";
 
 /// An avatar is two cells wide and one tall (about square).
 pub const AVATAR_SIZE: (u16, u16) = (2, 1);
@@ -91,7 +91,7 @@ impl Media {
         Media { picker, thumbs: HashMap::new(), avatars: false, detected }
     }
 
-    /// Draw pictures as `choice` says ("auto": as detected; `SLACKTUI_GRAPHICS` wins);
+    /// Draw pictures as `choice` says ("auto": as detected; `KLACK_GRAPHICS` wins);
     /// pictures made the other way are dropped.
     pub fn choose(&mut self, choice: &str) {
         let env = std::env::var(GRAPHICS_ENV).ok().filter(|v| !v.trim().is_empty());
@@ -100,7 +100,7 @@ impl Media {
             self.thumbs.clear();
         }
         self.picker.set_protocol_type(protocol);
-        self.avatars = protocol != ProtocolType::Halfblocks && std::env::var("SLACKTUI_AVATARS").map_or(true, |v| v != "0");
+        self.avatars = protocol != ProtocolType::Halfblocks && std::env::var("KLACK_AVATARS").map_or(true, |v| v != "0");
     }
 
     /// Cells to reserve under an image file's line when at most `max_cols` wide, or None

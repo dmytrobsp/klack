@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Record slacktui's own playback streams (never a microphone/source).
+"""Record klack's own playback streams (never a microphone/source).
 
 usage: streamrec.py OUT_DIR SECONDS_TOTAL [SECONDS_PER_STREAM]
 Polls PipeWire (pactl) every 50 ms; each new sink-input whose application name contains
-"slacktui" is recorded with pw-record (s16, 48 kHz, mono) into OUT_DIR/<n>-<serial>.wav,
+"klack" is recorded with pw-record (s16, 48 kHz, mono) into OUT_DIR/<n>-<serial>.wav,
 with the time it appeared (seconds since start) in the name.
 """
 import json, os, subprocess, sys, time
@@ -20,7 +20,7 @@ while time.time() - t0 < total:
     for si in inputs:
         props = si.get("properties", {})
         serial = props.get("object.serial")
-        if serial is None or serial in seen or "slacktui" not in props.get("application.name", "").lower():
+        if serial is None or serial in seen or "klack" not in props.get("application.name", "").lower():
             continue
         seen.add(serial)
         at = time.time() - t0

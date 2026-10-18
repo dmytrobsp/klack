@@ -835,7 +835,7 @@ pub fn sequence_label(seq: &[Key]) -> String {
 
 /// Where the user's bindings live: `keys.toml` next to the profiles.
 pub fn config_path() -> Option<std::path::PathBuf> {
-    directories::ProjectDirs::from("io.github", "rslack", "slacktui").map(|d| d.config_dir().join("keys.toml"))
+    slack_core::session::project_dirs().map(|d| d.config_dir().join("keys.toml"))
 }
 
 /// The user's keymap: defaults plus `keys.toml` if there is one.

@@ -87,7 +87,7 @@ pub enum Ctl {
         #[arg(long)]
         share_screen: bool,
     },
-    /// List audio input/output devices (names usable in SLACKTUI_AUDIO_INPUT/OUTPUT).
+    /// List audio input/output devices (names usable in KLACK_AUDIO_INPUT/OUTPUT).
     AudioDevices,
     /// List cameras (names usable with `huddle-media --camera` and in the preferences).
     Cameras,
@@ -460,9 +460,9 @@ pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
         }
         Ctl::AudioDevices => {
             let (inputs, outputs) = huddle::devices::list_devices()?;
-            println!("inputs (SLACKTUI_AUDIO_INPUT):");
+            println!("inputs (KLACK_AUDIO_INPUT):");
             inputs.iter().for_each(|d| println!("  {d}"));
-            println!("outputs (SLACKTUI_AUDIO_OUTPUT):");
+            println!("outputs (KLACK_AUDIO_OUTPUT):");
             outputs.iter().for_each(|d| println!("  {d}"));
         }
         Ctl::HuddleLeave { channel, call_id, attendee_id } => {

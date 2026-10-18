@@ -63,7 +63,7 @@ pub const TITLES: &[&str] = &["Preferences", "Keys", "Jump to…", "Activity", "
 
 /// A locale file with every string untranslated (`"text" = ""`).
 pub fn template() -> String {
-    let mut out = String::from("# slacktui locale: translate the right-hand sides; empty ones stay English.\n");
+    let mut out = String::from("# klack locale: translate the right-hand sides; empty ones stay English.\n");
     for s in translatable() {
         let key = s.replace('\\', "\\\\").replace('"', "\\\"");
         out += &format!("\"{key}\" = \"\"\n");

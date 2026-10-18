@@ -668,7 +668,7 @@ mod tests {
     }
 
     /// How long building the lines of a big conversation takes (it happens on every frame):
-    /// `cargo test --release -p slacktui build_lines_cost -- --ignored --nocapture`.
+    /// `cargo test --release -p klack build_lines_cost -- --ignored --nocapture`.
     #[test]
     #[ignore]
     fn build_lines_cost() {

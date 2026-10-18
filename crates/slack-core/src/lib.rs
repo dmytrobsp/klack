@@ -1,4 +1,4 @@
-//! Core Slack client logic for slacktui: sessions, Web API, real-time events and the
+//! Core Slack client logic for klack: sessions, Web API, real-time events and the
 //! data model. Contains no terminal code.
 
 pub mod api;

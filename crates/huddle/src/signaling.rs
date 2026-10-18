@@ -108,9 +108,9 @@ pub fn join_frame(audio_session_id: u64) -> SdkSignalFrame {
         protocol_version: Some(2),
         flags: Some(proto::JOIN_FLAG_HAS_STREAM_UPDATE),
         client_details: Some(proto::SdkClientDetails {
-            app_name: Some("slacktui".into()),
+            app_name: Some("klack".into()),
             app_version: Some(env!("CARGO_PKG_VERSION").into()),
-            platform_name: Some("slacktui".into()),
+            platform_name: Some("klack".into()),
             platform_version: Some(env!("CARGO_PKG_VERSION").into()),
             client_source: Some("amazon-chime-sdk-js".into()),
             chime_sdk_version: Some(CHIME_SDK_VERSION.into()),

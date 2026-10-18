@@ -2381,6 +2381,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "klack"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arboard",
+ "chrono",
+ "chrono-tz",
+ "clap",
+ "cpal",
+ "crossterm",
+ "directories",
+ "emojis",
+ "futures-util",
+ "huddle",
+ "image",
+ "notify-rust",
+ "ratatui",
+ "ratatui-image",
+ "rustix 1.1.5",
+ "rustls",
+ "serde",
+ "serde_json",
+ "slack-core",
+ "syntect",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+ "unicode-width",
+]
+
+[[package]]
 name = "lab"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4960,38 +4992,6 @@ dependencies = [
  "tracing",
  "url",
  "urlencoding",
-]
-
-[[package]]
-name = "slacktui"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "arboard",
- "chrono",
- "chrono-tz",
- "clap",
- "cpal",
- "crossterm",
- "directories",
- "emojis",
- "futures-util",
- "huddle",
- "image",
- "notify-rust",
- "ratatui",
- "ratatui-image",
- "rustix 1.1.5",
- "rustls",
- "serde",
- "serde_json",
- "slack-core",
- "syntect",
- "tokio",
- "toml",
- "tracing",
- "tracing-subscriber",
- "unicode-width",
 ]
 
 [[package]]

@@ -321,7 +321,7 @@ pub async fn download(client: slack_core::Client, file: slack_core::types::File)
     let url = file.mp4.as_deref().or(file.url_private_download.as_deref()).or(file.url_private.as_deref()).ok_or_else(|| anyhow::anyhow!("no video URL"))?.to_string();
     let bytes = client.download(&url).await?;
     let ext = Path::new(&file.name).extension().and_then(|e| e.to_str()).unwrap_or("mp4");
-    let path = std::env::temp_dir().join(format!("slacktui-{}-{}.{ext}", std::process::id(), file.id));
+    let path = std::env::temp_dir().join(format!("klack-{}-{}.{ext}", std::process::id(), file.id));
     tokio::fs::write(&path, bytes).await?;
     Ok(path)
 }

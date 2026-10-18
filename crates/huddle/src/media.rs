@@ -287,8 +287,8 @@ impl Media {
         let track = Arc::new(TrackLocalStaticSample::new(
             Instant::now(),
             MediaStreamTrack::new(
-                "slacktui-audio".into(),
-                "slacktui-audio-track".into(),
+                "klack-audio".into(),
+                "klack-audio-track".into(),
                 "AmazonChimeExpressAudio".into(),
                 RtpCodecKind::Audio,
                 vec![RTCRtpEncodingParameters { rtp_coding_parameters: RTCRtpCodingParameters { ssrc: Some(ssrc), ..Default::default() }, codec, ..Default::default() }],
@@ -301,8 +301,8 @@ impl Media {
             let video = Arc::new(TrackLocalStaticSample::new(
                 Instant::now(),
                 MediaStreamTrack::new(
-                    "slacktui-video".into(),
-                    "slacktui-video-track".into(),
+                    "klack-video".into(),
+                    "klack-video-track".into(),
                     VIDEO_TRACK_LABEL.into(),
                     RtpCodecKind::Video,
                     vec![RTCRtpEncodingParameters { rtp_coding_parameters: RTCRtpCodingParameters { ssrc: Some(ssrc), ..Default::default() }, codec: h264_codec(), ..Default::default() }],

@@ -595,7 +595,7 @@ impl Prefs {
             "Audio & video" => &[
                 "+ / - (or Enter) change the levels; a huddle you are in follows at once.",
                 "Below the speaking threshold the microphone sends silence.",
-                "SLACKTUI_AUDIO_INPUT / _OUTPUT, when set, win over the devices.",
+                "KLACK_AUDIO_INPUT / _OUTPUT, when set, win over the devices.",
             ],
             _ => &[],
         };

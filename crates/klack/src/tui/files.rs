@@ -4,9 +4,9 @@ use std::path::{Path, PathBuf};
 
 use slack_core::types::File;
 
-/// Where saved files go: `$SLACKTUI_DOWNLOAD_DIR`, else the user's downloads folder, else home.
+/// Where saved files go: `$KLACK_DOWNLOAD_DIR`, else the user's downloads folder, else home.
 pub fn download_dir() -> PathBuf {
-    if let Some(dir) = std::env::var_os("SLACKTUI_DOWNLOAD_DIR") {
+    if let Some(dir) = std::env::var_os("KLACK_DOWNLOAD_DIR") {
         return PathBuf::from(dir);
     }
     let dirs = directories::UserDirs::new();
@@ -76,7 +76,7 @@ mod tests {
 
     #[test]
     fn unique_names() {
-        let dir = std::env::temp_dir().join(format!("slacktui-files-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("klack-files-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         assert_eq!(unique_path(&dir, "a.png"), dir.join("a.png"));
         std::fs::write(dir.join("a.png"), b"x").unwrap();

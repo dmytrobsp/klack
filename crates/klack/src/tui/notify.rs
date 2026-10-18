@@ -60,7 +60,7 @@ pub fn huddle_notification(ws: &Workspace, channel: &str, user: &str, in_it: boo
     }
     let who = ws.user_name(user);
     let title = if conv.is_mpim { format!("{who} started a huddle in {}", ws.conversation_label(conv)) } else { format!("{who} started a huddle") };
-    Some((title, format!("Press {join_key} in slacktui to join")))
+    Some((title, format!("Press {join_key} in klack to join")))
 }
 
 /// Where clicking a notification takes you: a conversation, and the message in it.
@@ -89,7 +89,7 @@ pub fn show(title: String, body: String, settings: &super::settings::Settings, o
     let sound = settings.notifications.sound.clone();
     super::sound::play(&sound, super::settings::Settings::device(huddle::devices::OUTPUT_ENV, &settings.audio.output), settings.audio.sound_volume);
     let mut n = notify_rust::Notification::new();
-    n.appname("slacktui").summary(&title).body(&body);
+    n.appname("klack").summary(&title).body(&body);
     if sound == "system" {
         n.sound_name(super::sound::system_sound_name());
     }

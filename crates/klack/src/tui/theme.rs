@@ -236,7 +236,7 @@ fn color_text(c: Color) -> String {
 /// A complete theme file for `base` (to copy and edit).
 pub fn template(base: &str) -> Result<String, String> {
     let mut p = ALL.into_iter().find(|t| t.name == base).ok_or_else(|| format!("unknown base theme '{base}'"))?;
-    let mut out = format!("# slacktui theme: save as themes/<name>.toml next to settings.toml; omitted entries come from the base.\nbase = \"{base}\"\nsyntax = \"{}\"\n", p.syntax);
+    let mut out = format!("# klack theme: save as themes/<name>.toml next to settings.toml; omitted entries come from the base.\nbase = \"{base}\"\nsyntax = \"{}\"\n", p.syntax);
     for key in FIELDS.iter().chain(&["call_bg"]) {
         let c = *field(&mut p, key).expect("known field");
         out += &format!("{key} = {}\n", color_text(c));

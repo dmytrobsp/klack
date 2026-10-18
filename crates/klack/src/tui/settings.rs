@@ -73,7 +73,7 @@ pub struct Messages {
     /// Show emoji as `:name:` instead of the character.
     pub emoji_as_names: bool,
     /// How pictures are drawn: "auto" (asked from the terminal) or one of
-    /// [`super::media::GRAPHICS`]; `SLACKTUI_GRAPHICS` wins over it.
+    /// [`super::media::GRAPHICS`]; `KLACK_GRAPHICS` wins over it.
     pub graphics: String,
 }
 
@@ -120,8 +120,8 @@ impl Default for Notifications {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Audio {
-    /// Microphone and speaker (part of a device id or name); `SLACKTUI_AUDIO_INPUT` /
-    /// `SLACKTUI_AUDIO_OUTPUT` win over these.
+    /// Microphone and speaker (part of a device id or name); `KLACK_AUDIO_INPUT` /
+    /// `KLACK_AUDIO_OUTPUT` win over these.
     pub input: Option<String>,
     pub output: Option<String>,
     /// Huddle playback volume, in percent.

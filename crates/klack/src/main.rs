@@ -1,4 +1,4 @@
-//! slacktui — a native Slack client for the terminal.
+//! klack — a native Slack client for the terminal.
 
 mod ctl;
 mod tui;
@@ -8,7 +8,7 @@ use clap::{Parser, Subcommand};
 use slack_core::session::{self, Profile};
 
 #[derive(Parser)]
-#[command(name = "slacktui", version, about = "Native Slack client for the terminal")]
+#[command(name = "klack", version, about = "Native Slack client for the terminal")]
 struct Cli {
     /// Session profile (separate accounts/workspace sets).
     #[arg(long, global = true, default_value = "default")]
@@ -27,7 +27,7 @@ enum Command {
     /// Create or refresh the session for this profile.
     Login {
         /// Sign in with a browser session: the workspace URL (https://acme.slack.com) plus the
-        /// `d` cookie from --cookie, $SLACKTUI_COOKIE_D, or a prompt.
+        /// `d` cookie from --cookie, $KLACK_COOKIE_D, or a prompt.
         #[arg(long, value_name = "URL")]
         workspace: String,
         /// Value of the browser's `d` cookie for slack.com (prefer the env var or the prompt,
@@ -45,9 +45,9 @@ enum Command {
 fn init_logging(profile: &str) -> Result<()> {
     let dir = session::cache_dir(profile)?;
     std::fs::create_dir_all(&dir)?;
-    let file = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("slacktui.log"))?;
+    let file = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("klack.log"))?;
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::try_from_env("SLACKTUI_LOG").unwrap_or_else(|_| "slacktui=info,slack_core=info,huddle=info".into()))
+        .with_env_filter(tracing_subscriber::EnvFilter::try_from_env("KLACK_LOG").unwrap_or_else(|_| "klack=info,slack_core=info,huddle=info".into()))
         .with_writer(std::sync::Mutex::new(file))
         .with_ansi(false)
         .init();
@@ -60,10 +60,15 @@ async fn main() -> Result<()> {
     // aws-lc-rs), so rustls cannot pick one by itself: choose explicitly.
     let _ = rustls::crypto::ring::default_provider().install_default();
     let cli = Cli::parse();
+    // Folders of the old name (slacktui) become klack's.
+    let adopted = session::adopt_old_dirs();
     init_logging(&cli.profile)?;
+    for line in adopted {
+        tracing::info!("{line}");
+    }
     match cli.command {
         Some(Command::Login { workspace: url, cookie }) => {
-            let cookie = match cookie.or_else(|| std::env::var("SLACKTUI_COOKIE_D").ok()) {
+            let cookie = match cookie.or_else(|| std::env::var("KLACK_COOKIE_D").ok()) {
                 Some(c) => c,
                 None => {
                     eprint!("value of the `d` cookie: ");

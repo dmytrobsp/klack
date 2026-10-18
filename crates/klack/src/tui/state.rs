@@ -160,7 +160,7 @@ impl NotifyPrefs {
 }
 
 /// A sidebar section. `kind` is Slack's type: `standard` (made by the user), `stars`,
-/// `channels`, `direct_messages`, and others slacktui does not show.
+/// `channels`, `direct_messages`, and others klack does not show.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Section {
     pub id: String,

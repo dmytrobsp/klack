@@ -10,7 +10,7 @@ use super::composer::Draft;
 pub type Drafts = HashMap<String, Draft>;
 
 fn path(team: &str, user: &str) -> Option<PathBuf> {
-    directories::ProjectDirs::from("io.github", "rslack", "slacktui").map(|d| d.data_local_dir().join("drafts").join(format!("{team}-{user}.json")))
+    slack_core::session::project_dirs().map(|d| d.data_local_dir().join("drafts").join(format!("{team}-{user}.json")))
 }
 
 /// The saved drafts (none when there is no file; a broken file is reported and ignored).
