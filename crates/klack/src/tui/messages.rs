@@ -411,6 +411,19 @@ pub fn build_lines(ws: &Workspace, t: &Timeline, width: usize) -> Vec<Line<'stat
 }
 
 /// Lines plus the ts of the message each line belongs to.
+/// A reaction as a pill: " 👍 2 " on a shaded background, yours highlighted; the spaces
+/// inside do not break, so a pill never wraps apart. Themes without a code background (the
+/// terminal's own colours) keep "[👍 2]".
+fn reaction_pill(emoji: &str, count: u64, mine: bool) -> Span<'static> {
+    let p = super::theme::p();
+    if p.code_bg == ratatui::style::Color::Reset {
+        let style = if mine { Style::default().fg(p.mention).add_modifier(Modifier::BOLD) } else { Style::default() };
+        return Span::styled(format!("[{emoji}\u{a0}{count}]"), style);
+    }
+    let style = if mine { Style::default().bg(p.selection).fg(p.mention).add_modifier(Modifier::BOLD) } else { Style::default().bg(p.code_bg) };
+    Span::styled(format!("\u{a0}{emoji}\u{a0}{count}\u{a0}"), style)
+}
+
 /// What stands in the rows of a picture that could not be loaded.
 fn failed_thumb(reason: &str) -> String {
     format!("⚠ preview unavailable: {reason}")
@@ -568,8 +581,7 @@ pub fn message_body(ws: &Workspace, m: &Message, width: usize, summary: bool, th
         let mut spans = Vec::new();
         for r in &m.reactions {
             let mine = r.users.iter().any(|u| *u == ws.self_id);
-            let style = if mine { Style::default().fg(super::theme::p().mention).add_modifier(Modifier::BOLD) } else { Style::default() };
-            spans.push(Span::styled(format!("[{} {}]", text::emoji(ws, &r.name, None), r.count), style));
+            spans.push(reaction_pill(&text::emoji(ws, &r.name, None), r.count, mine));
             spans.push(Span::raw(" "));
         }
         out.extend(text::wrap(spans, width, vec![], vec![]));
@@ -657,6 +669,21 @@ mod tests {
             assert_eq!(ratatui::text::Span::raw(icon).width(), 2, "{icon:?}");
         }
         assert_eq!("🖼".width(), 1, "without the selector: one cell");
+    }
+
+    #[test]
+    fn reactions_are_pills_that_do_not_break() {
+        let pill = super::reaction_pill("👍", 2, false);
+        assert_eq!(pill.content, "\u{a0}👍\u{a0}2\u{a0}");
+        assert!(pill.style.bg.is_some(), "shaded");
+        assert!(super::reaction_pill("🎉", 1, true).style.add_modifier.contains(Modifier::BOLD), "yours stand out");
+        // Many pills in a narrow pane wrap between pills, never inside one.
+        let spans: Vec<Span<'static>> = (0..8).flat_map(|n| [super::reaction_pill("🔥", n, false), Span::raw(" ")]).collect();
+        for line in text::wrap(spans, 20, vec![], vec![]) {
+            let row: String = line.spans.iter().map(|s| s.content.to_string()).collect();
+            assert!(!row.trim_start().starts_with('\u{a0}') || row.trim_start().starts_with("\u{a0}🔥"), "{row:?}");
+            assert!(row.matches('🔥').count() == row.matches('\u{a0}').count() / 3, "whole pills only: {row:?}");
+        }
     }
 
     #[test]
