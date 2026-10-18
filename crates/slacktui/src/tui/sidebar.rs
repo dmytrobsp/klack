@@ -25,6 +25,8 @@ pub struct Sidebar {
     pub area: Rect,
     /// Item under the mouse pointer.
     pub hover: Option<usize>,
+    /// Conversations with a draft kept (marked ✎).
+    pub drafts: std::collections::HashSet<String>,
 }
 
 impl Sidebar {
@@ -104,8 +106,8 @@ impl Sidebar {
             .take(height)
             .map(|(n, item)| match item {
                 Item::Header(h) => Line::styled(format!(" {h}"), Style::default().fg(super::theme::p().dim).add_modifier(Modifier::BOLD)),
-                Item::Conversation(id) if n != self.selected && self.hover == Some(n) => conversation_line(ws, id, false, width).style(Style::default().bg(super::theme::p().hover)),
-                Item::Conversation(id) => conversation_line(ws, id, n == self.selected, width),
+                Item::Conversation(id) if n != self.selected && self.hover == Some(n) => conversation_line(ws, id, false, self.drafts.contains(id), width).style(Style::default().bg(super::theme::p().hover)),
+                Item::Conversation(id) => conversation_line(ws, id, n == self.selected, self.drafts.contains(id), width),
             })
             .collect();
         let border = if focused { Style::default().fg(super::theme::p().accent) } else { Style::default().fg(super::theme::p().dim) };
@@ -114,7 +116,7 @@ impl Sidebar {
     }
 }
 
-fn conversation_line(ws: &Workspace, id: &str, selected: bool, width: usize) -> Line<'static> {
+fn conversation_line(ws: &Workspace, id: &str, selected: bool, draft: bool, width: usize) -> Line<'static> {
     let Some(c) = ws.conversations.get(id) else { return Line::raw(id.to_string()) };
     let unread = ws.unread.get(id).cloned().unwrap_or_default();
     let muted = ws.muted.contains(id);
@@ -144,9 +146,13 @@ fn conversation_line(ws: &Workspace, id: &str, selected: bool, width: usize) -> 
         ""
     };
     let label = ws.conversation_label(c);
-    let room = width.saturating_sub(3 + badge.chars().count() + huddle.chars().count() + preview.chars().count() + 1);
+    let draft = if draft { " ✎" } else { "" };
+    let room = width.saturating_sub(3 + badge.chars().count() + huddle.chars().count() + preview.chars().count() + draft.chars().count() + 1);
     let label: String = if label.chars().count() > room { label.chars().take(room.saturating_sub(1)).chain(['…']).collect() } else { label };
     let mut spans = vec![Span::raw(" "), sigil, Span::styled(label, name_style)];
+    if !draft.is_empty() {
+        spans.push(Span::styled(draft, Style::default().fg(super::theme::p().dim)));
+    }
     if !preview.is_empty() {
         spans.push(Span::styled(preview, Style::default().fg(super::theme::p().dim)));
     }
@@ -177,6 +183,17 @@ mod tests {
             );
         }
         ws
+    }
+
+    #[test]
+    fn draft_marker() {
+        let w = ws();
+        let text = |l: Line| l.spans.iter().map(|s| s.content.to_string()).collect::<String>();
+        assert_eq!(text(conversation_line(&w, "C1", false, true, 30)), " # general ✎");
+        assert_eq!(text(conversation_line(&w, "C1", false, false, 30)), " # general");
+        // A long name makes room for the marker.
+        let line = text(conversation_line(&w, "C2", false, true, 10));
+        assert!(line.ends_with(" ✎") && line.contains('…'), "{line:?}");
     }
 
     #[test]

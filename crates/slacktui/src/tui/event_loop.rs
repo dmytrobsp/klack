@@ -2830,6 +2830,8 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     }
     let side_w = (body.width / 4).clamp(18, 32);
     let [side, main] = Layout::horizontal([Constraint::Length(side_w), Constraint::Min(10)]).areas(body);
+    // A thread's draft counts for its conversation.
+    app.sidebar.drafts = app.drafts.keys().map(|k| k.split('/').next().unwrap_or(k).to_string()).collect();
     app.sidebar.draw(f, side, &app.ws, app.focus == Focus::Sidebar);
     let (main, thread_area) = if app.thread.is_some() {
         let [left, right] = Layout::horizontal([Constraint::Min(30), Constraint::Percentage(40)]).areas(main);

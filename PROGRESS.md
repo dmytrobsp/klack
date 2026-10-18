@@ -104,6 +104,7 @@ background is in `../REPORT.md` and `../notes/`.
 | D4 — composer titles fit their box: the reply box picks the longest of "Reply · [ ] also to channel (Alt+A)", "… also to channel", "Reply · [ ] +channel", "[ ] +channel" that fits (the checkbox always stays); the edit title likewise shortens to "Editing · Enter save · Esc cancel" / "Editing message" | done | LIVE (the default test window's thread pane: "Reply · [ ] +channel" where it read "Reply · [ ] also to chann" before) + UNIT (titles at several widths, never wider than the box) | 33b6f62 |
 | D5 — day separators in the thread pane: the day is tracked for every message; in thread mode a separator appears where a reply's day differs from the message before it (after the "N replies" rule when the first reply is on a later day), never above the parent; the message pane is unchanged | done | LIVE (time zone set to Asia/Tokyo in a temporary settings.toml, removed afterwards; B replied now to its own DM message "a follow-up in the same group" from 23:51 Tokyo time: the thread pane showed the parent at 23:51, "1 reply", "─ Monday, October 19 ─", the reply at 04:22) + UNIT (one separator for one change of day, none above the parent, after the rule) | dc27060 |
 | D6 — a left click on an autocomplete suggestion completes it (the same path as Tab/Enter): the popup's geometry is one function (`popup_area`) used for drawing and for `Completion::row_at`, checked first on a left click | done | LIVE (`@dmy` in the DM composer, a click on the second row "Dmytro Dudnyk (You)" → "@Dmytro Dudnyk " in the composer, popup closed; the text was then erased, nothing sent) + UNIT (rows, border, composer and outside map correctly) | 84f6eac |
+| D7 — the sidebar marks conversations with a kept draft "✎" (a thread's draft counts for its conversation; the conversation you are in has its text in the composer, so it is marked only for a kept thread draft); the name is shortened to make room | done | LIVE ("half-written" in the DM, then #social: "○ Dmytro ✎"; erased in the DM and left again: "○ Dmytro") + UNIT (marker, room for it) | (this commit) |
 | Huddle invites: a desktop notification when someone else starts a huddle in a DM / group DM ("X started a huddle · Press F3 to join"); not for channels, muted conversations, DND, or a huddle you are in | done | LIVE (B started a huddle in the DM → D-Bus `Notify` "Dmytro started a huddle" captured; DM showed 🎧1) + UNIT (rules, start vs join) | 8d57bb0 |
 | Audio device selection: `SLACKTUI_AUDIO_INPUT` / `SLACKTUI_AUDIO_OUTPUT` match a device id or name (case-insensitive part); a named device that is missing is an error, never a fallback; `ctl audio-devices` lists `<id> — <name>` | done | LIVE (listing; `SLACKTUI_AUDIO_OUTPUT=nonexistent-device` → call bar "no sound: no output device matching…", no playback stream created) + UNIT (matching) | a708e3b |
 | Huddles in the TUI: F3 joins/starts the current conversation's huddle (`rooms.join`) or leaves; joins **muted** (the microphone is opened only while unmuted); F4 mute/unmute (AUDIO_CONTROL); call bar with participants, speaking 🔊 and muted 🔇; the meeting mix plays on the default output (cpal, resampled); sidebar shows `🎧N` on conversations with an active huddle (live `sh_room_join/leave/update`) | done | LIVE (B started a huddle in #social with a 440 Hz tone → `🎧1` appeared in A's sidebar; F3 joined: call bar listed B speaking and A muted; slacktui's own PipeWire playback stream carried the tone, −29.8 dB at 440 Hz vs −77.5 dB at 2 kHz; B's roster showed A `muted: true`; F3 left and B's roster dropped A) + UNIT (resampler, mixdown, roster rules, huddle tracking). **Microphone capture NOT verified live** (not recording the user's room); the send path itself is verified with `ctl huddle-media --tone`. | 4be3870 |
@@ -119,15 +120,15 @@ background is in `../REPORT.md` and `../notes/`.
 | Image viewer: `o` on a message with images opens a full-window view of the large version (`thumb_1024`, else the original), fitted without upscaling and re-encoded on resize; ←/→ or h/l between the message's images; Esc/q closes | done | LIVE (B's PNG shown complete and centred; thumbnail intact after closing) + UNIT (stepping, stale results ignored) | 0721cdd |
 | Inline image thumbnails: terminal graphics detected at startup (`Picker::from_query_stdio`, half-block fallback); rows reserved from `original_w/h` (≤ 36×10 cells, no upscaling) so nothing jumps; thumbnails fetched lazily when on screen (`thumb_*` with the session cookie), decoded/encoded off the UI task, cached per file; drawn with `SlicedImage` so partly scrolled images are clipped | done | LIVE (kitty: B's 800×500 PNG shown under its file line; clipped correctly after scrolling; no remnants after switching conversation) + UNIT (sizing, reserved rows) | a113b72 |
 
-Tests: `cargo test` → slack-core 9, huddle 33, slacktui 133, all passing. `cargo build` has no errors.
+Tests: `cargo test` → slack-core 9, huddle 33, slacktui 134, all passing. `cargo build` has no errors.
 
 ## Next (in order, each as a small, separately verified step)
 
-**NEXT UP: D7 — mark conversations with a draft in the sidebar.** Drafts (C4) are invisible until you
-return to the conversation. Show a ✎ after the name of every conversation that has a stored draft (and the
-current one while its composer has text?) — check how the sidebar renders badges and how `drafts` keys
-(conversation id; thread keys `channel/ts` belong to their channel too). Unit-test the marker; verify
-live: type in the DM, switch to #social, the DM row shows ✎; send or erase it, the ✎ goes.
+**NEXT UP: D8 — snippets: check Slack's `snippet_type` list.** `/snippet` (and uploads of code) send
+a `snippet_type` derived from the extension; Slack silently stores an unknown one (e.g. `rust`) as C++.
+Find the accepted list in the web client bundles (see `../notes/` for how they are searched; look for the
+snippet type picker / `filetype` values), map extensions to an accepted type (or `text`), unit-test the
+mapping, verify live by posting a `.rs` snippet as B or A and reading its `filetype` back with `ctl api`.
 
 The roadmap (items 1–15) is complete. Queue from the user (2026-10-18), in this order; run autonomously,
 one verified commit per step:
@@ -153,8 +154,8 @@ D. Queued by the agent on 2026-10-18 when the user said "queue next items as you
   D4. ~~The reply box title fits a narrow pane~~ — done.
   D5. ~~Day separators in the thread pane~~ — done.
   D6. ~~Autocomplete completes on a mouse click~~ — done.
-  D7. Mark conversations that have a draft in the sidebar (✎), now that drafts exist (C4) — NEXT.
-  D8. Snippets: check Slack's `snippet_type` list so an unknown type is not silently stored as C++.
+  D7. ~~Mark conversations with a draft in the sidebar~~ — done (✎).
+  D8. Snippets: check Slack's `snippet_type` list so an unknown type is not silently stored as C++ — NEXT.
   D9. Sections: read every page of a section's `channel_ids_page` (only the first today).
   D10. Notifications: let a conversation's level go back to "default" (find how the web client does it;
        Slack refuses `default` in the way we send it).
@@ -207,7 +208,7 @@ Hard (huddles video; the user's real camera/screen must not be captured in tests
 
 - The test workspace has very little history, so scrolling performance with large channels is unknown.
 - Delete rollback has not been seen against a real API failure (Slack let the owner delete even in an archived channel; edit rollback, same `Net::Restore` path, is LIVE since A3).
-- Drafts (per conversation and thread) are kept in memory only: lost on quit or workspace switch; the sidebar does not mark conversations with a draft.
+- Drafts (per conversation and thread) are kept in memory only: lost on quit or workspace switch; the sidebar marks them ✎.
 - The clipboard hand-off needs the terminal to outlive slacktui: with `kitty -e slacktui` the whole kitty instance exits and the copy is lost.
 - Video: no seeking; audio/video sync is by wall clock (both start together, no drift correction); each frame is a new kitty image (kitty evicts old ones by its storage quota); needs `ffmpeg`/`ffprobe` on PATH (a clear error otherwise).
 - Microphone: the capture pipeline (`MicConverter`: mixdown, resampling, 20 ms framing) is unit-tested with a synthetic 44.1 kHz stereo tone; opening the device is not verified live. A live attempt with `PIPEWIRE_NODE` pointing at a temporary null sink did **not** route the capture there — the default microphone (the user's headset) was used for ~12 s into the private test huddle; the recording was deleted. Do not run microphone tests without explicit device selection.

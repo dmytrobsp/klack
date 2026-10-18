@@ -40,7 +40,8 @@ and `/workspace [name]` lists them or switches by name.
 Press **F1** (or `?`) in the app for the full list. The essentials:
 
 What you type is kept per conversation and per thread: leave a half-written message (or an
-edit in progress) and it is back when you return, until you send it. Drafts live in memory only
+edit in progress) and it is back when you return, until you send it; the sidebar marks such
+conversations with ✎. Drafts live in memory only
 (gone after quitting or switching workspace).
 
 | Key | |
