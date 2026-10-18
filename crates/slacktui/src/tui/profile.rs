@@ -5,7 +5,7 @@
 use chrono::{FixedOffset, TimeZone, Utc};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use slack_core::format::{Block as Doc, Inline};
@@ -42,6 +42,7 @@ impl ProfileCard {
             .borders(Borders::ALL)
             .border_style(Style::default().fg(super::theme::p().accent))
             .title(format!(" {} ", super::i18n::tr("Profile")))
+            .title(vip_badge(ws, self.user()).right_aligned())
             .title_bottom(Line::styled(keys, Style::default().fg(super::theme::p().dim)).right_aligned());
         let lines = match ws.users.get(self.user()) {
             Some(u) => {
@@ -52,6 +53,19 @@ impl ProfileCard {
             None => vec![Line::styled(format!("unknown person {}", self.user()), Style::default().fg(super::theme::p().dim))],
         };
         f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).block(block), popup);
+    }
+}
+
+/// The VIP marker for a card's top-right border: a gold "★ VIP" for VIPs, a dim "☆ VIP"
+/// for everyone else (nothing for yourself).
+pub fn vip_badge(ws: &Workspace, user: &str) -> Line<'static> {
+    let p = super::theme::p();
+    if user == ws.self_id {
+        Line::raw("")
+    } else if ws.vip.contains(user) {
+        Line::styled(" ★ VIP ", Style::default().fg(Color::Black).bg(p.pin).add_modifier(Modifier::BOLD))
+    } else {
+        Line::styled(" ☆ VIP ", Style::default().fg(p.dim))
     }
 }
 
@@ -123,9 +137,6 @@ pub fn person_lines(ws: &Workspace, u: &User, now: i64) -> Vec<Line<'static>> {
     if !u.profile.title.is_empty() {
         out.push(field("Title", u.profile.title.clone()));
     }
-    if ws.vip.contains(&u.id) {
-        out.push(field("VIP", "yes (v on their card removes them)".into()));
-    }
     if !u.profile.status_text.is_empty() || !u.profile.status_emoji.is_empty() {
         let emoji = u.profile.status_emoji.trim_matches(':');
         let emoji = if emoji.is_empty() { String::new() } else { text::emoji(ws, emoji, None) + " " };
@@ -188,6 +199,16 @@ mod tests {
         assert_eq!(availability(&ws, 2000), "away", "an expired status is not shown");
         ws.dnd.snooze_until = Some(3000.0);
         assert!(availability(&ws, 2000).starts_with("away · 🔕 until "), "{}", availability(&ws, 2000));
+    }
+
+    #[test]
+    fn vip_badge_always_there() {
+        let mut ws = Workspace { self_id: "UME".into(), ..Default::default() };
+        let text = |l: Line| l.spans.iter().map(|s| s.content.to_string()).collect::<String>();
+        assert_eq!(text(vip_badge(&ws, "U2")), " ☆ VIP ");
+        ws.vip.insert("U2".into());
+        assert_eq!(text(vip_badge(&ws, "U2")), " ★ VIP ");
+        assert_eq!(text(vip_badge(&ws, "UME")), "", "not on your own card");
     }
 
     #[test]
