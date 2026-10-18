@@ -113,6 +113,8 @@ struct App {
     profile: Option<super::profile::ProfileCard>,
     /// A `dnd.info` refresh is on its way.
     dnd_refreshing: bool,
+    /// Open context menu (right-click).
+    menu: Option<super::menu::Menu>,
     /// Open preferences (F6).
     prefs: Option<super::prefs::Prefs>,
     /// Open activity view (F5).
@@ -573,6 +575,166 @@ impl App {
                 Err(e) => Net::Error(e.to_string()),
             });
         });
+    }
+
+    /// A messages-context action on the message pane or (`in_thread`) the thread pane;
+    /// keys and the context menu both come here.
+    fn message_action(&mut self, action: Action, in_thread: bool) {
+                            let timeline = match (&self.thread, in_thread) {
+            (Some((c, ts)), true) => self.ws.threads.get(&super::state::thread_key(c, ts)),
+            _ => self.current.as_ref().and_then(|c| self.ws.timelines.get(c)),
+        };
+        let order: Vec<String> = timeline.map(|t| super::messages::shown_messages(t, in_thread).map(|m| m.ts.clone()).collect()).unwrap_or_default();
+                            let pane = if in_thread { &mut self.thread_pane } else { &mut self.messages };
+        match Some(action) {
+            Some(Action::Up) => {
+                pane.move_selection(&order, -1);
+                if !in_thread && order.first() == self.messages.selected.as_ref() {
+                    self.maybe_load_older();
+                }
+            }
+            Some(Action::Down) => pane.move_selection(&order, 1),
+            Some(Action::Top) => pane.move_selection(&order, isize::MIN / 2),
+            Some(Action::Bottom) => pane.move_selection(&order, isize::MAX / 2),
+            Some(Action::Back) if in_thread => self.close_thread(),
+            Some(Action::Type) if in_thread => self.focus = Focus::ThreadComposer,
+            Some(Action::Back | Action::Type) => self.focus = Focus::Composer,
+            Some(Action::OpenThread) if !in_thread => {
+                if let Some(ts) = self.messages.selected.clone() {
+                    self.open_thread(&ts);
+                }
+            }
+            Some(Action::React) => {
+                if let (Some(channel), Some(ts)) = (self.current.clone(), self.selected_ts()) {
+                    self.picker = Some((EmojiPicker::default(), channel, ts));
+                }
+            }
+            Some(Action::Edit) => {
+                if let Some(ts) = self.selected_ts() {
+                    self.start_edit(&ts, in_thread);
+                }
+            }
+            Some(Action::Copy) => {
+                if let Some(ts) = self.selected_ts() {
+                    self.copy_text(&ts);
+                }
+            }
+            Some(Action::Pin) => {
+                if let Some(ts) = self.selected_ts() {
+                    self.toggle_pin(&ts);
+                }
+            }
+            Some(Action::ThreadHuddle) => {
+                let target = self.selected_ts().and_then(|ts| self.current.clone().map(|c| (c, ts)));
+                match target {
+                    _ if self.call.is_some() => self.status = "leave the current huddle first".into(),
+                    Some((channel, ts)) => {
+                        // A reply's huddle belongs to its thread.
+                        let root = self.ws.find_message(&channel, &ts).and_then(|m| m.thread_ts.clone()).unwrap_or(ts);
+                        self.join_huddle(channel, Some(root));
+                    }
+                    None => {}
+                }
+            }
+            Some(Action::Profile) => {
+                let m = self.selected_ts().and_then(|ts| self.current.as_deref().and_then(|c| self.ws.find_message(c, &ts)));
+                match m.map(super::profile::people_in).and_then(super::profile::ProfileCard::new) {
+                    Some(card) => self.profile = Some(card),
+                    None => self.status = "no person on this message".into(),
+                }
+            }
+            Some(Action::Save) => {
+                if let Some(ts) = self.selected_ts() {
+                    self.save_files(&ts);
+                }
+            }
+            Some(Action::Open) => {
+                if let Some(ts) = self.selected_ts() {
+                    self.open_viewer(&ts);
+                }
+            }
+            Some(Action::CopyLink) => {
+                if let Some(ts) = self.selected_ts() {
+                    self.copy_permalink(&ts);
+                }
+            }
+            Some(Action::Delete) => {
+                if let Some(ts) = self.selected_ts() {
+                    self.ask_delete(&ts);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Right-click: select what is under the pointer and offer its actions.
+    fn open_menu(&mut self, column: u16, row: u16) {
+        use super::menu::{Menu, Target};
+        let at = (column, row);
+        let panes = [(false, self.messages.message_at(column, row)), (true, if self.thread.is_some() { self.thread_pane.message_at(column, row) } else { None })];
+        if let Some((thread, ts)) = panes.into_iter().find_map(|(t, ts)| ts.map(|ts| (t, ts))) {
+            let channel = self.current.clone().unwrap_or_default();
+            let own = self.ws.find_message(&channel, &ts).is_some_and(|m| m.user.as_deref() == Some(self.ws.self_id.as_str()));
+            if thread {
+                self.thread_pane.selected = Some(ts);
+                self.focus = Focus::Thread;
+            } else {
+                self.messages.selected = Some(ts);
+                self.focus = Focus::Messages;
+            }
+            self.menu = Some(Menu::new(Target::Message { thread }, at, &self.keys, own, false, false));
+        } else if let Some(n) = self.sidebar.item_at(column, row) {
+            self.sidebar.selected = n;
+            let id = self.sidebar.selected_id().unwrap_or_default().to_string();
+            let channel = self.ws.conversations.get(&id).is_some_and(|c| !c.is_dm() && c.is_member);
+            self.menu = Some(Menu::new(Target::Conversation, at, &self.keys, false, channel, self.ws.starred.contains(&id)));
+        }
+    }
+
+    /// Run the context menu's chosen item, like its key would.
+    fn run_menu(&mut self) {
+        use super::menu::{Item, Target};
+        let Some(menu) = self.menu.take() else { return };
+        let Some(item) = menu.chosen() else { return };
+        if menu.target == Target::Conversation {
+            // The clicked conversation becomes the current one first.
+            self.sync_current();
+        }
+        match (menu.target, item) {
+            (Target::Message { thread }, Item::Do(action)) => {
+                self.focus = if thread { Focus::Thread } else { Focus::Messages };
+                self.message_action(action, thread);
+            }
+            (Target::Conversation, Item::Do(action)) => self.sidebar_action(action),
+            (_, Item::Details) => self.open_details(),
+            (_, Item::Leave) => {
+                if let Some(id) = self.current.clone() {
+                    self.confirm = Some(Confirm::Leave(id));
+                }
+            }
+        }
+    }
+
+    /// A sidebar-context action on the selected conversation.
+    fn sidebar_action(&mut self, action: Action) {
+        match action {
+            Action::Up => self.sidebar.move_by(-1),
+            Action::Down => self.sidebar.move_by(1),
+            Action::Top => self.sidebar.move_by(isize::MIN / 2),
+            Action::Bottom => self.sidebar.move_by(isize::MAX / 2),
+            Action::Open => self.focus = Focus::Composer,
+            Action::Star => {
+                if let Some(id) = self.sidebar.selected_id().map(String::from) {
+                    self.toggle_star(id);
+                }
+            }
+            Action::MoveToSection => match self.sidebar.selected_id().map(String::from) {
+                Some(id) if self.ws.is_outside(&id) => self.status = "join the channel to file it in a section".into(),
+                Some(id) => self.mover = Some(super::sections::MovePicker::new(&self.ws, id)),
+                None => {}
+            },
+            _ => {}
+        }
     }
 
     fn join_channel(&mut self, channel: String) {
@@ -1091,7 +1253,9 @@ impl App {
     /// The contexts a key press is looked up in now: the open overlay's, or the focused
     /// pane's; plus global.
     fn active_contexts(&self) -> Vec<Context> {
-        let overlay = if self.help.is_some() {
+        let overlay = if self.menu.is_some() {
+            Some(Context::Menu)
+        } else if self.help.is_some() {
             Some(Context::Help)
         } else if let Some(p) = &self.prefs {
             Some(if p.editing.is_some() { Context::TextField } else { Context::Preferences })
@@ -1523,6 +1687,7 @@ async fn run_workspace(
         profile: None,
         activity: None,
         prefs: None,
+        menu: None,
         dnd_refreshing: false,
         mover: None,
         huddle_after_open: None,
@@ -1629,6 +1794,35 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
 fn handle_event(app: &mut App, ev: Event) -> bool {
     match ev {
         Event::Key(k) if k.kind != KeyEventKind::Release && app.global(&k) == Some(Action::Quit) && !app.capturing_key() => return false,
+        Event::Key(k) if k.kind != KeyEventKind::Release && app.menu.is_some() => {
+            let action = app.action_in(Context::Menu, &k);
+            let Some(m) = app.menu.as_mut() else { return true };
+            match action {
+                Some(Action::Up) => m.move_by(-1),
+                Some(Action::Down) => m.move_by(1),
+                Some(Action::Open) => app.run_menu(),
+                Some(Action::Close) => app.menu = None,
+                _ => {}
+            }
+        }
+        Event::Mouse(m) if app.menu.is_some() && matches!(m.kind, MouseEventKind::Moved | MouseEventKind::Down(_)) => {
+            let hit = app.menu.as_ref().and_then(|menu| menu.item_at(m.column, m.row));
+            match (m.kind, hit) {
+                (MouseEventKind::Moved, Some(n)) => {
+                    if let Some(menu) = app.menu.as_mut() {
+                        menu.selected = n;
+                    }
+                }
+                (MouseEventKind::Down(MouseButton::Left), Some(n)) => {
+                    if let Some(menu) = app.menu.as_mut() {
+                        menu.selected = n;
+                    }
+                    app.run_menu();
+                }
+                (MouseEventKind::Down(_), None) => app.menu = None,
+                _ => {}
+            }
+        }
         Event::Key(k) if k.kind != KeyEventKind::Release && app.help.is_some() => {
             let action = app.action_in(Context::Help, &k);
             let Some(h) = app.help.as_mut() else { return true };
@@ -1970,111 +2164,14 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
                 return true;
             }
             match app.focus {
-                Focus::Sidebar => match app.action_in(Context::Sidebar, &k) {
-                    Some(Action::Up) => app.sidebar.move_by(-1),
-                    Some(Action::Down) => app.sidebar.move_by(1),
-                    Some(Action::Top) => app.sidebar.move_by(isize::MIN / 2),
-                    Some(Action::Bottom) => app.sidebar.move_by(isize::MAX / 2),
-                    Some(Action::Open) => app.focus = Focus::Composer,
-                    Some(Action::Star) => {
-                        if let Some(id) = app.sidebar.selected_id().map(String::from) {
-                            app.toggle_star(id);
-                        }
+                Focus::Sidebar => {
+                    if let Some(action) = app.action_in(Context::Sidebar, &k) {
+                        app.sidebar_action(action);
                     }
-                    Some(Action::MoveToSection) => match app.sidebar.selected_id().map(String::from) {
-                        Some(id) if app.ws.is_outside(&id) => app.status = "join the channel to file it in a section".into(),
-                        Some(id) => app.mover = Some(super::sections::MovePicker::new(&app.ws, id)),
-                        None => {}
-                    },
-                    _ => {}
-                },
+                }
                 Focus::Messages | Focus::Thread => {
-                    let in_thread = app.focus == Focus::Thread;
-                    let timeline = match (&app.thread, in_thread) {
-                        (Some((c, ts)), true) => app.ws.threads.get(&super::state::thread_key(c, ts)),
-                        _ => app.current.as_ref().and_then(|c| app.ws.timelines.get(c)),
-                    };
-                    let order: Vec<String> = timeline.map(|t| super::messages::shown_messages(t, in_thread).map(|m| m.ts.clone()).collect()).unwrap_or_default();
-                    let action = app.action_in(Context::Messages, &k);
-                    let pane = if in_thread { &mut app.thread_pane } else { &mut app.messages };
-                    match action {
-                        Some(Action::Up) => {
-                            pane.move_selection(&order, -1);
-                            if !in_thread && order.first() == app.messages.selected.as_ref() {
-                                app.maybe_load_older();
-                            }
-                        }
-                        Some(Action::Down) => pane.move_selection(&order, 1),
-                        Some(Action::Top) => pane.move_selection(&order, isize::MIN / 2),
-                        Some(Action::Bottom) => pane.move_selection(&order, isize::MAX / 2),
-                        Some(Action::Back) if in_thread => app.close_thread(),
-                        Some(Action::Type) if in_thread => app.focus = Focus::ThreadComposer,
-                        Some(Action::Back | Action::Type) => app.focus = Focus::Composer,
-                        Some(Action::OpenThread) if !in_thread => {
-                            if let Some(ts) = app.messages.selected.clone() {
-                                app.open_thread(&ts);
-                            }
-                        }
-                        Some(Action::React) => {
-                            if let (Some(channel), Some(ts)) = (app.current.clone(), app.selected_ts()) {
-                                app.picker = Some((EmojiPicker::default(), channel, ts));
-                            }
-                        }
-                        Some(Action::Edit) => {
-                            if let Some(ts) = app.selected_ts() {
-                                app.start_edit(&ts, in_thread);
-                            }
-                        }
-                        Some(Action::Copy) => {
-                            if let Some(ts) = app.selected_ts() {
-                                app.copy_text(&ts);
-                            }
-                        }
-                        Some(Action::Pin) => {
-                            if let Some(ts) = app.selected_ts() {
-                                app.toggle_pin(&ts);
-                            }
-                        }
-                        Some(Action::ThreadHuddle) => {
-                            let target = app.selected_ts().and_then(|ts| app.current.clone().map(|c| (c, ts)));
-                            match target {
-                                _ if app.call.is_some() => app.status = "leave the current huddle first".into(),
-                                Some((channel, ts)) => {
-                                    // A reply's huddle belongs to its thread.
-                                    let root = app.ws.find_message(&channel, &ts).and_then(|m| m.thread_ts.clone()).unwrap_or(ts);
-                                    app.join_huddle(channel, Some(root));
-                                }
-                                None => {}
-                            }
-                        }
-                        Some(Action::Profile) => {
-                            let m = app.selected_ts().and_then(|ts| app.current.as_deref().and_then(|c| app.ws.find_message(c, &ts)));
-                            match m.map(super::profile::people_in).and_then(super::profile::ProfileCard::new) {
-                                Some(card) => app.profile = Some(card),
-                                None => app.status = "no person on this message".into(),
-                            }
-                        }
-                        Some(Action::Save) => {
-                            if let Some(ts) = app.selected_ts() {
-                                app.save_files(&ts);
-                            }
-                        }
-                        Some(Action::Open) => {
-                            if let Some(ts) = app.selected_ts() {
-                                app.open_viewer(&ts);
-                            }
-                        }
-                        Some(Action::CopyLink) => {
-                            if let Some(ts) = app.selected_ts() {
-                                app.copy_permalink(&ts);
-                            }
-                        }
-                        Some(Action::Delete) => {
-                            if let Some(ts) = app.selected_ts() {
-                                app.ask_delete(&ts);
-                            }
-                        }
-                        _ => {}
+                    if let Some(action) = app.action_in(Context::Messages, &k) {
+                        app.message_action(action, app.focus == Focus::Thread);
                     }
                 }
                 Focus::Composer | Focus::ThreadComposer => {
@@ -2116,6 +2213,7 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
             app.messages.hover = app.messages.message_at(c, r);
             app.thread_pane.hover = if app.thread.is_some() { app.thread_pane.message_at(c, r) } else { None };
         }
+        Event::Mouse(m) if m.kind == MouseEventKind::Down(MouseButton::Right) => app.open_menu(m.column, m.row),
         Event::Mouse(m) => match m.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 if app.sidebar.click(m.column, m.row) {
@@ -2510,6 +2608,9 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     }
     if let Some(p) = app.prefs.as_mut() {
         p.draw(f, body, &app.ws, app.current.as_deref(), &app.keys);
+    }
+    if let Some(m) = app.menu.as_mut() {
+        m.draw(f, body);
     }
     if let Some(h) = app.help.as_mut() {
         h.draw(f, body, &app.keys);

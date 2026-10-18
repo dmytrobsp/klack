@@ -16,6 +16,7 @@ pub mod i18n;
 pub mod keymap;
 pub mod live;
 pub mod media;
+pub mod menu;
 pub mod messages;
 pub mod notify;
 pub mod picker;

@@ -44,6 +44,7 @@ Press **F1** (or `?`) in the app for the full list. The essentials:
 | Tab / Shift+Tab | move between sidebar, messages, composer, thread, reply box |
 | Alt+↑ / Alt+↓, Ctrl+K | previous / next conversation, jump to any conversation or person (`#` lists every channel, including ones you are not in) |
 | Ctrl+F | search messages |
+| mouse | click to select, wheel to scroll, hover shading, right-click for a context menu (messages, sidebar entries) |
 | F5 | activity: mentions, reactions to your messages, thread replies |
 | `/status [:emoji:] [text] [for 30m\|2h\|today]` · `/status clear` | set or clear your status |
 | `/away` · `/active` · `/dnd 30m` · `/dnd off` | appear away / active · pause or resume notifications |

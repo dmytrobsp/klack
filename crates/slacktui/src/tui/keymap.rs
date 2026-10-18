@@ -184,10 +184,11 @@ pub enum Context {
     Confirm,
     Help,
     Preferences,
+    Menu,
 }
 
 impl Context {
-    pub const ALL: [Context; 19] = [
+    pub const ALL: [Context; 20] = [
         Context::Global,
         Context::Sidebar,
         Context::Messages,
@@ -207,6 +208,7 @@ impl Context {
         Context::Confirm,
         Context::Help,
         Context::Preferences,
+        Context::Menu,
     ];
 
     /// The table name in `keys.toml`.
@@ -231,6 +233,7 @@ impl Context {
             Context::Confirm => "confirm",
             Context::Help => "help",
             Context::Preferences => "preferences",
+            Context::Menu => "menu",
         }
     }
 
@@ -256,6 +259,7 @@ impl Context {
             Context::Confirm => "Yes / no questions",
             Context::Help => "This help",
             Context::Preferences => "Preferences",
+            Context::Menu => "Context menu (right-click)",
         }
     }
 
@@ -545,6 +549,12 @@ actions! {
         Reset "reset" "Keys: back to the default keys" ["r"]
         Close "close" "close" ["esc", "q", "f6"]
     }
+    Menu {
+        Up "up" "previous item" ["up", "k"]
+        Down "down" "next item" ["down", "j"]
+        Open "choose" "do it" ["enter", "space"]
+        Close "close" "close" ["esc", "q"]
+    }
     Help {
         Up "up" "scroll up" ["up", "k"]
         Down "down" "scroll down" ["down", "j"]
@@ -734,6 +744,7 @@ pub fn hints_for(context: Context) -> &'static [(Action, &'static str)] {
         Context::Confirm => &[(Yes, "yes")],
         Context::Help => &[(PageDown, "page"), (Close, "close")],
         Context::Preferences => &[(Open, "change"), (NextTab, "category"), (Close, "close")],
+        Context::Menu => &[(Open, "choose"), (Close, "close")],
     }
 }
 
