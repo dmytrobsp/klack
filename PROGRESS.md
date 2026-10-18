@@ -94,6 +94,7 @@ Medium:
 11. ~~Multiple workspaces~~ — done (Alt+1…9, `/workspace`).
 11b. ~~Your own account marked "(You)"~~ — done.
 12. Remappable keys (added by the user on 2026-10-18): every keystroke in the app is an action that can be rebound, both in a config file and from the preferences menu (item 13); support a prefix/leader key (e.g. `Ctrl+X` then a key, like tmux/vim chords) with a pending-chord indicator. The F1 help panel and a *contextual* help bar (the status-bar hints should follow the focused pane/overlay, not be fixed) must show the user's actual bindings. Needs a central action registry replacing the hard-coded `KeyCode` matches in `event_loop.rs`; detect conflicts; keep the defaults identical to today.
+12b. Clearer message boundaries (added by the user on 2026-10-18): at a glance it is hard to tell where one message ends and the next begins, especially with snippets and formatted code, which blend in with the surrounding messages. Make each message visibly its own block (e.g. spacing or a rule between messages/author groups, a distinct background or frame for code blocks and snippets).
 13. Preferences menu: availability, notifications (per-channel all/mentions/nothing, keywords), VIP, appearance (theme/colours, compact mode), messages & media (inline images/video on/off, emoji style), language & region (time zone, 12/24 h, date format; i18n scaffolding), audio & video (devices). Save to a config file; Slack-side prefs via `users.prefs.*`.
 
 Hard (huddles video; the user's real camera/screen must not be captured in tests without them):
