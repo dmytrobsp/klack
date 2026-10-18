@@ -187,7 +187,18 @@ struct App {
     /// Conversation currently shown in the message pane.
     current: Option<String>,
     status: String,
+    /// The status as last seen and since when, to clear it after [`STATUS_TTL`].
+    status_shown: (String, std::time::Instant),
     loading: bool,
+}
+
+/// How long a status-bar message stays. One ending in "…" stays until it is replaced: it
+/// describes something still going on (loading, uploading, joining, a dialog open).
+const STATUS_TTL: Duration = Duration::from_secs(8);
+
+/// Whether a status shown for `age` should go.
+fn status_expired(status: &str, age: Duration) -> bool {
+    !status.is_empty() && !status.ends_with('…') && age >= STATUS_TTL
 }
 
 impl App {
@@ -1073,6 +1084,17 @@ impl App {
         }
     }
 
+    /// Clear the status bar's message once it has been shown for [`STATUS_TTL`] (a new
+    /// message starts the clock again).
+    fn expire_status(&mut self, now: std::time::Instant) {
+        if self.status != self.status_shown.0 {
+            self.status_shown = (self.status.clone(), now);
+        } else if status_expired(&self.status, now - self.status_shown.1) {
+            self.status.clear();
+            self.status_shown.0.clear();
+        }
+    }
+
     /// Subscribe to everyone's presence once connected and the user list is known
     /// (again after each reconnect); Slack answers with their current presence.
     fn subscribe_presence(&mut self) {
@@ -1104,7 +1126,7 @@ impl App {
             return;
         };
         if call.share_pending {
-            self.status = "choose what to share in the desktop's dialog".into();
+            self.status = "choose what to share in the desktop's dialog…".into();
         } else if call.is_sharing() {
             call.stop_share();
             self.status = "stopped sharing".into();
@@ -1845,6 +1867,7 @@ async fn run_workspace(
         messages: MessagePane::default(),
         current: None,
         status: "loading workspace…".into(),
+        status_shown: (String::new(), std::time::Instant::now()),
         loading: true,
     };
 
@@ -1853,6 +1876,7 @@ async fn run_workspace(
     // Redraws the call bar's level meters.
     let mut call_tick = tokio::time::interval(Duration::from_millis(100));
     loop {
+        app.expire_status(std::time::Instant::now());
         terminal.draw(|f| draw(f, &mut app))?;
         app.request_thumbs();
         app.request_activity_messages();
@@ -2886,6 +2910,16 @@ fn draw_composer(f: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &App,
 #[cfg(test)]
 mod tests {
     use slack_core::session::WorkspaceSession;
+
+    #[test]
+    fn status_messages_expire() {
+        use super::{Duration, status_expired};
+        let s = Duration::from_secs;
+        assert!(!status_expired("left #general", s(7)));
+        assert!(status_expired("left #general", s(8)));
+        assert!(!status_expired("uploading notes.txt…", s(600)), "still going on");
+        assert!(!status_expired("", s(600)));
+    }
 
     fn session(team_id: &str, team: &str, user: &str) -> WorkspaceSession {
         WorkspaceSession { team_id: team_id.into(), team_name: team.into(), user_name: user.into(), ..Default::default() }
