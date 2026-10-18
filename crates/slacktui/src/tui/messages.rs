@@ -334,7 +334,9 @@ pub fn build_lines_owned(ws: &Workspace, t: &Timeline, width: usize, thread: boo
             out.push(Line::styled(format!("{label}{}", "─".repeat(width.saturating_sub(label.chars().count()))), Style::default().fg(super::theme::p().dim)));
             owners.resize(out.len(), None);
             prev = None;
-        } else if !thread && last_day.is_none_or(|d| !same_day(d, ts)) {
+        }
+        // A day separator where the day changes; in a thread not above the parent.
+        if last_day.is_none_or(|d| !same_day(d, ts)) && !(thread && n == 0) {
             last_day = Some(ts);
             let label = format!(" {} ", day_label(ws, ts));
             let side = width.saturating_sub(label.chars().count()) / 2;
@@ -342,6 +344,7 @@ pub fn build_lines_owned(ws: &Workspace, t: &Timeline, width: usize, thread: boo
             owners.resize(out.len(), None);
             prev = None;
         }
+        last_day.get_or_insert(ts);
         if is_system(m) {
             let body = format::plain_text(&format::message_blocks(&m.text, &m.blocks), &|i| text::inline_plain(ws, i));
             out.push(Line::styled(format!("{}  {}", time_label(ws, ts), body), Style::default().fg(super::theme::p().dim).add_modifier(Modifier::ITALIC)));
@@ -619,6 +622,31 @@ mod tests {
         m.edited = Some(Default::default());
         assert_eq!(plain(&message_body(&ws, &m, 30, true, &|_, _| None).0), vec!["exactly ten (edited)"]);
         assert_eq!(plain(&message_body(&ws, &m, 12, true, &|_, _| None).0), vec!["exactly ten", "(edited)"]);
+    }
+
+    #[test]
+    fn thread_pane_day_separators() {
+        let ws = Workspace::default();
+        let day = 86_400.0;
+        let mut parent = msg("1000000.0", "U1", "parent");
+        parent.thread_ts = Some("1000000.0".into());
+        let reply = |ts: f64, text: &str| {
+            let mut r = msg(&format!("{ts:.1}"), "U2", text);
+            r.thread_ts = Some("1000000.0".into());
+            r
+        };
+        let t = Timeline { messages: vec![parent, reply(1_000_060.0, "same day"), reply(1_000_000.0 + 2.0 * day, "two days later"), reply(1_000_000.0 + 2.0 * day + 60.0, "and again")], loaded: true, ..Default::default() };
+        let (lines, owners, _) = build_lines_owned(&ws, &t, 40, true, &|_, _| None, false);
+        let p = plain(&lines);
+        let seps: Vec<usize> = p.iter().enumerate().filter(|(_, l)| l.starts_with('─')).map(|(i, _)| i).collect();
+        assert_eq!(seps.len(), 1, "one change of day among the replies: {p:?}");
+        assert_eq!(owners[seps[0]], None);
+        assert_eq!(p[seps[0] + 2], "two days later", "{p:?}");
+        assert_eq!(p[1], "parent", "no separator above the parent: {p:?}");
+        // A first reply on a later day: the separator comes after the replies rule.
+        let t = Timeline { messages: vec![t.messages[0].clone(), t.messages[2].clone()], loaded: true, ..Default::default() };
+        let p = plain(&build_lines_owned(&ws, &t, 40, true, &|_, _| None, false).0);
+        assert!(p[2].starts_with(" 1 reply") && p[3].starts_with('─'), "{p:?}");
     }
 
     #[test]
