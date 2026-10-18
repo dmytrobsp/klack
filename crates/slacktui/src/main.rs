@@ -51,6 +51,9 @@ fn init_logging(profile: &str) -> Result<()> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Both rustls crypto providers are compiled in (webrtc uses ring, reqwest/tungstenite
+    // aws-lc-rs), so rustls cannot pick one by itself: choose explicitly.
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let cli = Cli::parse();
     init_logging(&cli.profile)?;
     match cli.command {

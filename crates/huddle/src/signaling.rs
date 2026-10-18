@@ -105,6 +105,45 @@ pub fn join_frame(audio_session_id: u64) -> SdkSignalFrame {
     f
 }
 
+/// The SUBSCRIBE frame for an audio-only session (what the web SDK sends).
+pub fn subscribe_frame(sdp_offer: String, audio_host: &str, attendee_id: &str, muted: bool) -> SdkSignalFrame {
+    let mut f = frame(Type::Subscribe);
+    f.sub = Some(proto::SdkSubscribeFrame {
+        duplex: Some(proto::SdkStreamServiceType::Rx as i32),
+        send_streams: vec![proto::SdkStreamDescriptor {
+            media_type: Some(proto::SdkStreamMediaType::Audio as i32),
+            track_label: Some("AmazonChimeExpressAudio".into()),
+            attendee_id: Some(attendee_id.into()),
+            stream_id: Some(1),
+            group_id: Some(1),
+            framerate: Some(15),
+            max_bitrate_kbps: Some(600),
+            avg_bitrate_bps: Some(400_000),
+            ..Default::default()
+        }],
+        sdp_offer: Some(sdp_offer),
+        audio_host: Some(audio_host.into()),
+        audio_checkin: Some(false),
+        audio_muted: Some(muted),
+        ..Default::default()
+    });
+    f
+}
+
+/// PONG for a server PING.
+pub fn pong_frame(ping_id: u32) -> SdkSignalFrame {
+    let mut f = frame(Type::PingPong);
+    f.ping_pong = Some(proto::SdkPingPongFrame { r#type: proto::SdkPingPongType::Pong as i32, ping_id });
+    f
+}
+
+/// AUDIO_CONTROL: tell the server we are (un)muted.
+pub fn mute_frame(muted: bool) -> SdkSignalFrame {
+    let mut f = frame(Type::AudioControl);
+    f.audio_control = Some(proto::SdkAudioControlFrame { muted: Some(muted) });
+    f
+}
+
 pub type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 /// The signaling connection.

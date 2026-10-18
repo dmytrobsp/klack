@@ -26,3 +26,4 @@ emojis = "0.9.1"
 chrono = "0.4.45"
 directories = "6.0.0"
 cpal = "0.18.2"
+rustls = { version = "0.23.46", features = ["ring"] }

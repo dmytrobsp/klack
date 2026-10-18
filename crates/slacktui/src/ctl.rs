@@ -29,6 +29,17 @@ pub enum Ctl {
         #[arg(default_value_t = 10)]
         seconds: u64,
     },
+    /// Join a conversation's huddle with audio for N seconds: optionally send a tone and
+    /// record what arrives (48 kHz mono s16le).
+    HuddleMedia {
+        channel: String,
+        #[arg(default_value_t = 20)]
+        seconds: u64,
+        #[arg(long)]
+        tone: Option<f64>,
+        #[arg(long)]
+        record: Option<std::path::PathBuf>,
+    },
     /// Leave a huddle via `rooms.leave`.
     HuddleLeave { channel: String, call_id: String, attendee_id: String },
     /// Call any Web API method with key=value arguments; prints the response with
@@ -152,6 +163,51 @@ pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
                 }
             }
             sig.close().await;
+        }
+        Ctl::HuddleMedia { channel, seconds, tone, record } => {
+            use huddle::session::{FRAME_SAMPLES, SAMPLE_RATE, Session, SessionEvent};
+            let id = resolve_channel(&client, &channel).await?;
+            let creds = huddle::signaling::Credentials::from_rooms_join(&client.call_raw("rooms.join", &[("channel_id", id)]).await?)?;
+            println!("room {} attendee {}", creds.room_id, creds.attendee.attendee_id);
+            let mut session = Session::start(creds, false);
+            let mut file = match &record {
+                Some(p) => Some(std::fs::File::create(p)?),
+                None => None,
+            };
+            let mut tick = tokio::time::interval(std::time::Duration::from_millis(20));
+            let deadline = tokio::time::sleep(std::time::Duration::from_secs(seconds));
+            tokio::pin!(deadline);
+            let (mut phase, mut received, mut sum_sq) = (0u64, 0usize, 0f64);
+            loop {
+                tokio::select! {
+                    _ = &mut deadline => break,
+                    _ = tick.tick() => {
+                        if let Some(hz) = tone {
+                            let frame: Vec<i16> = (0..FRAME_SAMPLES).map(|i| (((phase + i as u64) as f64 * hz * std::f64::consts::TAU / SAMPLE_RATE as f64).sin() * 6000.0) as i16).collect();
+                            phase += FRAME_SAMPLES as u64;
+                            session.send_pcm(frame);
+                        }
+                    }
+                    ev = session.events.recv() => match ev {
+                        Some(SessionEvent::Ended) | None => { println!("session ended"); break; }
+                        Some(SessionEvent::Speaking(_)) => {}
+                        Some(ev) => println!("{ev:?}"),
+                    },
+                    Some(pcm) = session.audio.recv() => {
+                        received += pcm.len();
+                        sum_sq += pcm.iter().map(|s| (*s as f64).powi(2)).sum::<f64>();
+                        if let Some(f) = file.as_mut() {
+                            use std::io::Write;
+                            let bytes: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
+                            f.write_all(&bytes)?;
+                        }
+                    }
+                }
+            }
+            session.leave();
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), async { while let Some(ev) = session.events.recv().await { if matches!(ev, SessionEvent::Ended) { break; } } }).await;
+            let rms = if received > 0 { (sum_sq / received as f64).sqrt() } else { 0.0 };
+            println!("received {:.1} s of audio, rms {rms:.0}", received as f64 / SAMPLE_RATE as f64);
         }
         Ctl::HuddleLeave { channel, call_id, attendee_id } => {
             let id = resolve_channel(&client, &channel).await?;
