@@ -777,7 +777,7 @@ impl App {
     fn start_edit(&mut self, ts: &str, thread: bool) {
         let Some(channel) = self.current.clone() else { return };
         let Some(m) = self.ws.find_message(&channel, ts) else { return };
-        if m.user.as_deref() != Some(self.ws.self_id.as_str()) {
+        if m.user.as_deref() != Some(self.ws.self_id.as_str()) || super::messages::is_system(m) {
             self.status = "you can only edit your own messages".into();
             return;
         }
@@ -837,7 +837,7 @@ impl App {
     /// Ask to delete our own message `ts` in the current conversation.
     fn ask_delete(&mut self, ts: &str) {
         let Some(channel) = self.current.clone() else { return };
-        let own = self.ws.find_message(&channel, ts).is_some_and(|m| m.user.as_deref() == Some(self.ws.self_id.as_str()));
+        let own = self.ws.find_message(&channel, ts).is_some_and(|m| m.user.as_deref() == Some(self.ws.self_id.as_str()) && !super::messages::is_system(m));
         if own {
             self.confirm = Some(Confirm::Delete { channel, ts: ts.to_string() });
         } else {
@@ -2770,6 +2770,8 @@ fn draw_composer(f: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &App,
     } else if thread {
         let key = app.keys.first_key(Context::Composer, Action::AlsoToChannel).unwrap_or_default();
         format!(" Reply · [{}] also to channel ({key}) ", if app.broadcast { "x" } else { " " })
+    } else if app.current.as_deref().and_then(|c| app.ws.conversations.get(c)).is_some_and(|c| c.is_archived) {
+        format!(" #{target} is archived ")
     } else if app.current.as_deref().is_some_and(|c| app.ws.is_outside(c)) {
         format!(" Previewing #{target} · /join to join ")
     } else {

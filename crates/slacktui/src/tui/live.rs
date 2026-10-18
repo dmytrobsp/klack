@@ -213,9 +213,21 @@ pub fn apply(ws: &mut Workspace, ev: &Value, current: Option<&str>) -> Effects {
                 fx.rebuild_sidebar = true;
             }
         }
-        "channel_left" | "group_left" | "channel_archive" | "channel_deleted" => {
+        "channel_left" | "group_left" | "channel_archive" | "group_archive" | "channel_deleted" => {
             if let Some(c) = ws.conversations.get_mut(&channel) {
                 c.is_member = false;
+                c.is_archived |= ev["type"].as_str().is_some_and(|t| t.ends_with("_archive"));
+                fx.rebuild_sidebar = true;
+            }
+            // The conversation on screen stays open (as a preview) instead of the sidebar
+            // selection sliding onto another one.
+            if current == Some(channel.as_str()) {
+                ws.preview = Some(channel.clone());
+            }
+        }
+        "channel_unarchive" | "group_unarchive" => {
+            if let Some(c) = ws.conversations.get_mut(&channel) {
+                c.is_archived = false;
                 fx.rebuild_sidebar = true;
             }
         }
@@ -486,5 +498,21 @@ mod tests {
         apply(&mut w, &json!({"channel":"C0CA5R2EX1Q","id":3,"thread_ts":"1792344539.206299","type":"user_typing","user":"U3"}), None);
         assert_eq!(w.typing_in("C0CA5R2EX1Q"), Vec::<String>::new(), "thread typing is not channel typing");
         assert_eq!(w.typing_in("C0CA5R2EX1Q/1792344539.206299"), vec!["U3".to_string()]);
+    }
+
+    #[test]
+    fn archiving_the_open_channel_keeps_it_open() {
+        let mut w = Workspace::default();
+        for id in ["C1", "C2"] {
+            w.conversations.insert(id.into(), slack_core::types::Conversation { id: id.into(), name: id.to_lowercase(), is_channel: true, is_member: true, ..Default::default() });
+        }
+        let fx = apply(&mut w, &json!({"type":"channel_archive","channel":"C1","user":"U1"}), Some("C1"));
+        assert!(fx.rebuild_sidebar && w.conversations["C1"].is_archived && !w.conversations["C1"].is_member);
+        assert_eq!(w.preview.as_deref(), Some("C1"), "the open channel stays");
+        assert_eq!(w.sidebar().0, vec!["C1", "C2"]);
+        apply(&mut w, &json!({"type":"channel_left","channel":"C2"}), Some("C1"));
+        assert_eq!(w.preview.as_deref(), Some("C1"), "leaving another channel changes nothing here");
+        apply(&mut w, &json!({"type":"channel_unarchive","channel":"C1","user":"U1"}), Some("C1"));
+        assert!(!w.conversations["C1"].is_archived);
     }
 }

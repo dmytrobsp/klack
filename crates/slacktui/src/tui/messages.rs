@@ -260,11 +260,28 @@ fn same_day(a: f64, b: f64) -> bool {
     d(a) == d(b)
 }
 
-/// System messages (joins, topic changes) rendered as one dim line.
-fn is_system(m: &Message) -> bool {
+/// System messages (joins, topic changes, archiving) rendered as one dim line; they cannot
+/// be edited or deleted.
+pub fn is_system(m: &Message) -> bool {
     matches!(
         m.subtype.as_deref(),
-        Some("channel_join" | "channel_leave" | "channel_topic" | "channel_purpose" | "channel_name" | "group_join" | "pinned_item")
+        Some(
+            "channel_join"
+                | "channel_leave"
+                | "channel_topic"
+                | "channel_purpose"
+                | "channel_name"
+                | "channel_archive"
+                | "channel_unarchive"
+                | "group_join"
+                | "group_leave"
+                | "group_topic"
+                | "group_purpose"
+                | "group_name"
+                | "group_archive"
+                | "group_unarchive"
+                | "pinned_item"
+        )
     )
 }
 
@@ -433,6 +450,19 @@ mod tests {
 
     fn plain(lines: &[Line]) -> Vec<String> {
         lines.iter().map(|l| l.spans.iter().map(|s| s.content.to_string()).collect()).collect()
+    }
+
+    #[test]
+    fn archive_notices_are_system_messages() {
+        // Subtypes as Slack returned them in #history-paging.
+        for subtype in ["channel_archive", "channel_unarchive", "group_archive", "channel_join"] {
+            let m = Message { subtype: Some(subtype.into()), user: Some("U1".into()), ..Default::default() };
+            assert!(is_system(&m), "{subtype}");
+        }
+        for subtype in [None, Some("thread_broadcast"), Some("file_share")] {
+            let m = Message { subtype: subtype.map(String::from), ..Default::default() };
+            assert!(!is_system(&m), "{subtype:?}");
+        }
     }
 
     #[test]

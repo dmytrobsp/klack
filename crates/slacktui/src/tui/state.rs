@@ -424,7 +424,8 @@ impl Workspace {
     /// Sidebar order: channels (alphabetical), then DMs (open ones), Slackbot last.
     pub fn sidebar(&self) -> (Vec<String>, Vec<String>) {
         let shown = |c: &Conversation| c.is_member || self.preview.as_deref() == Some(c.id.as_str());
-        let mut channels: Vec<&Conversation> = self.conversations.values().filter(|c| !c.is_dm() && shown(c) && !c.is_archived).collect();
+        let previewed = |c: &Conversation| self.preview.as_deref() == Some(c.id.as_str());
+        let mut channels: Vec<&Conversation> = self.conversations.values().filter(|c| !c.is_dm() && shown(c) && (!c.is_archived || previewed(c))).collect();
         channels.sort_by_key(|c| c.name.to_lowercase());
         let mut dms: Vec<&Conversation> = self
             .conversations
@@ -603,6 +604,11 @@ mod tests {
         assert_eq!(ws.sidebar().0, vec!["C1"]);
         ws.preview = Some("C2".into());
         assert_eq!(ws.sidebar().0, vec!["C1", "C2"]);
+        // An archived channel stays while it is previewed (it was open when archived).
+        ws.conversations.get_mut("C2").unwrap().is_archived = true;
+        assert_eq!(ws.sidebar().0, vec!["C1", "C2"]);
+        ws.preview = None;
+        assert_eq!(ws.sidebar().0, vec!["C1"]);
     }
 
     fn sections_ws() -> Workspace {
