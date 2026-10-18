@@ -12,6 +12,8 @@ pub struct Palette {
     pub accent: Color,
     /// Background of the selected row.
     pub selection: Color,
+    /// Background of the row under the mouse pointer.
+    pub hover: Color,
     /// Secondary text: times, hints, separators.
     pub dim: Color,
     /// Unread conversations.
@@ -47,6 +49,7 @@ pub const DARK: Palette = Palette {
     name: "dark",
     accent: rgb(0x61afef),
     selection: rgb(0x2c3e5c),
+    hover: rgb(0x262a33),
     dim: rgb(0x8a8a8a),
     strong: Color::White,
     good: rgb(0x98c379),
@@ -70,6 +73,7 @@ pub const LIGHT: Palette = Palette {
     name: "light",
     accent: rgb(0x1264a3),
     selection: rgb(0xd4e4f7),
+    hover: rgb(0xeef2f7),
     dim: rgb(0x6b6b6b),
     strong: Color::Black,
     good: rgb(0x2e7d32),
@@ -93,6 +97,7 @@ pub const TERMINAL: Palette = Palette {
     name: "terminal",
     accent: Color::Blue,
     selection: Color::DarkGray,
+    hover: Color::Reset,
     dim: Color::DarkGray,
     strong: Color::Reset,
     good: Color::Green,

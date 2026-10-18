@@ -47,6 +47,8 @@ pub struct MessagePane {
     rows: Vec<Option<String>>,
     /// Thread mode: show the parent and every reply instead of top-level messages.
     pub thread: bool,
+    /// Message under the mouse pointer.
+    pub hover: Option<String>,
     /// Thumbnails that were on screen but not loaded at the last draw.
     pub wanted: Vec<(File, (u16, u16))>,
 }
@@ -82,13 +84,18 @@ impl MessagePane {
         self.selected = Some(order[next].clone());
     }
 
-    /// Select the message drawn at terminal row `row`; true if one was hit.
-    pub fn click(&mut self, column: u16, row: u16) -> bool {
+    /// The message drawn at a terminal position.
+    pub fn message_at(&self, column: u16, row: u16) -> Option<String> {
         let inner = self.area.inner(ratatui::layout::Margin { horizontal: 1, vertical: 1 });
         if !inner.contains((column, row).into()) {
-            return false;
+            return None;
         }
-        match self.rows.get((row - inner.y) as usize).cloned().flatten() {
+        self.rows.get((row - inner.y) as usize).cloned().flatten()
+    }
+
+    /// Select the message drawn at terminal row `row`; true if one was hit.
+    pub fn click(&mut self, column: u16, row: u16) -> bool {
+        match self.message_at(column, row) {
             Some(ts) => {
                 self.selected = Some(ts);
                 true
@@ -131,7 +138,14 @@ impl MessagePane {
             let system: std::collections::HashSet<&str> = t.messages.iter().filter(|m| is_system(m)).map(|m| m.ts.as_str()).collect();
             add_gutter(&mut lines, &owners, &own, &system);
         }
-        // Highlight the selected message's rows.
+        // Shade the message under the pointer, then highlight the selected one.
+        if let Some(h) = &self.hover {
+            for (line, owner) in lines.iter_mut().zip(&owners) {
+                if owner.as_ref() == Some(h) {
+                    *line = std::mem::take(line).patch_style(Style::default().bg(super::theme::p().hover));
+                }
+            }
+        }
         let highlight = Style::default().bg(super::theme::p().selection);
         if focused {
             if let Some(sel) = &self.selected {

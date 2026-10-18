@@ -23,6 +23,8 @@ pub struct Sidebar {
     pub offset: usize,
     /// Last drawn area, for mouse hit-testing.
     pub area: Rect,
+    /// Item under the mouse pointer.
+    pub hover: Option<usize>,
 }
 
 impl Sidebar {
@@ -64,18 +66,25 @@ impl Sidebar {
         }
     }
 
-    /// Select the conversation drawn at terminal row `row`; true if one was hit.
-    pub fn click(&mut self, column: u16, row: u16) -> bool {
+    /// The conversation item drawn at a terminal position.
+    pub fn item_at(&self, column: u16, row: u16) -> Option<usize> {
         let inner = self.area.inner(ratatui::layout::Margin { horizontal: 1, vertical: 1 });
         if !inner.contains((column, row).into()) {
-            return false;
+            return None;
         }
         let n = self.offset + (row - inner.y) as usize;
-        if matches!(self.items.get(n), Some(Item::Conversation(_))) {
-            self.selected = n;
-            return true;
+        matches!(self.items.get(n), Some(Item::Conversation(_))).then_some(n)
+    }
+
+    /// Select the conversation drawn at terminal row `row`; true if one was hit.
+    pub fn click(&mut self, column: u16, row: u16) -> bool {
+        match self.item_at(column, row) {
+            Some(n) => {
+                self.selected = n;
+                true
+            }
+            None => false,
         }
-        false
     }
 
     pub fn draw(&mut self, f: &mut Frame, area: Rect, ws: &Workspace, focused: bool) {
@@ -95,6 +104,7 @@ impl Sidebar {
             .take(height)
             .map(|(n, item)| match item {
                 Item::Header(h) => Line::styled(format!(" {h}"), Style::default().fg(super::theme::p().dim).add_modifier(Modifier::BOLD)),
+                Item::Conversation(id) if n != self.selected && self.hover == Some(n) => conversation_line(ws, id, false, width).style(Style::default().bg(super::theme::p().hover)),
                 Item::Conversation(id) => conversation_line(ws, id, n == self.selected, width),
             })
             .collect();
