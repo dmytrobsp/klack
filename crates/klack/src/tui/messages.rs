@@ -411,6 +411,20 @@ pub fn build_lines(ws: &Workspace, t: &Timeline, width: usize) -> Vec<Line<'stat
 }
 
 /// Lines plus the ts of the message each line belongs to.
+/// An attachment's own colour (bots mark success, warnings and failures with it): `#2eb886`,
+/// `2eb886`, or Slack's names `good`, `warning`, `danger`.
+fn attachment_color(att: &serde_json::Value) -> Option<ratatui::style::Color> {
+    let c = att["color"].as_str()?.trim();
+    let hex = match c {
+        "good" => "2eb886",
+        "warning" => "daa038",
+        "danger" => "a30200",
+        _ => c.trim_start_matches('#'),
+    };
+    let v = u32::from_str_radix(hex, 16).ok().filter(|_| hex.len() == 6)?;
+    Some(ratatui::style::Color::Rgb((v >> 16) as u8, (v >> 8) as u8, v as u8))
+}
+
 /// A reaction as a pill: " 👍 2 " on a shaded background, yours highlighted; the spaces
 /// inside do not break, so a pill never wraps apart. Themes without a code background (the
 /// terminal's own colours) keep "[👍 2]".
@@ -535,7 +549,7 @@ pub fn message_body(ws: &Workspace, m: &Message, width: usize, summary: bool, th
     for att in &m.attachments {
         let title = att["title"].as_str().or_else(|| att["fallback"].as_str()).unwrap_or("");
         let detail = att["text"].as_str().unwrap_or("");
-        let bar = Span::styled("▍ ", Style::default().fg(super::theme::p().quote_bar));
+        let bar = Span::styled("▍ ", Style::default().fg(attachment_color(att).unwrap_or(super::theme::p().quote_bar)));
         if !title.is_empty() {
             out.extend(text::wrap(vec![Span::styled(format::unescape(title), Style::default().add_modifier(Modifier::BOLD))], width, vec![bar.clone()], vec![bar.clone()]));
         }
@@ -669,6 +683,18 @@ mod tests {
             assert_eq!(ratatui::text::Span::raw(icon).width(), 2, "{icon:?}");
         }
         assert_eq!("🖼".width(), 1, "without the selector: one cell");
+    }
+
+    #[test]
+    fn attachment_colours() {
+        use ratatui::style::Color;
+        let c = |v: serde_json::Value| super::attachment_color(&v);
+        assert_eq!(c(serde_json::json!({"color": "#2eb886"})), Some(Color::Rgb(0x2e, 0xb8, 0x86)));
+        assert_eq!(c(serde_json::json!({"color": "ff0000"})), Some(Color::Rgb(255, 0, 0)));
+        assert_eq!(c(serde_json::json!({"color": "danger"})), Some(Color::Rgb(0xa3, 0x02, 0x00)));
+        assert_eq!(c(serde_json::json!({"color": "#fff"})), None, "short forms are not Slack's");
+        assert_eq!(c(serde_json::json!({"color": "nope"})), None);
+        assert_eq!(c(serde_json::json!({"title": "x"})), None);
     }
 
     #[test]
