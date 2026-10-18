@@ -2,7 +2,7 @@
 //! (message, huddle). Opened with `u` on a message (its author, then anyone it mentions) and
 //! from the Members tab of F2.
 
-use chrono::{FixedOffset, Local, TimeZone, Utc};
+use chrono::{FixedOffset, TimeZone, Utc};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -93,7 +93,7 @@ pub fn availability(ws: &Workspace, now: i64) -> String {
         parts.push("away".into());
     }
     match ws.dnd.snooze_until.filter(|t| *t > now as f64) {
-        Some(t) => parts.push(format!("🔕 until {}", Local.timestamp_opt(t as i64, 0).single().map(|d| d.format(ws.settings.time_format()).to_string()).unwrap_or_default())),
+        Some(t) => parts.push(format!("🔕 until {}", super::clock::at(t as i64).map(|d| d.format(ws.settings.time_format()).to_string()).unwrap_or_default())),
         None if ws.dnd.active(now as f64) => parts.push("🔕".into()),
         None => {}
     }
@@ -133,7 +133,7 @@ pub fn person_lines(ws: &Workspace, u: &User, now: i64) -> Vec<Line<'static>> {
             .profile
             .status_expiration
             .filter(|t| *t > 0)
-            .and_then(|t| Local.timestamp_opt(t, 0).single())
+            .and_then(|t| super::clock::at(t))
             .map(|t| format!(" (until {})", t.format(&format!("%a {}", ws.settings.time_format()))))
             .unwrap_or_default();
         out.push(field("Status", format!("{emoji}{}{until}", u.profile.status_text)));

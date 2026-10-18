@@ -1,7 +1,6 @@
 //! Preferences (F6): local settings by category; a change applies at once and is saved
 //! to settings.toml.
 
-use chrono::Local;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -28,6 +27,7 @@ pub enum Field {
     EmojiAsNames,
     Clock24,
     DateFormat,
+    TimeZone,
     Desktop,
     /// Slack: the level for the conversation on screen.
     ConversationLevel,
@@ -54,7 +54,7 @@ pub const CATEGORIES: &[(&str, &[Field])] = &[
     ("Availability", &[Field::Status, Field::Away, Field::Pause]),
     ("Appearance", &[Field::Theme, Field::Compact]),
     ("Messages & media", &[Field::InlineImages, Field::Avatars, Field::EmojiAsNames]),
-    ("Language & region", &[Field::Clock24, Field::DateFormat]),
+    ("Language & region", &[Field::Clock24, Field::DateFormat, Field::TimeZone]),
     ("Notifications", &[Field::Desktop, Field::ConversationLevel, Field::ChannelDefault, Field::Keywords, Field::Vips]),
     ("Audio", &[Field::Input, Field::Output]),
 ];
@@ -78,6 +78,7 @@ impl Field {
             Field::EmojiAsNames => "Show emoji as :names:",
             Field::Clock24 => "24-hour clock",
             Field::DateFormat => "Date format",
+            Field::TimeZone => "Time zone",
             Field::Desktop => "Desktop notifications",
             Field::ConversationLevel => "This conversation notifies about",
             Field::ChannelDefault => "Channels notify about (default)",
@@ -111,7 +112,9 @@ impl Field {
             Field::Avatars => yes(s.messages.avatars),
             Field::EmojiAsNames => yes(s.messages.emoji_as_names),
             Field::Clock24 => yes(s.region.clock_24h),
-            Field::DateFormat => Local::now().format(&s.region.date_format).to_string(),
+            Field::DateFormat => super::clock::now().format(&s.region.date_format).to_string(),
+            Field::TimeZone if s.region.timezone.is_empty() => format!("system ({})", super::clock::now().format("%:z")),
+            Field::TimeZone => format!("{} ({})", s.region.timezone, super::clock::now().format("%H:%M")),
             Field::Desktop => yes(s.notifications.desktop),
             Field::ConversationLevel => match current {
                 Some(c) => {
@@ -133,9 +136,9 @@ impl Field {
             }
             Field::Away => yes(ws.presence.get(&ws.self_id) == Some(&false)),
             Field::Pause => {
-                let now = Local::now().timestamp() as f64;
+                let now = super::clock::now().timestamp() as f64;
                 match ws.dnd.snooze_until.filter(|t| *t > now) {
-                    Some(t) => chrono::TimeZone::timestamp_opt(&Local, t as i64, 0).single().map(|d| format!("until {}", d.format(s.time_format()))).unwrap_or_default(),
+                    Some(t) => super::clock::at(t as i64).map(|d| format!("until {}", d.format(s.time_format()))).unwrap_or_default(),
                     None => "no".into(),
                 }
             }
@@ -162,6 +165,7 @@ impl Field {
             }
         };
         match self {
+            Field::TimeZone => {}
             Field::Theme => {
                 s.appearance.theme = super::theme::next(&s.appearance.theme).into();
                 super::theme::set(&s.appearance.theme);
@@ -257,6 +261,17 @@ impl Prefs {
                 self.capturing = Some(Vec::new());
                 None
             }
+            // A text field: Enter starts editing, Enter again applies (the caller saves).
+            Field::TimeZone => {
+                match self.editing.take() {
+                    Some(text) => match super::clock::set(&text) {
+                        Ok(()) => ws.settings.region.timezone = text.trim().to_string(),
+                        Err(e) => self.saved = Some(Err(e)),
+                    },
+                    None => self.editing = Some(ws.settings.region.timezone.clone()),
+                }
+                None
+            }
             Field::ConversationLevel => {
                 let channel = current?.to_string();
                 let mpim = ws.conversations.get(&channel).is_some_and(|c| c.is_mpim);
@@ -277,7 +292,7 @@ impl Prefs {
             Field::Away => Some(SlackChange::Command(if ws.presence.get(&ws.self_id) == Some(&false) { "/active" } else { "/away" }.into())),
             Field::Pause => {
                 // Step from the pause in effect (rounded to an offered length) to the next.
-                let now = Local::now().timestamp() as f64;
+                let now = super::clock::now().timestamp() as f64;
                 let left = ws.dnd.snooze_until.filter(|t| *t > now).map_or(0, |t| ((t - now) / 60.0).round() as u64);
                 let i = PAUSES.iter().position(|m| *m >= left && (*m == 0) == (left == 0)).unwrap_or(0);
                 Some(SlackChange::Command(match PAUSES[(i + 1) % PAUSES.len()] {
@@ -427,9 +442,9 @@ mod tests {
         assert_eq!(p.change(&mut ws, None), Some(SlackChange::Command("/active".into())));
         p.selected = 2;
         assert_eq!(p.change(&mut ws, None), Some(SlackChange::Command("/dnd 30m".into())), "not paused → 30 minutes");
-        ws.dnd.snooze_until = Some(Local::now().timestamp() as f64 + 29.6 * 60.0);
+        ws.dnd.snooze_until = Some(crate::tui::clock::now().timestamp() as f64 + 29.6 * 60.0);
         assert_eq!(p.change(&mut ws, None), Some(SlackChange::Command("/dnd 60m".into())), "30 min left → an hour");
-        ws.dnd.snooze_until = Some(Local::now().timestamp() as f64 + 470.0 * 60.0);
+        ws.dnd.snooze_until = Some(crate::tui::clock::now().timestamp() as f64 + 470.0 * 60.0);
         assert_eq!(p.change(&mut ws, None), Some(SlackChange::Command("/dnd off".into())), "the longest → off");
         p.selected = 0;
         assert_eq!(p.change(&mut ws, None), None, "Enter edits the status");

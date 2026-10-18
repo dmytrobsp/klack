@@ -1,6 +1,6 @@
 //! Message timeline rendering and scrolling.
 
-use chrono::{Local, TimeZone};
+
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -234,15 +234,15 @@ fn add_gutter(lines: &mut [Line<'static>], owners: &[Option<String>], own: &std:
 }
 
 fn day_label(ws: &Workspace, ts: f64) -> String {
-    Local.timestamp_opt(ts as i64, 0).single().map(|d| d.format(&ws.settings.region.date_format).to_string()).unwrap_or_default()
+    super::clock::at(ts as i64).map(|d| d.format(&ws.settings.region.date_format).to_string()).unwrap_or_default()
 }
 
 fn time_label(ws: &Workspace, ts: f64) -> String {
-    Local.timestamp_opt(ts as i64, 0).single().map(|d| d.format(ws.settings.time_format()).to_string()).unwrap_or_default()
+    super::clock::at(ts as i64).map(|d| d.format(ws.settings.time_format()).to_string()).unwrap_or_default()
 }
 
 fn same_day(a: f64, b: f64) -> bool {
-    let d = |t: f64| Local.timestamp_opt(t as i64, 0).single().map(|d| d.date_naive());
+    let d = |t: f64| super::clock::at(t as i64).map(|d| d.date_naive());
     d(a) == d(b)
 }
 

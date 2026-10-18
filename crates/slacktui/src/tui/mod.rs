@@ -4,6 +4,7 @@ pub mod activity;
 pub mod autocomplete;
 pub mod call;
 pub mod clipboard;
+pub mod clock;
 pub mod commands;
 pub mod composer;
 pub mod details;

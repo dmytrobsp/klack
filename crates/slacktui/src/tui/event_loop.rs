@@ -364,11 +364,11 @@ impl App {
             }
             Command::Status { emoji, text, expiry } => {
                 use super::commands::Expiry;
-                let now = chrono::Local::now();
+                let now = super::clock::now();
                 let expiration = match expiry {
                     Expiry::Never => 0,
                     Expiry::Minutes(m) => now.timestamp() + m as i64 * 60,
-                    Expiry::Today => (now.date_naive() + chrono::Days::new(1)).and_hms_opt(0, 0, 0).and_then(|t| t.and_local_timezone(chrono::Local).earliest()).map_or(0, |t| t.timestamp()),
+                    Expiry::Today => (now.date_naive() + chrono::Days::new(1)).and_hms_opt(0, 0, 0).and_then(|t| t.and_local_timezone(*now.offset()).earliest()).map_or(0, |t| t.timestamp()),
                 };
                 let done = if text.is_empty() && emoji.is_empty() { "status cleared".to_string() } else { "status set".to_string() };
                 self.spawn_simple(done, async move |client: Client| client.set_status(&emoji, &text, expiration).await);
@@ -981,9 +981,13 @@ impl App {
         let current = self.current.clone();
         let Some(p) = self.prefs.as_mut() else { return };
         let on_slack = p.on_slack();
+        p.saved = None;
         let change = p.change(&mut self.ws, current.as_deref());
         if !on_slack {
-            p.saved = Some(super::settings::save(&self.ws.settings).map(|path| path.display().to_string()));
+            // A refused value (e.g. an unknown time zone) keeps its message and is not saved.
+            if p.saved.is_none() && p.editing.is_none() {
+                p.saved = Some(super::settings::save(&self.ws.settings).map(|path| path.display().to_string()));
+            }
             return;
         }
         let Some(change) = change else { return };
@@ -1439,6 +1443,10 @@ pub async fn run(profile: slack_core::session::Profile, team: Option<&str>) -> R
         // Read again on every switch, so changes made in the preferences carry over.
         let (settings, settings_problem) = super::settings::load();
         super::theme::set(&settings.appearance.theme);
+        let mut settings_problem = settings_problem;
+        if let Err(e) = super::clock::set(&settings.region.timezone) {
+            settings_problem.get_or_insert(e);
+        }
         // Keys may have been rebound in the preferences meanwhile.
         let mut keymap = super::keymap::load_user();
         keymap.1.extend(settings_problem);

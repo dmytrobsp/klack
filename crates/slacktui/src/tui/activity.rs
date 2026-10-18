@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use chrono::{Local, TimeZone};
+
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -157,9 +157,9 @@ impl Activity {
 }
 
 fn when(ws: &Workspace, t: f64) -> String {
-    let Some(d) = Local.timestamp_opt(t as i64, 0).single() else { return String::new() };
+    let Some(d) = super::clock::at(t as i64) else { return String::new() };
     let time = ws.settings.time_format();
-    if d.date_naive() == Local::now().date_naive() { d.format(time).to_string() } else { d.format(&format!("%b %-d {time}")).to_string() }
+    if d.date_naive() == super::clock::now().date_naive() { d.format(time).to_string() } else { d.format(&format!("%b %-d {time}")).to_string() }
 }
 
 /// "Bob mentioned you in #general · 14:02" and the like.

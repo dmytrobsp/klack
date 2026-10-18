@@ -52,11 +52,13 @@ pub struct Region {
     pub clock_24h: bool,
     /// Day separators, as a strftime pattern.
     pub date_format: String,
+    /// IANA time zone for shown times (e.g. `Europe/Kyiv`); empty: the system's.
+    pub timezone: String,
 }
 
 impl Default for Region {
     fn default() -> Self {
-        Region { clock_24h: true, date_format: "%A, %B %-d".into() }
+        Region { clock_24h: true, date_format: "%A, %B %-d".into(), timezone: String::new() }
     }
 }
 

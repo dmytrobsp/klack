@@ -1,6 +1,5 @@
 //! Conversation details overlay (F2): about, members, pinned messages.
 
-use chrono::{Local, TimeZone};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -111,7 +110,7 @@ fn about(ws: &Workspace, conv: Option<&Conversation>) -> Vec<Line<'static>> {
     let purpose = plain(&c.purpose.value);
     out.push(field("Topic", if topic.is_empty() { "—".into() } else { topic }));
     out.push(field("Purpose", if purpose.is_empty() { "—".into() } else { purpose }));
-    if let Some(created) = c.created.and_then(|t| Local.timestamp_opt(t as i64, 0).single()) {
+    if let Some(created) = c.created.and_then(|t| super::clock::at(t as i64)) {
         out.push(field("Created", created.format("%B %e, %Y").to_string()));
     }
     if let Some(s) = ws.section_of(&c.id) {
@@ -137,7 +136,7 @@ fn member_line(ws: &Workspace, id: &str) -> Line<'static> {
 }
 
 fn pin_line(ws: &Workspace, m: &Message, width: usize) -> Line<'static> {
-    let when = Local.timestamp_opt(m.time() as i64, 0).single().map(|d| d.format("%b %e").to_string()).unwrap_or_default();
+    let when = super::clock::at(m.time() as i64).map(|d| d.format("%b %e").to_string()).unwrap_or_default();
     let body = slack_core::format::plain_text(&slack_core::format::message_blocks(&m.text, &m.blocks), &|i| text::inline_plain(ws, i)).replace('\n', " ");
     let author = ws.author(m);
     let room = width.saturating_sub(author.chars().count() + when.chars().count() + 6);
