@@ -67,9 +67,6 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Some(Command::Ctl { cmd }) => ctl::run(&cli.profile, cli.team.as_deref(), cmd).await,
-        None => {
-            eprintln!("The interactive UI is not built yet; use `slacktui ctl --help`.");
-            Ok(())
-        }
+        None => tui::event_loop::run().await,
     }
 }
