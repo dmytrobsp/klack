@@ -166,17 +166,23 @@ G. Agreed with the user on 2026-10-19 after queue F ("proceed with proposed orde
   G3. ~~Drafts typed since the last conversation switch are lost on a crash~~ — done (saved 2 s after typing pauses).
 
 H. Added by the user on 2026-10-19 (after queue G), in this order:
-  H1. Separation: move slacktui into a standalone project that neither relies on nor references slack-rea or
-      rslack (its own repository; the RE notes and tools it needs come along or are rewritten for it).
-  H2. Rebranding: an existing open-source Go client is already called `slack-tui`; choose a distinct name
-      (propose candidates to the user) and change docs, comments and code to it.
+  H1 (NEXT). Separation: move slacktui into a standalone project that neither relies on nor references slack-rea or
+      rslack (its own repository; the RE notes and tools it needs come along or are rewritten for it). Decided
+      2026-10-19: `~/projects/klack`, git history kept; carry the relevant Claude project memories over to the
+      new project's memory folder (the user asked).
+  H2. Rebranding: an existing project is already called `slack-tui` (github.com/bmalbusca/slack-tui; also
+      kurenn/slack-tui in Go); the user chose **klack** (2026-10-19: one syllable, rhymes with Slack, Rust's crab
+      clacks its claws, keys clack in a terminal; free on crates.io, no project found). Change docs, comments,
+      code, binary, crate and config paths (`ProjectDirs` qualifier `io.github.rslack.slacktui` → klack's, with a
+      move of existing config/cache/drafts) to it.
   H3. Contribution: make sure it does not depend on this machine's setup and builds and runs elsewhere
       (documented prerequisites, no hard-coded paths, clean-checkout build in a fresh container).
       Compatibility (added by the user on 2026-10-19, folded into H3 and H5): the application must launch
       reliably on other setups too — other distributions and desktops (X11/Wayland, no PipeWire, no D-Bus
       notifications, no audio device), terminals (graphics or not), locales; it degrades with a clear message
       instead of failing. H3 covers building from source, H5 the shipped binaries on each platform.
-  H4. UI pass: study the Go `slack-tui` project's interface and lift good design decisions from it.
+  H4. UI pass: study the interface of github.com/gammons/slk (the client the user meant; not slack-tui) and
+      lift good design decisions from it.
   H5. Distribution: push to GitHub, set up CI, and work out distribution for Linux, Windows and macOS (the
       push and the repository's name/visibility need the user's go-ahead first).
 
