@@ -26,6 +26,8 @@ enum Net {
     History { channel: String, page: HistoryPage, older: bool },
     /// Our own message, as returned by chat.postMessage.
     Posted { channel: String, message: slack_core::types::Message },
+    /// A permalink to copy.
+    Permalink(String),
     /// An optimistic change failed: put the original message back.
     Restore { channel: String, message: slack_core::types::Message, error: String },
     Error(String),
@@ -39,6 +41,7 @@ enum Focus {
 }
 
 struct App {
+    clipboard: super::clipboard::Clipboard,
     /// Message (channel, ts) awaiting y/n delete confirmation.
     confirm_delete: Option<(String, String)>,
     /// Open reaction picker, with the message it targets.
@@ -249,6 +252,28 @@ impl App {
         });
     }
 
+    /// Copy message `ts` of the current conversation as plain text.
+    fn copy_text(&mut self, ts: &str) {
+        let Some(m) = self.current.as_deref().and_then(|c| self.ws.timelines.get(c)).and_then(|t| t.messages.iter().find(|m| m.ts == ts)) else { return };
+        let ws = &self.ws;
+        let text = slack_core::format::plain_text(&slack_core::format::message_blocks(&m.text, &m.blocks), &|i| super::text::inline_plain(ws, i));
+        let how = self.clipboard.copy(&text);
+        self.status = format!("copied message text to the {how}");
+    }
+
+    /// Fetch the permalink of message `ts` and copy it when it arrives.
+    fn copy_permalink(&mut self, ts: &str) {
+        let Some(channel) = self.current.clone() else { return };
+        let (client, tx, ts) = (self.client.clone(), self.net.clone(), ts.to_string());
+        tokio::spawn(async move {
+            let msg = match client.permalink(&channel, &ts).await {
+                Ok(url) => Net::Permalink(url),
+                Err(e) => Net::Error(format!("permalink failed: {e}")),
+            };
+            let _ = tx.send(msg);
+        });
+    }
+
     /// Load older history once the top is visible.
     fn maybe_load_older(&mut self) {
         if let Some(id) = self.current.clone() {
@@ -275,6 +300,7 @@ pub async fn run(client: Client) -> Result<()> {
     spawn_boot(client.clone(), net_tx.clone());
     let mut rtm = slack_core::rtm::spawn(client.clone());
     let mut app = App {
+        clipboard: Default::default(),
         confirm_delete: None,
         picker: None,
         rtm_commands: rtm.commands.clone(),
@@ -319,6 +345,7 @@ pub async fn run(client: Client) -> Result<()> {
             app.mark_current_read();
         }
     }
+    app.clipboard.hand_off();
     Ok(())
 }
 
@@ -437,6 +464,16 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
                         KeyCode::Char('e') => {
                             if let Some(ts) = app.messages.selected.clone() {
                                 app.start_edit(&ts);
+                            }
+                        }
+                        KeyCode::Char('y') => {
+                            if let Some(ts) = app.messages.selected.clone() {
+                                app.copy_text(&ts);
+                            }
+                        }
+                        KeyCode::Char('Y') => {
+                            if let Some(ts) = app.messages.selected.clone() {
+                                app.copy_permalink(&ts);
                             }
                         }
                         KeyCode::Char('d') => {
@@ -563,6 +600,10 @@ fn handle_net(app: &mut App, msg: Net) {
         }
         Net::Posted { channel, message } => {
             app.ws.timelines.entry(channel).or_default().upsert(message);
+        }
+        Net::Permalink(url) => {
+            let how = app.clipboard.copy(&url);
+            app.status = format!("copied link to the {how}");
         }
         Net::Restore { channel, message, error } => {
             app.ws.timelines.entry(channel).or_default().upsert(message);

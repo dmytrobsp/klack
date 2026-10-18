@@ -18,7 +18,7 @@ image = "0.25"
 futures-util = "0.3.34"
 notify-rust = "4.18.2"
 unicode-width = "0.2.2"
-arboard = "3.7.0"
+arboard = { version = "3.7.0", features = ["wayland-data-control"] }
 ratatui = "0.30"
 crossterm = { version = "0.29", features = ["event-stream"] }
 emojis = "0.9.1"
