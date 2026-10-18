@@ -226,7 +226,7 @@ pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
                     }
                     ev = session.events.recv() => match ev {
                         Some(SessionEvent::Ended) | None => { println!("session ended"); break; }
-                        Some(SessionEvent::Speaking(_)) => {}
+                        Some(SessionEvent::Levels(_)) => {}
                         Some(ev) => println!("{ev:?}"),
                     },
                     Some(pcm) = session.audio.recv() => {

@@ -32,14 +32,24 @@ impl Participant {
     }
 }
 
+/// Levels from here up count as speaking.
+pub const SPEAKING: f32 = 0.1;
+
+/// An attendee's speaking level (0–1) from the `volume` of its audio metadata, which is
+/// dB below full scale: the Chime SDK maps -14 dB and louder to 1 and -42 dB to 0.
+pub fn level(volume: Option<u32>) -> f32 {
+    volume.map_or(0.0, |v| ((42.0 - v as f32) / 28.0).clamp(0.0, 1.0))
+}
+
 #[derive(Debug, Clone)]
 pub enum SessionEvent {
     /// Media connected: audio flows.
     Connected,
     /// Who is in the huddle (keyed by audio stream id).
     Roster(Vec<Participant>),
-    /// Audio stream ids currently above the speaking threshold.
-    Speaking(Vec<String>),
+    /// Speaking levels (0–1) of the attendees in the last audio metadata frame, by
+    /// attendee id; attendees left out are silent.
+    Levels(Vec<(String, f32)>),
     Error(String),
     /// The session ended (left, kicked or failed).
     Ended,
@@ -165,8 +175,13 @@ async fn run(
                     let _ = events.send(SessionEvent::Roster(roster.values().cloned().collect()));
                 }
                 if let Some(meta) = &frame.audio_metadata {
-                    let speaking: Vec<String> = meta.attendee_states.iter().filter(|s| s.volume.unwrap_or(0) > 0 && s.muted != Some(true)).filter_map(|s| s.audio_stream_id.and_then(|id| roster.get(&id)).map(|p| p.attendee_id.clone())).collect();
-                    let _ = events.send(SessionEvent::Speaking(speaking));
+                    let levels: Vec<(String, f32)> = meta
+                        .attendee_states
+                        .iter()
+                        .filter(|s| s.muted != Some(true))
+                        .filter_map(|s| s.audio_stream_id.and_then(|id| roster.get(&id)).map(|p| (p.attendee_id.clone(), level(s.volume))))
+                        .collect();
+                    let _ = events.send(SessionEvent::Levels(levels));
                 }
                 if let Some(e) = &frame.error {
                     return Err(anyhow!("signaling error {:?}: {}", e.status, e.description.clone().unwrap_or_default()));
@@ -239,6 +254,16 @@ fn audio_session_id() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn levels_like_the_sdk() {
+        assert_eq!(level(None), 0.0);
+        assert_eq!(level(Some(0)), 1.0);
+        assert_eq!(level(Some(14)), 1.0);
+        assert!((level(Some(28)) - 0.5).abs() < 1e-6);
+        assert_eq!(level(Some(42)), 0.0);
+        assert_eq!(level(Some(90)), 0.0);
+    }
 
     #[test]
     fn roster_follows_stream_info() {

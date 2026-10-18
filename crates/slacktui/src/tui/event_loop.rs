@@ -1566,6 +1566,8 @@ async fn run_workspace(
 
     let mut tick = tokio::time::interval(Duration::from_millis(500));
     let mut video_tick = tokio::time::interval(Duration::from_millis(40));
+    // Redraws the call bar's level meters.
+    let mut call_tick = tokio::time::interval(Duration::from_millis(100));
     loop {
         terminal.draw(|f| draw(f, &mut app))?;
         app.request_thumbs();
@@ -1593,6 +1595,7 @@ async fn run_workspace(
                 }
             }
             _ = tick.tick() => {}
+            _ = call_tick.tick(), if app.call.is_some() => {}
             _ = video_tick.tick(), if app.player.is_some() => {
                 if let Some(p) = app.player.as_mut() {
                     p.advance();

@@ -1,6 +1,5 @@
 //! The huddle you are in: session state, audio devices and the call bar.
 
-use std::collections::HashSet;
 
 use huddle::devices::{Microphone, Speaker};
 use huddle::session::{Participant, PcmSink, Session, SessionEvent};
@@ -21,8 +20,10 @@ pub struct Call {
     input: Option<String>,
     pub session: Session,
     pub roster: Vec<Participant>,
-    /// Attendee ids currently speaking.
-    pub speaking: HashSet<String>,
+    /// Speaking levels (0–1) by attendee id, from the meeting.
+    pub levels: std::collections::HashMap<String, f32>,
+    /// Our own microphone level while unmuted (f32 bits), measured locally.
+    mic_level: std::sync::Arc<std::sync::atomic::AtomicU32>,
     pub muted: bool,
     pub connected: bool,
     sink: PcmSink,
@@ -30,6 +31,13 @@ pub struct Call {
     mic: Option<Microphone>,
     /// Why there is no sound, if the speaker could not be opened.
     pub speaker_error: Option<String>,
+}
+
+/// A four-bar level meter ("▂▄▆█" when loud, "▂···" when quiet).
+pub fn meter(level: f32) -> String {
+    const BARS: [char; 4] = ['▂', '▄', '▆', '█'];
+    const STEPS: [f32; 4] = [0.02, 0.3, 0.55, 0.8];
+    BARS.iter().zip(STEPS).map(|(b, s)| if level >= s { *b } else { '·' }).collect()
 }
 
 impl Call {
@@ -54,14 +62,18 @@ impl Call {
                 Some(e.to_string())
             }
         };
-        Call { channel, thread: None, input: devices.0, session, roster: Vec::new(), speaking: HashSet::new(), muted: true, connected: false, sink, mic: None, speaker_error }
+        Call { channel, thread: None, input: devices.0, session, roster: Vec::new(), levels: Default::default(), mic_level: Default::default(), muted: true, connected: false, sink, mic: None, speaker_error }
     }
 
     /// Toggle the microphone; opening it can fail (no device, no permission).
     pub fn toggle_mute(&mut self) -> anyhow::Result<()> {
         if self.muted {
             let sink = self.sink.clone();
-            self.mic = Some(Microphone::start(self.input.clone(), move |frame| sink.send(frame))?);
+            let level = self.mic_level.clone();
+            self.mic = Some(Microphone::start(self.input.clone(), move |frame| {
+                level.store(huddle::devices::frame_level(&frame).to_bits(), std::sync::atomic::Ordering::Relaxed);
+                sink.send(frame)
+            })?);
             self.muted = false;
         } else {
             self.mic = None;
@@ -81,7 +93,7 @@ impl Call {
         match ev {
             SessionEvent::Connected => self.connected = true,
             SessionEvent::Roster(r) => self.roster = r,
-            SessionEvent::Speaking(s) => self.speaking = s.into_iter().collect(),
+            SessionEvent::Levels(l) => self.levels = l.into_iter().collect(),
             SessionEvent::Error(e) => tracing::warn!("huddle: {e}"),
             SessionEvent::Ended => return true,
         }
@@ -101,13 +113,16 @@ impl Call {
             if n > 0 {
                 spans.push(Span::raw(", "));
             }
-            let name = ws.person_label(p.user_id());
-            let style = if self.speaking.contains(&p.attendee_id) { green.add_modifier(Modifier::BOLD) } else { Style::default() };
-            spans.push(Span::styled(name, style));
-            if p.muted {
+            let me = p.user_id() == ws.self_id;
+            // Our own level comes from the microphone at once; others' from the meeting.
+            let level = if me && !self.muted { f32::from_bits(self.mic_level.load(std::sync::atomic::Ordering::Relaxed)) } else { self.levels.get(&p.attendee_id).copied().unwrap_or(0.0) };
+            let speaking = level >= huddle::session::SPEAKING;
+            let style = if speaking { green.add_modifier(Modifier::BOLD) } else { Style::default() };
+            spans.push(Span::styled(ws.person_label(p.user_id()), style));
+            if p.muted || (me && self.muted) {
                 spans.push(Span::styled(" 🔇", Style::default().fg(super::theme::p().dim)));
-            } else if self.speaking.contains(&p.attendee_id) {
-                spans.push(Span::styled(" 🔊", green));
+            } else {
+                spans.push(Span::styled(format!(" {}", meter(level)), if speaking { green } else { Style::default().fg(super::theme::p().dim) }));
             }
         }
         let (mute, leave, thread) = keys;
@@ -117,5 +132,16 @@ impl Call {
             spans.push(Span::styled(format!(" · no sound: {e}"), Style::default().fg(super::theme::p().danger)));
         }
         f.render_widget(Paragraph::new(Line::from(spans)).style(Style::default().bg(super::theme::p().call_bg)), area);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn meters() {
+        assert_eq!(super::meter(0.0), "····");
+        assert_eq!(super::meter(0.1), "▂···");
+        assert_eq!(super::meter(0.6), "▂▄▆·");
+        assert_eq!(super::meter(1.0), "▂▄▆█");
     }
 }

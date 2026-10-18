@@ -160,6 +160,17 @@ impl Microphone {
     }
 }
 
+/// Loudness of a frame as a level (0–1): its RMS in dBFS mapped from -50 dB (0) to
+/// -10 dB (1), roughly how the meeting reports speakers.
+pub fn frame_level(frame: &[i16]) -> f32 {
+    if frame.is_empty() {
+        return 0.0;
+    }
+    let mean = frame.iter().map(|s| (*s as f32 / i16::MAX as f32).powi(2)).sum::<f32>() / frame.len() as f32;
+    let db = 10.0 * mean.max(1e-10).log10();
+    ((db + 50.0) / 40.0).clamp(0.0, 1.0)
+}
+
 /// Speaker playback; push frames with [`Speaker::play`]; dropping it stops the stream.
 pub struct Speaker {
     queue: Arc<Mutex<VecDeque<f32>>>,
@@ -226,6 +237,16 @@ impl Speaker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frame_levels() {
+        assert_eq!(frame_level(&[0; 960]), 0.0);
+        let full: Vec<i16> = (0..960).map(|i| ((i as f32 * 0.1).sin() * i16::MAX as f32) as i16).collect();
+        assert_eq!(frame_level(&full), 1.0, "a full-scale sine (-3 dBFS) is at the top");
+        let quiet: Vec<i16> = full.iter().map(|s| s / 100).collect();
+        let l = frame_level(&quiet);
+        assert!(l > 0.0 && l < 0.4, "-43 dBFS is low: {l}");
+    }
 
     #[test]
     fn resampling_rates_and_continuity() {
