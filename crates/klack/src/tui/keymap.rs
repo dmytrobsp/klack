@@ -781,15 +781,10 @@ pub fn hint_words() -> Vec<&'static str> {
 }
 
 impl Keymap {
-    /// Status-bar hints for the active contexts ("r react · e edit · F1 help · Ctrl+K jump"):
-    /// the most specific context first, then help, then the global ones (which a narrow
-    /// window cuts off first); actions without a key are left out.
-    pub fn hints(&self, contexts: &[Context]) -> String {
-        let hint = |c: Context, (action, word): &(Action, &str)| self.first_key(c, *action).map(|k| format!("{k} {}", super::i18n::tr(word)));
-        let mut parts: Vec<String> = contexts.iter().rev().filter(|c| **c != Context::Global).flat_map(|&c| hints_for(c).iter().filter_map(move |h| hint(c, h))).collect();
-        parts.extend(hint(Context::Global, &(Action::Help, "help")));
-        parts.extend(hints_for(Context::Global).iter().filter_map(|h| hint(Context::Global, h)));
-        parts.join(" · ")
+    /// One context's own key hints ("y yes · n no"), for the status bar while a dialog is open;
+    /// actions without a key are left out.
+    pub fn context_hints(&self, context: Context) -> String {
+        hints_for(context).iter().filter_map(|(action, word)| self.first_key(context, *action).map(|k| format!("{k} {}", super::i18n::tr(word)))).collect::<Vec<_>>().join(" · ")
     }
 }
 
@@ -945,11 +940,11 @@ mod tests {
     #[test]
     fn hints_follow_context_and_bindings() {
         let (map, _) = Keymap::load("[messages]\nreact = \"R\"\nedit = []\n");
-        let h = map.hints(&[Context::Global, Context::Messages]);
+        let h = map.context_hints(Context::Messages);
         assert!(h.starts_with("Enter thread · R react · u profile"), "{h}");
         assert!(!h.contains("edit"), "unbound actions get no hint: {h}");
-        assert!(h.ends_with("Esc back · F1 help · Ctrl+K jump · Ctrl+F search · Tab focus"), "{h}");
-        assert_eq!(map.hints(&[Context::Global, Context::Confirm]), "y yes · F1 help · Ctrl+K jump · Ctrl+F search · Tab focus");
+        assert!(h.ends_with("Esc back"), "only the context's own keys: {h}");
+        assert_eq!(map.context_hints(Context::Confirm), "y yes");
     }
 
     #[test]

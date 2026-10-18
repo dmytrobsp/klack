@@ -3129,13 +3129,14 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     if let Some(s) = app.snippet.as_mut() {
         s.draw(f, body);
     }
-    let mut live = if app.connected { "● live" } else { "○ connecting" }.to_string();
+    // Before the connection, at the right: a key chord under way, your availability.
+    let mut extras = String::new();
     if !app.pending.is_empty() {
-        live = format!("{live} · {} …", super::keymap::sequence_label(&app.pending));
+        extras.push_str(&format!("{} … · ", super::keymap::sequence_label(&app.pending)));
     }
     let me = super::profile::availability(&app.ws, chrono::Utc::now().timestamp());
     if !me.is_empty() {
-        live = format!("{live} · {me}");
+        extras.push_str(&format!("{me} · "));
     }
     let (unread, mentions) = app.ws.total_unread();
     let others = super::others::label(&app.others.lock().unwrap_or_else(|e| e.into_inner()), app.workspace);
@@ -3174,8 +3175,92 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     if let Some(h) = app.help.as_mut() {
         h.draw(f, body, &app.keys);
     }
-    let hints = app.keys.hints(&app.active_contexts());
-    f.render_widget(Paragraph::new(format!(" {live} · {info} · {hints}")), status);
+    // The status bar (from slk): where keys go, the breadcrumb, what is going on, the way to
+    // the keys and the connection.
+    let contexts = app.active_contexts();
+    let top = contexts.last().copied().unwrap_or(Context::Global);
+    let (pill, typing) = mode_label(top, app.focus, app.composer.editing.is_some());
+    let mut crumb = app.current.as_deref().and_then(|c| app.ws.conversations.get(c)).map(|c| if c.is_dm() { app.ws.conversation_label(c) } else { format!("#{}", c.name) }).unwrap_or_default();
+    match app.focus {
+        Focus::Thread | Focus::ThreadComposer if app.thread.is_some() => crumb.push_str(" › Thread"),
+        Focus::Huddle => crumb.push_str(" › Huddle"),
+        _ => {}
+    }
+    let dialog = !matches!(top, Context::Global | Context::Sidebar | Context::Messages | Context::Composer | Context::Completion | Context::Huddle);
+    let middle = if dialog && app.status.is_empty() && app.ringing.is_none() { app.keys.context_hints(top) } else { info };
+    let help = app.keys.first_key(Context::Global, Action::Help).map(|k| format!("{k} keys · ")).unwrap_or_default();
+    let p = super::theme::p();
+    let dim = ratatui::style::Style::default().fg(p.dim);
+    let right = vec![
+        ratatui::text::Span::styled(format!("{help}{extras}"), dim),
+        ratatui::text::Span::styled(if app.connected { "● live " } else { "○ connecting " }, if app.connected { ratatui::style::Style::default().fg(p.good) } else { dim }),
+    ];
+    f.render_widget(Paragraph::new(status_line(pill, typing, &crumb, &middle, right, status.width)), status);
+}
+
+/// The status bar's pill — where keys go: the open dialog, or the focused pane — and whether
+/// that is typing.
+fn mode_label(top: Context, focus: Focus, editing: bool) -> (&'static str, bool) {
+    match top {
+        Context::Menu => ("MENU", false),
+        Context::Help => ("KEYS", false),
+        Context::Preferences => ("PREFS", false),
+        Context::TextField => ("EDIT", true),
+        Context::Switcher => ("JUMP", true),
+        Context::Mover => ("SECTION", false),
+        Context::Activity => ("ACTIVITY", false),
+        Context::Profile => ("PROFILE", false),
+        Context::Details => ("DETAILS", false),
+        Context::Search => ("SEARCH", true),
+        Context::Player => ("VIDEO", false),
+        Context::Snippet => ("SNIPPET", false),
+        Context::Viewer => ("IMAGE", false),
+        Context::Confirm => ("CONFIRM", false),
+        Context::Picker => ("REACT", true),
+        _ => match focus {
+            Focus::Sidebar => ("SIDEBAR", false),
+            Focus::Huddle => ("HUDDLE", false),
+            Focus::Messages => ("MESSAGES", false),
+            Focus::Thread => ("THREAD", false),
+            Focus::ThreadComposer => ("REPLY", true),
+            Focus::Composer if editing => ("EDITING", true),
+            Focus::Composer => ("COMPOSE", true),
+        },
+    }
+}
+
+/// The status bar in `width` columns: the pill, the breadcrumb, the middle text and the right
+/// part (kept whole, at the right edge); the middle is cut first, then the breadcrumb.
+fn status_line(pill: &str, typing: bool, crumb: &str, middle: &str, right: Vec<ratatui::text::Span<'static>>, width: u16) -> ratatui::text::Line<'static> {
+    use ratatui::style::{Modifier, Style};
+    use ratatui::text::Span;
+    use unicode_width::UnicodeWidthStr;
+    let p = super::theme::p();
+    let pill = format!(" {pill} ");
+    let pill_style = Style::default().bg(if typing { p.good } else { p.accent }).fg(ratatui::style::Color::Black).add_modifier(Modifier::BOLD);
+    let right_w: usize = right.iter().map(|s| s.content.width()).sum();
+    let width = width as usize;
+    let mut room = width.saturating_sub(pill.width() + right_w + 1);
+    let cut = |s: &str, room: usize| -> String {
+        if s.width() <= room {
+            return s.to_string();
+        }
+        let mut out = String::new();
+        for c in s.chars() {
+            if out.width() + unicode_width::UnicodeWidthChar::width(c).unwrap_or(0) + 1 > room {
+                break;
+            }
+            out.push(c);
+        }
+        if room > 0 { format!("{out}…") } else { out }
+    };
+    let crumb = cut(&format!(" {crumb}"), room);
+    room = room.saturating_sub(crumb.width());
+    let middle = if middle.is_empty() || room < 6 { String::new() } else { cut(&format!("  {middle}"), room) };
+    let used = pill.width() + crumb.width() + middle.width() + right_w;
+    let mut spans = vec![Span::styled(pill, pill_style), Span::styled(crumb, Style::default().add_modifier(Modifier::BOLD)), Span::raw(middle), Span::raw(" ".repeat(width.saturating_sub(used)))];
+    spans.extend(right);
+    ratatui::text::Line::from(spans)
 }
 
 fn draw_confirm(f: &mut ratatui::Frame, area: ratatui::layout::Rect, question: &str) {
@@ -3249,6 +3334,25 @@ fn draw_composer(f: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &App,
 #[cfg(test)]
 mod tests {
     use slack_core::session::WorkspaceSession;
+
+    #[test]
+    fn status_bar_fits() {
+        use ratatui::text::Span;
+        let plain = |l: ratatui::text::Line| l.spans.iter().map(|s| s.content.to_string()).collect::<String>();
+        let right = || vec![Span::raw("F1 keys · "), Span::raw("● live ")];
+        let wide = plain(super::status_line("MESSAGES", false, "#social › Thread", "0 unread · 0 mentions", right(), 80));
+        assert!(wide.starts_with(" MESSAGES  #social › Thread  0 unread · 0 mentions"), "{wide:?}");
+        assert!(wide.ends_with("F1 keys · ● live "), "{wide:?}");
+        assert_eq!(unicode_width::UnicodeWidthStr::width(wide.as_str()), 80);
+        let narrow = plain(super::status_line("MESSAGES", false, "#a-rather-long-channel-name", "0 unread · 0 mentions", right(), 40));
+        assert_eq!(unicode_width::UnicodeWidthStr::width(narrow.as_str()), 40, "{narrow:?}");
+        assert!(narrow.contains('…') && narrow.ends_with("● live "), "the breadcrumb is cut, the right part stays: {narrow:?}");
+        assert!(!narrow.contains("unread"), "the middle goes first: {narrow:?}");
+        let tiny = plain(super::status_line("MESSAGES", false, "#social", "x", right(), 20));
+        assert!(tiny.starts_with(" MESSAGES "), "{tiny:?}");
+        assert_eq!(super::mode_label(crate::tui::keymap::Context::Confirm, super::Focus::Messages, false), ("CONFIRM", false));
+        assert_eq!(super::mode_label(crate::tui::keymap::Context::Composer, super::Focus::Composer, true), ("EDITING", true));
+    }
 
     #[test]
     fn drafts_save_after_a_pause() {

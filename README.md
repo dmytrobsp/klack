@@ -42,6 +42,15 @@ Windows from Linux: `rustup target add x86_64-pc-windows-gnu`, `apt install ming
 MinGW DLLs (`crates/klack/build.rs` links OpenH264's C++ runtime statically, `.cargo/config.toml` the C
 runtime).
 
+## The screen
+
+The sidebar on the left (sections, starred conversations, channels, direct messages), the
+messages in the middle with a reply pane for threads on the right, the composer below, and a status
+bar at the bottom: a pill saying where your keys go now (SIDEBAR, MESSAGES, COMPOSE, THREAD, REPLY,
+HUDDLE, or the open dialog: JUMP, SEARCH, PREFS, …), where you are (`#social › Thread`), unread
+counts and messages — or, while a dialog is open, its keys — then F1 for all keys and whether klack
+is connected. A thumb on a pane's right border shows where you are when it scrolls.
+
 ## Signing in
 
 - **From a browser:** sign in to Slack in your browser, copy the value of the `d` cookie for
