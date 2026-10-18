@@ -169,6 +169,19 @@ Tests: `cargo test` → slack-core 10, huddle 33, klack 161 (+1 ignored: the `bu
 
 **NEXT UP: G2b** (queue G below) — waiting for the user to install foot and WezTerm (offered 2026-10-19); then H4g (H1–H3, H4a–f done; H4 = the slk ideas below). B's test picture `g2-test.png` (F0CA1HJ6DSR) is still in #new-channel for G2b: delete it (file + message) afterwards.
 
+H4g notes (investigated, no code yet): `client.counts` entries carry `last_read` (and `has_unreads`, `latest`) for
+channels/ims/mpims — `Workspace::apply_counts` (state.rs) should also set `conversations[id].last_read`; live
+`*_marked` events already update it (live.rs). Plan: `MessagePane::new_since: Option<String>` snapshotted in
+`App::sync_current` (event_loop.rs) when the conversation changes and it `has_unreads` (before `mark_current_read`
+clears them), so the marker survives marking; in `MessagePane::draw` insert a red "— new —" line before the
+first built line owned by the first newer message that is not your own (shift `slots` and `owners` like the
+"beginning of conversation" note does); while anchored (not following), the bottom border title shows
+"↓ N newer" = shown messages after the last one on screen. Unit-test with a timeline + `new_since`; live: B posts
+two messages while A is in another conversation, then A opens the DM.
+
+Left on this machine by H3 (remove when the project wraps up, or keep for CI work): podman images
+debian:trixie, ubuntu:24.04, fedora:latest, archlinux:latest and the volume `klack-cargo-registry`.
+
 G. Agreed with the user on 2026-10-19 after queue F ("proceed with proposed order"); run autonomously, one
    verified commit per step:
   G1. ~~Far-up scrolling in a long history~~ — done, not with a cache (staleness across 26 mutation sites and
