@@ -111,6 +111,8 @@ struct App {
     profile: Option<super::profile::ProfileCard>,
     /// A `dnd.info` refresh is on its way.
     dnd_refreshing: bool,
+    /// Open preferences (F6).
+    prefs: Option<super::prefs::Prefs>,
     /// Open activity view (F5).
     activity: Option<super::activity::Activity>,
     /// Open "move to section" picker.
@@ -346,6 +348,7 @@ impl App {
             },
             Command::Dm(people) => self.open_group(people),
             Command::Star => self.toggle_star(channel),
+            Command::Prefs => self.prefs = Some(super::prefs::Prefs::new()),
             Command::Workspace(None) => {
                 let list: Vec<String> = self.workspaces.iter().enumerate().map(|(n, w)| format!("{}{} {w}", if n == self.workspace { "▸" } else { "" }, n + 1)).collect();
                 self.status = format!("workspaces (Alt+number): {}", list.join(" · "));
@@ -963,6 +966,8 @@ impl App {
     fn active_contexts(&self) -> Vec<Context> {
         let overlay = if self.help.is_some() {
             Some(Context::Help)
+        } else if self.prefs.is_some() {
+            Some(Context::Preferences)
         } else if self.switcher.is_some() {
             Some(Context::Switcher)
         } else if let Some(m) = &self.mover {
@@ -1293,6 +1298,7 @@ pub async fn run(profile: slack_core::session::Profile, team: Option<&str>) -> R
     let mut index = sessions.iter().position(|s| s.team_id == start.team_id && s.user_id == start.user_id).unwrap_or(0);
     let labels = workspace_labels(&sessions);
     let keymap = super::keymap::load_user();
+
     for w in &keymap.1 {
         tracing::warn!("{w}");
     }
@@ -1304,7 +1310,11 @@ pub async fn run(profile: slack_core::session::Profile, team: Option<&str>) -> R
     let mut events = EventStream::new();
     loop {
         let client = Client::new(sessions[index].clone())?;
-        let (next, kept_media, kept_clipboard) = run_workspace(client, (labels.clone(), index), &keymap, &mut terminal, &mut events, media, clipboard).await?;
+        // Read again on every switch, so changes made in the preferences carry over.
+        let (settings, settings_problem) = super::settings::load();
+        let mut keymap = keymap.clone();
+        keymap.1.extend(settings_problem);
+        let (next, kept_media, kept_clipboard) = run_workspace(client, (labels.clone(), index), &keymap, &settings, &mut terminal, &mut events, media, clipboard).await?;
         (media, clipboard) = (kept_media, kept_clipboard);
         match next {
             Some(i) => index = i,
@@ -1329,6 +1339,7 @@ async fn run_workspace(
     client: Client,
     workspaces: (Vec<String>, usize),
     keymap: &(Keymap, Vec<String>),
+    settings: &super::settings::Settings,
     terminal: &mut super::terminal::Tui,
     events: &mut EventStream,
     mut media: super::media::Media,
@@ -1355,6 +1366,7 @@ async fn run_workspace(
         details: None,
         profile: None,
         activity: None,
+        prefs: None,
         dnd_refreshing: false,
         mover: None,
         huddle_after_open: None,
@@ -1386,6 +1398,7 @@ async fn run_workspace(
         ws: Workspace {
             team_name,
             self_id: client.session.user_id.clone(),
+            settings: settings.clone(),
             ..Default::default()
         },
         sidebar: Sidebar::default(),
@@ -1468,6 +1481,25 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
                 Some(Action::Close) => app.help = None,
                 _ => {}
             }
+        }
+        Event::Key(k) if k.kind != KeyEventKind::Release && app.prefs.is_some() => {
+            let action = app.action_in(Context::Preferences, &k);
+            let Some(p) = app.prefs.as_mut() else { return true };
+            match action {
+                Some(Action::Close) => app.prefs = None,
+                Some(Action::Up) => p.move_by(-1),
+                Some(Action::Down) => p.move_by(1),
+                Some(Action::PrevTab) => p.switch_category(-1),
+                Some(Action::NextTab) => p.switch_category(1),
+                Some(Action::Open) => {
+                    p.change(&mut app.ws.settings);
+                    p.saved = Some(super::settings::save(&app.ws.settings).map(|path| path.display().to_string()));
+                }
+                _ => {}
+            }
+        }
+        Event::Key(k) if k.kind != KeyEventKind::Release && app.global(&k) == Some(Action::Preferences) => {
+            app.prefs = Some(super::prefs::Prefs::new());
         }
         Event::Key(k) if k.kind != KeyEventKind::Release && app.switcher.is_some() => {
             let len = app.switcher.as_ref().map(|s| s.entries(&app.ws).len()).unwrap_or(0);
@@ -1921,7 +1953,9 @@ fn handle_rtm(app: &mut App, ev: slack_core::rtm::RtmEvent) {
                 let in_it = app.call.as_ref().is_some_and(|c| c.channel == channel);
                 let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64();
                 if let Some((title, body)) = super::notify::huddle_notification(&app.ws, &channel, &user, in_it, now) {
-                    super::notify::show(title, body);
+                    if app.ws.settings.notifications.desktop {
+                        super::notify::show(title, body);
+                    }
                 }
             }
             if let Some((channel, m)) = fx.incoming {
@@ -1934,7 +1968,9 @@ fn handle_rtm(app: &mut App, ev: slack_core::rtm::RtmEvent) {
                 let note = super::notify::notification(&app.ws, &channel, &m, app.terminal_focused && in_view, now);
                 tracing::debug!(channel, ts = m.ts, in_view, focused = app.terminal_focused, dnd = ?app.ws.dnd, notify = note.is_some(), "incoming message");
                 if let Some((title, body)) = note {
-                    super::notify::show(title, body);
+                    if app.ws.settings.notifications.desktop {
+                        super::notify::show(title, body);
+                    }
                 }
             }
         }
@@ -2076,7 +2112,12 @@ fn handle_net(app: &mut App, msg: Net) {
         }
         Net::HuddleJoined { channel, thread, result } => match result {
             Ok(creds) if app.call.is_none() => {
-                let mut call = super::call::Call::start(channel, creds);
+                let audio = &app.ws.settings.audio;
+                let devices = (
+                    super::settings::Settings::device(huddle::devices::INPUT_ENV, &audio.input),
+                    super::settings::Settings::device(huddle::devices::OUTPUT_ENV, &audio.output),
+                );
+                let mut call = super::call::Call::start(channel, creds, devices);
                 call.thread = thread;
                 app.call = Some(call);
                 app.status.clear();
@@ -2254,6 +2295,9 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     }
     if let Some(m) = &app.mover {
         m.draw(f, body, &app.ws);
+    }
+    if let Some(p) = &app.prefs {
+        p.draw(f, body, &app.ws.settings);
     }
     if let Some(h) = app.help.as_mut() {
         h.draw(f, body, &app.keys);

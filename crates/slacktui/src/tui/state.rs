@@ -79,6 +79,8 @@ pub struct Workspace {
     pub starred: std::collections::HashSet<String>,
     /// Sidebar sections in display order (`users.channelSections.list`).
     pub sections: Vec<Section>,
+    /// Local preferences (settings.toml).
+    pub settings: super::settings::Settings,
 }
 
 /// A sidebar section. `kind` is Slack's type: `standard` (made by the user), `stars`,

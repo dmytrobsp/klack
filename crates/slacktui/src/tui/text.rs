@@ -52,6 +52,9 @@ pub fn user_color(id: &str) -> Color {
 
 /// Emoji shortcode (optionally with unicode hint) → display text.
 pub fn emoji(ws: &Workspace, name: &str, unicode: Option<&str>) -> String {
+    if ws.settings.messages.emoji_as_names {
+        return format!(":{name}:");
+    }
     if let Some(s) = unicode.and_then(format::decode_unicode) {
         return s;
     }

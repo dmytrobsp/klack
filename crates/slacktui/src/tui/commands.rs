@@ -13,6 +13,8 @@ pub enum Command {
     Dm(Vec<Recipient>),
     /// Star or unstar the current conversation.
     Star,
+    /// Open the preferences.
+    Prefs,
     /// List the profile's workspaces, or switch to the one matching the name.
     Workspace(Option<String>),
     /// Set your status (empty emoji and text clear it).
@@ -133,6 +135,7 @@ pub fn parse(text: &str, mrkdwn: &str) -> Option<Result<Command, String>> {
         "/join" if rest.contains(char::is_whitespace) => Err("usage: /join [#channel]".into()),
         "/join" => Ok(Command::Join(Some(rest.trim_start_matches('#').to_string()).filter(|n| !n.is_empty()))),
         "/star" if rest.is_empty() => Ok(Command::Star),
+        "/prefs" | "/preferences" if rest.is_empty() => Ok(Command::Prefs),
         "/workspace" => Ok(Command::Workspace(Some(rest.to_string()).filter(|r| !r.is_empty()))),
         "/status" => parse_status(rest),
         "/away" if rest.is_empty() => Ok(Command::Away(true)),

@@ -150,10 +150,11 @@ pub enum Context {
     Player,
     Confirm,
     Help,
+    Preferences,
 }
 
 impl Context {
-    pub const ALL: [Context; 18] = [
+    pub const ALL: [Context; 19] = [
         Context::Global,
         Context::Sidebar,
         Context::Messages,
@@ -172,6 +173,7 @@ impl Context {
         Context::Player,
         Context::Confirm,
         Context::Help,
+        Context::Preferences,
     ];
 
     /// The table name in `keys.toml`.
@@ -195,6 +197,7 @@ impl Context {
             Context::Player => "video_player",
             Context::Confirm => "confirm",
             Context::Help => "help",
+            Context::Preferences => "preferences",
         }
     }
 
@@ -219,6 +222,7 @@ impl Context {
             Context::Player => "Video player",
             Context::Confirm => "Yes / no questions",
             Context::Help => "This help",
+            Context::Preferences => "Preferences",
         }
     }
 
@@ -244,6 +248,7 @@ pub enum Action {
     Huddle,
     Mute,
     Activity,
+    Preferences,
     PrevConversation,
     NextConversation,
     ScrollUp,
@@ -334,6 +339,7 @@ actions! {
         Huddle "huddle" "join or leave the huddle" ["f3"]
         Mute "mute" "mute or unmute in the huddle" ["f4"]
         Activity "activity" "mentions, reactions, threads" ["f5"]
+        Preferences "preferences" "preferences" ["f6"]
         PrevConversation "previous_conversation" "previous conversation" ["alt+up"]
         NextConversation "next_conversation" "next conversation" ["alt+down"]
         ScrollUp "scroll_up" "scroll messages up" ["pageup"]
@@ -489,6 +495,14 @@ actions! {
     }
     Confirm {
         Yes "yes" "confirm (any other key: no)" ["y", "Y"]
+    }
+    Preferences {
+        Up "up" "previous setting" ["up", "k"]
+        Down "down" "next setting" ["down", "j"]
+        PrevTab "previous_category" "previous category" ["left", "h", "shift+tab"]
+        NextTab "next_category" "next category" ["right", "l", "tab"]
+        Open "change" "change the setting" ["enter", "space"]
+        Close "close" "close" ["esc", "q", "f6"]
     }
     Help {
         Up "up" "scroll up" ["up", "k"]
@@ -678,6 +692,7 @@ pub fn hints_for(context: Context) -> &'static [(Action, &'static str)] {
         Context::Player => &[(Pause, "pause"), (Close, "stop")],
         Context::Confirm => &[(Yes, "yes")],
         Context::Help => &[(PageDown, "page"), (Close, "close")],
+        Context::Preferences => &[(Open, "change"), (NextTab, "category"), (Close, "close")],
     }
 }
 

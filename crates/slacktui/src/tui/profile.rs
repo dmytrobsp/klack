@@ -97,7 +97,7 @@ pub fn availability(ws: &Workspace, now: i64) -> String {
         parts.push("away".into());
     }
     match ws.dnd.snooze_until.filter(|t| *t > now as f64) {
-        Some(t) => parts.push(format!("🔕 until {}", Local.timestamp_opt(t as i64, 0).single().map(|d| d.format("%H:%M").to_string()).unwrap_or_default())),
+        Some(t) => parts.push(format!("🔕 until {}", Local.timestamp_opt(t as i64, 0).single().map(|d| d.format(ws.settings.time_format()).to_string()).unwrap_or_default())),
         None if ws.dnd.active(now as f64) => parts.push("🔕".into()),
         None => {}
     }
@@ -109,9 +109,9 @@ pub fn field(label: &str, value: String) -> Line<'static> {
 }
 
 /// Their local time at `now` (epoch seconds), e.g. `16:05 · Eastern European Summer Time`.
-pub fn local_time(u: &User, now: i64) -> Option<String> {
+pub fn local_time(u: &User, now: i64, time_format: &str) -> Option<String> {
     let offset = FixedOffset::east_opt(u.tz_offset? as i32)?;
-    let time = offset.timestamp_opt(now, 0).single()?.format("%H:%M").to_string();
+    let time = offset.timestamp_opt(now, 0).single()?.format(time_format).to_string();
     let label = u.tz_label.clone().or_else(|| u.tz.clone()).unwrap_or_default();
     Some(if label.is_empty() { time } else { format!("{time} · {label}") })
 }
@@ -135,11 +135,11 @@ pub fn person_lines(ws: &Workspace, u: &User, now: i64) -> Vec<Line<'static>> {
             .status_expiration
             .filter(|t| *t > 0)
             .and_then(|t| Local.timestamp_opt(t, 0).single())
-            .map(|t| format!(" (until {})", t.format("%a %H:%M")))
+            .map(|t| format!(" (until {})", t.format(&format!("%a {}", ws.settings.time_format()))))
             .unwrap_or_default();
         out.push(field("Status", format!("{emoji}{}{until}", u.profile.status_text)));
     }
-    if let Some(t) = local_time(u, now) {
+    if let Some(t) = local_time(u, now, ws.settings.time_format()) {
         out.push(field("Local time", t));
     }
     let presence = match ws.presence.get(&u.id) {
@@ -172,8 +172,9 @@ mod tests {
     fn local_time_uses_the_offset() {
         let u = User { tz_offset: Some(3 * 3600), tz_label: Some("Eastern European Summer Time".into()), ..Default::default() };
         // 2026-10-18 12:00 UTC
-        assert_eq!(local_time(&u, 1_792_324_800).as_deref(), Some("15:00 · Eastern European Summer Time"));
-        assert_eq!(local_time(&User::default(), 0), None);
+        assert_eq!(local_time(&u, 1_792_324_800, "%H:%M").as_deref(), Some("15:00 · Eastern European Summer Time"));
+        assert_eq!(local_time(&u, 1_792_324_800, "%-I:%M %p").as_deref(), Some("3:00 PM · Eastern European Summer Time"));
+        assert_eq!(local_time(&User::default(), 0, "%H:%M"), None);
     }
 
     #[test]

@@ -157,9 +157,10 @@ impl Activity {
     }
 }
 
-fn when(t: f64) -> String {
+fn when(ws: &Workspace, t: f64) -> String {
     let Some(d) = Local.timestamp_opt(t as i64, 0).single() else { return String::new() };
-    if d.date_naive() == Local::now().date_naive() { d.format("%H:%M").to_string() } else { d.format("%b %-d %H:%M").to_string() }
+    let time = ws.settings.time_format();
+    if d.date_naive() == Local::now().date_naive() { d.format(time).to_string() } else { d.format(&format!("%b %-d {time}")).to_string() }
 }
 
 /// "Bob mentioned you in #general · 14:02" and the like.
@@ -186,7 +187,7 @@ pub fn headline(ws: &Workspace, it: &Item, msg: Option<&Message>) -> Line<'stati
         spans.push(Span::raw(format!("{icon} ")));
     }
     spans.push(Span::styled(what, style));
-    spans.push(Span::styled(format!("  {}", when(it.when)), Style::default().fg(DIM)));
+    spans.push(Span::styled(format!("  {}", when(ws, it.when)), Style::default().fg(DIM)));
     Line::from(spans)
 }
 

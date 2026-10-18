@@ -105,9 +105,9 @@ impl MessagePane {
         let block = Block::default().borders(Borders::ALL).border_style(border).title(title);
         let inner = block.inner(area);
         let width = inner.width.saturating_sub(1 + GUTTER) as usize;
-        let thumb_size = |file: &File| media.thumb_size(file);
+        let thumb_size = |file: &File| media.thumb_size(file).filter(|_| ws.settings.messages.inline_images);
         let (mut lines, mut owners, mut slots) = match timeline {
-            Some(t) if t.loaded || !t.messages.is_empty() => build_lines_owned(ws, t, width, self.thread, &thumb_size, media.avatars),
+            Some(t) if t.loaded || !t.messages.is_empty() => build_lines_owned(ws, t, width, self.thread, &thumb_size, media.avatars && ws.settings.messages.avatars),
             Some(_) => (vec![Line::styled("Loading messages…", Style::default().fg(DIM))], vec![None], vec![]),
             None => (vec![], vec![], vec![]),
         };
@@ -234,12 +234,12 @@ fn add_gutter(lines: &mut [Line<'static>], owners: &[Option<String>], own: &std:
     }
 }
 
-fn day_label(ts: f64) -> String {
-    Local.timestamp_opt(ts as i64, 0).single().map(|d| d.format("%A, %B %-d").to_string()).unwrap_or_default()
+fn day_label(ws: &Workspace, ts: f64) -> String {
+    Local.timestamp_opt(ts as i64, 0).single().map(|d| d.format(&ws.settings.region.date_format).to_string()).unwrap_or_default()
 }
 
-fn time_label(ts: f64) -> String {
-    Local.timestamp_opt(ts as i64, 0).single().map(|d| d.format("%H:%M").to_string()).unwrap_or_default()
+fn time_label(ws: &Workspace, ts: f64) -> String {
+    Local.timestamp_opt(ts as i64, 0).single().map(|d| d.format(ws.settings.time_format()).to_string()).unwrap_or_default()
 }
 
 fn same_day(a: f64, b: f64) -> bool {
@@ -285,7 +285,7 @@ pub fn build_lines_owned(ws: &Workspace, t: &Timeline, width: usize, thread: boo
             prev = None;
         } else if !thread && last_day.is_none_or(|d| !same_day(d, ts)) {
             last_day = Some(ts);
-            let label = format!(" {} ", day_label(ts));
+            let label = format!(" {} ", day_label(ws, ts));
             let side = width.saturating_sub(label.chars().count()) / 2;
             out.push(Line::styled(format!("{}{}{}", "─".repeat(side), label, "─".repeat(side)), Style::default().fg(DIM)));
             owners.resize(out.len(), None);
@@ -293,22 +293,22 @@ pub fn build_lines_owned(ws: &Workspace, t: &Timeline, width: usize, thread: boo
         }
         if is_system(m) {
             let body = format::plain_text(&format::message_blocks(&m.text, &m.blocks), &|i| text::inline_plain(ws, i));
-            out.push(Line::styled(format!("{}  {}", time_label(ts), body), Style::default().fg(DIM).add_modifier(Modifier::ITALIC)));
+            out.push(Line::styled(format!("{}  {}", time_label(ws, ts), body), Style::default().fg(DIM).add_modifier(Modifier::ITALIC)));
             owners.resize(out.len(), Some(m.ts.clone()));
             prev = None;
             continue;
         }
         let grouped = prev.is_some_and(|p| p.user == m.user && p.bot_id == m.bot_id && ts - p.time() < GROUP_WINDOW && !is_system(p));
         if !grouped {
-            // A blank row between author groups.
-            if prev.is_some() {
+            // A blank row between author groups (not in compact mode).
+            if prev.is_some() && !ws.settings.appearance.compact {
                 out.push(Line::raw(""));
                 owners.resize(out.len(), None);
             }
             let color = m.user.as_deref().map(text::user_color).unwrap_or(Color::Gray);
             let mut header = vec![
                 Span::styled(ws.author(m), Style::default().fg(color).add_modifier(Modifier::BOLD)),
-                Span::styled(format!("  {}", time_label(ts)), Style::default().fg(DIM)),
+                Span::styled(format!("  {}", time_label(ws, ts)), Style::default().fg(DIM)),
             ];
             if let Some(file) = m.user.as_deref().and_then(|u| ws.users.get(u)).and_then(super::media::avatar_file).filter(|_| avatars) {
                 slots.push(ImageSlot { line: out.len(), col: 0, file, size: super::media::AVATAR_SIZE });
@@ -402,7 +402,7 @@ pub fn message_body(ws: &Workspace, m: &Message, width: usize, summary: bool, th
         out.extend(text::wrap(spans, width, vec![], vec![]));
     }
     if summary && m.reply_count > 0 {
-        let last = m.latest_reply.as_deref().and_then(|t| t.parse::<f64>().ok()).map(|t| format!(" · last {}", time_label(t))).unwrap_or_default();
+        let last = m.latest_reply.as_deref().and_then(|t| t.parse::<f64>().ok()).map(|t| format!(" · last {}", time_label(ws, t))).unwrap_or_default();
         let s = if m.reply_count == 1 { "reply" } else { "replies" };
         out.push(Line::styled(format!("💬 {} {s}{last}", m.reply_count), Style::default().fg(text::MENTION)));
     }

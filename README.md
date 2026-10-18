@@ -104,6 +104,7 @@ No video, screen sharing, echo cancellation or noise suppression yet.
 
 | Variable | |
 |---|---|
+| (F6 or `/prefs`) | preferences: compact list, thumbnails, profile pictures, emoji as names, 12/24 h clock, date format, desktop notifications, microphone and speaker — saved in `settings.toml` next to `keys.toml` |
 | `SLACKTUI_LOG` | log filter, e.g. `slacktui=debug` (log file: `~/.cache/slacktui/<profile>/slacktui.log`) |
 | `SLACKTUI_DOWNLOAD_DIR` | where `s` saves attachments (default: your downloads folder) |
 | `SLACKTUI_AVATARS=0` | no profile pictures next to names (they are also off on terminals without real graphics) |

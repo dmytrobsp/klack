@@ -84,7 +84,7 @@ impl Search {
         let start = self.selected.saturating_sub(per_page - 1);
         let mut lines = Vec::new();
         for (n, hit) in self.hits.iter().enumerate().skip(start).take(per_page) {
-            let when = hit.ts.parse::<f64>().ok().and_then(|t| Local.timestamp_opt(t as i64, 0).single()).map(|d| d.format("%b %e %H:%M").to_string()).unwrap_or_default();
+            let when = hit.ts.parse::<f64>().ok().and_then(|t| Local.timestamp_opt(t as i64, 0).single()).map(|d| d.format(&format!("%b %e {}", ws.settings.time_format())).to_string()).unwrap_or_default();
             let who = hit.user.as_deref().map(|u| ws.user_name(u)).unwrap_or_else(|| "bot".into());
             let place = ws.channel_label(&hit.channel);
             let place = if ws.conversations.get(&hit.channel).is_some_and(|c| c.is_dm()) { place } else { format!("#{place}") };

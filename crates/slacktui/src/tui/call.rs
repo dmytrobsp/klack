@@ -18,6 +18,8 @@ pub struct Call {
     pub channel: String,
     /// The thread the huddle was started in, if any.
     pub thread: Option<String>,
+    /// Microphone to open when unmuting (None: the default).
+    input: Option<String>,
     pub session: Session,
     pub roster: Vec<Participant>,
     /// Attendee ids currently speaking.
@@ -33,12 +35,13 @@ pub struct Call {
 
 impl Call {
     /// Start the session (muted) and play the meeting's audio on the default output.
-    pub fn start(channel: String, creds: Credentials) -> Call {
+    /// `devices`: (microphone, speaker) names, None for the system default.
+    pub fn start(channel: String, creds: Credentials, devices: (Option<String>, Option<String>)) -> Call {
         let mut session = Session::start(creds, true);
         let sink = session.pcm_sink();
         let (_, empty) = tokio::sync::mpsc::unbounded_channel();
         let mut audio = std::mem::replace(&mut session.audio, empty);
-        let speaker_error = match Speaker::start(std::env::var(huddle::devices::OUTPUT_ENV).ok()) {
+        let speaker_error = match Speaker::start(devices.1) {
             Ok(mut speaker) => {
                 tokio::spawn(async move {
                     while let Some(frame) = audio.recv().await {
@@ -52,14 +55,14 @@ impl Call {
                 Some(e.to_string())
             }
         };
-        Call { channel, thread: None, session, roster: Vec::new(), speaking: HashSet::new(), muted: true, connected: false, sink, mic: None, speaker_error }
+        Call { channel, thread: None, input: devices.0, session, roster: Vec::new(), speaking: HashSet::new(), muted: true, connected: false, sink, mic: None, speaker_error }
     }
 
     /// Toggle the microphone; opening it can fail (no device, no permission).
     pub fn toggle_mute(&mut self) -> anyhow::Result<()> {
         if self.muted {
             let sink = self.sink.clone();
-            self.mic = Some(Microphone::start(std::env::var(huddle::devices::INPUT_ENV).ok(), move |frame| sink.send(frame))?);
+            self.mic = Some(Microphone::start(self.input.clone(), move |frame| sink.send(frame))?);
             self.muted = false;
         } else {
             self.mic = None;

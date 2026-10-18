@@ -20,6 +20,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/status [:e:] [text] [for 30m|today]", "set your status · /status clear"),
     ("/away · /active · /dnd 30m|off", "appear away / active · pause notifications"),
     ("/workspace [name]", "list the profile's workspaces or switch"),
+    ("/prefs", "preferences (also F6)"),
 ];
 
 #[derive(Debug, Default)]
