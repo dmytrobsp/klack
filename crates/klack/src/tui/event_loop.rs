@@ -3240,6 +3240,8 @@ fn draw_composer(f: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &App,
     };
     f.render_widget(Paragraph::new(text).wrap(ratatui::widgets::Wrap { trim: false }).scroll((skip, 0)).block(block), area);
     if focused {
+        // A faint tint shows where typing goes (from slk).
+        f.buffer_mut().set_style(inner, Style::default().bg(super::theme::p().hover));
         f.set_cursor_position((inner.x + col, inner.y + row - skip));
     }
 }
