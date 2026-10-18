@@ -28,6 +28,10 @@ enum Net {
     Posted { channel: String, message: slack_core::types::Message },
     /// All replies of a thread (parent first).
     Replies { channel: String, ts: String, page: HistoryPage },
+    /// Conversation details loaded for the F2 overlay.
+    DetailsInfo(slack_core::types::Conversation),
+    DetailsMembers { channel: String, members: Vec<String> },
+    DetailsPins { channel: String, pins: Vec<slack_core::types::Message> },
     /// Search results for a query.
     SearchDone { query: String, result: Result<serde_json::Value, String> },
     /// A DM opened from the quick switcher.
@@ -57,6 +61,8 @@ enum Focus {
 }
 
 struct App {
+    /// Open conversation details (F2).
+    details: Option<super::details::Details>,
     /// Open search overlay (Ctrl+F).
     search: Option<super::search::Search>,
     /// A search hit to select once its conversation is shown.
@@ -514,20 +520,65 @@ impl App {
         let Some(entry) = sw.entries(&self.ws).into_iter().nth(sw.selected) else { return };
         match entry.target {
             super::switcher::Target::Conversation(id) => self.jump_to(&id),
-            super::switcher::Target::User(user) => {
-                self.status = format!("opening a DM with {}…", entry.label);
-                let (client, tx) = (self.client.clone(), self.net.clone());
-                tokio::spawn(async move {
-                    let _ = tx.send(match client.open_dm(&[&user]).await {
-                        Ok(mut c) => {
-                            c.is_im = true;
-                            c.user.get_or_insert(user);
-                            Net::DmOpened(c)
-                        }
-                        Err(e) => Net::Error(format!("opening the DM failed: {e}")),
-                    });
-                });
+            super::switcher::Target::User(user) => self.open_dm_with(user),
+        }
+    }
+
+    /// Show the DM with `user`, opening one if needed.
+    fn open_dm_with(&mut self, user: String) {
+        if let Some(id) = self.ws.conversations.values().find(|c| c.is_im && c.user.as_deref() == Some(user.as_str())).map(|c| c.id.clone()) {
+            self.jump_to(&id);
+            return;
+        }
+        self.status = format!("opening a DM with {}…", self.ws.user_name(&user));
+        let (client, tx) = (self.client.clone(), self.net.clone());
+        tokio::spawn(async move {
+            let _ = tx.send(match client.open_dm(&[&user]).await {
+                Ok(mut c) => {
+                    c.is_im = true;
+                    c.user.get_or_insert(user);
+                    Net::DmOpened(c)
+                }
+                Err(e) => Net::Error(format!("opening the DM failed: {e}")),
+            });
+        });
+    }
+
+    /// Open the details overlay for the current conversation and load its tabs.
+    fn open_details(&mut self) {
+        let Some(channel) = self.current.clone() else { return };
+        self.details = Some(super::details::Details::new(channel.clone()));
+        let (client, tx) = (self.client.clone(), self.net.clone());
+        tokio::spawn(async move {
+            let (info, members, pins) = tokio::join!(client.conversation_info(&channel), client.members(&channel), client.pins(&channel));
+            match info {
+                Ok(c) => {
+                    let _ = tx.send(Net::DetailsInfo(c));
+                }
+                Err(e) => tracing::warn!("conversations.info failed: {e}"),
             }
+            let _ = tx.send(Net::DetailsMembers { channel: channel.clone(), members: members.unwrap_or_default() });
+            let pins = pins.map(|v| super::details::parse_pins(&v)).unwrap_or_default();
+            let _ = tx.send(Net::DetailsPins { channel, pins });
+        });
+    }
+
+    /// Enter in the details overlay: DM a member, or go to a pinned message.
+    fn details_enter(&mut self) {
+        let Some(d) = self.details.take() else { return };
+        match d.tab {
+            super::details::Tab::Members => {
+                if let Some(user) = d.members.as_ref().and_then(|m| m.get(d.selected)).cloned() {
+                    self.open_dm_with(user);
+                }
+            }
+            super::details::Tab::Pins => {
+                if let Some(m) = d.pins.as_ref().and_then(|p| p.get(d.selected)) {
+                    let thread_ts = m.thread_ts.clone().filter(|_| m.is_reply());
+                    self.open_hit(super::search::Hit { channel: d.channel.clone(), ts: m.ts.clone(), thread_ts, user: m.user.clone(), text: m.text.clone() });
+                }
+            }
+            super::details::Tab::About => self.details = Some(d),
         }
     }
 
@@ -675,6 +726,7 @@ pub async fn run(client: Client) -> Result<()> {
         help: false,
         switcher: None,
         search: None,
+        details: None,
         pending_hit: None,
         player: None,
         screen: Default::default(),
@@ -772,6 +824,20 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
                 _ => {}
             }
         }
+        Event::Key(k) if k.kind != KeyEventKind::Release && app.details.is_some() => {
+            let Some(d) = app.details.as_mut() else { return true };
+            match k.code {
+                KeyCode::Char('q') if k.modifiers.contains(KeyModifiers::CONTROL) => return false,
+                KeyCode::Esc | KeyCode::F(2) | KeyCode::Char('q') => app.details = None,
+                KeyCode::Left | KeyCode::Char('h') | KeyCode::BackTab => d.switch_tab(-1),
+                KeyCode::Right | KeyCode::Char('l') | KeyCode::Tab => d.switch_tab(1),
+                KeyCode::Up | KeyCode::Char('k') => d.move_by(-1),
+                KeyCode::Down | KeyCode::Char('j') => d.move_by(1),
+                KeyCode::Enter => app.details_enter(),
+                _ => {}
+            }
+        }
+        Event::Key(k) if k.kind != KeyEventKind::Release && k.code == KeyCode::F(2) => app.open_details(),
         Event::Key(k) if k.kind != KeyEventKind::Release && app.search.is_some() => {
             let Some(search) = app.search.as_mut() else { return true };
             match k.code {
@@ -1101,6 +1167,21 @@ fn handle_net(app: &mut App, msg: Net) {
             tl.loading = false;
         }
         Net::FileDone(message) => app.status = message,
+        Net::DetailsInfo(c) => {
+            if let Some(d) = app.details.as_mut().filter(|d| d.channel == c.id) {
+                d.info = Some(c);
+            }
+        }
+        Net::DetailsMembers { channel, members } => {
+            if let Some(d) = app.details.as_mut().filter(|d| d.channel == channel) {
+                d.members = Some(members);
+            }
+        }
+        Net::DetailsPins { channel, pins } => {
+            if let Some(d) = app.details.as_mut().filter(|d| d.channel == channel) {
+                d.pins = Some(pins);
+            }
+        }
         Net::SearchDone { query, result } => {
             if let Some(search) = app.search.as_mut() {
                 search.busy = false;
@@ -1226,6 +1307,9 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     }
     if let Some(search) = &app.search {
         search.draw(f, body, &app.ws);
+    }
+    if let Some(d) = &app.details {
+        d.draw(f, body, &app.ws);
     }
     if app.help {
         super::help::draw(f, body);
