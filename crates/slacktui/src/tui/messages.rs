@@ -207,6 +207,12 @@ impl MessagePane {
                     let beside = Rect { x: inner.x + GUTTER, width: inner.width.saturating_sub(GUTTER), ..inner };
                     f.render_widget(SlicedImage::new(proto, position), beside);
                 }
+                // Say why instead of leaving the rows blank (not for profile pictures).
+                Some(Thumb::Failed(reason)) if !slot.file.id.starts_with(super::media::AVATAR_PREFIX) => {
+                    let x = inner.x + GUTTER + slot.col;
+                    let row = Rect { x, y: inner.y + top.max(0) as u16, width: inner.right().saturating_sub(x), height: 1 };
+                    f.render_widget(Paragraph::new(failed_thumb(reason)).style(Style::default().fg(super::theme::p().dim)), row);
+                }
                 Some(_) => {}
                 None => self.wanted.push((slot.file, slot.size)),
             }
@@ -319,6 +325,11 @@ pub fn build_lines(ws: &Workspace, t: &Timeline, width: usize) -> Vec<Line<'stat
 }
 
 /// Lines plus the ts of the message each line belongs to.
+/// What stands in the rows of a picture that could not be loaded.
+fn failed_thumb(reason: &str) -> String {
+    format!("⚠ preview unavailable: {reason}")
+}
+
 pub fn build_lines_owned(ws: &Workspace, t: &Timeline, width: usize, thread: bool, thumb_size: ThumbSize, avatars: bool) -> (Vec<Line<'static>>, Vec<Option<String>>, Vec<ImageSlot>) {
     let mut out: Vec<Line<'static>> = Vec::new();
     let mut owners: Vec<Option<String>> = Vec::new();
@@ -531,6 +542,14 @@ mod tests {
         // Real values for a 3-line file ending in a newline.
         let trailing = File { mode: "snippet".into(), preview: Some("a\nb\nc\n".into()), lines: Some(4), lines_more: Some(0), ..Default::default() };
         assert_eq!(plain(&snippet_preview(&trailing, 20)).len(), 3);
+    }
+
+    #[test]
+    fn failed_thumbnails_say_why() {
+        // As `load_thumb` reports a corrupt upload (`{:#}` of its error).
+        let e = "not a picture that can be shown: The image format could not be determined";
+        assert_eq!(super::failed_thumb(super::super::media::short_reason(e)), "⚠ preview unavailable: not a picture that can be shown");
+        assert_eq!(super::super::media::short_reason("no preview"), "no preview");
     }
 
     #[test]

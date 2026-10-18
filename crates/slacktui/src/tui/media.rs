@@ -15,7 +15,8 @@ pub const MAX_ROWS: u16 = 10;
 pub enum Thumb {
     Loading,
     Ready(SlicedProtocol),
-    Failed,
+    /// Why, in a few words (shown in place of the picture).
+    Failed(String),
 }
 
 pub struct Media {
@@ -90,21 +91,29 @@ pub fn thumb_cells(file: &File, font: FontSize, max_cols: u16, max_rows: u16) ->
 }
 
 /// Download, decode and encode a thumbnail for `file` at `size` cells (blocking parts run
-/// off the UI task).
+/// off the UI task). The error's outermost context says what failed in a few words
+/// ([`short_reason`]); the rest is the detail for the log.
 pub async fn load_thumb(client: slack_core::Client, picker: Picker, file: File, size: (u16, u16)) -> anyhow::Result<SlicedProtocol> {
+    use anyhow::Context;
     let px_width = size.0 as u32 * picker.font_size().width as u32;
     let url = file.preview_url(px_width).ok_or_else(|| anyhow::anyhow!("no preview"))?.to_string();
     let bytes = if file.id.starts_with(AVATAR_PREFIX) {
         // Public CDN pictures: fetched without the session.
-        client.http().get(&url).send().await?.error_for_status()?.bytes().await?.to_vec()
+        async { anyhow::Ok(client.http().get(&url).send().await?.error_for_status()?.bytes().await?.to_vec()) }.await
     } else {
-        client.download(&url).await?
-    };
+        client.download(&url).await
+    }
+    .context("download failed")?;
     tokio::task::spawn_blocking(move || {
-        let img = image::load_from_memory(&bytes)?;
-        Ok(SlicedProtocol::new(&picker, img, Some(Size::new(size.0, size.1)))?)
+        let img = image::load_from_memory(&bytes).context("not a picture that can be shown")?;
+        SlicedProtocol::new(&picker, img, Some(Size::new(size.0, size.1))).context("could not draw it")
     })
     .await?
+}
+
+/// The few words before the detail of a [`load_thumb`] error (`{:#}`: "context: detail").
+pub fn short_reason(error: &str) -> &str {
+    error.split(": ").next().unwrap_or(error)
 }
 
 #[cfg(test)]

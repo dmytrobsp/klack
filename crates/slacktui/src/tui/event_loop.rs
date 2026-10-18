@@ -1816,7 +1816,7 @@ impl App {
             let (client, tx, picker) = (self.client.clone(), self.net.clone(), self.media.picker.clone());
             tokio::spawn(async move {
                 let id = file.id.clone();
-                let result = super::media::load_thumb(client, picker, file, size).await.map_err(|e| e.to_string());
+                let result = super::media::load_thumb(client, picker, file, size).await.map_err(|e| format!("{e:#}"));
                 let _ = tx.send(Net::Thumb { id, result });
             });
         }
@@ -2950,7 +2950,7 @@ fn handle_net(app: &mut App, msg: Net) {
                 Ok(proto) => super::media::Thumb::Ready(proto),
                 Err(e) => {
                     tracing::warn!("thumbnail {id} failed: {e}");
-                    super::media::Thumb::Failed
+                    super::media::Thumb::Failed(super::media::short_reason(&e).to_string())
                 }
             };
             app.media.thumbs.insert(id, thumb);
