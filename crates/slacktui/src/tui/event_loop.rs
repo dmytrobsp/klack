@@ -45,6 +45,13 @@ enum Focus {
 }
 
 struct App {
+    /// Open @/#/: suggestion list.
+    completion: Option<super::autocomplete::Completion>,
+    /// Suggestions closed with Esc for this (composer, token start) until the token changes.
+    completion_dismissed: Option<(bool, usize)>,
+    /// Composer boxes on the last draw (to anchor the suggestion list).
+    composer_area: ratatui::layout::Rect,
+    thread_composer_area: ratatui::layout::Rect,
     /// Open thread pane: (channel, parent ts).
     thread: Option<(String, String)>,
     thread_pane: MessagePane,
@@ -360,6 +367,45 @@ impl App {
         }
     }
 
+    /// Recompute suggestions for the token at the focused composer's cursor.
+    fn refresh_completion(&mut self) {
+        let thread = match self.focus {
+            Focus::Composer => false,
+            Focus::ThreadComposer => true,
+            _ => {
+                self.completion = None;
+                return;
+            }
+        };
+        let Some((start, trigger)) = self.composer_for(thread).trigger() else {
+            self.completion = None;
+            self.completion_dismissed = None;
+            return;
+        };
+        if self.completion_dismissed == Some((thread, start)) {
+            self.completion = None;
+            return;
+        }
+        let items = super::autocomplete::suggestions(&self.ws, &trigger);
+        if items.is_empty() {
+            self.completion = None;
+            return;
+        }
+        // Keep the highlighted row while the list itself is unchanged.
+        let selected = match &self.completion {
+            Some(c) if c.thread == thread && c.start == start && c.items == items => c.selected,
+            _ => 0,
+        };
+        self.completion = Some(super::autocomplete::Completion { thread, start, items, selected });
+    }
+
+    /// Insert the highlighted suggestion.
+    fn accept_completion(&mut self) {
+        let Some(c) = self.completion.take() else { return };
+        let Some(s) = c.items.get(c.selected) else { return };
+        self.composer_for(c.thread).complete(c.start, &format!("{} ", s.replacement), s.id.as_deref());
+    }
+
     /// Focus order for Tab: left to right, top to bottom.
     fn focus_order(&self) -> Vec<Focus> {
         let mut order = vec![Focus::Sidebar, Focus::Messages, Focus::Composer];
@@ -403,6 +449,10 @@ pub async fn run(client: Client) -> Result<()> {
     spawn_boot(client.clone(), net_tx.clone());
     let mut rtm = slack_core::rtm::spawn(client.clone());
     let mut app = App {
+        completion: None,
+        completion_dismissed: None,
+        composer_area: Default::default(),
+        thread_composer_area: Default::default(),
         thread: None,
         thread_pane: MessagePane::thread(),
         thread_composer: Composer::default(),
@@ -442,6 +492,7 @@ pub async fn run(client: Client) -> Result<()> {
                 if !handle_terminal(&mut app, ev?) {
                     break;
                 }
+                app.refresh_completion();
             }
             Some(msg) = net_rx.recv() => handle_net(&mut app, msg),
             Some(ev) = rtm.events.recv() => handle_rtm(&mut app, ev),
@@ -463,6 +514,29 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
             if let Some((channel, ts)) = app.confirm_delete.take() {
                 if matches!(k.code, KeyCode::Char('y') | KeyCode::Char('Y')) {
                     app.delete(channel, ts);
+                }
+            }
+        }
+        Event::Key(k)
+            if k.kind != KeyEventKind::Release
+                && app.completion.is_some()
+                && k.modifiers.difference(KeyModifiers::SHIFT).is_empty()
+                && matches!(k.code, KeyCode::Up | KeyCode::Down | KeyCode::Tab | KeyCode::BackTab | KeyCode::Enter | KeyCode::Esc) =>
+        {
+            let Some(c) = app.completion.as_mut() else { return true };
+            match k.code {
+                KeyCode::Up | KeyCode::BackTab => c.move_by(-1),
+                KeyCode::Down => c.move_by(1),
+                KeyCode::Enter if k.modifiers.contains(KeyModifiers::SHIFT) => {
+                    // Shift+Enter keeps its newline meaning.
+                    let thread = c.thread;
+                    app.completion = None;
+                    app.composer_for(thread).insert('\n');
+                }
+                KeyCode::Tab | KeyCode::Enter => app.accept_completion(),
+                _ => {
+                    app.completion_dismissed = Some((c.thread, c.start));
+                    app.completion = None;
                 }
             }
         }
@@ -731,6 +805,7 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         let title = format!("Thread · {} · Esc close", app.ws.channel_label(&channel));
         let timeline = app.ws.threads.get(&super::state::thread_key(&channel, &ts));
         app.thread_pane.draw(f, pane, &app.ws, &title, timeline, app.focus == Focus::Thread);
+        app.thread_composer_area = comp;
         draw_composer(f, comp, app, true);
     }
 
@@ -741,7 +816,11 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     let timeline = current.as_deref().and_then(|c| app.ws.timelines.get(c));
     let title = current.as_deref().map(|c| app.ws.channel_label(c)).unwrap_or_default();
     app.messages.draw(f, msgs, &app.ws, &title, timeline, app.focus == Focus::Messages);
+    app.composer_area = comp;
     draw_composer(f, comp, app, false);
+    if let Some(c) = &app.completion {
+        super::autocomplete::draw(f, if c.thread { app.thread_composer_area } else { app.composer_area }, c);
+    }
     if let Some((picker, _, _)) = &app.picker {
         let custom: Vec<String> = app.ws.custom_emoji.keys().cloned().collect();
         picker.draw(f, main, &custom);

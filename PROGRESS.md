@@ -27,20 +27,20 @@ background is in `../REPORT.md` and `../notes/`.
 | Delete own messages: `d` → y/n popup → `chat.delete`; optimistic with rollback; refuses others' messages | done | LIVE (`n` keeps it, `y` removes it, B's history no longer has it; `d` on B's message shows a refusal) | e415bdf |
 | Copy: `y` = message as plain text, `Y` = permalink (`chat.getPermalink`). arboard (with Wayland data-control), OSC 52 fallback; on quit the copy is handed to the terminal via OSC 52 so it survives | done | LIVE (`wl-paste` read back the text with `@Dmytro`/`&`/`<…>` resolved, and the `…/archives/D…/p…` link; after quit the clipboard still held the text, with the terminal left open) + UNIT (base64) | 64dffaa |
 | Threads pane (view): Enter on a message opens its thread on the right (`conversations.replies`, loaded once, then kept live over RTM); parent, "N replies" rule, replies; ↑↓/jk/g/G selection, `r` react, `y`/`Y` copy, mouse click/scroll; Esc closes; closes on channel switch; Tab cycle includes it | done | LIVE (B's existing reply loaded; two replies from B appeared live; 👍 added from the thread showed on both copies of the parent; `y` copied a reply) + UNIT (thread layout, copies across timeline/thread) | fd103c4 |
-| Threads pane (reply): own composer in the thread pane (`i` from the thread, Tab order sidebar → messages → composer → thread → reply); Enter posts with `thread_ts`; Alt+A toggles "also send to channel" (`reply_broadcast`); ↑ in the empty reply box / `e` / `d` work on own replies; composer keys shared via `Composer::handle_key` | done | LIVE (reply read back by B with `ctl replies`; reply edited from the thread; broadcast reply shown in both panes and in B's channel history; broadcast deleted from the thread pane, gone for B; reply count stayed exact throughout) + UNIT (key outcomes) | see git log |
-| `ctl replies <chan> <ts>`; `ctl history`/`replies` print reactions | done | LIVE | see git log |
+| Threads pane (reply): own composer in the thread pane (`i` from the thread, Tab order sidebar → messages → composer → thread → reply); Enter posts with `thread_ts`; Alt+A toggles "also send to channel" (`reply_broadcast`); ↑ in the empty reply box / `e` / `d` work on own replies; composer keys shared via `Composer::handle_key` | done | LIVE (reply read back by B with `ctl replies`; reply edited from the thread; broadcast reply shown in both panes and in B's channel history; broadcast deleted from the thread pane, gone for B; reply count stayed exact throughout) + UNIT (key outcomes) | d0c1620 |
+| `ctl replies <chan> <ts>`; `ctl history`/`replies` print reactions | done | LIVE | d0c1620 |
+| Autocomplete in both composers: `@user` (display/handle/real name; prefix, then word, then substring) plus `@here/@channel/@everyone`, `#channel`, `:emoji:` (picker ranking, custom emoji); popup above the composer; ↑↓ move, Tab/Enter insert, Esc dismisses until the token changes; mentions are sent as `<@U…>`/`<#C…>`/`<!here>` | done | LIVE (sent `hi @Dmytro Dudnyk see #social it works :tada:` — B read back `<@U0C9YM9J3RR> … <#C0CA4NBM998> … :tada:`; `@dmytro.d` completed in the thread box and arrived as `<@U…>`; Esc dismissal checked) + UNIT (ranking, specials, channels, emoji) | see git log |
 
-Tests: `cargo test` → slack-core 8, slacktui 32, all passing. `cargo build` has no errors.
-There are dead-code warnings for the planned autocomplete API (`Composer::trigger/complete`).
+Tests: `cargo test` → slack-core 8, slacktui 34, all passing. `cargo build` has no errors.
+Remaining dead-code warnings: `Composer::cursor/is_multiline`, `Sidebar::select_id`, `Workspace::team_id`.
 
 ## Next (in order, each as a small, separately verified step)
 
-1. Autocomplete popup for `@user`, `#channel` and `:emoji:` (composer `trigger()`/`complete()` already exist and are tested).
-2. Desktop notifications (notify-rust) for DMs, mentions and @here, honouring DND and muted channels and the terminal focus events.
-3. Images inline (ratatui-image, kitty protocol; `File::preview_url`), an image viewer, upload from a path.
-4. Video playback with sound (ffmpeg-next → frames via ratatui-image; cpal audio).
-5. Huddles: reverse engineer the signalling first (observe the web client inside RSlack), then audio.
-6. Search, channel info/members, pins, quick switcher (Ctrl+K), help overlay.
+1. Desktop notifications (notify-rust) for DMs, mentions and @here, honouring DND and muted channels and the terminal focus events.
+2. Images inline (ratatui-image, kitty protocol; `File::preview_url`), an image viewer, upload from a path.
+3. Video playback with sound (ffmpeg-next → frames via ratatui-image; cpal audio).
+4. Huddles: reverse engineer the signalling first (observe the web client inside RSlack), then audio.
+5. Search, channel info/members, pins, quick switcher (Ctrl+K), help overlay.
 
 ## Known gaps / not verified
 
@@ -57,7 +57,9 @@ There are dead-code warnings for the planned autocomplete API (`Composer::trigge
 - The clipboard hand-off needs the terminal to outlive slacktui: with `kitty -e slacktui` the whole kitty instance exits and the copy is lost.
 - The thread pane has no day separators, so a thread spanning several days shows only times.
 - Key hints for `e`/`d`/`r`/`y`/`Y` are not shown anywhere yet (help overlay is in "Next").
-- Reaction chips with VS16 emoji (❤️) sometimes render with an extra blank cell (`[❤  1]`); seen in screenshots, not investigated.
+- Reaction chips with VS16 emoji (❤️) sometimes render with an extra blank cell (`[❤  1]`), and stale characters appear on nearby rows (`appear]instantly`): ratatui and kitty disagree on the width. Seen in several screenshots; not fixed yet.
+- `@here/@channel/@everyone` are offered in DMs too.
+- Autocomplete does not complete on a mouse click.
 
 ## Bug log
 

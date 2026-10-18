@@ -1,5 +1,6 @@
 //! Interactive terminal UI.
 
+pub mod autocomplete;
 pub mod clipboard;
 pub mod composer;
 pub mod event_loop;
