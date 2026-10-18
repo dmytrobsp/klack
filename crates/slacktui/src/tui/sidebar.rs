@@ -127,10 +127,14 @@ fn conversation_line(ws: &Workspace, id: &str, selected: bool, width: usize) -> 
         name_style = name_style.fg(DIM);
     }
     let badge = if unread.mentions > 0 { format!(" {}", unread.mentions) } else { String::new() };
+    let huddle = ws.huddles.get(id).map(|(_, p)| format!(" 🎧{}", p.len())).unwrap_or_default();
     let label = ws.conversation_label(c);
-    let room = width.saturating_sub(3 + badge.chars().count());
+    let room = width.saturating_sub(3 + badge.chars().count() + huddle.chars().count() + 1);
     let label: String = if label.chars().count() > room { label.chars().take(room.saturating_sub(1)).chain(['…']).collect() } else { label };
     let mut spans = vec![Span::raw(" "), sigil, Span::styled(label, name_style)];
+    if !huddle.is_empty() {
+        spans.push(Span::styled(huddle, Style::default().fg(Color::Rgb(0x2b, 0xac, 0x76))));
+    }
     if !badge.is_empty() {
         spans.push(Span::styled(badge, Style::default().fg(Color::White).bg(Color::Rgb(0xe0, 0x1e, 0x5a)).add_modifier(Modifier::BOLD)));
     }

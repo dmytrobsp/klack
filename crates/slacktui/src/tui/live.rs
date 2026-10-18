@@ -135,6 +135,20 @@ pub fn apply(ws: &mut Workspace, ev: &Value, current: Option<&str>) -> Effects {
                 c.last_read = ev["ts"].as_str().map(String::from);
             }
         }
+        "sh_room_join" | "sh_room_leave" | "sh_room_update" => {
+            let room = &ev["room"];
+            let id = room["id"].as_str().unwrap_or_default().to_string();
+            let participants: Vec<String> = room["participants"].as_array().into_iter().flatten().filter_map(|u| u.as_str().map(String::from)).collect();
+            let ended = room["has_ended"].as_bool().unwrap_or(false) || participants.is_empty();
+            for c in room["channels"].as_array().into_iter().flatten().filter_map(|c| c.as_str()) {
+                if ended {
+                    ws.huddles.remove(c);
+                } else {
+                    ws.huddles.insert(c.to_string(), (id.clone(), participants.clone()));
+                }
+            }
+            fx.rebuild_sidebar = true;
+        }
         "pin_added" | "pin_removed" => {
             let added = ev["type"] == "pin_added";
             let item = &ev["item"];
@@ -305,6 +319,15 @@ mod tests {
         assert_eq!(t.messages.len(), 1);
         assert_eq!(t.messages[0].reply_count, 1);
         assert_eq!(t.messages[0].latest_reply.as_deref(), Some("11.0"));
+    }
+
+    #[test]
+    fn huddle_events_track_active_huddles() {
+        let mut w = ws();
+        apply(&mut w, &json!({"type":"sh_room_join","user":"U2","room":{"id":"R1","channels":["C1"],"participants":["U2"],"has_ended":false}}), None);
+        assert_eq!(w.huddles["C1"], ("R1".to_string(), vec!["U2".to_string()]));
+        apply(&mut w, &json!({"type":"sh_room_leave","user":"U2","room":{"id":"R1","channels":["C1"],"participants":[],"has_ended":false}}), None);
+        assert!(w.huddles.is_empty());
     }
 
     #[test]

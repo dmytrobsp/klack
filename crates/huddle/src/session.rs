@@ -58,7 +58,21 @@ pub struct Session {
     pub audio: mpsc::UnboundedReceiver<Vec<i16>>,
 }
 
+/// Clonable handle that feeds microphone frames into a session (e.g. from an audio thread).
+#[derive(Clone)]
+pub struct PcmSink(mpsc::UnboundedSender<Command>);
+
+impl PcmSink {
+    pub fn send(&self, frame: Vec<i16>) {
+        let _ = self.0.send(Command::Pcm(frame));
+    }
+}
+
 impl Session {
+    pub fn pcm_sink(&self) -> PcmSink {
+        PcmSink(self.commands.clone())
+    }
+
     pub fn start(creds: Credentials, muted: bool) -> Session {
         let (commands, command_rx) = mpsc::unbounded_channel();
         let (event_tx, events) = mpsc::unbounded_channel();
@@ -147,17 +161,7 @@ async fn run(
                     sig.send(&signaling::pong_frame(p.ping_id)).await?;
                 }
                 if let Some(info) = &frame.audio_stream_id_info {
-                    for s in &info.streams {
-                        let Some(id) = s.audio_stream_id else { continue };
-                        if s.dropped == Some(true) {
-                            roster.remove(&id);
-                            continue;
-                        }
-                        let p = roster.entry(id).or_insert_with(|| Participant { attendee_id: String::new(), external_user_id: String::new(), muted: false });
-                        if let Some(a) = &s.attendee_id { p.attendee_id = a.clone(); }
-                        if let Some(x) = &s.external_user_id { p.external_user_id = x.clone(); }
-                        if let Some(m) = s.muted { p.muted = m; }
-                    }
+                    apply_stream_info(&mut roster, info);
                     let _ = events.send(SessionEvent::Roster(roster.values().cloned().collect()));
                 }
                 if let Some(meta) = &frame.audio_metadata {
@@ -202,6 +206,29 @@ async fn run(
     Ok(())
 }
 
+/// Update the roster (keyed by audio stream id) from AUDIO_STREAM_ID_INFO, as the web SDK
+/// reads it: an entry with an attendee id announces (or re-announces) that attendee, one with
+/// `muted` updates the mute state, and one with neither means the stream's attendee left.
+pub fn apply_stream_info(roster: &mut BTreeMap<u32, Participant>, info: &crate::proto::SdkAudioStreamIdInfoFrame) {
+    for s in &info.streams {
+        let Some(id) = s.audio_stream_id else { continue };
+        if let Some(attendee) = &s.attendee_id {
+            // A reconnect gets a new, higher stream id: forget the old one.
+            roster.retain(|sid, p| *sid >= id || p.attendee_id != *attendee);
+            let p = roster.entry(id).or_insert_with(|| Participant { attendee_id: attendee.clone(), external_user_id: String::new(), muted: false });
+            p.external_user_id = s.external_user_id.clone().unwrap_or_else(|| attendee.clone());
+        }
+        if let Some(m) = s.muted {
+            if let Some(p) = roster.get_mut(&id) {
+                p.muted = m;
+            }
+        }
+        if s.attendee_id.is_none() && s.muted.is_none() {
+            roster.remove(&id);
+        }
+    }
+}
+
 fn audio_session_id() -> u64 {
     use std::hash::{BuildHasher, Hasher};
     let mut h = std::collections::hash_map::RandomState::new().build_hasher();
@@ -212,6 +239,23 @@ fn audio_session_id() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn roster_follows_stream_info() {
+        use crate::proto::{SdkAudioStreamIdInfo as S, SdkAudioStreamIdInfoFrame as F};
+        let join = |id: u32, att: &str| S { audio_stream_id: Some(id), attendee_id: Some(att.into()), external_user_id: Some(format!("T-R-{att}")), ..Default::default() };
+        let mut r = BTreeMap::new();
+        apply_stream_info(&mut r, &F { streams: vec![join(1, "a"), join(2, "b")] });
+        assert_eq!(r.len(), 2);
+        apply_stream_info(&mut r, &F { streams: vec![S { audio_stream_id: Some(2), muted: Some(true), ..Default::default() }] });
+        assert!(r[&2].muted);
+        // b leaves: an entry with only the stream id.
+        apply_stream_info(&mut r, &F { streams: vec![S { audio_stream_id: Some(2), ..Default::default() }] });
+        assert_eq!(r.keys().copied().collect::<Vec<_>>(), vec![1]);
+        // a reconnects under stream 3: stream 1 goes away.
+        apply_stream_info(&mut r, &F { streams: vec![join(3, "a")] });
+        assert_eq!(r.keys().copied().collect::<Vec<_>>(), vec![3]);
+    }
 
     #[test]
     fn user_id_from_external_id() {

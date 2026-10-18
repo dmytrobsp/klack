@@ -34,6 +34,8 @@ enum Net {
     DetailsPins { channel: String, pins: Vec<slack_core::types::Message> },
     /// Search results for a query.
     SearchDone { query: String, result: Result<serde_json::Value, String> },
+    /// Huddle credentials from `rooms.join`.
+    HuddleJoined { channel: String, result: Result<huddle::signaling::Credentials, String> },
     /// A DM opened from the quick switcher.
     DmOpened(slack_core::types::Conversation),
     /// A video downloaded to a temporary file, ready to play.
@@ -61,6 +63,8 @@ enum Focus {
 }
 
 struct App {
+    /// The huddle we are in.
+    call: Option<super::call::Call>,
     /// Presence subscription sent on the current RTM connection.
     presence_subscribed: bool,
     /// Open conversation details (F2).
@@ -538,6 +542,27 @@ impl App {
         }
     }
 
+    /// F3: join (or start) the huddle of the current conversation, or leave the one we are in.
+    fn toggle_huddle(&mut self) {
+        if let Some(call) = self.call.as_mut() {
+            call.leave();
+            self.status = "leaving the huddle…".into();
+            return;
+        }
+        let Some(channel) = self.current.clone() else { return };
+        self.status = "joining the huddle…".into();
+        let (client, tx) = (self.client.clone(), self.net.clone());
+        tokio::spawn(async move {
+            let result = async {
+                let v = client.call_raw("rooms.join", &[("channel_id", channel.clone())]).await?;
+                huddle::signaling::Credentials::from_rooms_join(&v)
+            }
+            .await
+            .map_err(|e| e.to_string());
+            let _ = tx.send(Net::HuddleJoined { channel, result });
+        });
+    }
+
     /// Show the DM with `user`, opening one if needed.
     fn open_dm_with(&mut self, user: String) {
         if let Some(id) = self.ws.conversations.values().find(|c| c.is_im && c.user.as_deref() == Some(user.as_str())).map(|c| c.id.clone()) {
@@ -761,6 +786,7 @@ pub async fn run(client: Client) -> Result<()> {
         search: None,
         details: None,
         presence_subscribed: false,
+        call: None,
         pending_hit: None,
         player: None,
         screen: Default::default(),
@@ -813,6 +839,17 @@ pub async fn run(client: Client) -> Result<()> {
             }
             Some(msg) = net_rx.recv() => handle_net(&mut app, msg),
             Some(ev) = rtm.events.recv() => handle_rtm(&mut app, ev),
+            Some(ev) = async {
+                match app.call.as_mut() {
+                    Some(call) => call.session.events.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                if app.call.as_mut().is_some_and(|c| c.apply(ev)) {
+                    app.call = None;
+                    app.status = "left the huddle".into();
+                }
+            }
             _ = tick.tick() => {}
             _ = video_tick.tick(), if app.player.is_some() => {
                 if let Some(p) = app.player.as_mut() {
@@ -872,6 +909,14 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
             }
         }
         Event::Key(k) if k.kind != KeyEventKind::Release && k.code == KeyCode::F(2) => app.open_details(),
+        Event::Key(k) if k.kind != KeyEventKind::Release && k.code == KeyCode::F(3) => app.toggle_huddle(),
+        Event::Key(k) if k.kind != KeyEventKind::Release && k.code == KeyCode::F(4) => {
+            if let Some(call) = app.call.as_mut() {
+                if let Err(e) = call.toggle_mute() {
+                    app.status = format!("microphone: {e}");
+                }
+            }
+        }
         Event::Key(k) if k.kind != KeyEventKind::Release && app.search.is_some() => {
             let Some(search) = app.search.as_mut() else { return true };
             match k.code {
@@ -1240,6 +1285,14 @@ fn handle_net(app: &mut App, msg: Net) {
                 }
             }
         }
+        Net::HuddleJoined { channel, result } => match result {
+            Ok(creds) if app.call.is_none() => {
+                app.call = Some(super::call::Call::start(channel, creds));
+                app.status.clear();
+            }
+            Ok(_) => {}
+            Err(e) => app.status = format!("cannot join the huddle: {e}"),
+        },
         Net::DmOpened(c) => {
             let id = c.id.clone();
             app.ws.conversations.entry(id.clone()).or_insert(c);
@@ -1298,7 +1351,11 @@ fn handle_net(app: &mut App, msg: Net) {
 
 fn draw(f: &mut ratatui::Frame, app: &mut App) {
     app.screen = f.area();
-    let [body, status] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(f.area());
+    let call_rows = if app.call.is_some() { 1 } else { 0 };
+    let [body, call_bar, status] = Layout::vertical([Constraint::Min(1), Constraint::Length(call_rows), Constraint::Length(1)]).areas(f.area());
+    if let Some(call) = &app.call {
+        call.draw(f, call_bar, &app.ws);
+    }
     let side_w = (body.width / 4).clamp(18, 32);
     let [side, main] = Layout::horizontal([Constraint::Length(side_w), Constraint::Min(10)]).areas(body);
     app.sidebar.draw(f, side, &app.ws, app.focus == Focus::Sidebar);

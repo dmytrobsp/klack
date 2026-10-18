@@ -183,7 +183,7 @@ pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
                     _ = &mut deadline => break,
                     _ = tick.tick() => {
                         if let Some(hz) = tone {
-                            let frame: Vec<i16> = (0..FRAME_SAMPLES).map(|i| (((phase + i as u64) as f64 * hz * std::f64::consts::TAU / SAMPLE_RATE as f64).sin() * 6000.0) as i16).collect();
+                            let frame: Vec<i16> = (0..FRAME_SAMPLES).map(|i| (((phase + i as u64) as f64 * hz * std::f64::consts::TAU / SAMPLE_RATE as f64).sin() * 1500.0) as i16).collect();
                             phase += FRAME_SAMPLES as u64;
                             session.send_pcm(frame);
                         }

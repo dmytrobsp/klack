@@ -72,6 +72,8 @@ pub struct Workspace {
     pub custom_emoji: HashMap<String, String>,
     pub muted: std::collections::HashSet<String>,
     pub dnd: Dnd,
+    /// Active huddles: channel → (room id, participant user ids).
+    pub huddles: HashMap<String, (String, Vec<String>)>,
 }
 
 /// Do Not Disturb, as `dnd.info` / `dnd_updated` report it (times in epoch seconds).

@@ -1,6 +1,7 @@
 //! Interactive terminal UI.
 
 pub mod autocomplete;
+pub mod call;
 pub mod clipboard;
 pub mod composer;
 pub mod details;

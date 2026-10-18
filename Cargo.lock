@@ -1874,6 +1874,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bytes",
+ "cpal",
  "futures-util",
  "opus",
  "prost",
