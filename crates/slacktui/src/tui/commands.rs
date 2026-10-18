@@ -97,6 +97,56 @@ pub const MAX_GROUP: usize = 8;
 
 /// Parse a composer's contents. `mrkdwn` is the same text with autocompleted mentions as
 /// `<@U…>`, which `/dm` needs because display names may contain spaces.
+/// The snippet languages Slack accepts as `snippet_type` (the web client's snippet editor list,
+/// plus `text`); anything else is refused with `unknown_snippet_type`.
+const SNIPPET_LANGS: &[&str] = &[
+    "text", "apl", "applescript", "asciiarmor", "asn.1", "aspx", "asterisk", "brainfuck", "c", "cfm", "clojure",
+    "cmake", "cobol", "coffeescript", "cpp", "crystal", "csharp", "css", "csv", "cypher", "d", "dart", "diff",
+    "django", "dockerfile", "dtd", "dylan", "ebnf", "ecl", "eiffel", "ejs", "elixir", "elm", "erb", "erlang",
+    "factor", "fcl", "forth", "fortran", "fsharp", "gas", "gherkin", "go", "graphql", "groovy", "gss", "haml",
+    "handlebars", "haskell", "haskell_literate", "haxe", "html", "http", "idl", "java", "javascript", "jinja2",
+    "json", "json_ld", "jsp", "jsx", "julia", "kotlin", "latex", "less", "lisp", "livescript", "lua", "markdown",
+    "mathematica", "matlab", "mbox", "mirc", "modelica", "mscgen", "mumps", "mysql", "nginx", "nsis", "ntriples",
+    "objc", "ocaml", "oz", "pascal", "pegjs", "perl", "php", "pig", "powershell", "properties", "protobuf", "pug",
+    "puppet", "python", "q", "r", "rpm", "rst", "ruby", "rust", "sas", "sass", "scala", "scheme", "scss", "shell",
+    "sieve", "slim", "smalltalk", "smarty", "solr", "soy", "sparql", "spreadsheet", "sql", "stylus", "swift", "tcl",
+    "textile", "tiddlywiki", "tiki", "toml", "tornado", "troff", "tsv", "tsx", "ttcn", "ttcn_cfg", "turtle", "twig",
+    "typescript", "vb", "vbscript", "velocity", "verilog", "vhdl", "vue", "webidl", "xml", "xquery", "yacas", "yaml",
+    "z80",
+];
+
+/// Usual names and file extensions for Slack's snippet languages.
+const SNIPPET_ALIASES: &[(&str, &str)] = &[
+    ("rs", "rust"), ("py", "python"), ("js", "javascript"), ("mjs", "javascript"), ("cjs", "javascript"), ("ts", "typescript"),
+    ("sh", "shell"), ("bash", "shell"), ("zsh", "shell"), ("md", "markdown"), ("yml", "yaml"), ("kt", "kotlin"), ("kts", "kotlin"),
+    ("rb", "ruby"), ("cs", "csharp"), ("c#", "csharp"), ("c++", "cpp"), ("cc", "cpp"), ("cxx", "cpp"), ("hpp", "cpp"), ("h", "c"),
+    ("hs", "haskell"), ("pl", "perl"), ("ex", "elixir"), ("exs", "elixir"), ("erl", "erlang"), ("txt", "text"), ("plain", "text"),
+    ("ps1", "powershell"), ("proto", "protobuf"), ("clj", "clojure"), ("cljs", "clojure"), ("coffee", "coffeescript"), ("htm", "html"),
+    ("jl", "julia"), ("tex", "latex"), ("ml", "ocaml"), ("fs", "fsharp"), ("f90", "fortran"), ("ini", "properties"), ("golang", "go"),
+];
+
+/// Slack's snippet language for a name or file extension (any case), if it has one.
+pub fn snippet_lang(word: &str) -> Option<&'static str> {
+    let w = word.trim().to_lowercase();
+    SNIPPET_LANGS.iter().find(|l| **l == w).copied().or_else(|| SNIPPET_ALIASES.iter().find(|(a, _)| *a == w).map(|(_, l)| *l))
+}
+
+/// `/snippet`'s head: `[lang] [title]`, or just a file name whose extension gives the language.
+fn snippet_head(head: &str) -> Result<(String, String), String> {
+    let head = head.trim();
+    let (first, rest) = head.split_once(char::is_whitespace).unwrap_or((head, ""));
+    let from_name = |name: &str| name.rsplit_once('.').and_then(|(_, ext)| snippet_lang(ext)).unwrap_or("text");
+    if first.is_empty() {
+        Ok(("text".into(), String::new()))
+    } else if let Some(lang) = snippet_lang(first) {
+        Ok((lang.into(), rest.trim().to_string()))
+    } else if first.contains('.') {
+        Ok((from_name(head).into(), head.to_string()))
+    } else {
+        Err(format!("unknown snippet language {first:?} — e.g. rust, python, javascript, shell, json, text"))
+    }
+}
+
 pub fn parse(text: &str, mrkdwn: &str) -> Option<Result<Command, String>> {
     if let Some(rest) = mrkdwn.trim().strip_prefix("/dm").filter(|r| r.is_empty() || r.starts_with(char::is_whitespace)) {
         let people: Vec<Recipient> = rest
@@ -115,15 +165,10 @@ pub fn parse(text: &str, mrkdwn: &str) -> Option<Result<Command, String>> {
     }
     if let Some(rest) = text.strip_prefix("/snippet").filter(|r| r.is_empty() || r.starts_with(char::is_whitespace)) {
         let (head, body) = rest.split_once('\n').unwrap_or((rest, ""));
-        let (lang, title) = head.trim().split_once(char::is_whitespace).unwrap_or((head.trim(), ""));
         return Some(if body.trim().is_empty() {
             Err("usage: /snippet [lang] [title], then the snippet on the next lines (Alt+Enter)".into())
         } else {
-            Ok(Command::Snippet {
-                lang: if lang.is_empty() { "text".into() } else { lang.to_lowercase() },
-                title: title.trim().to_string(),
-                body: body.to_string(),
-            })
+            snippet_head(head).map(|(lang, title)| Command::Snippet { lang, title, body: body.to_string() })
         });
     }
     if let Some(upload) = parse_upload(text) {
@@ -192,6 +237,19 @@ mod tests {
         );
         assert_eq!(parse("/snippet\nhello"), Some(Ok(Command::Snippet { lang: "text".into(), title: String::new(), body: "hello".into() })));
         assert!(matches!(parse("/snippet rust"), Some(Err(_))), "nothing to post");
+        // Aliases and file names (languages and values from Slack's list).
+        let lang_title = |head: &str| match parse(&format!("/snippet {head}\nx")) {
+            Some(Ok(Command::Snippet { lang, title, .. })) => Ok((lang, title)),
+            Some(Err(e)) => Err(e),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(lang_title("rs main.rs"), Ok(("rust".into(), "main.rs".into())));
+        assert_eq!(lang_title("TOML Cargo.toml"), Ok(("toml".into(), "Cargo.toml".into())));
+        assert_eq!(lang_title("build.sh"), Ok(("shell".into(), "build.sh".into())), "the language from the file name");
+        assert_eq!(lang_title("notes.unknownext"), Ok(("text".into(), "notes.unknownext".into())));
+        assert!(lang_title("klingon hello").unwrap_err().contains("unknown snippet language"), "refused before Slack refuses it");
+        assert_eq!(snippet_lang("c++"), Some("cpp"));
+        assert!(SNIPPET_LANGS.contains(&"rust") && SNIPPET_LANGS.len() == 143);
         assert_eq!(parse("/snippets"), None);
     }
 
