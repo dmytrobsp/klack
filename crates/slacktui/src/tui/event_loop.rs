@@ -92,6 +92,8 @@ enum Focus {
 struct App {
     /// Key bindings (defaults plus keys.toml).
     keys: Keymap,
+    /// Keys of a sequence typed so far (e.g. the leader).
+    pending: Vec<Key>,
     /// Problems found in keys.toml, shown once the workspace has loaded.
     key_warnings: Vec<String>,
     /// The profile's workspaces (labels) and which one this is.
@@ -956,9 +958,77 @@ impl App {
         self.action_in(Context::Global, k)
     }
 
-    /// The action of a key press in `context`, if any.
+    /// The contexts a key press is looked up in now: the open overlay's, or the focused
+    /// pane's; plus global.
+    fn active_contexts(&self) -> Vec<Context> {
+        let overlay = if self.help.is_some() {
+            Some(Context::Help)
+        } else if self.switcher.is_some() {
+            Some(Context::Switcher)
+        } else if let Some(m) = &self.mover {
+            Some(if m.naming.is_some() { Context::SectionName } else { Context::Mover })
+        } else if self.activity.is_some() {
+            Some(Context::Activity)
+        } else if self.profile.is_some() {
+            Some(Context::Profile)
+        } else if self.details.is_some() {
+            Some(Context::Details)
+        } else if self.search.is_some() {
+            Some(Context::Search)
+        } else if self.player.is_some() {
+            Some(Context::Player)
+        } else if self.snippet.is_some() {
+            Some(Context::Snippet)
+        } else if self.viewer.is_some() {
+            Some(Context::Viewer)
+        } else if self.confirm.is_some() {
+            Some(Context::Confirm)
+        } else if self.picker.is_some() {
+            Some(Context::Picker)
+        } else {
+            None
+        };
+        let mut out = vec![Context::Global];
+        match overlay {
+            Some(c) => out.push(c),
+            None => {
+                if self.completion.is_some() {
+                    out.push(Context::Completion);
+                }
+                out.push(match self.focus {
+                    Focus::Sidebar => Context::Sidebar,
+                    Focus::Messages | Focus::Thread => Context::Messages,
+                    Focus::Composer | Focus::ThreadComposer => Context::Composer,
+                });
+            }
+        }
+        out
+    }
+
+    /// Before a key is handled: hold it if it only starts a sequence (the leader), drop it
+    /// if it ends a sequence that means nothing. True when the key was used up here.
+    fn hold_sequence(&mut self, k: &crossterm::event::KeyEvent) -> bool {
+        let key = Key::from_event(k);
+        let results: Vec<Lookup> = self.active_contexts().into_iter().map(|c| self.keys.lookup(c, &self.pending, key)).collect();
+        if results.iter().any(|r| matches!(r, Lookup::Action(_))) {
+            return false;
+        }
+        if results.contains(&Lookup::Pending) {
+            self.pending.push(key);
+            return true;
+        }
+        if !self.pending.is_empty() {
+            let mut seq = std::mem::take(&mut self.pending);
+            seq.push(key);
+            self.status = format!("{} is not bound here", super::keymap::sequence_label(&seq));
+            return true;
+        }
+        false
+    }
+
+    /// The action of a key press in `context` (after any pending keys), if any.
     fn action_in(&self, context: Context, k: &crossterm::event::KeyEvent) -> Option<Action> {
-        match self.keys.lookup(context, &[], super::keymap::Key::from_event(k)) {
+        match self.keys.lookup(context, &self.pending, super::keymap::Key::from_event(k)) {
             Lookup::Action(a) => Some(a),
             Lookup::Pending | Lookup::None => None,
         }
@@ -1272,6 +1342,7 @@ async fn run_workspace(
     let mut app = App {
         keys: keymap.0.clone(),
         key_warnings: keymap.1.clone(),
+        pending: Vec::new(),
         workspaces: workspaces.0,
         workspace: workspaces.1,
         switch_to: None,
@@ -1373,6 +1444,17 @@ async fn run_workspace(
 
 /// Returns false to quit.
 fn handle_terminal(app: &mut App, ev: Event) -> bool {
+    if let Event::Key(k) = &ev {
+        if k.kind != KeyEventKind::Release && app.hold_sequence(k) {
+            return true;
+        }
+    }
+    let keep_going = handle_event(app, ev);
+    app.pending.clear();
+    keep_going
+}
+
+fn handle_event(app: &mut App, ev: Event) -> bool {
     match ev {
         Event::Key(k) if k.kind != KeyEventKind::Release && app.global(&k) == Some(Action::Quit) => return false,
         Event::Key(k) if k.kind != KeyEventKind::Release && app.help.is_some() => {
@@ -2146,6 +2228,9 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         s.draw(f, body);
     }
     let mut live = if app.connected { "● live" } else { "○ connecting" }.to_string();
+    if !app.pending.is_empty() {
+        live = format!("{live} · {} …", super::keymap::sequence_label(&app.pending));
+    }
     let me = super::profile::availability(&app.ws, chrono::Utc::now().timestamp());
     if !me.is_empty() {
         live = format!("{live} · {me}");

@@ -76,7 +76,9 @@ react = "R"
 pin = []            # unbound
 ```
 
-Keys are written like `ctrl+k`, `alt+up`, `shift+tab`, `G`, `f5`, `space`, `pageup`. Plain
+Keys are written like `ctrl+k`, `alt+up`, `shift+tab`, `G`, `f5`, `space`, `pageup`. Set
+`leader = "ctrl+b"` (at the top) to use chords such as `"<leader> k"`; while a chord is
+being typed the status bar shows it. Plain
 characters cannot be bound where you type (global, composer, search fields). Problems are shown
 in the status bar at startup, and the default stays in place for any entry that has one.
 
