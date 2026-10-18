@@ -165,7 +165,7 @@ pub fn extract_api_token(html: &str) -> Option<String> {
 /// `auth.test`.
 pub async fn session_from_cookie(workspace_url: &str, cookie_d: &str) -> Result<WorkspaceSession> {
     let base = workspace_url.trim_end_matches('/');
-    let http = reqwest::Client::builder().user_agent(USER_AGENT).build()?;
+    let http = crate::api::http_client(|| reqwest::Client::builder().user_agent(USER_AGENT))?;
     let html = http
         .get(format!("{base}/customize/emoji"))
         .header(reqwest::header::COOKIE, format!("d={cookie_d}"))

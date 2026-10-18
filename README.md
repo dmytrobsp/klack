@@ -12,12 +12,24 @@ cookie). It is not an official Slack app.
 
 ## Requirements
 
-- A recent stable Rust toolchain (edition 2024).
-- **cmake** (huddles: the bundled Opus is built with it): `apt install cmake` · `brew install cmake`.
-- **ALSA headers** on Linux (audio): `apt install libasound2-dev`.
-- **ffmpeg / ffprobe on PATH** at runtime, for video playback, cameras and (outside Wayland) screen sharing.
-- A terminal with graphics for real images (kitty, WezTerm, Ghostty, iTerm2, or any sixel
-  terminal); others get half-block images.
+To build: a recent stable Rust toolchain (edition 2024; [rustup](https://rustup.rs)), a C/C++
+compiler, `pkg-config`, **cmake** (the bundled Opus codec is built with it) and the **ALSA headers**
+on Linux. On a fresh system that is (each line checked with a clean checkout in a container,
+`tools/container-build.sh`):
+
+| System | Packages |
+|---|---|
+| Debian 13 / Ubuntu 24.04 | `apt install build-essential pkg-config cmake libasound2-dev git curl` |
+| Fedora | `dnf install gcc gcc-c++ make pkgconf-pkg-config cmake alsa-lib-devel git` |
+| Arch | `pacman -S base-devel cmake alsa-lib git` |
+| macOS | Xcode command-line tools, then `brew install cmake` |
+
+To run: `libasound.so.2` (ALSA's library, on every desktop Linux) and the C++ runtime. Optional:
+**ffmpeg / ffprobe on PATH** for video playback, cameras and (outside Wayland) screen sharing; a
+D-Bus notification service for desktop notifications; a terminal with graphics for real images
+(kitty, WezTerm, Ghostty, iTerm2, or any sixel terminal; others get half-block images). Without a
+sound card huddles still work (silently, with a note in the call bar); without system CA
+certificates klack uses the Mozilla roots it carries.
 
 ```sh
 cargo build --release

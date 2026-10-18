@@ -24,13 +24,22 @@ pub struct Client {
 
 pub type Params<'a> = Vec<(&'a str, String)>;
 
+/// An HTTP client checking certificates against the system's store or — where the system has
+/// none (a minimal container without ca-certificates) — against Mozilla's roots bundled in klack.
+pub fn http_client(builder: impl Fn() -> reqwest::ClientBuilder) -> Result<reqwest::Client> {
+    match builder().build() {
+        Ok(client) => Ok(client),
+        Err(e) => {
+            tracing::warn!("no usable system certificates ({e:#}); using the bundled Mozilla roots");
+            let roots = webpki_root_certs::TLS_SERVER_ROOT_CERTS.iter().filter_map(|c| reqwest::Certificate::from_der(c).ok());
+            Ok(builder().tls_certs_only(roots).build()?)
+        }
+    }
+}
+
 impl Client {
     pub fn new(session: WorkspaceSession) -> Result<Self> {
-        let http = reqwest::Client::builder()
-            .user_agent(USER_AGENT)
-            .connect_timeout(Duration::from_secs(15))
-            .timeout(Duration::from_secs(120))
-            .build()?;
+        let http = http_client(|| reqwest::Client::builder().user_agent(USER_AGENT).connect_timeout(Duration::from_secs(15)).timeout(Duration::from_secs(120)))?;
         Ok(Client { http, session })
     }
 

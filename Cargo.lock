@@ -4992,6 +4992,7 @@ dependencies = [
  "tracing",
  "url",
  "urlencoding",
+ "webpki-root-certs",
 ]
 
 [[package]]

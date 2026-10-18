@@ -79,6 +79,38 @@ impl<B: Backend> Backend for WideSafe<B> {
     }
 }
 
+/// Where text that libraries print to stderr themselves (ALSA's diagnostics on a system with no
+/// sound card, say) goes while the TUI is up, instead of onto the screen: klack's log file.
+pub static STDERR_LOG: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+/// stderr as it was before the TUI took it over.
+#[cfg(unix)]
+static SAVED_STDERR: std::sync::Mutex<Option<std::os::fd::OwnedFd>> = std::sync::Mutex::new(None);
+
+/// Send stderr to [`STDERR_LOG`] (if set) until [`give_back_stderr`].
+#[cfg(unix)]
+fn divert_stderr() {
+    let Some(path) = STDERR_LOG.get() else { return };
+    let Ok(file) = std::fs::OpenOptions::new().create(true).append(true).open(path) else { return };
+    let Ok(saved) = rustix::io::dup(rustix::stdio::stderr()) else { return };
+    if rustix::stdio::dup2_stderr(&file).is_ok() {
+        *SAVED_STDERR.lock().unwrap_or_else(|e| e.into_inner()) = Some(saved);
+    }
+}
+
+#[cfg(unix)]
+fn give_back_stderr() {
+    if let Some(saved) = SAVED_STDERR.lock().unwrap_or_else(|e| e.into_inner()).take() {
+        let _ = rustix::stdio::dup2_stderr(&saved);
+    }
+}
+
+#[cfg(not(unix))]
+fn divert_stderr() {}
+
+#[cfg(not(unix))]
+fn give_back_stderr() {}
+
 /// Restores the terminal when dropped.
 pub struct TerminalGuard {
     keyboard_enhanced: bool,
@@ -95,12 +127,15 @@ impl TerminalGuard {
             execute!(out, PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES))?;
         }
         install_panic_hook(keyboard_enhanced);
+        divert_stderr();
         let terminal = Terminal::new(WideSafe(CrosstermBackend::new(out)))?;
         Ok((TerminalGuard { keyboard_enhanced }, terminal))
     }
 }
 
 fn restore(keyboard_enhanced: bool) {
+    // First, so a panic message printed after this reaches the terminal.
+    give_back_stderr();
     let mut out = io::stdout();
     if keyboard_enhanced {
         let _ = execute!(out, PopKeyboardEnhancementFlags);

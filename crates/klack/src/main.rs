@@ -46,6 +46,7 @@ fn init_logging(profile: &str) -> Result<()> {
     let dir = session::cache_dir(profile)?;
     std::fs::create_dir_all(&dir)?;
     let file = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("klack.log"))?;
+    let _ = tui::terminal::STDERR_LOG.set(dir.join("klack.log"));
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::try_from_env("KLACK_LOG").unwrap_or_else(|_| "klack=info,slack_core=info,huddle=info".into()))
         .with_writer(std::sync::Mutex::new(file))
