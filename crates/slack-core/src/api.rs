@@ -161,6 +161,19 @@ impl Client {
         self.call_field("conversations.open", "channel", &[("users", users.join(",")), ("return_im", "true".into())]).await
     }
 
+    pub async fn join(&self, channel: &str) -> Result<Conversation> {
+        self.call_field("conversations.join", "channel", &[("channel", channel.into())]).await
+    }
+
+    pub async fn leave(&self, channel: &str) -> Result<()> {
+        self.call_raw("conversations.leave", &[("channel", channel.into())]).await.map(|_| ())
+    }
+
+    /// Create a channel; Slack expects lowercase names without spaces (see `types::channel_name`).
+    pub async fn create_channel(&self, name: &str, private: bool) -> Result<Conversation> {
+        self.call_field("conversations.create", "channel", &[("name", name.into()), ("is_private", private.to_string())]).await
+    }
+
     pub async fn members(&self, channel: &str) -> Result<Vec<String>> {
         self.call_field("conversations.members", "members", &[("channel", channel.into()), ("limit", "1000".into())]).await
     }

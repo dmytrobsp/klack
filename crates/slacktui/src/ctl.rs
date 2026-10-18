@@ -11,8 +11,18 @@ use slack_core::types::Conversation;
 pub enum Ctl {
     /// Show who this profile is signed in as.
     Whoami,
-    /// List conversations.
+    /// List conversations (`-` marks public channels you are not in).
     Channels,
+    /// Join a public channel.
+    Join { channel: String },
+    /// Leave a channel.
+    Leave { channel: String },
+    /// Create a channel (lowercase, spaces become hyphens).
+    Create {
+        name: String,
+        #[arg(long)]
+        private: bool,
+    },
     /// Print recent messages.
     History {
         channel: String,
@@ -120,8 +130,18 @@ pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
         Ctl::Channels => {
             for c in client.conversations_list().await? {
                 let kind = if c.is_im { "dm" } else if c.is_mpim { "group-dm" } else if c.is_private { "private" } else { "channel" };
-                println!("{:<12} {:<9} {}", c.id, kind, if c.name.is_empty() { c.user.unwrap_or_default() } else { c.name });
+                let member = if c.is_dm() || c.is_member { ' ' } else { '-' };
+                println!("{:<12} {:<9} {member} {}", c.id, kind, if c.name.is_empty() { c.user.unwrap_or_default() } else { c.name });
             }
+        }
+        Ctl::Join { channel } => {
+            let c = client.join(&resolve_channel(&client, &channel).await?).await?;
+            println!("joined #{} ({})", c.name, c.id);
+        }
+        Ctl::Leave { channel } => client.leave(&resolve_channel(&client, &channel).await?).await?,
+        Ctl::Create { name, private } => {
+            let c = client.create_channel(&slack_core::types::channel_name(&name), private).await?;
+            println!("created #{} ({})", c.name, c.id);
         }
         Ctl::History { channel, n } => {
             let id = resolve_channel(&client, &channel).await?;

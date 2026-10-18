@@ -39,6 +39,30 @@ impl Conversation {
     }
 }
 
+/// A name Slack accepts for a new channel: lowercase, spaces and other characters as
+/// hyphens (runs collapsed), at most 80 characters.
+pub fn channel_name(input: &str) -> String {
+    let mut out = String::new();
+    for c in input.trim().trim_start_matches('#').chars().flat_map(char::to_lowercase) {
+        let c = if c.is_alphanumeric() || c == '_' || c == '-' { c } else { '-' };
+        if !(c == '-' && out.ends_with('-')) {
+            out.push(c);
+        }
+    }
+    out.trim_matches('-').chars().take(80).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn channel_names() {
+        assert_eq!(super::channel_name("#Team Updates!"), "team-updates");
+        assert_eq!(super::channel_name("  a  --  b_c "), "a-b_c");
+        assert_eq!(super::channel_name("Café"), "café");
+        assert_eq!(super::channel_name("x".repeat(100).as_str()).len(), 80);
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UserProfile {
