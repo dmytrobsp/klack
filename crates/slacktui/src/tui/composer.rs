@@ -28,6 +28,16 @@ pub enum Trigger {
     Emoji(String),
 }
 
+/// What is typed in a composer — text, cursor, mentions and the message being edited — kept
+/// while you are in another conversation or thread (the sent-message history stays put).
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct Draft {
+    chars: Vec<char>,
+    cursor: usize,
+    mentions: Vec<(String, String)>,
+    editing: Option<String>,
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct Composer {
     chars: Vec<char>,
@@ -102,6 +112,19 @@ impl Composer {
     pub fn set(&mut self, text: &str) {
         self.chars = text.chars().collect();
         self.cursor = self.chars.len();
+    }
+
+    /// Take what is typed out, leaving the composer empty; None when there is nothing to keep.
+    pub fn take_draft(&mut self) -> Option<Draft> {
+        let draft = (!self.is_empty() || self.editing.is_some()).then(|| Draft { chars: self.chars.clone(), cursor: self.cursor, mentions: self.mentions.clone(), editing: self.editing.clone() });
+        self.clear();
+        draft
+    }
+
+    /// Put a draft back in place of what is there.
+    pub fn restore(&mut self, d: Draft) {
+        self.clear();
+        (self.chars, self.cursor, self.mentions, self.editing) = (d.chars, d.cursor, d.mentions, d.editing);
     }
 
     pub fn clear(&mut self) {
@@ -474,6 +497,31 @@ mod tests {
         assert_eq!(c.text(), "hello\n");
         c.backspace();
         assert_eq!(c.text(), "hello");
+    }
+
+    #[test]
+    fn drafts() {
+        let mut c = Composer::default();
+        assert_eq!(c.take_draft(), None, "nothing typed");
+        c.set("  \n");
+        assert_eq!(c.take_draft(), None, "only whitespace");
+        c.set("hello world");
+        c.left();
+        c.mentions.push(("@bob".into(), "U2".into()));
+        c.history.push("sent before".into());
+        let d = c.take_draft().expect("a draft");
+        assert!(c.is_empty() && c.mentions.is_empty());
+        assert_eq!(c.history, vec!["sent before".to_string()], "the history stays");
+        c.set("other");
+        c.restore(d.clone());
+        assert_eq!((c.text(), c.cursor(), c.mentions.clone()), ("hello world".to_string(), 10, vec![("@bob".to_string(), "U2".to_string())]));
+        // An edit in progress is kept even when its text was cleared.
+        c.clear();
+        c.editing = Some("10.0".into());
+        let d = c.take_draft().expect("the edit");
+        assert_eq!(c.editing, None);
+        c.restore(d);
+        assert_eq!(c.editing.as_deref(), Some("10.0"));
     }
 
     #[test]

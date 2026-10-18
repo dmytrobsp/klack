@@ -137,6 +137,8 @@ struct App {
     search: Option<super::search::Search>,
     /// A search hit to select once its conversation is shown.
     pending_hit: Option<super::search::Hit>,
+    /// What was typed in conversations (by id) and threads (by thread key) you left.
+    drafts: std::collections::HashMap<String, super::composer::Draft>,
     /// Open quick switcher (Ctrl+K).
     switcher: Option<super::switcher::Switcher>,
     /// Key help overlay is open.
@@ -214,6 +216,12 @@ impl App {
             if self.ws.preview.is_some() && self.ws.preview != selected {
                 self.ws.preview = None;
                 self.sidebar.rebuild(&self.ws);
+            }
+            if let Some(old) = &self.current {
+                stash(&mut self.drafts, old, &mut self.composer);
+            }
+            if let Some(d) = selected.as_ref().and_then(|id| self.drafts.remove(id)) {
+                self.composer.restore(d);
             }
             self.current = selected.clone();
             self.messages.scroll = 0;
@@ -912,6 +920,15 @@ impl App {
 
     /// Open the thread whose parent is `parent` in `channel`.
     fn open_thread_at(&mut self, channel: String, parent: String) {
+        let key = super::state::thread_key(&channel, &parent);
+        if self.thread.as_ref().is_none_or(|(c, t)| super::state::thread_key(c, t) != key) {
+            if let Some((c, t)) = &self.thread {
+                stash(&mut self.drafts, &super::state::thread_key(c, t), &mut self.thread_composer);
+            }
+            if let Some(d) = self.drafts.remove(&key) {
+                self.thread_composer.restore(d);
+            }
+        }
         self.thread_pane.scroll = 0;
         self.thread_pane.selected = None;
         self.focus = Focus::Thread;
@@ -932,8 +949,9 @@ impl App {
     }
 
     fn close_thread(&mut self) {
-        self.thread = None;
-        self.thread_composer.clear();
+        if let Some((c, t)) = self.thread.take() {
+            stash(&mut self.drafts, &super::state::thread_key(&c, &t), &mut self.thread_composer);
+        }
         self.broadcast = false;
         if matches!(self.focus, Focus::Thread | Focus::ThreadComposer) {
             self.focus = Focus::Messages;
@@ -1688,6 +1706,15 @@ fn spawn_boot(client: Client, tx: mpsc::UnboundedSender<Net>) {
     });
 }
 
+/// Keep what is typed in `composer` as the draft for `key` (or forget the old draft when
+/// nothing is typed), leaving the composer empty.
+fn stash(drafts: &mut std::collections::HashMap<String, super::composer::Draft>, key: &str, composer: &mut super::composer::Composer) {
+    match composer.take_draft() {
+        Some(d) => drafts.insert(key.to_string(), d),
+        None => drafts.remove(key),
+    };
+}
+
 /// Run the app on the profile's workspace `team` (or its default); Alt+1…9 and `/workspace`
 /// switch to another of the profile's workspaces without leaving the terminal.
 pub async fn run(profile: slack_core::session::Profile, team: Option<&str>) -> Result<()> {
@@ -1785,6 +1812,7 @@ async fn run_workspace(
         presence_subscribed: false,
         call: None,
         pending_hit: None,
+        drafts: Default::default(),
         player: None,
         screen: Default::default(),
         terminal_focused: true,
