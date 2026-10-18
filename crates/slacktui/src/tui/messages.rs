@@ -26,9 +26,16 @@ pub struct MessagePane {
     pub selected: Option<String>,
     /// Message ts owning each visible row of the last draw (for clicks).
     rows: Vec<Option<String>>,
+    /// Thread mode: show the parent and every reply instead of top-level messages.
+    pub thread: bool,
 }
 
 impl MessagePane {
+    /// A pane in thread mode.
+    pub fn thread() -> Self {
+        MessagePane { thread: true, ..Default::default() }
+    }
+
     pub fn scroll_up(&mut self, n: usize) {
         self.scroll = self.scroll.saturating_add(n);
     }
@@ -69,19 +76,19 @@ impl MessagePane {
         }
     }
 
-    pub fn draw(&mut self, f: &mut Frame, area: Rect, ws: &Workspace, channel: Option<&str>, timeline: Option<&Timeline>, focused: bool) {
+    pub fn draw(&mut self, f: &mut Frame, area: Rect, ws: &Workspace, title: &str, timeline: Option<&Timeline>, focused: bool) {
         self.area = area;
-        let title = channel.map(|c| format!(" {} ", ws.channel_label(c))).unwrap_or_default();
+        let title = if title.is_empty() { String::new() } else { format!(" {title} ") };
         let border = if focused { Style::default().fg(Color::Rgb(0x61, 0xaf, 0xef)) } else { Style::default().fg(DIM) };
         let block = Block::default().borders(Borders::ALL).border_style(border).title(title);
         let inner = block.inner(area);
         let width = inner.width.saturating_sub(1) as usize;
         let (mut lines, mut owners) = match timeline {
-            Some(t) if t.loaded || !t.messages.is_empty() => build_lines_owned(ws, t, width),
+            Some(t) if t.loaded || !t.messages.is_empty() => build_lines_owned(ws, t, width, self.thread),
             Some(_) => (vec![Line::styled("Loading messages…", Style::default().fg(DIM))], vec![None]),
             None => (vec![], vec![]),
         };
-        if let Some(t) = timeline {
+        if let Some(t) = timeline.filter(|_| !self.thread) {
             let note = if t.loading && t.loaded {
                 Some("Loading older messages…")
             } else if t.loaded && !t.has_more && !t.messages.is_empty() {
@@ -160,27 +167,33 @@ fn is_system(m: &Message) -> bool {
     )
 }
 
-/// Top-level messages shown in the pane, oldest first (selection order).
-pub fn shown_messages(t: &Timeline) -> impl Iterator<Item = &Message> {
-    t.messages.iter().filter(|m| !m.hidden && !m.is_reply() || m.subtype.as_deref() == Some("thread_broadcast"))
+/// Messages shown in the pane, oldest first (selection order): top-level ones, or in
+/// `thread` mode all of them (parent first).
+pub fn shown_messages(t: &Timeline, thread: bool) -> impl Iterator<Item = &Message> {
+    t.messages.iter().filter(move |m| !m.hidden && (thread || !m.is_reply() || m.subtype.as_deref() == Some("thread_broadcast")))
 }
 
 /// Render every message in the timeline, oldest first.
 #[cfg(test)]
 pub fn build_lines(ws: &Workspace, t: &Timeline, width: usize) -> Vec<Line<'static>> {
-    build_lines_owned(ws, t, width).0
+    build_lines_owned(ws, t, width, false).0
 }
 
 /// Lines plus the ts of the message each line belongs to.
-pub fn build_lines_owned(ws: &Workspace, t: &Timeline, width: usize) -> (Vec<Line<'static>>, Vec<Option<String>>) {
+pub fn build_lines_owned(ws: &Workspace, t: &Timeline, width: usize, thread: bool) -> (Vec<Line<'static>>, Vec<Option<String>>) {
     let mut out: Vec<Line<'static>> = Vec::new();
     let mut owners: Vec<Option<String>> = Vec::new();
     let mut prev: Option<&Message> = None;
     let mut last_day: Option<f64> = None;
-    for m in shown_messages(t) {
+    for (n, m) in shown_messages(t, thread).enumerate() {
         let ts = m.time();
         owners.resize(out.len(), None);
-        if last_day.is_none_or(|d| !same_day(d, ts)) {
+        if thread && n == 1 {
+            let replies = t.messages.len() - 1;
+            let label = format!(" {replies} {} ", if replies == 1 { "reply" } else { "replies" });
+            out.push(Line::styled(format!("{label}{}", "─".repeat(width.saturating_sub(label.chars().count()))), Style::default().fg(DIM)));
+            prev = None;
+        } else if !thread && last_day.is_none_or(|d| !same_day(d, ts)) {
             last_day = Some(ts);
             let label = format!(" {} ", day_label(ts));
             let side = width.saturating_sub(label.chars().count()) / 2;
@@ -202,7 +215,7 @@ pub fn build_lines_owned(ws: &Workspace, t: &Timeline, width: usize) -> (Vec<Lin
                 Span::styled(format!("  {}", time_label(ts)), Style::default().fg(DIM)),
             ]));
         }
-        out.extend(message_body(ws, m, width));
+        out.extend(message_body(ws, m, width, !thread));
         owners.resize(out.len(), Some(m.ts.clone()));
         prev = Some(m);
     }
@@ -210,14 +223,16 @@ pub fn build_lines_owned(ws: &Workspace, t: &Timeline, width: usize) -> (Vec<Lin
     (out, owners)
 }
 
-/// Text, files, reactions and thread summary of one message.
-pub fn message_body(ws: &Workspace, m: &Message, width: usize) -> Vec<Line<'static>> {
+/// Text, files, reactions and (with `summary`) the thread summary of one message.
+pub fn message_body(ws: &Workspace, m: &Message, width: usize, summary: bool) -> Vec<Line<'static>> {
     let mut out = Vec::new();
     let blocks = format::message_blocks(&m.text, &m.blocks);
     let mut body = text::render_blocks(ws, &blocks, width);
     if m.edited.is_some() {
-        if let Some(last) = body.last_mut() {
-            last.spans.push(Span::styled(" (edited)", Style::default().fg(DIM)));
+        let mark = Span::styled(" (edited)", Style::default().fg(DIM));
+        match body.last_mut() {
+            Some(last) if last.width() + mark.width() <= width => last.spans.push(mark),
+            _ => body.push(Line::from(Span::styled("(edited)", Style::default().fg(DIM)))),
         }
     }
     if m.subtype.as_deref() == Some("thread_broadcast") {
@@ -267,7 +282,7 @@ pub fn message_body(ws: &Workspace, m: &Message, width: usize) -> Vec<Line<'stat
         }
         out.extend(text::wrap(spans, width, vec![], vec![]));
     }
-    if m.reply_count > 0 {
+    if summary && m.reply_count > 0 {
         let last = m.latest_reply.as_deref().and_then(|t| t.parse::<f64>().ok()).map(|t| format!(" · last {}", time_label(t))).unwrap_or_default();
         let s = if m.reply_count == 1 { "reply" } else { "replies" };
         out.push(Line::styled(format!("💬 {} {s}{last}", m.reply_count), Style::default().fg(text::MENTION)));
@@ -308,6 +323,31 @@ mod tests {
         let t = Timeline { messages: vec![join, msg("1010.0", "U2", "hello")], loaded: true, ..Default::default() };
         let p = plain(&build_lines(&ws, &t, 60));
         assert_eq!(p.iter().filter(|l| l.contains('─')).count(), 1, "{p:?}");
+    }
+
+    #[test]
+    fn edited_mark_wraps_instead_of_overflowing() {
+        let ws = Workspace::default();
+        let mut m = msg("1000.0", "U1", "exactly ten");
+        m.edited = Some(Default::default());
+        assert_eq!(plain(&message_body(&ws, &m, 30, true)), vec!["exactly ten (edited)"]);
+        assert_eq!(plain(&message_body(&ws, &m, 12, true)), vec!["exactly ten", "(edited)"]);
+    }
+
+    #[test]
+    fn thread_mode_shows_parent_then_replies() {
+        let ws = Workspace::default();
+        let mut parent = msg("1000.0", "U1", "parent");
+        parent.reply_count = 1;
+        parent.thread_ts = Some("1000.0".into());
+        let mut reply = msg("1001.0", "U2", "reply");
+        reply.thread_ts = Some("1000.0".into());
+        let t = Timeline { messages: vec![parent, reply], loaded: true, ..Default::default() };
+        let p = plain(&build_lines_owned(&ws, &t, 30, true).0);
+        assert_eq!(p[1], "parent", "{p:?}");
+        assert!(p[2].starts_with(" 1 reply ─"), "{p:?}");
+        assert_eq!(p[4], "reply", "{p:?}");
+        assert!(!p.iter().any(|l| l.starts_with("💬")), "{p:?}");
     }
 
     #[test]

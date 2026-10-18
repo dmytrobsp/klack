@@ -26,6 +26,8 @@ enum Net {
     History { channel: String, page: HistoryPage, older: bool },
     /// Our own message, as returned by chat.postMessage.
     Posted { channel: String, message: slack_core::types::Message },
+    /// All replies of a thread (parent first).
+    Replies { channel: String, ts: String, page: HistoryPage },
     /// A permalink to copy.
     Permalink(String),
     /// An optimistic change failed: put the original message back.
@@ -37,10 +39,14 @@ enum Net {
 enum Focus {
     Sidebar,
     Messages,
+    Thread,
     Composer,
 }
 
 struct App {
+    /// Open thread pane: (channel, parent ts).
+    thread: Option<(String, String)>,
+    thread_pane: MessagePane,
     clipboard: super::clipboard::Clipboard,
     /// Message (channel, ts) awaiting y/n delete confirmation.
     confirm_delete: Option<(String, String)>,
@@ -90,6 +96,7 @@ impl App {
             self.current = selected.clone();
             self.messages.scroll = 0;
             self.messages.selected = None;
+            self.close_thread();
             if let Some(id) = selected {
                 self.load_history(&id, false);
             }
@@ -119,22 +126,23 @@ impl App {
     /// Toggle our reaction `name` on message `ts` in `channel` (optimistic, then API).
     fn toggle_reaction(&mut self, channel: String, ts: String, name: String) {
         let me = self.ws.self_id.clone();
-        let Some(msg) = self.ws.timelines.get_mut(&channel).and_then(|t| t.messages.iter_mut().find(|m| m.ts == ts)) else { return };
-        let had = msg.reactions.iter().any(|r| r.name == name && r.users.contains(&me));
-        match msg.reactions.iter().position(|r| r.name == name) {
-            Some(i) if had => {
-                let r = &mut msg.reactions[i];
-                r.users.retain(|u| *u != me);
-                r.count = r.count.saturating_sub(1);
-                if r.count == 0 {
-                    msg.reactions.remove(i);
+        let Some(had) = self.ws.find_message(&channel, &ts).map(|m| m.reactions.iter().any(|r| r.name == name && r.users.contains(&me))) else { return };
+        for msg in self.ws.copies_mut(&channel, &ts) {
+            match msg.reactions.iter().position(|r| r.name == name) {
+                Some(i) if had => {
+                    let r = &mut msg.reactions[i];
+                    r.users.retain(|u| *u != me);
+                    r.count = r.count.saturating_sub(1);
+                    if r.count == 0 {
+                        msg.reactions.remove(i);
+                    }
                 }
+                Some(i) => {
+                    msg.reactions[i].users.push(me.clone());
+                    msg.reactions[i].count += 1;
+                }
+                None => msg.reactions.push(slack_core::types::Reaction { name: name.clone(), users: vec![me.clone()], count: 1 }),
             }
-            Some(i) => {
-                msg.reactions[i].users.push(me);
-                msg.reactions[i].count += 1;
-            }
-            None => msg.reactions.push(slack_core::types::Reaction { name: name.clone(), users: vec![me], count: 1 }),
         }
         let (client, tx) = (self.client.clone(), self.net.clone());
         tokio::spawn(async move {
@@ -194,7 +202,7 @@ impl App {
     /// Our newest top-level message in the current conversation.
     fn last_own_message(&self) -> Option<String> {
         let t = self.ws.timelines.get(self.current.as_deref()?)?;
-        let own: Vec<&slack_core::types::Message> = super::messages::shown_messages(t).filter(|m| m.user.as_deref() == Some(self.ws.self_id.as_str()) && m.subtype.is_none()).collect();
+        let own: Vec<&slack_core::types::Message> = super::messages::shown_messages(t, false).filter(|m| m.user.as_deref() == Some(self.ws.self_id.as_str()) && m.subtype.is_none()).collect();
         own.last().map(|m| m.ts.clone())
     }
 
@@ -254,7 +262,7 @@ impl App {
 
     /// Copy message `ts` of the current conversation as plain text.
     fn copy_text(&mut self, ts: &str) {
-        let Some(m) = self.current.as_deref().and_then(|c| self.ws.timelines.get(c)).and_then(|t| t.messages.iter().find(|m| m.ts == ts)) else { return };
+        let Some(m) = self.current.as_deref().and_then(|c| self.ws.find_message(c, ts)) else { return };
         let ws = &self.ws;
         let text = slack_core::format::plain_text(&slack_core::format::message_blocks(&m.text, &m.blocks), &|i| super::text::inline_plain(ws, i));
         let how = self.clipboard.copy(&text);
@@ -272,6 +280,46 @@ impl App {
             };
             let _ = tx.send(msg);
         });
+    }
+
+    /// Open the thread of message `ts` (or the thread it was broadcast from) in the
+    /// current conversation, loading its replies once.
+    fn open_thread(&mut self, ts: &str) {
+        let Some(channel) = self.current.clone() else { return };
+        let Some(m) = self.ws.find_message(&channel, ts) else { return };
+        let parent = if m.is_reply() { m.thread_ts.clone().unwrap_or_default() } else { m.ts.clone() };
+        self.thread_pane.scroll = 0;
+        self.thread_pane.selected = None;
+        self.focus = Focus::Thread;
+        let tl = self.ws.threads.entry(super::state::thread_key(&channel, &parent)).or_default();
+        self.thread = Some((channel.clone(), parent.clone()));
+        if tl.loaded || tl.loading {
+            return;
+        }
+        tl.loading = true;
+        let (client, tx) = (self.client.clone(), self.net.clone());
+        tokio::spawn(async move {
+            let msg = match client.replies(&channel, &parent).await {
+                Ok(page) => Net::Replies { channel, ts: parent, page },
+                Err(e) => Net::Error(format!("loading thread failed: {e}")),
+            };
+            let _ = tx.send(msg);
+        });
+    }
+
+    fn close_thread(&mut self) {
+        self.thread = None;
+        if self.focus == Focus::Thread {
+            self.focus = Focus::Messages;
+        }
+    }
+
+    /// The selected message of the focused pane.
+    fn selected_ts(&self) -> Option<String> {
+        match self.focus {
+            Focus::Thread => self.thread_pane.selected.clone(),
+            _ => self.messages.selected.clone(),
+        }
     }
 
     /// Load older history once the top is visible.
@@ -300,6 +348,8 @@ pub async fn run(client: Client) -> Result<()> {
     spawn_boot(client.clone(), net_tx.clone());
     let mut rtm = slack_core::rtm::spawn(client.clone());
     let mut app = App {
+        thread: None,
+        thread_pane: MessagePane::thread(),
         clipboard: Default::default(),
         confirm_delete: None,
         picker: None,
@@ -414,7 +464,8 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
                 KeyCode::Tab => {
                     app.focus = match app.focus {
                         Focus::Sidebar => Focus::Messages,
-                        Focus::Messages => Focus::Composer,
+                        Focus::Messages if app.thread.is_some() => Focus::Thread,
+                        Focus::Messages | Focus::Thread => Focus::Composer,
                         Focus::Composer => Focus::Sidebar,
                     };
                     return true;
@@ -423,6 +474,8 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
                     app.focus = match app.focus {
                         Focus::Sidebar => Focus::Composer,
                         Focus::Messages => Focus::Sidebar,
+                        Focus::Thread => Focus::Messages,
+                        Focus::Composer if app.thread.is_some() => Focus::Thread,
                         Focus::Composer => Focus::Messages,
                     };
                     return true;
@@ -438,45 +491,52 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
                     KeyCode::Enter | KeyCode::Char('i') | KeyCode::Esc => app.focus = Focus::Composer,
                     _ => {}
                 },
-                Focus::Messages => {
-                    let order: Vec<String> = app
-                        .current
-                        .as_ref()
-                        .and_then(|c| app.ws.timelines.get(c))
-                        .map(|t| super::messages::shown_messages(t).map(|m| m.ts.clone()).collect())
-                        .unwrap_or_default();
+                Focus::Messages | Focus::Thread => {
+                    let in_thread = app.focus == Focus::Thread;
+                    let timeline = match (&app.thread, in_thread) {
+                        (Some((c, ts)), true) => app.ws.threads.get(&super::state::thread_key(c, ts)),
+                        _ => app.current.as_ref().and_then(|c| app.ws.timelines.get(c)),
+                    };
+                    let order: Vec<String> = timeline.map(|t| super::messages::shown_messages(t, in_thread).map(|m| m.ts.clone()).collect()).unwrap_or_default();
+                    let pane = if in_thread { &mut app.thread_pane } else { &mut app.messages };
                     match k.code {
                         KeyCode::Up | KeyCode::Char('k') => {
-                            app.messages.move_selection(&order, -1);
-                            if order.first() == app.messages.selected.as_ref() {
+                            pane.move_selection(&order, -1);
+                            if !in_thread && order.first() == app.messages.selected.as_ref() {
                                 app.maybe_load_older();
                             }
                         }
-                        KeyCode::Down | KeyCode::Char('j') => app.messages.move_selection(&order, 1),
-                        KeyCode::Home | KeyCode::Char('g') => app.messages.move_selection(&order, isize::MIN / 2),
-                        KeyCode::End | KeyCode::Char('G') => app.messages.move_selection(&order, isize::MAX / 2),
+                        KeyCode::Down | KeyCode::Char('j') => pane.move_selection(&order, 1),
+                        KeyCode::Home | KeyCode::Char('g') => pane.move_selection(&order, isize::MIN / 2),
+                        KeyCode::End | KeyCode::Char('G') => pane.move_selection(&order, isize::MAX / 2),
+                        KeyCode::Esc if in_thread => app.close_thread(),
                         KeyCode::Esc | KeyCode::Char('i') => app.focus = Focus::Composer,
+                        KeyCode::Enter if !in_thread => {
+                            if let Some(ts) = app.messages.selected.clone() {
+                                app.open_thread(&ts);
+                            }
+                        }
                         KeyCode::Char('r') => {
-                            if let (Some(channel), Some(ts)) = (app.current.clone(), app.messages.selected.clone()) {
+                            if let (Some(channel), Some(ts)) = (app.current.clone(), app.selected_ts()) {
                                 app.picker = Some((EmojiPicker::default(), channel, ts));
                             }
                         }
-                        KeyCode::Char('e') => {
+                        KeyCode::Char('e') if !in_thread => {
                             if let Some(ts) = app.messages.selected.clone() {
                                 app.start_edit(&ts);
                             }
                         }
                         KeyCode::Char('y') => {
-                            if let Some(ts) = app.messages.selected.clone() {
+                            if let Some(ts) = app.selected_ts() {
                                 app.copy_text(&ts);
                             }
                         }
                         KeyCode::Char('Y') => {
-                            if let Some(ts) = app.messages.selected.clone() {
+                            if let Some(ts) = app.selected_ts() {
                                 app.copy_permalink(&ts);
                             }
                         }
-                        KeyCode::Char('d') => {
+                        KeyCode::Char('d') if !in_thread => {
                             if let Some(ts) = app.messages.selected.clone() {
                                 app.ask_delete(&ts);
                             }
@@ -538,6 +598,8 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
                     app.focus = Focus::Composer;
                 } else if app.messages.click(m.column, m.row) {
                     app.focus = Focus::Messages;
+                } else if app.thread.is_some() && app.thread_pane.click(m.column, m.row) {
+                    app.focus = Focus::Thread;
                 }
             }
             MouseEventKind::ScrollUp if app.sidebar.area.contains((m.column, m.row).into()) => app.sidebar.move_by(-1),
@@ -547,6 +609,8 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
                 app.maybe_load_older();
             }
             MouseEventKind::ScrollDown if app.messages.area.contains((m.column, m.row).into()) => app.messages.scroll_down(3),
+            MouseEventKind::ScrollUp if app.thread.is_some() && app.thread_pane.area.contains((m.column, m.row).into()) => app.thread_pane.scroll_up(3),
+            MouseEventKind::ScrollDown if app.thread.is_some() && app.thread_pane.area.contains((m.column, m.row).into()) => app.thread_pane.scroll_down(3),
             _ => {}
         },
         _ => {}
@@ -601,6 +665,14 @@ fn handle_net(app: &mut App, msg: Net) {
         Net::Posted { channel, message } => {
             app.ws.timelines.entry(channel).or_default().upsert(message);
         }
+        Net::Replies { channel, ts, page } => {
+            let tl = app.ws.threads.entry(super::state::thread_key(&channel, &ts)).or_default();
+            for m in page.messages {
+                tl.upsert(m);
+            }
+            tl.loaded = true;
+            tl.loading = false;
+        }
         Net::Permalink(url) => {
             let how = app.clipboard.copy(&url);
             app.status = format!("copied link to the {how}");
@@ -621,13 +693,25 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     let side_w = (body.width / 4).clamp(18, 32);
     let [side, main] = Layout::horizontal([Constraint::Length(side_w), Constraint::Min(10)]).areas(body);
     app.sidebar.draw(f, side, &app.ws, app.focus == Focus::Sidebar);
+    let (main, thread_area) = if app.thread.is_some() {
+        let [left, right] = Layout::horizontal([Constraint::Min(30), Constraint::Percentage(40)]).areas(main);
+        (left, Some(right))
+    } else {
+        (main, None)
+    };
+    if let (Some(area), Some((channel, ts))) = (thread_area, app.thread.clone()) {
+        let title = format!("Thread · {} · Esc close", app.ws.channel_label(&channel));
+        let timeline = app.ws.threads.get(&super::state::thread_key(&channel, &ts));
+        app.thread_pane.draw(f, area, &app.ws, &title, timeline, app.focus == Focus::Thread);
+    }
 
     let inner_w = main.width.saturating_sub(2) as usize;
     let composer_h = app.composer.rows(inner_w).clamp(1, 8) + 2;
     let [msgs, comp] = Layout::vertical([Constraint::Min(3), Constraint::Length(composer_h)]).areas(main);
     let current = app.current.clone();
     let timeline = current.as_deref().and_then(|c| app.ws.timelines.get(c));
-    app.messages.draw(f, msgs, &app.ws, current.as_deref(), timeline, app.focus == Focus::Messages);
+    let title = current.as_deref().map(|c| app.ws.channel_label(c)).unwrap_or_default();
+    app.messages.draw(f, msgs, &app.ws, &title, timeline, app.focus == Focus::Messages);
     draw_composer(f, comp, app);
     if let Some((picker, _, _)) = &app.picker {
         let custom: Vec<String> = app.ws.custom_emoji.keys().cloned().collect();

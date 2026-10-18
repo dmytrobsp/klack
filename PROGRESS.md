@@ -25,15 +25,16 @@ background is in `../REPORT.md` and `../notes/`.
 | Reaction picker (`r`): search, favourites, custom emoji, optimistic toggle | done | LIVE (🚀 added, no double count from the RTM echo). Server-side state NOT read back independently. | 5ab8258 |
 | Edit own messages: `e` on a selected message or ↑ in an empty composer; mentions/channels/@here back to composer mentions; Enter = `chat.update`, Esc cancels; optimistic with rollback | done | LIVE (edited a message with a mention, `&` and `<…>`; B's `ctl history` read back the right `<@U…>`/`&amp;`/`&lt;` text; `e` path and Esc cancel checked by screenshot) + UNIT (round trip) | d2cdb2f |
 | Delete own messages: `d` → y/n popup → `chat.delete`; optimistic with rollback; refuses others' messages | done | LIVE (`n` keeps it, `y` removes it, B's history no longer has it; `d` on B's message shows a refusal) | e415bdf |
-| Copy: `y` = message as plain text, `Y` = permalink (`chat.getPermalink`). arboard (with Wayland data-control), OSC 52 fallback; on quit the copy is handed to the terminal via OSC 52 so it survives | done | LIVE (`wl-paste` read back the text with `@Dmytro`/`&`/`<…>` resolved, and the `…/archives/D…/p…` link; after quit the clipboard still held the text, with the terminal left open) + UNIT (base64) | see git log |
+| Copy: `y` = message as plain text, `Y` = permalink (`chat.getPermalink`). arboard (with Wayland data-control), OSC 52 fallback; on quit the copy is handed to the terminal via OSC 52 so it survives | done | LIVE (`wl-paste` read back the text with `@Dmytro`/`&`/`<…>` resolved, and the `…/archives/D…/p…` link; after quit the clipboard still held the text, with the terminal left open) + UNIT (base64) | 64dffaa |
+| Threads pane (view): Enter on a message opens its thread on the right (`conversations.replies`, loaded once, then kept live over RTM); parent, "N replies" rule, replies; ↑↓/jk/g/G selection, `r` react, `y`/`Y` copy, mouse click/scroll; Esc closes; closes on channel switch; Tab cycle includes it | done | LIVE (B's existing reply loaded; two replies from B appeared live; 👍 added from the thread showed on both copies of the parent; `y` copied a reply) + UNIT (thread layout, copies across timeline/thread) | see git log |
 
-Tests: `cargo test` → slack-core 8, slacktui 26, all passing. `cargo build` has no errors.
+Tests: `cargo test` → slack-core 8, slacktui 30, all passing. `cargo build` has no errors.
 There are dead-code warnings for the planned autocomplete API (`Composer::trigger/complete`).
 
 ## Next (in order, each as a small, separately verified step)
 
-1. Threads pane: Enter on a message opens its replies (`conversations.replies`). The composer then
-   targets the thread (`thread_ts`); the thread state map already exists (`Workspace::threads`).
+1. Threads pane, part 2: a composer inside the thread pane that replies with `thread_ts` (optionally
+   "also send to channel"), and `e`/`d` on own messages inside the thread.
 2. Autocomplete popup for `@user`, `#channel` and `:emoji:` (composer `trigger()`/`complete()` already exist and are tested).
 3. Desktop notifications (notify-rust) for DMs, mentions and @here, honouring DND and muted channels and the terminal focus events.
 4. Images inline (ratatui-image, kitty protocol; `File::preview_url`), an image viewer, upload from a path.
@@ -52,10 +53,14 @@ There are dead-code warnings for the planned autocomplete API (`Composer::trigge
 - The message being edited is not highlighted while the composer has focus.
 - The OSC 52 copy path (no system clipboard, e.g. over SSH) has only been exercised as the quit hand-off, not as the primary path.
 - The clipboard hand-off needs the terminal to outlive slacktui: with `kitty -e slacktui` the whole kitty instance exits and the copy is lost.
+- The thread pane has no day separators, so a thread spanning several days shows only times.
 - Key hints for `e`/`d`/`r`/`y`/`Y` are not shown anywhere yet (help overlay is in "Next").
 - Reaction chips with VS16 emoji (❤️) sometimes render with an extra blank cell (`[❤  1]`); seen in screenshots, not investigated.
 
 ## Bug log
+
+- Live thread replies were counted twice (`💬 3 replies` for 2): the reply event bumped `reply_count` and `message_replied` also carried the server count. Found by screenshot; a reply is now counted only if newer than the parent's `latest_reply`. Test `reply_counted_once_with_message_replied`.
+- " (edited)" was appended after wrapping and got cut off in narrow panes. Found by screenshot in the thread pane; now wraps to its own line. Test `edited_mark_wraps_instead_of_overflowing`.
 
 - Duplicate day separator after system messages (`channel_join`). Found by screenshot; fixed in 9936455 and guarded by the test `one_day_separator_around_system_messages`.
 - Status-bar unread counts were computed only at boot. Found by screenshot; now computed per frame (104b768).

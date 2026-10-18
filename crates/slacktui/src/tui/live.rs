@@ -61,7 +61,9 @@ pub fn apply(ws: &mut Workspace, ev: &Value, current: Option<&str>) -> Effects {
                     if let Some(t) = ws.threads.get_mut(&thread_key(&channel, &parent)) {
                         t.upsert(m.clone());
                     }
-                    if let Some(p) = ws.timelines.get_mut(&channel).and_then(|t| t.messages.iter_mut().find(|x| x.ts == parent)) {
+                    // `message_replied` may already have brought the server's count for this reply.
+                    let counted = |p: &Message| p.latest_reply.as_deref().and_then(|l| l.parse::<f64>().ok()).is_some_and(|l| l >= m.time());
+                    if let Some(p) = ws.timelines.get_mut(&channel).and_then(|t| t.messages.iter_mut().find(|x| x.ts == parent)).filter(|p| !counted(p)) {
                         p.reply_count += 1;
                         p.latest_reply = Some(m.ts.clone());
                         if let Some(u) = &m.user {
@@ -259,6 +261,21 @@ mod tests {
         assert_eq!(t.messages.len(), 1);
         assert_eq!(t.messages[0].reply_count, 1);
         assert_eq!(t.messages[0].latest_reply.as_deref(), Some("11.0"));
+    }
+
+    #[test]
+    fn reply_counted_once_with_message_replied() {
+        let parent = json!({"type":"message","channel":"C1","user":"U2","text":"parent","ts":"10.0"});
+        let reply = json!({"type":"message","channel":"C1","user":"U3","text":"reply","ts":"11.0","thread_ts":"10.0"});
+        let replied = json!({"type":"message","subtype":"message_replied","channel":"C1","message":{"type":"message","user":"U2","text":"parent","ts":"10.0","thread_ts":"10.0","reply_count":1,"latest_reply":"11.0"}});
+        for order in [[&reply, &replied], [&replied, &reply]] {
+            let mut w = ws();
+            apply(&mut w, &parent, Some("C1"));
+            for ev in order {
+                apply(&mut w, ev, Some("C1"));
+            }
+            assert_eq!(w.timelines["C1"].messages[0].reply_count, 1);
+        }
     }
 
     #[test]

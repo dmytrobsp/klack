@@ -79,6 +79,26 @@ pub fn thread_key(channel: &str, ts: &str) -> String {
 }
 
 impl Workspace {
+    /// Message `ts` of `channel`, from its timeline or a loaded thread.
+    pub fn find_message(&self, channel: &str, ts: &str) -> Option<&Message> {
+        let prefix = format!("{channel}/");
+        let threads = self.threads.iter().filter(|(k, _)| k.starts_with(&prefix)).map(|(_, t)| t);
+        self.timelines.get(channel).into_iter().chain(threads).flat_map(|t| t.messages.iter()).find(|m| m.ts == ts)
+    }
+
+    /// Every loaded copy of message `ts` of `channel` (a thread parent is in both its
+    /// timeline and its thread).
+    pub fn copies_mut(&mut self, channel: &str, ts: &str) -> Vec<&mut Message> {
+        let prefix = format!("{channel}/");
+        let mut out: Vec<&mut Message> = self.timelines.get_mut(channel).into_iter().flat_map(|t| t.messages.iter_mut()).filter(|m| m.ts == ts).collect();
+        for (key, t) in self.threads.iter_mut() {
+            if key.starts_with(&prefix) {
+                out.extend(t.messages.iter_mut().filter(|m| m.ts == ts));
+            }
+        }
+        out
+    }
+
     pub fn user_name(&self, id: &str) -> String {
         match self.users.get(id) {
             Some(u) => u.display().to_string(),
@@ -202,6 +222,19 @@ mod tests {
         assert_eq!(t.messages.len(), 5);
         t.remove("3.0");
         assert_eq!(t.messages.len(), 4);
+    }
+
+    #[test]
+    fn copies_span_timeline_and_thread() {
+        let mut ws = Workspace::default();
+        ws.timelines.entry("C1".into()).or_default().upsert(msg("1.0"));
+        let thread = ws.threads.entry(thread_key("C1", "1.0")).or_default();
+        thread.upsert(msg("1.0"));
+        thread.upsert(msg("2.0"));
+        ws.threads.entry(thread_key("C2", "1.0")).or_default().upsert(msg("1.0"));
+        assert_eq!(ws.copies_mut("C1", "1.0").len(), 2);
+        assert_eq!(ws.find_message("C1", "2.0").map(|m| m.ts.as_str()), Some("2.0"));
+        assert!(ws.find_message("C2", "2.0").is_none());
     }
 
     #[test]
