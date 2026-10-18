@@ -41,6 +41,8 @@ pub struct Call {
     volume: Option<Volume>,
     pub muted: bool,
     pub connected: bool,
+    /// We asked to leave (the session ends next).
+    pub leaving: bool,
     /// When media connected: roster changes in the first moments are the people already
     /// there arriving, not joins.
     connected_at: Option<std::time::Instant>,
@@ -205,6 +207,7 @@ impl Call {
             volume,
             muted: true,
             connected: false,
+            leaving: false,
             connected_at: None,
             joined: 0,
             left: 0,
@@ -291,6 +294,7 @@ impl Call {
     }
 
     pub fn leave(&mut self) {
+        self.leaving = true;
         self.mic = None;
         self.camera = None;
         self.stop_share();

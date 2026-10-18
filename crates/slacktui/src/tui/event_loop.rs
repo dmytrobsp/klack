@@ -139,6 +139,8 @@ struct App {
     mover: Option<super::sections::MovePicker>,
     /// Join the huddle of the DM with this person once it is open.
     huddle_after_open: Option<String>,
+    /// A huddle that ended before it connected was joined again (once).
+    rejoined: bool,
     /// Open search overlay (Ctrl+F).
     search: Option<super::search::Search>,
     /// A search hit to select once its conversation is shown.
@@ -1275,12 +1277,19 @@ impl App {
     }
 
     fn join_huddle(&mut self, channel: String, thread: Option<String>) {
+        self.rejoined = false;
+        self.join_huddle_after(channel, thread, std::time::Duration::ZERO);
+    }
+
+    /// [`App::join_huddle`] after `delay`.
+    fn join_huddle_after(&mut self, channel: String, thread: Option<String>, delay: std::time::Duration) {
         if self.ringing.as_ref().is_some_and(|r| r.channel == channel) {
             self.ringing = None;
         }
         self.status = "joining the huddle…".into();
         let (client, tx) = (self.client.clone(), self.net.clone());
         tokio::spawn(async move {
+            tokio::time::sleep(delay).await;
             let result = async {
                 let mut params = vec![("channel_id", channel.clone())];
                 if let Some(t) = &thread {
@@ -2025,6 +2034,7 @@ async fn run_workspace(
         dnd_refreshing: false,
         mover: None,
         huddle_after_open: None,
+        rejoined: false,
         presence_subscribed: false,
         call: None,
         pending_hit: None,
@@ -2126,8 +2136,21 @@ async fn run_workspace(
                     }
                 }
                 if ended {
-                    app.call = None;
+                    let call = app.call.take();
                     app.status = "left the huddle".into();
+                    // Right after a huddle emptied, Slack can still hand out its room though the
+                    // meeting is over: the session ends before connecting. Ask again once.
+                    if let Some(call) = call {
+                        match rejoin_after_end(call.connected, call.leaving, app.rejoined) {
+                            Some(true) => {
+                                tracing::info!(channel = call.channel, "the huddle ended before connecting; joining again");
+                                app.rejoined = true;
+                                app.join_huddle_after(call.channel, call.thread, REJOIN_DELAY);
+                            }
+                            Some(false) => app.status = "cannot join the huddle: it ended as we joined".into(),
+                            None => {}
+                        }
+                    }
                 }
             }
             _ = tick.tick() => {}
@@ -2978,6 +3001,15 @@ fn handle_net(app: &mut App, msg: Net) {
     }
 }
 
+/// How long to wait before joining again a huddle that ended before it connected.
+const REJOIN_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// A call's session ended: None when that is an ordinary end (it had connected, or we left),
+/// else whether to join again (only once; Some(false): give up).
+fn rejoin_after_end(connected: bool, leaving: bool, rejoined: bool) -> Option<bool> {
+    (!connected && !leaving).then_some(!rejoined)
+}
+
 fn draw(f: &mut ratatui::Frame, app: &mut App) {
     app.screen = f.area();
     // The huddle view goes with the call, and gives way once the messages or the composer
@@ -3179,6 +3211,15 @@ fn draw_composer(f: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &App,
 #[cfg(test)]
 mod tests {
     use slack_core::session::WorkspaceSession;
+
+    #[test]
+    fn rejoining_a_huddle_that_ended_at_once() {
+        use super::rejoin_after_end;
+        assert_eq!(rejoin_after_end(false, false, false), Some(true), "ended before connecting: join again");
+        assert_eq!(rejoin_after_end(false, false, true), Some(false), "again: give up");
+        assert_eq!(rejoin_after_end(true, false, false), None, "an ordinary end");
+        assert_eq!(rejoin_after_end(false, true, false), None, "we left before it connected");
+    }
 
     #[test]
     fn reply_titles_fit() {
