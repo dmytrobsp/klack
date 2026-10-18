@@ -50,7 +50,7 @@ Press **F1** (or `?`) in the app for the full list. The essentials:
 | `/away` · `/active` · `/dnd 30m` · `/dnd off` | appear away / active · pause or resume notifications |
 | `*` · `m` (sidebar) | star / unstar · move to a section (or a new one); `/section rename <name>` · `/section delete` |
 | F2 | conversation details: about, members, pins |
-| F3 / F4 / F7 / F8 / F9 | join or leave the huddle / mute or unmute / open the huddle's thread / huddle view / camera on or off |
+| F3 / F4 / F7 / F8 / F9 / F10 | join or leave the huddle / mute or unmute / open the huddle's thread / huddle view / camera on or off / share your screen or stop |
 | F6 | preferences (also `/prefs`): availability, appearance, messages, region, notifications, audio, keys |
 | Enter (on a message) | open its thread |
 | r · e · d · y · Y · o · s · P | react · edit · delete · copy text · copy link · open image/video/snippet · save files · pin |
@@ -121,7 +121,10 @@ distribute binaries). For tests, `slacktui ctl huddle-media <channel> --video-te
 synthetic camera (a moving test pattern), `--share-test` shares it as a screen, `--camera NAME`
 sends a real camera (`ctl cameras` lists them), and `--record-video DIR` saves what arrives.
 
-Sharing your screen and echo cancellation are not done yet.
+Your screen: F10 in a huddle asks the desktop what to share (a screen or a window; on Linux through
+the screen-cast portal, read with GStreamer's `pipewiresrc` — `gst-launch-1.0` and the GStreamer
+PipeWire plugin must be installed); F10 again stops. Others see it as your screen share; you see it
+in a "🖥 Your screen" tile. Screen sharing is Linux-only so far. No echo cancellation yet.
 
 ## Other settings
 

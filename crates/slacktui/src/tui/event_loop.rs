@@ -49,6 +49,8 @@ enum Net {
     SearchDone { query: String, result: Result<serde_json::Value, String> },
     /// Huddle credentials from `rooms.join`.
     HuddleJoined { channel: String, thread: Option<String>, result: Result<huddle::signaling::Credentials, String> },
+    /// Our screen share started (the user chose what to share), or why not.
+    ScreenShared(Result<super::call::ScreenShare, String>),
     /// A DM opened from the quick switcher.
     DmOpened(slack_core::types::Conversation),
     /// A video downloaded to a temporary file, ready to play.
@@ -1060,6 +1062,28 @@ impl App {
         }
     }
 
+    /// F10: share the screen (the desktop asks what; nothing blocks meanwhile), or stop.
+    fn toggle_share(&mut self) {
+        let Some(call) = self.call.as_mut() else {
+            self.status = "not in a huddle".into();
+            return;
+        };
+        if call.share_pending {
+            self.status = "choose what to share in the desktop's dialog".into();
+        } else if call.is_sharing() {
+            call.stop_share();
+            self.status = "stopped sharing".into();
+        } else {
+            call.share_pending = true;
+            self.status = "choose what to share in the desktop's dialog…".into();
+            let (creds, videos, tx) = (call.creds.clone(), call.videos.clone(), self.net.clone());
+            tokio::spawn(async move {
+                let result = super::call::start_share(creds, videos).await.map_err(|e| e.to_string());
+                let _ = tx.send(Net::ScreenShared(result));
+            });
+        }
+    }
+
     /// F3: join (or start) the huddle of the current conversation, or leave the one we are in.
     fn toggle_huddle(&mut self) {
         if let Some(call) = self.call.as_mut() {
@@ -2054,6 +2078,7 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
         Event::Key(k) if k.kind != KeyEventKind::Release && app.global(&k) == Some(Action::Huddle) => app.toggle_huddle(),
         Event::Key(k) if k.kind != KeyEventKind::Release && app.global(&k) == Some(Action::HuddleThread) => app.open_huddle_thread(),
         Event::Key(k) if k.kind != KeyEventKind::Release && app.global(&k) == Some(Action::HuddleView) => app.toggle_huddle_view(),
+        Event::Key(k) if k.kind != KeyEventKind::Release && app.global(&k) == Some(Action::ShareScreen) => app.toggle_share(),
         Event::Key(k) if k.kind != KeyEventKind::Release && app.global(&k) == Some(Action::Camera) => {
             let wanted = app.ws.settings.video.camera.clone();
             app.status = match app.call.as_mut() {
@@ -2479,6 +2504,19 @@ fn handle_net(app: &mut App, msg: Net) {
                 }
             }
         }
+        // A share that comes back after the call ended is dropped, which ends it.
+        Net::ScreenShared(result) => {
+            if let Some(call) = app.call.as_mut() {
+                call.share_pending = false;
+                match result {
+                    Ok(share) => {
+                        app.status = format!("sharing your {}", share.what);
+                        call.set_share(share);
+                    }
+                    Err(e) => app.status = format!("screen share: {e}"),
+                }
+            }
+        }
         Net::HuddleJoined { channel, thread, result } => match result {
             Ok(creds) if app.call.is_none() => {
                 let audio = &app.ws.settings.audio;
@@ -2592,7 +2630,7 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     let [body, call_bar, status] = Layout::vertical([Constraint::Min(1), Constraint::Length(call_rows), Constraint::Length(1)]).areas(f.area());
     app.call_bar_area = call_bar;
     let key = |a| app.keys.first_key(Context::Global, a).unwrap_or_default();
-    let call_keys = (key(Action::Mute), key(Action::Huddle), key(Action::HuddleThread), key(Action::HuddleView), key(Action::Camera));
+    let call_keys = (key(Action::Mute), key(Action::Huddle), key(Action::HuddleThread), key(Action::HuddleView), key(Action::Camera), key(Action::ShareScreen));
     if let Some(call) = &app.call {
         call.draw(f, call_bar, &app.ws, (&call_keys.0, &call_keys.1, &call_keys.2, &call_keys.3));
     }
@@ -2620,7 +2658,7 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         app.messages.area = Default::default();
         app.messages.hover = None;
         app.composer_area = Default::default();
-        let keys = super::huddle_view::Keys { mute: &call_keys.0, leave: &call_keys.1, thread: &call_keys.2, view: &call_keys.3, camera: &call_keys.4 };
+        let keys = super::huddle_view::Keys { mute: &call_keys.0, leave: &call_keys.1, thread: &call_keys.2, view: &call_keys.3, camera: &call_keys.4, share: &call_keys.5 };
         view.draw(f, main, call, &app.ws, &app.media, keys);
     } else {
         let inner_w = main.width.saturating_sub(2) as usize;

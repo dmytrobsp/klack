@@ -54,12 +54,13 @@ pub fn grid(n: usize, area: Rect) -> (Vec<Rect>, u16) {
 }
 
 /// The call's keys in a line, shortened when `width` is too narrow for the long form.
-pub fn controls(keys: Keys, muted: bool, camera_on: bool, width: usize) -> String {
-    let Keys { mute, leave, thread, view, camera } = keys;
+pub fn controls(keys: Keys, muted: bool, camera_on: bool, sharing: bool, width: usize) -> String {
+    let Keys { mute, leave, thread, view, camera, share } = keys;
     let mic = if muted { "unmute" } else { "mute" };
     let cam = if camera_on { "camera off" } else { "camera on" };
-    let long = format!(" {mute} {mic} · {camera} {cam} · {thread} thread · {leave} leave · {view} back to the messages");
-    if long.chars().count() <= width { long } else { format!(" {mute} {mic} · {camera} {cam} · {thread} thread · {leave} leave · {view} messages") }
+    let screen = if sharing { "stop sharing" } else { "share screen" };
+    let long = format!(" {mute} {mic} · {camera} {cam} · {share} {screen} · {thread} thread · {leave} leave · {view} back to the messages");
+    if long.chars().count() <= width { long } else { format!(" {mute} {mic} · {camera} {cam} · {share} {screen} · {thread} thread · {leave} leave · {view} messages") }
 }
 
 /// The call's keys, for the hints.
@@ -70,6 +71,7 @@ pub struct Keys<'a> {
     pub thread: &'a str,
     pub view: &'a str,
     pub camera: &'a str,
+    pub share: &'a str,
 }
 
 /// Rows `text` takes when wrapped at word boundaries to `width` (as `Wrap { trim: true }`).
@@ -135,19 +137,20 @@ impl HuddleView {
         f.render_widget(block, area);
         // The controls and audio lines, wrapped in a narrow pane.
         let width = inner.width as usize;
-        let texts = [controls(keys, call.muted, call.camera_on(), width), audio_summary(&ws.settings.audio, width)];
+        let texts = [controls(keys, call.muted, call.camera_on(), call.is_sharing(), width), audio_summary(&ws.settings.audio, width)];
         let footer_h = (texts.iter().map(|t| wrapped_rows(t, width)).sum::<u16>()).min(inner.height);
         let tiles_area = Rect { height: inner.height.saturating_sub(footer_h + 1), y: inner.y + 1, ..inner };
         let footer = Rect { y: inner.y + inner.height - footer_h, height: footer_h, ..inner };
 
         // Screen shares first, then the people.
-        let tiles = call.shares.len() + call.roster.len();
+        let shares = call.shown_shares(&ws.self_id);
+        let tiles = shares.len() + call.roster.len();
         let (rects, scale) = grid(tiles, tiles_area);
         let picture = (PICTURE.0 * scale, PICTURE.1 * scale);
         for (n, rect) in rects.iter().enumerate() {
-            match call.shares.get(n) {
+            match shares.get(n) {
                 Some((share, user)) => self.draw_share(f, *rect, call, share, user, ws, media),
-                None => self.draw_tile(f, *rect, picture, call, &call.roster[n - call.shares.len()], ws, media),
+                None => self.draw_tile(f, *rect, picture, call, &call.roster[n - shares.len()], ws, media),
             }
         }
         if rects.len() < tiles {
@@ -215,7 +218,8 @@ impl HuddleView {
     #[allow(clippy::too_many_arguments)]
     fn draw_share(&mut self, f: &mut Frame, rect: Rect, call: &Call, share: &str, user: &str, ws: &Workspace, media: &Media) {
         let accent = Style::default().fg(super::theme::p().accent);
-        let block = Block::default().borders(Borders::ALL).border_style(accent).title(Span::styled(format!(" 🖥 {}'s screen ", ws.person_label(user)), accent.add_modifier(Modifier::BOLD)));
+        let title = if user == ws.self_id { " 🖥 Your screen ".to_string() } else { format!(" 🖥 {}'s screen ", ws.person_label(user)) };
+        let block = Block::default().borders(Borders::ALL).border_style(accent).title(Span::styled(title, accent.add_modifier(Modifier::BOLD)));
         let inner = block.inner(rect);
         f.render_widget(block, rect);
         match call.video(share) {
@@ -300,9 +304,9 @@ mod tests {
         assert_eq!(wrapped_rows(" vol 100% · gain 100% · gate off · noise off", 80), 1);
         assert_eq!(wrapped_rows(" vol 100% · gain 100% · gate off · noise off", 38), 2);
         assert_eq!(wrapped_rows("abcdefghij", 4), 3, "a long word is broken");
-        let keys = Keys { mute: "F4", leave: "F3", thread: "F7", view: "F8", camera: "F9" };
-        assert_eq!(controls(keys, true, false, 100), " F4 unmute · F9 camera on · F7 thread · F3 leave · F8 back to the messages");
-        assert_eq!(controls(keys, false, true, 40), " F4 mute · F9 camera off · F7 thread · F3 leave · F8 messages");
+        let keys = Keys { mute: "F4", leave: "F3", thread: "F7", view: "F8", camera: "F9", share: "F10" };
+        assert_eq!(controls(keys, true, false, false, 120), " F4 unmute · F9 camera on · F10 share screen · F7 thread · F3 leave · F8 back to the messages");
+        assert_eq!(controls(keys, false, true, true, 40), " F4 mute · F9 camera off · F10 stop sharing · F7 thread · F3 leave · F8 messages");
     }
 
     #[test]

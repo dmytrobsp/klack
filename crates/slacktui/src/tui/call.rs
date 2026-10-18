@@ -46,6 +46,63 @@ pub struct Call {
     self_attendee: String,
     /// Open only while the camera is on.
     camera: Option<huddle::camera::Camera>,
+    /// The meeting credentials (a screen share joins with derived ones).
+    pub creds: Credentials,
+    /// Our screen share, while it runs.
+    share: Option<ScreenShare>,
+    /// The desktop is asking what to share.
+    pub share_pending: bool,
+}
+
+/// Our running screen share: a second session (`<attendee>#content`) sending the capture.
+pub struct ScreenShare {
+    session: Session,
+    _capture: huddle::screen::ScreenCapture,
+    /// What is shared ("monitor 2560×1440").
+    pub what: String,
+}
+
+/// Ask the desktop what to share (waits for the user), then join as our share attendee and
+/// send it; our own picture of it is kept in `videos` for our share tile. The share session
+/// joins only once something was chosen, so others never see an empty share.
+pub async fn start_share(creds: Credentials, videos: Videos) -> anyhow::Result<ScreenShare> {
+    use huddle::screen::{SHARE_FPS as FPS, SHARE_HEIGHT as H, SHARE_WIDTH as W};
+    // Capture → encoder thread; a slow encoder drops pictures rather than queueing them.
+    let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(2);
+    let (capture, what) = huddle::screen::ScreenCapture::start(W, H, FPS, move |rgb| {
+        let _ = tx.try_send(rgb);
+    })
+    .await?;
+    let creds = creds.content_share();
+    let me = creds.attendee.attendee_id.clone();
+    let mut session = Session::start(creds, huddle::session::Options { muted: true, send_video: true, receive_video: false });
+    // It hears the meeting too; nobody listens.
+    session.audio = tokio::sync::mpsc::unbounded_channel().1;
+    let mut events = std::mem::replace(&mut session.events, tokio::sync::mpsc::unbounded_channel().1);
+    tokio::spawn(async move {
+        while let Some(ev) = events.recv().await {
+            if let SessionEvent::Error(e) = ev {
+                tracing::warn!("screen share: {e}");
+            }
+        }
+    });
+    let sink = session.video_sink();
+    let mut encoder = huddle::video::H264Encoder::for_screen(W, H, FPS, 1_500_000)?;
+    let period = std::time::Duration::from_secs_f64(1.0 / FPS as f64);
+    std::thread::spawn(move || {
+        for rgb in rx {
+            if sink.keyframe_wanted() {
+                encoder.request_keyframe();
+            }
+            match encoder.encode_rgb(&rgb) {
+                Ok(unit) => sink.send(unit, period),
+                Err(e) => tracing::warn!("screen share: {e}"),
+            }
+            let frame = huddle::session::VideoFrame { attendee_id: me.clone(), stream_id: 0, width: W, height: H, rgb: std::sync::Arc::new(rgb) };
+            videos.lock().unwrap_or_else(|e| e.into_inner()).insert(me.clone(), (std::time::Instant::now(), frame));
+        }
+    });
+    Ok(ScreenShare { session, _capture: capture, what })
 }
 
 pub type Videos = std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, huddle::session::VideoFrame)>>>;
@@ -77,6 +134,7 @@ impl Call {
     /// `devices`: (microphone, speaker) names, None for the system default.
     pub fn start(channel: String, creds: Credentials, devices: (Option<String>, Option<String>), audio_settings: &super::settings::Audio) -> Call {
         let self_attendee = creds.attendee.attendee_id.clone();
+        let creds_kept = creds.clone();
         let mut session = Session::start(creds, Default::default());
         let sink = session.pcm_sink();
         let (_, empty) = tokio::sync::mpsc::unbounded_channel();
@@ -126,6 +184,9 @@ impl Call {
             shares: Vec::new(),
             self_attendee,
             camera: None,
+            creds: creds_kept,
+            share: None,
+            share_pending: false,
         };
         call.set_audio(audio_settings);
         call
@@ -198,6 +259,7 @@ impl Call {
     pub fn leave(&mut self) {
         self.mic = None;
         self.camera = None;
+        self.stop_share();
         self.session.leave();
     }
 
@@ -236,7 +298,39 @@ impl Call {
 
     /// Whether the participant is sharing their screen.
     pub fn sharing(&self, attendee_id: &str) -> bool {
-        self.shares.iter().any(|(share, _)| share.strip_suffix(huddle::signaling::CONTENT_MODALITY) == Some(attendee_id))
+        (attendee_id == self.self_attendee && self.share.is_some()) || self.shares.iter().any(|(share, _)| share.strip_suffix(huddle::signaling::CONTENT_MODALITY) == Some(attendee_id))
+    }
+
+    /// Our share's attendee id.
+    pub fn share_attendee(&self) -> String {
+        format!("{}{}", self.self_attendee, huddle::signaling::CONTENT_MODALITY)
+    }
+
+    pub fn is_sharing(&self) -> bool {
+        self.share.is_some()
+    }
+
+    /// A share that started (from [`start_share`]).
+    pub fn set_share(&mut self, share: ScreenShare) {
+        self.share = Some(share);
+    }
+
+    /// Stop our screen share (the share attendee leaves the meeting).
+    pub fn stop_share(&mut self) {
+        if let Some(s) = self.share.take() {
+            s.session.leave();
+            self.videos.lock().unwrap_or_else(|e| e.into_inner()).remove(&self.share_attendee());
+        }
+    }
+
+    /// The shares to show: the meeting's, and ours while it runs (first).
+    pub fn shown_shares(&self, self_user: &str) -> Vec<(String, String)> {
+        let mut shares = self.shares.clone();
+        let own = self.share_attendee();
+        if self.share.is_some() && !shares.iter().any(|(a, _)| *a == own) {
+            shares.insert(0, (own, self_user.to_string()));
+        }
+        shares
     }
 
     /// The participant's latest picture, if their video is running.
