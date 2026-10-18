@@ -657,6 +657,43 @@ impl Keymap {
     }
 }
 
+/// The few actions worth a hint in the status bar for each context, with short words.
+pub fn hints_for(context: Context) -> &'static [(Action, &'static str)] {
+    use Action::*;
+    match context {
+        Context::Global => &[(Switcher, "jump"), (Search, "search"), (FocusNext, "focus")],
+        Context::Sidebar => &[(Open, "open"), (Star, "star"), (MoveToSection, "section")],
+        Context::Messages => &[(OpenThread, "thread"), (React, "react"), (Edit, "edit"), (Profile, "profile"), (Open, "open"), (Back, "back")],
+        Context::Composer => &[(Send, "send"), (Newline, "new line"), (Leave, "leave")],
+        Context::Completion => &[(Accept, "insert"), (Dismiss, "close")],
+        Context::Switcher | Context::Search => &[(Open, "go"), (Down, "next"), (Close, "close")],
+        Context::Picker => &[(Open, "react"), (Close, "close")],
+        Context::Details => &[(NextTab, "next tab"), (Open, "open"), (Close, "close")],
+        Context::Profile => &[(Open, "message"), (Huddle, "huddle"), (NextTab, "next person"), (Close, "close")],
+        Context::Activity => &[(Open, "open"), (Refresh, "refresh"), (Close, "close")],
+        Context::Mover => &[(Open, "move"), (Close, "close")],
+        Context::SectionName => &[(Open, "create"), (Close, "back")],
+        Context::Snippet => &[(PageDown, "page"), (Copy, "copy"), (Close, "close")],
+        Context::Viewer => &[(NextTab, "next"), (Close, "close")],
+        Context::Player => &[(Pause, "pause"), (Close, "stop")],
+        Context::Confirm => &[(Yes, "yes")],
+        Context::Help => &[(PageDown, "page"), (Close, "close")],
+    }
+}
+
+impl Keymap {
+    /// Status-bar hints for the active contexts ("r react · e edit · F1 help · Ctrl+K jump"):
+    /// the most specific context first, then help, then the global ones (which a narrow
+    /// window cuts off first); actions without a key are left out.
+    pub fn hints(&self, contexts: &[Context]) -> String {
+        let hint = |c: Context, (action, word): &(Action, &str)| self.first_key(c, *action).map(|k| format!("{k} {word}"));
+        let mut parts: Vec<String> = contexts.iter().rev().filter(|c| **c != Context::Global).flat_map(|&c| hints_for(c).iter().filter_map(move |h| hint(c, h))).collect();
+        parts.extend(hint(Context::Global, &(Action::Help, "help")));
+        parts.extend(hints_for(Context::Global).iter().filter_map(|h| hint(Context::Global, h)));
+        parts.join(" · ")
+    }
+}
+
 pub fn sequence_label(seq: &[Key]) -> String {
     seq.iter().map(Key::label).collect::<Vec<_>>().join(" ")
 }
@@ -768,6 +805,16 @@ mod tests {
         assert_eq!(map.lookup(Context::Messages, &[], k("r")), Lookup::Action(Action::React), "react was there first");
         assert_eq!(warnings.len(), 5, "{warnings:#?}");
         assert!(warnings.iter().any(|w| w.contains("nowhere")) && warnings.iter().any(|w| w.contains("bound to both react and copy")));
+    }
+
+    #[test]
+    fn hints_follow_context_and_bindings() {
+        let (map, _) = Keymap::load("[messages]\nreact = \"R\"\nedit = []\n");
+        let h = map.hints(&[Context::Global, Context::Messages]);
+        assert!(h.starts_with("Enter thread · R react · u profile"), "{h}");
+        assert!(!h.contains("edit"), "unbound actions get no hint: {h}");
+        assert!(h.ends_with("Esc back · F1 help · Ctrl+K jump · Ctrl+F search · Tab focus"), "{h}");
+        assert_eq!(map.hints(&[Context::Global, Context::Confirm]), "y yes · F1 help · Ctrl+K jump · Ctrl+F search · Tab focus");
     }
 
     #[test]

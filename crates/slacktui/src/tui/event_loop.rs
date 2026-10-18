@@ -2258,9 +2258,8 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     if let Some(h) = app.help.as_mut() {
         h.draw(f, body, &app.keys);
     }
-    let hint = |a: Action, what: &str| app.keys.first_key(Context::Global, a).map(|k| format!(" · {k} {what}")).unwrap_or_default();
-    let hints = [hint(Action::Help, "help"), hint(Action::FocusNext, "focus"), hint(Action::Switcher, "jump"), hint(Action::Quit, "quit")].concat();
-    f.render_widget(Paragraph::new(format!(" {live} · {info}{hints}")), status);
+    let hints = app.keys.hints(&app.active_contexts());
+    f.render_widget(Paragraph::new(format!(" {live} · {info} · {hints}")), status);
 }
 
 fn draw_confirm(f: &mut ratatui::Frame, area: ratatui::layout::Rect, question: &str) {
