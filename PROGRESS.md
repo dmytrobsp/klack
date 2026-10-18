@@ -30,14 +30,15 @@ background is in `../REPORT.md` and `../notes/`.
 | Threads pane (reply): own composer in the thread pane (`i` from the thread, Tab order sidebar → messages → composer → thread → reply); Enter posts with `thread_ts`; Alt+A toggles "also send to channel" (`reply_broadcast`); ↑ in the empty reply box / `e` / `d` work on own replies; composer keys shared via `Composer::handle_key` | done | LIVE (reply read back by B with `ctl replies`; reply edited from the thread; broadcast reply shown in both panes and in B's channel history; broadcast deleted from the thread pane, gone for B; reply count stayed exact throughout) + UNIT (key outcomes) | d0c1620 |
 | `ctl replies <chan> <ts>`; `ctl history`/`replies` print reactions | done | LIVE | d0c1620 |
 | Autocomplete in both composers: `@user` (display/handle/real name; prefix, then word, then substring) plus `@here/@channel/@everyone`, `#channel`, `:emoji:` (picker ranking, custom emoji); popup above the composer; ↑↓ move, Tab/Enter insert, Esc dismisses until the token changes; mentions are sent as `<@U…>`/`<#C…>`/`<!here>` | done | LIVE (sent `hi @Dmytro Dudnyk see #social it works :tada:` — B read back `<@U0C9YM9J3RR> … <#C0CA4NBM998> … :tada:`; `@dmytro.d` completed in the thread box and arrived as `<@U…>`; Esc dismissal checked) + UNIT (ranking, specials, channels, emoji) | 2d609d0 |
-| Desktop notifications (notify-rust): DMs/group DMs, mentions incl. @here/@channel/@everyone, replies in threads you started or replied to; quiet for own/system messages, muted channels, DND (snooze + daily schedule, live `dnd_updated`), and the conversation/thread on screen while the terminal is focused (focus-change reporting) | done | LIVE (D-Bus `Notify` calls captured with `dbus-monitor`: DM elsewhere → "Dmytro"; #social without mention → none; with mention → "Dmytro in #social"; DM on screen + focused → none; same but unfocused → notified; reply in own thread → "Dmytro (thread)") + UNIT (decision rules, DND windows) | see git log |
+| Desktop notifications (notify-rust): DMs/group DMs, mentions incl. @here/@channel/@everyone, replies in threads you started or replied to; quiet for own/system messages, muted channels, DND (snooze + daily schedule, live `dnd_updated`), and the conversation/thread on screen while the terminal is focused (focus-change reporting) | done | LIVE (D-Bus `Notify` calls captured with `dbus-monitor`: DM elsewhere → "Dmytro"; #social without mention → none; with mention → "Dmytro in #social"; DM on screen + focused → none; same but unfocused → notified; reply in own thread → "Dmytro (thread)") + UNIT (decision rules, DND windows) | 56bda27 |
+| Inline image thumbnails: terminal graphics detected at startup (`Picker::from_query_stdio`, half-block fallback); rows reserved from `original_w/h` (≤ 36×10 cells, no upscaling) so nothing jumps; thumbnails fetched lazily when on screen (`thumb_*` with the session cookie), decoded/encoded off the UI task, cached per file; drawn with `SlicedImage` so partly scrolled images are clipped | done | LIVE (kitty: B's 800×500 PNG shown under its file line; clipped correctly after scrolling; no remnants after switching conversation) + UNIT (sizing, reserved rows) | see git log |
 
-Tests: `cargo test` → slack-core 8, slacktui 38, all passing. `cargo build` has no errors.
+Tests: `cargo test` → slack-core 8, slacktui 40, all passing. `cargo build` has no errors.
 Remaining dead-code warnings: `Composer::cursor/is_multiline`, `Sidebar::select_id`, `Workspace::team_id`.
 
 ## Next (in order, each as a small, separately verified step)
 
-1. Images inline (ratatui-image, kitty protocol; `File::preview_url`), an image viewer, upload from a path.
+1. Images, part 2: a full-size image viewer (Enter/`o` on an image), then upload from a path.
 2. Video playback with sound (ffmpeg-next → frames via ratatui-image; cpal audio).
 3. Huddles: reverse engineer the signalling first (observe the web client inside RSlack), then audio.
 4. Search, channel info/members, pins, quick switcher (Ctrl+K), help overlay.
@@ -59,6 +60,7 @@ Remaining dead-code warnings: `Composer::cursor/is_multiline`, `Sidebar::select_
 - Key hints for `e`/`d`/`r`/`y`/`Y` are not shown anywhere yet (help overlay is in "Next").
 - Reaction chips with VS16 emoji (❤️) sometimes render with an extra blank cell (`[❤  1]`), and stale characters appear on nearby rows (`appear]instantly`): ratatui and kitty disagree on the width. Seen in several screenshots; not fixed yet.
 - `@here/@channel/@everyone` are offered in DMs too.
+- Thumbnails: only tested in kitty (sixel/iTerm2/half-block paths untested); not tested inside the thread pane; a failed thumbnail leaves its reserved rows blank (no error text); GIFs show their first frame only.
 - Notifications: clicking one does nothing (no jump to the conversation); per-channel notification preferences (all/mentions/nothing) and keyword alerts are not honoured; muted channels come from boot prefs only (no live pref updates); the daily DND schedule can be off by an hour across a DST change.
 - A freshly opened kitty window does not report focus-out until it has had one focus-in, so right after launch an unfocused slacktui may think it is focused (harness quirk; normal use is unaffected once the window has been focused).
 - Autocomplete does not complete on a mouse click.

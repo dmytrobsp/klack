@@ -28,6 +28,8 @@ enum Net {
     Posted { channel: String, message: slack_core::types::Message },
     /// All replies of a thread (parent first).
     Replies { channel: String, ts: String, page: HistoryPage },
+    /// A thumbnail finished loading.
+    Thumb { id: String, result: Result<ratatui_image::sliced::SlicedProtocol, String> },
     /// A permalink to copy.
     Permalink(String),
     /// An optimistic change failed: put the original message back.
@@ -45,6 +47,7 @@ enum Focus {
 }
 
 struct App {
+    media: super::media::Media,
     /// The terminal window has focus (focus-change reporting).
     terminal_focused: bool,
     /// Open @/#/: suggestion list.
@@ -408,6 +411,23 @@ impl App {
         self.composer_for(c.thread).complete(c.start, &format!("{} ", s.replacement), s.id.as_deref());
     }
 
+    /// Start loading thumbnails that were on screen but not cached yet.
+    fn request_thumbs(&mut self) {
+        let wanted: Vec<_> = self.messages.wanted.drain(..).chain(self.thread_pane.wanted.drain(..)).collect();
+        for (file, size) in wanted {
+            if self.media.thumbs.contains_key(&file.id) {
+                continue;
+            }
+            self.media.thumbs.insert(file.id.clone(), super::media::Thumb::Loading);
+            let (client, tx, picker) = (self.client.clone(), self.net.clone(), self.media.picker.clone());
+            tokio::spawn(async move {
+                let id = file.id.clone();
+                let result = super::media::load_thumb(client, picker, file, size).await.map_err(|e| e.to_string());
+                let _ = tx.send(Net::Thumb { id, result });
+            });
+        }
+    }
+
     /// Focus order for Tab: left to right, top to bottom.
     fn focus_order(&self) -> Vec<Focus> {
         let mut order = vec![Focus::Sidebar, Focus::Messages, Focus::Composer];
@@ -450,7 +470,11 @@ pub async fn run(client: Client) -> Result<()> {
     let (net_tx, mut net_rx) = mpsc::unbounded_channel();
     spawn_boot(client.clone(), net_tx.clone());
     let mut rtm = slack_core::rtm::spawn(client.clone());
+    let (_guard, mut terminal) = TerminalGuard::enter()?;
+    // Query the terminal before the event stream starts reading stdin.
+    let media = super::media::Media::detect();
     let mut app = App {
+        media,
         terminal_focused: true,
         completion: None,
         completion_dismissed: None,
@@ -484,11 +508,11 @@ pub async fn run(client: Client) -> Result<()> {
         loading: true,
     };
 
-    let (_guard, mut terminal) = TerminalGuard::enter()?;
     let mut events = EventStream::new();
     let mut tick = tokio::time::interval(Duration::from_millis(500));
     loop {
         terminal.draw(|f| draw(f, &mut app))?;
+        app.request_thumbs();
         tokio::select! {
             ev = events.next() => {
                 let Some(ev) = ev else { break };
@@ -785,6 +809,16 @@ fn handle_net(app: &mut App, msg: Net) {
             tl.loaded = true;
             tl.loading = false;
         }
+        Net::Thumb { id, result } => {
+            let thumb = match result {
+                Ok(proto) => super::media::Thumb::Ready(proto),
+                Err(e) => {
+                    tracing::warn!("thumbnail {id} failed: {e}");
+                    super::media::Thumb::Failed
+                }
+            };
+            app.media.thumbs.insert(id, thumb);
+        }
         Net::Permalink(url) => {
             let how = app.clipboard.copy(&url);
             app.status = format!("copied link to the {how}");
@@ -824,7 +858,7 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         let [pane, comp] = Layout::vertical([Constraint::Min(3), Constraint::Length(h)]).areas(area);
         let title = format!("Thread · {} · Esc close", app.ws.channel_label(&channel));
         let timeline = app.ws.threads.get(&super::state::thread_key(&channel, &ts));
-        app.thread_pane.draw(f, pane, &app.ws, &title, timeline, app.focus == Focus::Thread);
+        app.thread_pane.draw(f, pane, &app.ws, &title, timeline, app.focus == Focus::Thread, &app.media);
         app.thread_composer_area = comp;
         draw_composer(f, comp, app, true);
     }
@@ -835,7 +869,7 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     let current = app.current.clone();
     let timeline = current.as_deref().and_then(|c| app.ws.timelines.get(c));
     let title = current.as_deref().map(|c| app.ws.channel_label(c)).unwrap_or_default();
-    app.messages.draw(f, msgs, &app.ws, &title, timeline, app.focus == Focus::Messages);
+    app.messages.draw(f, msgs, &app.ws, &title, timeline, app.focus == Focus::Messages, &app.media);
     app.composer_area = comp;
     draw_composer(f, comp, app, false);
     if let Some(c) = &app.completion {
