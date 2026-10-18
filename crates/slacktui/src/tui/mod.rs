@@ -26,6 +26,7 @@ pub mod sections;
 pub mod settings;
 pub mod sidebar;
 pub mod snippet;
+pub mod sound;
 pub mod state;
 pub mod switcher;
 pub mod terminal;

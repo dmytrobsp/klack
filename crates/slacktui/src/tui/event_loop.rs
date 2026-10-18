@@ -2132,7 +2132,7 @@ fn handle_rtm(app: &mut App, ev: slack_core::rtm::RtmEvent) {
                 let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64();
                 if let Some((title, body)) = super::notify::huddle_notification(&app.ws, &channel, &user, in_it, now, &app.keys.first_key(Context::Global, Action::Huddle).unwrap_or_default()) {
                     if app.ws.settings.notifications.desktop {
-                        super::notify::show(title, body);
+                        super::notify::show(title, body, &app.ws.settings);
                     }
                 }
             }
@@ -2147,7 +2147,7 @@ fn handle_rtm(app: &mut App, ev: slack_core::rtm::RtmEvent) {
                 tracing::debug!(channel, ts = m.ts, in_view, focused = app.terminal_focused, dnd = ?app.ws.dnd, notify = note.is_some(), "incoming message");
                 if let Some((title, body)) = note {
                     if app.ws.settings.notifications.desktop {
-                        super::notify::show(title, body);
+                        super::notify::show(title, body, &app.ws.settings);
                     }
                 }
             }

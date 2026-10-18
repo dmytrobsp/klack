@@ -30,6 +30,7 @@ pub enum Field {
     TimeZone,
     Language,
     Desktop,
+    Sound,
     /// Slack: the level for the conversation on screen.
     ConversationLevel,
     /// Slack: the default level for channels.
@@ -56,7 +57,7 @@ pub const CATEGORIES: &[(&str, &[Field])] = &[
     ("Appearance", &[Field::Theme, Field::Compact]),
     ("Messages & media", &[Field::InlineImages, Field::Avatars, Field::EmojiAsNames]),
     ("Language & region", &[Field::Clock24, Field::DateFormat, Field::TimeZone, Field::Language]),
-    ("Notifications", &[Field::Desktop, Field::ConversationLevel, Field::ChannelDefault, Field::Keywords, Field::Vips]),
+    ("Notifications", &[Field::Desktop, Field::Sound, Field::ConversationLevel, Field::ChannelDefault, Field::Keywords, Field::Vips]),
     ("Audio", &[Field::Input, Field::Output]),
 ];
 
@@ -82,6 +83,7 @@ impl Field {
             Field::TimeZone => "Time zone",
             Field::Language => "Language (locales/<code>.toml)",
             Field::Desktop => "Desktop notifications",
+            Field::Sound => "Sound",
             Field::ConversationLevel => "This conversation notifies about",
             Field::ChannelDefault => "Channels notify about (default)",
             Field::Keywords => "Keywords",
@@ -120,6 +122,7 @@ impl Field {
             Field::TimeZone if s.region.timezone.is_empty() => format!("system ({})", super::clock::now().format("%:z")),
             Field::TimeZone => format!("{} ({})", s.region.timezone, super::clock::now().format("%H:%M")),
             Field::Desktop => yes(s.notifications.desktop),
+            Field::Sound => s.notifications.sound.clone(),
             Field::ConversationLevel => match current {
                 Some(c) => {
                     let mpim = ws.conversations.get(c).is_some_and(|c| c.is_mpim);
@@ -184,6 +187,13 @@ impl Field {
                 s.region.date_format = DATE_FORMATS[i].into();
             }
             Field::Desktop => s.notifications.desktop ^= true,
+            Field::Sound => {
+                let sounds = super::sound::SOUNDS;
+                let i = sounds.iter().position(|x| *x == s.notifications.sound).map_or(0, |i| (i + 1) % sounds.len());
+                s.notifications.sound = sounds[i].into();
+                // Let the user hear it.
+                super::sound::play(sounds[i], Settings::device(huddle::devices::OUTPUT_ENV, &s.audio.output));
+            }
             // Slack-side: see `Prefs::change`.
             Field::ConversationLevel | Field::ChannelDefault | Field::Keywords | Field::Vips | Field::Status | Field::Away | Field::Pause | Field::Leader | Field::Binding(_) => {}
             Field::Input => s.audio.input = next(&s.audio.input, &devices.0),
@@ -212,7 +222,7 @@ const LEADER_LABEL: &str = "Leader key (for chords such as Leader k)";
 /// Category names and fixed labels, for translation templates.
 pub fn translatable() -> Vec<String> {
     let all = [
-        Field::Theme, Field::Compact, Field::InlineImages, Field::Avatars, Field::EmojiAsNames, Field::Clock24, Field::DateFormat, Field::TimeZone, Field::Language, Field::Desktop,
+        Field::Theme, Field::Compact, Field::InlineImages, Field::Avatars, Field::EmojiAsNames, Field::Clock24, Field::DateFormat, Field::TimeZone, Field::Language, Field::Desktop, Field::Sound,
         Field::ConversationLevel, Field::ChannelDefault, Field::Keywords, Field::Vips, Field::Status, Field::Away, Field::Pause, Field::Input, Field::Output,
     ];
     CATEGORIES.iter().map(|c| c.0).chain(["Keys", LEADER_LABEL]).chain(all.iter().map(|f| f.fixed_label())).map(String::from).collect()
@@ -442,12 +452,12 @@ mod tests {
     fn slack_side_changes() {
         let mut ws = Workspace::default();
         let mut p = Prefs { category: 4, ..Default::default() };
-        p.selected = 1;
+        p.selected = 2;
         assert_eq!(p.change(&mut ws, Some("C1")), Some(SlackChange::ConversationLevel { channel: "C1".into(), level: "nothing".into() }), "mentions (default) → nothing");
         assert_eq!(p.change(&mut ws, None), None, "no conversation, no change");
-        p.selected = 2;
-        assert_eq!(p.change(&mut ws, None), Some(SlackChange::ChannelDefault("nothing".into())));
         p.selected = 3;
+        assert_eq!(p.change(&mut ws, None), Some(SlackChange::ChannelDefault("nothing".into())));
+        p.selected = 4;
         ws.notify.keywords = vec!["a".into()];
         assert_eq!(p.change(&mut ws, None), None, "Enter starts editing");
         assert_eq!(p.editing.as_deref(), Some("a"));

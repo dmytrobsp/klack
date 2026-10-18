@@ -69,11 +69,13 @@ impl Default for Region {
 pub struct Notifications {
     /// Desktop notifications at all.
     pub desktop: bool,
+    /// Sound with each notification: off, chime, ping, knock, or system (the desktop's).
+    pub sound: String,
 }
 
 impl Default for Notifications {
     fn default() -> Self {
-        Notifications { desktop: true }
+        Notifications { desktop: true, sound: "off".into() }
     }
 }
 

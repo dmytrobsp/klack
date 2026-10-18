@@ -63,10 +63,17 @@ pub fn huddle_notification(ws: &Workspace, channel: &str, user: &str, in_it: boo
     Some((title, format!("Press {join_key} in slacktui to join")))
 }
 
-/// Show a desktop notification without blocking the UI.
-pub fn show(title: String, body: String) {
+/// Show a desktop notification without blocking the UI, with the sound from the settings.
+pub fn show(title: String, body: String, settings: &super::settings::Settings) {
+    let sound = settings.notifications.sound.clone();
+    super::sound::play(&sound, super::settings::Settings::device(huddle::devices::OUTPUT_ENV, &settings.audio.output));
     tokio::task::spawn_blocking(move || {
-        let result = notify_rust::Notification::new().appname("slacktui").summary(&title).body(&body).show();
+        let mut n = notify_rust::Notification::new();
+        n.appname("slacktui").summary(&title).body(&body);
+        if sound == "system" {
+            n.sound_name(super::sound::system_sound_name());
+        }
+        let result = n.show();
         if let Err(e) = result {
             tracing::warn!("notification failed: {e}");
         }
