@@ -104,18 +104,20 @@ pub struct Audio {
     pub speaking_threshold_db: Option<i32>,
     /// RNNoise noise suppression on the microphone.
     pub noise_suppression: bool,
+    /// Remove what the speaker plays from the microphone (AEC3).
+    pub echo_cancellation: bool,
 }
 
 impl Default for Audio {
     fn default() -> Self {
-        Audio { input: None, output: None, huddle_volume: 100, sound_volume: 100, mic_gain: 100, speaking_threshold_db: None, noise_suppression: false }
+        Audio { input: None, output: None, huddle_volume: 100, sound_volume: 100, mic_gain: 100, speaking_threshold_db: None, noise_suppression: false, echo_cancellation: true }
     }
 }
 
 impl Audio {
     /// How the microphone is processed in a huddle.
     pub fn mic_config(&self) -> huddle::devices::MicConfig {
-        huddle::devices::MicConfig { gain: self.mic_gain as f32 / 100.0, gate_db: self.speaking_threshold_db.map(|d| d as f32), suppress_noise: self.noise_suppression }
+        huddle::devices::MicConfig { gain: self.mic_gain as f32 / 100.0, gate_db: self.speaking_threshold_db.map(|d| d as f32), suppress_noise: self.noise_suppression, cancel_echo: self.echo_cancellation }
     }
 }
 
@@ -193,8 +195,8 @@ mod tests {
         let s = Settings::parse("[audio]\nmic_gain = 150\n").unwrap();
         assert_eq!((s.audio.huddle_volume, s.audio.sound_volume, s.audio.speaking_threshold_db, s.audio.noise_suppression), (100, 100, None, false));
         let cfg = s.audio.mic_config();
-        assert_eq!((cfg.gain, cfg.gate_db, cfg.suppress_noise), (1.5, None, false));
-        let s = Settings::parse("[audio]\nspeaking_threshold_db = -40\nnoise_suppression = true\n").unwrap();
-        assert_eq!(s.audio.mic_config(), huddle::devices::MicConfig { gain: 1.0, gate_db: Some(-40.0), suppress_noise: true });
+        assert_eq!((cfg.gain, cfg.gate_db, cfg.suppress_noise, cfg.cancel_echo), (1.5, None, false, true), "echo cancellation is on by default");
+        let s = Settings::parse("[audio]\nspeaking_threshold_db = -40\nnoise_suppression = true\necho_cancellation = false\n").unwrap();
+        assert_eq!(s.audio.mic_config(), huddle::devices::MicConfig { gain: 1.0, gate_db: Some(-40.0), suppress_noise: true, cancel_echo: false });
     }
 }

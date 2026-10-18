@@ -1,7 +1,7 @@
 //! The huddle you are in: session state, audio devices and the call bar.
 
 
-use huddle::devices::{MicConfig, MicProcessor, Microphone, Speaker, Volume};
+use huddle::devices::{EchoCanceller, MicConfig, MicProcessor, Microphone, Speaker, Volume};
 use huddle::session::{Participant, PcmSink, Session, SessionEvent};
 use huddle::signaling::Credentials;
 use ratatui::Frame;
@@ -26,8 +26,11 @@ pub struct Call {
     mic_level: std::sync::Arc<std::sync::atomic::AtomicU32>,
     /// Whether the speaking threshold lets our microphone through.
     mic_open: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    /// Gain, threshold and noise suppression, read by the microphone for each frame.
+    /// Gain, threshold, noise suppression and echo cancellation, read by the microphone for
+    /// each frame.
     mic_config: std::sync::Arc<std::sync::Mutex<MicConfig>>,
+    /// Fed with what the speaker plays, used on the microphone while unmuted.
+    echo: EchoCanceller,
     /// Playback volume of the meeting (None without a speaker).
     volume: Option<Volume>,
     pub muted: bool,
@@ -149,12 +152,18 @@ impl Call {
                 latest.lock().unwrap_or_else(|e| e.into_inner()).insert(frame.attendee_id.clone(), (std::time::Instant::now(), frame));
             }
         });
+        let echo = EchoCanceller::new();
         let (volume, speaker_error) = match Speaker::start(devices.1) {
             Ok(mut speaker) => {
                 let volume = speaker.volume();
+                let (echo, vol) = (echo.clone(), volume.clone());
                 tokio::spawn(async move {
                     while let Some(frame) = audio.recv().await {
                         speaker.play(&frame);
+                        // The canceller's reference: the meeting as loud as it is played.
+                        let v = vol.get();
+                        let played: Vec<i16> = frame.iter().map(|s| (*s as f32 * v).clamp(i16::MIN as f32, i16::MAX as f32) as i16).collect();
+                        echo.render(&played);
                     }
                 });
                 (Some(volume), None)
@@ -174,6 +183,7 @@ impl Call {
             mic_level: Default::default(),
             mic_open: Default::default(),
             mic_config: Default::default(),
+            echo,
             volume,
             muted: true,
             connected: false,
@@ -205,7 +215,7 @@ impl Call {
         if self.muted {
             let sink = self.sink.clone();
             let (level, open, config) = (self.mic_level.clone(), self.mic_open.clone(), self.mic_config.clone());
-            let mut processor = MicProcessor::new();
+            let mut processor = MicProcessor::with_echo_canceller(self.echo.clone());
             self.mic = Some(Microphone::start(self.input.clone(), move |mut frame| {
                 let cfg = *config.lock().unwrap_or_else(|e| e.into_inner());
                 let (l, o) = processor.process(&mut frame, &cfg);

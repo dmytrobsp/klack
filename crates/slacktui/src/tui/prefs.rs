@@ -52,6 +52,7 @@ pub enum Field {
     MicGain,
     SpeakingThreshold,
     NoiseSuppression,
+    EchoCancellation,
     /// The camera for huddles (one of the cameras found; never a default).
     Camera,
 }
@@ -65,7 +66,7 @@ pub const CATEGORIES: &[(&str, &[Field])] = &[
     ("Messages & media", &[Field::InlineImages, Field::Avatars, Field::EmojiAsNames]),
     ("Language & region", &[Field::Clock24, Field::DateFormat, Field::TimeZone, Field::Language]),
     ("Notifications", &[Field::Desktop, Field::Sound, Field::ConversationLevel, Field::ChannelDefault, Field::Keywords, Field::Vips]),
-    ("Audio & video", &[Field::Input, Field::Output, Field::HuddleVolume, Field::SoundVolume, Field::MicGain, Field::SpeakingThreshold, Field::NoiseSuppression, Field::Camera]),
+    ("Audio & video", &[Field::Input, Field::Output, Field::HuddleVolume, Field::SoundVolume, Field::MicGain, Field::SpeakingThreshold, Field::NoiseSuppression, Field::EchoCancellation, Field::Camera]),
 ];
 
 /// Volumes offered, in percent.
@@ -123,6 +124,7 @@ impl Field {
             Field::MicGain => "Microphone gain",
             Field::SpeakingThreshold => "Speaking threshold",
             Field::NoiseSuppression => "Noise suppression",
+            Field::EchoCancellation => "Echo cancellation",
             Field::Camera => "Camera (F9 in a huddle)",
         }
     }
@@ -193,6 +195,7 @@ impl Field {
             Field::MicGain => format!("{}%", s.audio.mic_gain),
             Field::SpeakingThreshold => s.audio.speaking_threshold_db.map_or("off".into(), |d| format!("{d} dB")),
             Field::NoiseSuppression => yes(s.audio.noise_suppression),
+            Field::EchoCancellation => yes(s.audio.echo_cancellation),
             Field::Camera => s.video.camera.clone().unwrap_or_else(|| "none (the camera stays off)".into()),
         }
     }
@@ -251,6 +254,7 @@ impl Field {
             Field::Input => s.audio.input = next(&s.audio.input, &devices.0),
             Field::Output => s.audio.output = next(&s.audio.output, &devices.1),
             Field::NoiseSuppression => s.audio.noise_suppression ^= true,
+            Field::EchoCancellation => s.audio.echo_cancellation ^= true,
             // Needs the cameras found: see `Prefs::change`.
             Field::Camera => {}
             Field::HuddleVolume | Field::SoundVolume | Field::MicGain | Field::SpeakingThreshold => {
@@ -282,7 +286,7 @@ pub fn translatable() -> Vec<String> {
     let all = [
         Field::Theme, Field::Compact, Field::InlineImages, Field::Avatars, Field::EmojiAsNames, Field::Clock24, Field::DateFormat, Field::TimeZone, Field::Language, Field::Desktop, Field::Sound,
         Field::ConversationLevel, Field::ChannelDefault, Field::Keywords, Field::Vips, Field::Status, Field::Away, Field::Pause, Field::Input, Field::Output,
-        Field::HuddleVolume, Field::SoundVolume, Field::MicGain, Field::SpeakingThreshold, Field::NoiseSuppression, Field::Camera,
+        Field::HuddleVolume, Field::SoundVolume, Field::MicGain, Field::SpeakingThreshold, Field::NoiseSuppression, Field::EchoCancellation, Field::Camera,
     ];
     CATEGORIES.iter().map(|c| c.0).chain(["Keys", LEADER_LABEL]).chain(all.iter().map(|f| f.fixed_label())).map(String::from).collect()
 }
@@ -561,6 +565,8 @@ mod tests {
         assert_eq!(s.audio.speaking_threshold_db, None);
         Field::NoiseSuppression.change(&mut s, &Default::default());
         assert!(s.audio.noise_suppression);
+        Field::EchoCancellation.change(&mut s, &Default::default());
+        assert!(!s.audio.echo_cancellation, "on by default, so the first change turns it off");
         assert!(!Field::Compact.adjust(&mut s, true, false), "not a level");
     }
 

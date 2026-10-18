@@ -216,11 +216,11 @@ pub fn wrapped_rows(text: &str, width: usize) -> u16 {
 pub fn audio_summary(a: &super::settings::Audio, width: usize) -> String {
     let threshold = a.speaking_threshold_db.map_or("off".to_string(), |d| format!("{d} dB"));
     let on = |b: bool| if b { "on" } else { "off" };
-    let long = format!(" volume {}% · mic gain {}% · threshold {threshold} · noise suppression {} · F6 → Audio", a.huddle_volume, a.mic_gain, on(a.noise_suppression));
+    let long = format!(" volume {}% · mic gain {}% · threshold {threshold} · noise suppression {} · echo cancellation {} · F6 → Audio", a.huddle_volume, a.mic_gain, on(a.noise_suppression), on(a.echo_cancellation));
     if long.chars().count() <= width {
         long
     } else {
-        format!(" vol {}% · gain {}% · gate {threshold} · noise {}", a.huddle_volume, a.mic_gain, on(a.noise_suppression))
+        format!(" vol {}% · gain {}% · gate {threshold} · noise {} · echo {}", a.huddle_volume, a.mic_gain, on(a.noise_suppression), on(a.echo_cancellation))
     }
 }
 
@@ -588,8 +588,8 @@ mod tests {
     #[test]
     fn audio_line_shortens() {
         let a = crate::tui::settings::Audio { speaking_threshold_db: Some(-45), noise_suppression: true, ..Default::default() };
-        assert_eq!(audio_summary(&a, 200), " volume 100% · mic gain 100% · threshold -45 dB · noise suppression on · F6 → Audio");
-        assert_eq!(audio_summary(&a, 60), " vol 100% · gain 100% · gate -45 dB · noise on");
+        assert_eq!(audio_summary(&a, 200), " volume 100% · mic gain 100% · threshold -45 dB · noise suppression on · echo cancellation on · F6 → Audio");
+        assert_eq!(audio_summary(&a, 60), " vol 100% · gain 100% · gate -45 dB · noise on · echo on");
         assert_eq!(wrapped_rows(" vol 100% · gain 100% · gate off · noise off", 80), 1);
         assert_eq!(wrapped_rows(" vol 100% · gain 100% · gate off · noise off", 38), 2);
         assert_eq!(wrapped_rows("abcdefghij", 4), 3, "a long word is broken");

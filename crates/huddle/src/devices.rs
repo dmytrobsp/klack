@@ -179,6 +179,52 @@ pub fn frame_level(frame: &[i16]) -> f32 {
     ((frame_db(frame) + 50.0) / 40.0).clamp(0.0, 1.0)
 }
 
+/// Echo cancellation (WebRTC's AEC3, pure Rust via `sonora`): removes what the speaker
+/// plays from the microphone. Clones share one canceller: the playback side feeds it the
+/// meeting audio ([`EchoCanceller::render`]), the microphone side cleans each frame with it
+/// ([`EchoCanceller::capture`]); it finds the delay between the two itself.
+#[derive(Clone)]
+pub struct EchoCanceller(Arc<Mutex<sonora::AudioProcessing>>);
+
+/// The canceller works on 10 ms chunks.
+const AEC_CHUNK: usize = SAMPLE_RATE as usize / 100;
+
+impl EchoCanceller {
+    pub fn new() -> EchoCanceller {
+        let config = sonora::Config { echo_canceller: Some(Default::default()), ..Default::default() };
+        let stream = sonora::StreamConfig::new(SAMPLE_RATE, 1);
+        EchoCanceller(Arc::new(Mutex::new(sonora::AudioProcessing::builder().config(config).capture_config(stream).render_config(stream).build())))
+    }
+
+    /// Note audio (48 kHz mono) as it goes to the speaker.
+    pub fn render(&self, frame: &[i16]) {
+        let mut apm = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut out = [0i16; AEC_CHUNK];
+        for chunk in frame.chunks(AEC_CHUNK).filter(|c| c.len() == AEC_CHUNK) {
+            let _ = apm.process_render_i16(chunk, &mut out);
+        }
+    }
+
+    /// Remove the speaker's echo from a microphone frame (48 kHz mono) in place.
+    pub fn capture(&self, frame: &mut [i16]) {
+        let mut apm = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut out = [0i16; AEC_CHUNK];
+        for chunk in frame.chunks_mut(AEC_CHUNK).filter(|c| c.len() == AEC_CHUNK) {
+            // Required with echo cancellation on; only a hint, AEC3 estimates the delay.
+            let _ = apm.set_stream_delay_ms(0);
+            if apm.process_capture_i16(chunk, &mut out).is_ok() {
+                chunk.copy_from_slice(&out);
+            }
+        }
+    }
+}
+
+impl Default for EchoCanceller {
+    fn default() -> Self {
+        EchoCanceller::new()
+    }
+}
+
 /// How the microphone is processed before sending; shared with a running call (behind a
 /// mutex) so a change applies to the next frame.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -189,11 +235,13 @@ pub struct MicConfig {
     pub gate_db: Option<f32>,
     /// RNNoise noise suppression.
     pub suppress_noise: bool,
+    /// Echo cancellation (needs a canceller fed with the playback, see [`MicProcessor::with_echo_canceller`]).
+    pub cancel_echo: bool,
 }
 
 impl Default for MicConfig {
     fn default() -> Self {
-        MicConfig { gain: 1.0, gate_db: None, suppress_noise: false }
+        MicConfig { gain: 1.0, gate_db: None, suppress_noise: false, cancel_echo: false }
     }
 }
 
@@ -204,9 +252,11 @@ pub const GATE_HANG_FRAMES: u32 = 15;
 /// Samples faded in when the gate opens (2 ms), to avoid a click.
 const GATE_FADE_IN: usize = 96;
 
-/// Noise suppression, gain and the speaking gate for 20 ms 48 kHz frames, in that order.
+/// Echo cancellation, noise suppression, gain and the speaking gate for 20 ms 48 kHz frames,
+/// in that order.
 #[derive(Default)]
 pub struct MicProcessor {
+    echo: Option<EchoCanceller>,
     /// Created on first use (RNNoise keeps state across frames).
     denoise: Option<Box<nnnoiseless::DenoiseState<'static>>>,
     /// Frames left before the gate closes.
@@ -219,9 +269,17 @@ impl MicProcessor {
         MicProcessor::default()
     }
 
+    /// With echo cancellation by `echo` (used while [`MicConfig::cancel_echo`] is on).
+    pub fn with_echo_canceller(echo: EchoCanceller) -> MicProcessor {
+        MicProcessor { echo: Some(echo), ..Default::default() }
+    }
+
     /// Process `frame` in place; returns its level (0–1, before the gate) and whether the
     /// gate let it through (a closed gate leaves silence).
     pub fn process(&mut self, frame: &mut [i16], cfg: &MicConfig) -> (f32, bool) {
+        if let Some(echo) = self.echo.as_ref().filter(|_| cfg.cancel_echo) {
+            echo.capture(frame);
+        }
         if cfg.suppress_noise {
             let state = self.denoise.get_or_insert_with(nnnoiseless::DenoiseState::new);
             let n = nnnoiseless::DenoiseState::FRAME_SIZE;
@@ -494,6 +552,156 @@ mod tests {
         // Judge the second half, after RNNoise has settled.
         let reduction = 20.0 * (rms(&input[50..]) / rms(&out[50..]).max(1.0)).log10();
         assert!(reduction > 10.0, "noise reduced by only {reduction:.1} dB");
+    }
+
+    /// Speech-like noise for the echo tests: white noise (a fixed LCG) low-passed to the speech
+    /// band (AEC3 drops everything above 16 kHz) whose loudness changes every 100 ms, as
+    /// frames of `secs` seconds.
+    fn bursty_noise(secs: f32, seed: u32) -> Vec<Vec<i16>> {
+        let mut seed = seed;
+        let mut next = || {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (seed >> 16) as f32 / 32_768.0 - 1.0
+        };
+        let n = (secs * SAMPLE_RATE as f32) as usize;
+        let (mut amp, mut lp) = (0.0, [0.0f32; 3]);
+        let all: Vec<i16> = (0..n)
+            .map(|i| {
+                if i % (SAMPLE_RATE as usize / 10) == 0 {
+                    amp = 0.1 + 0.5 * (next() + 1.0) / 2.0;
+                }
+                // Three one-pole low-passes: about -18 dB/octave above ~2.5 kHz.
+                let mut x = next();
+                for y in lp.iter_mut() {
+                    *y += 0.3 * (x - *y);
+                    x = *y;
+                }
+                (x * 2.5 * amp * i16::MAX as f32).clamp(i16::MIN as f32, i16::MAX as f32) as i16
+            })
+            .collect();
+        all.chunks(FRAME_SAMPLES).map(|c| c.to_vec()).collect()
+    }
+
+    /// What a microphone hears of `played`: delayed by `delay` samples, attenuated, through
+    /// a short room response.
+    fn echo_of(played: &[Vec<i16>], delay: usize) -> Vec<Vec<i16>> {
+        let all = played.concat();
+        let at = |i: usize| if i >= delay && i - delay < all.len() { all[i - delay] as f32 } else { 0.0 };
+        let mic: Vec<i16> = (0..all.len()).map(|i| (0.3 * at(i) + 0.12 * at(i.wrapping_sub(7)) - 0.05 * at(i.wrapping_sub(23))) as i16).collect();
+        mic.chunks(FRAME_SAMPLES).map(|c| c.to_vec()).collect()
+    }
+
+    #[test]
+    fn echo_cancellation_removes_the_speaker() {
+        // 6 s of "far end" played with a 60 ms echo path; judge the last 2 s.
+        let played = bursty_noise(6.0, 7);
+        let heard = echo_of(&played, 60 * SAMPLE_RATE as usize / 1000);
+        let echo = EchoCanceller::new();
+        let mut p = MicProcessor::with_echo_canceller(echo.clone());
+        let cfg = MicConfig { cancel_echo: true, ..Default::default() };
+        let mut out = heard.clone();
+        for (far, near) in played.iter().zip(out.iter_mut()) {
+            echo.render(far);
+            p.process(near, &cfg);
+        }
+        let tail = out.len() - 100;
+        let reduction = 20.0 * (rms(&heard[tail..]) / rms(&out[tail..]).max(1.0)).log10();
+        assert!(reduction > 20.0, "echo reduced by only {reduction:.1} dB");
+        // Switched off in the config, the canceller is not used.
+        let mut f = heard[tail].clone();
+        p.process(&mut f, &MicConfig::default());
+        assert_eq!(f, heard[tail]);
+    }
+
+    /// Power of `x` at `hz` (Goertzel), per sample.
+    fn power_at(x: &[i16], hz: f32) -> f64 {
+        let w = std::f64::consts::TAU * hz as f64 / SAMPLE_RATE as f64;
+        let (mut s1, mut s2) = (0.0f64, 0.0f64);
+        for v in x {
+            let s = *v as f64 + 2.0 * w.cos() * s1 - s2;
+            s2 = s1;
+            s1 = s;
+        }
+        (s1 * s1 + s2 * s2 - 2.0 * w.cos() * s1 * s2) / x.len() as f64
+    }
+
+    #[test]
+    fn echo_cancellation_in_double_talk() {
+        // The far end (below ~600 Hz) plays alone for 4 s, then the near end talks too
+        // (speech-like noise, high-passed) for 2 s: per band, the voice must stay and the echo
+        // go. (Steady pure tones from the near end are suppressed in double talk, ~-24 dB.)
+        let lowpass = |frames: &mut Vec<Vec<i16>>, a: f32, gain: f32| {
+            let mut lp = [0.0f32; 3];
+            for s in frames.iter_mut().flatten() {
+                let mut x = *s as f32;
+                for y in lp.iter_mut() {
+                    *y += a * (x - *y);
+                    x = *y;
+                }
+                *s = (x * gain).clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+            }
+        };
+        let mut played = bursty_noise(6.0, 3);
+        lowpass(&mut played, 0.08, 3.0);
+        let heard = echo_of(&played, 2_400);
+        // Second differences: a high-pass that leaves little below 1 kHz.
+        let (mut x1, mut x2) = (0.0f32, 0.0f32);
+        let voice: Vec<Vec<i16>> = bursty_noise(2.0, 17).iter().map(|f| f.iter().map(|s| {
+            let x = *s as f32;
+            let y = x - 2.0 * x1 + x2;
+            (x2, x1) = (x1, x);
+            (y * 4.0).clamp(i16::MIN as f32, i16::MAX as f32) as i16
+        }).collect()).collect();
+        let mic: Vec<Vec<i16>> = heard.iter().enumerate().map(|(n, e)| match n.checked_sub(200) {
+            Some(k) => e.iter().zip(&voice[k]).map(|(a, b)| a.saturating_add(*b)).collect(),
+            None => e.clone(),
+        }).collect();
+        let echo = EchoCanceller::new();
+        let mut p = MicProcessor::with_echo_canceller(echo.clone());
+        let cfg = MicConfig { cancel_echo: true, ..Default::default() };
+        let mut out = mic.clone();
+        for (far, near) in played.iter().zip(out.iter_mut()) {
+            echo.render(far);
+            p.process(near, &cfg);
+        }
+        // The last 1.5 s of double talk.
+        let (before, after) = (mic[225..].concat(), out[225..].concat());
+        let band = |x: &[i16], from: usize, to: usize| (from..to).map(|k| power_at(x, k as f32 * 50.0)).sum::<f64>();
+        let kept = 10.0 * (band(&after, 50, 80) / band(&before, 50, 80)).log10();
+        let removed = 10.0 * (band(&before, 2, 12) / band(&after, 2, 12).max(1e-9)).log10();
+        assert!(kept > -3.0, "the voice lost {:.1} dB in double talk", -kept);
+        assert!(removed > 20.0, "echo reduced by only {removed:.1} dB in double talk");
+    }
+
+    #[test]
+    fn echo_cancellation_keeps_the_voice() {
+        // Nothing played: the near-end voice passes (AEC3's band split costs ~0.4 dB).
+        let voice = bursty_noise(3.0, 11);
+        let echo = EchoCanceller::new();
+        let mut p = MicProcessor::with_echo_canceller(echo.clone());
+        let cfg = MicConfig { cancel_echo: true, ..Default::default() };
+        let silence = vec![0i16; FRAME_SAMPLES];
+        let mut out = voice.clone();
+        for near in out.iter_mut() {
+            echo.render(&silence);
+            p.process(near, &cfg);
+        }
+        let loss = 20.0 * (rms(&voice[50..]) / rms(&out[50..]).max(1.0)).log10();
+        assert!(loss < 1.0, "voice lost {loss:.1} dB with nothing playing");
+        // The microphone opened after the far end had been playing for a while (render
+        // without capture while muted) still works.
+        let echo = EchoCanceller::new();
+        let played = bursty_noise(4.0, 5);
+        played[..100].iter().for_each(|f| echo.render(f));
+        let heard = echo_of(&played[100..], 2_880);
+        let mut p = MicProcessor::with_echo_canceller(echo.clone());
+        let mut out = heard.clone();
+        for (far, near) in played[100..].iter().zip(out.iter_mut()) {
+            echo.render(far);
+            p.process(near, &cfg);
+        }
+        let reduction = 20.0 * (rms(&heard[50..]) / rms(&out[50..]).max(1.0)).log10();
+        assert!(reduction > 20.0, "after unmuting: echo reduced by only {reduction:.1} dB");
     }
 
     #[test]

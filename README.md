@@ -108,7 +108,9 @@ no silent fallback.
 
 F6 → Audio also has the huddle volume, the notification sound volume, a microphone gain, a
 speaking threshold (quieter microphone input is sent as silence, held open 300 ms after you
-stop so words are not cut) and noise suppression (RNNoise via `nnnoiseless`). `+`/`-` (or Enter)
+stop so words are not cut), noise suppression (RNNoise via `nnnoiseless`) and echo cancellation
+(on by default: WebRTC's AEC3 via the pure-Rust `sonora`, so others do not hear themselves from your
+speakers; it drops the microphone above 16 kHz, which speech does not need). `+`/`-` (or Enter)
 step the levels, and a huddle you are in follows at once.
 
 Other people's cameras play in their tiles in the huddle view (F8), with 📹 next to them in the
@@ -132,7 +134,7 @@ in a "🖥 Your screen" tile. Screen sharing is Linux-only so far. No echo cance
 
 | Variable | |
 |---|---|
-| (F6 or `/prefs`) | preferences: theme, compact list, thumbnails, profile pictures, emoji as names, 12/24 h clock, date format, time zone, language, desktop notifications and sound, microphone and speaker, volumes, microphone gain, speaking threshold, noise suppression — saved in `settings.toml` next to `keys.toml` |
+| (F6 or `/prefs`) | preferences: theme, compact list, thumbnails, profile pictures, emoji as names, 12/24 h clock, date format, time zone, language, desktop notifications and sound, microphone and speaker, volumes, microphone gain, speaking threshold, noise suppression, echo cancellation — saved in `settings.toml` next to `keys.toml` |
 | `SLACKTUI_LOG` | log filter, e.g. `slacktui=debug` (log file: `~/.cache/slacktui/<profile>/slacktui.log`) |
 | `SLACKTUI_DOWNLOAD_DIR` | where `s` saves attachments (default: your downloads folder) |
 | `SLACKTUI_AVATARS=0` | no profile pictures next to names (they are also off on terminals without real graphics) |
