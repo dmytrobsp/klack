@@ -9,7 +9,11 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
+use ratatui_image::sliced::{SignedPosition, SlicedImage};
+use slack_core::types::File;
 
+use super::huddle_view::Keys;
+use super::media::{Media, Thumb};
 use super::state::Workspace;
 
 pub struct Call {
@@ -22,6 +26,8 @@ pub struct Call {
     pub roster: Vec<Participant>,
     /// Speaking levels (0–1) by attendee id, from the meeting.
     pub levels: std::collections::HashMap<String, f32>,
+    /// Who of the others is talking, or talked last (attendee id), for the call bar.
+    last_speaker: Option<String>,
     /// Our own microphone level while unmuted (f32 bits), measured locally.
     mic_level: std::sync::Arc<std::sync::atomic::AtomicU32>,
     /// Whether the speaking threshold lets our microphone through.
@@ -191,6 +197,7 @@ impl Call {
             session,
             roster: Vec::new(),
             levels: Default::default(),
+            last_speaker: None,
             mic_level: Default::default(),
             mic_open: Default::default(),
             mic_config: Default::default(),
@@ -313,7 +320,12 @@ impl Call {
                     self.alone_since = Some(std::time::Instant::now());
                 }
             }
-            SessionEvent::Levels(l) => self.levels = l.into_iter().collect(),
+            SessionEvent::Levels(l) => {
+                self.levels = l.into_iter().collect();
+                if let Some(id) = loudest_other(&self.levels, &self.roster, &self.self_attendee) {
+                    self.last_speaker = Some(id);
+                }
+            }
             SessionEvent::Error(e) => tracing::warn!("huddle: {e}"),
             SessionEvent::VideoSources(sources) => self.shares = screen_shares(&sources),
             SessionEvent::SendingVideo { .. } => {}
@@ -355,11 +367,6 @@ impl Call {
         (level, level >= huddle::session::SPEAKING && !gated && !muted, muted, gated)
     }
 
-    /// Whether the participant is sharing their screen.
-    pub fn sharing(&self, attendee_id: &str) -> bool {
-        (attendee_id == self.self_attendee && self.share.is_some()) || self.shares.iter().any(|(share, _)| share.strip_suffix(huddle::signaling::CONTENT_MODALITY) == Some(attendee_id))
-    }
-
     /// Our share's attendee id.
     pub fn share_attendee(&self) -> String {
         format!("{}{}", self.self_attendee, huddle::signaling::CONTENT_MODALITY)
@@ -398,41 +405,180 @@ impl Call {
         videos.get(attendee_id).filter(|(at, _)| at.elapsed() < VIDEO_STALE).map(|(_, f)| f.clone())
     }
 
-    /// `keys`: the mute, huddle, thread and view keys, for the hint.
-    pub fn draw(&self, f: &mut Frame, area: Rect, ws: &Workspace, keys: (&str, &str, &str, &str)) {
-        let place = self.place(ws);
-        let green = Style::default().fg(super::theme::p().own);
-        let mut spans = vec![Span::styled(format!(" 🎧 {place} "), green.add_modifier(Modifier::BOLD))];
+    /// The call bar's pieces: what is going on (the place, who is talking or talked last,
+    /// how many are here, our microphone, camera and share), then the keys. The avatar, if
+    /// any, goes in the first two cells of its piece.
+    fn bar(&self, ws: &Workspace, media: &Media, keys: Keys) -> [Vec<Piece>; 2] {
+        let p = super::theme::p();
+        let (green, dim) = (Style::default().fg(p.own), Style::default().fg(p.dim));
+        let piece = |text: String, style: Style| Piece { spans: vec![Span::styled(text, style)], avatar: None };
+        let mut state = vec![piece(format!("🎧 {}", self.place(ws)), green.add_modifier(Modifier::BOLD))];
         if !self.connected {
-            spans.push(Span::styled("connecting… ", Style::default().fg(super::theme::p().dim)));
+            state.push(piece("connecting…".into(), dim));
         }
-        for (n, p) in self.roster.iter().enumerate() {
-            if n > 0 {
-                spans.push(Span::raw(", "));
+        let speaker = self.last_speaker.as_deref().and_then(|id| self.roster.iter().find(|p| p.attendee_id == id));
+        if let Some(sp) = speaker {
+            let (level, speaking, _, _) = self.participant_state(sp, &ws.self_id);
+            let name = truncate(&ws.person_label(sp.user_id()), SPEAKER_NAME);
+            let mut spans = Vec::new();
+            let mut avatar = None;
+            if media.avatars && ws.settings.messages.avatars {
+                if let Some(file) = ws.users.get(sp.user_id()).and_then(super::media::avatar_file) {
+                    // The initial stands in until the picture is there.
+                    if !matches!(media.thumbs.get(&file.id), Some(Thumb::Ready(_))) {
+                        let initial: String = name.chars().next().map(|c| c.to_uppercase().collect()).unwrap_or_default();
+                        spans.push(Span::styled(format!("{initial:<2}"), Style::default().add_modifier(Modifier::BOLD)));
+                    } else {
+                        spans.push(Span::raw("  "));
+                    }
+                    avatar = Some(file);
+                }
             }
-            let (level, speaking, muted, _) = self.participant_state(p, &ws.self_id);
-            let style = if speaking { green.add_modifier(Modifier::BOLD) } else { Style::default() };
-            spans.push(Span::styled(ws.person_label(p.user_id()), style));
-            if self.video(&p.attendee_id).is_some() {
-                spans.push(Span::raw(" 📹"));
+            if avatar.is_some() {
+                spans.push(Span::raw(" "));
             }
-            if self.sharing(&p.attendee_id) {
-                spans.push(Span::raw(" 🖥"));
+            spans.push(Span::styled(name, if speaking { green.add_modifier(Modifier::BOLD) } else { Style::default() }));
+            spans.push(Span::styled(format!(" {}", meter(level)), if speaking { green } else { dim }));
+            if !speaking {
+                spans.push(Span::styled(" talked last", dim));
             }
-            if muted {
-                spans.push(Span::styled(" 🔇", Style::default().fg(super::theme::p().dim)));
-            } else {
-                spans.push(Span::styled(format!(" {}", meter(level)), if speaking { green } else { Style::default().fg(super::theme::p().dim) }));
-            }
+            state.push(Piece { spans, avatar });
         }
-        let (mute, leave, thread, view) = keys;
-        let mic = if self.muted { format!("🔇 muted · {mute} unmute") } else { format!("🎙 live · {mute} mute") };
-        spans.push(Span::styled(format!("  ·  {mic} · {view} view · {thread} thread · {leave} leave"), Style::default().fg(super::theme::p().dim)));
+        state.push(piece(people(self.roster.len()), dim));
+        let mic = if self.muted {
+            piece("🔇 muted".into(), Style::default())
+        } else {
+            let (level, open) = (f32::from_bits(self.mic_level.load(std::sync::atomic::Ordering::Relaxed)), self.mic_open.load(std::sync::atomic::Ordering::Relaxed));
+            Piece { spans: vec![Span::styled("🎙 live ", green.add_modifier(Modifier::BOLD)), Span::styled(meter(level), if open { green } else { dim })], avatar: None }
+        };
+        state.push(mic);
+        state.push(if self.camera_on() { piece("📹 camera on".into(), green) } else { piece("camera off".into(), dim) });
+        if self.is_sharing() {
+            state.push(piece("🖥 sharing your screen".into(), green));
+        } else if let Some((_, user)) = self.shares.first() {
+            state.push(piece(format!("🖥 {} is sharing", truncate(&ws.person_label(user), SPEAKER_NAME)), Style::default()));
+        }
         if let Some(e) = &self.speaker_error {
-            spans.push(Span::styled(format!(" · no sound: {e}"), Style::default().fg(super::theme::p().danger)));
+            state.push(piece(format!("no sound: {e}"), Style::default().fg(p.danger)));
         }
-        f.render_widget(Paragraph::new(Line::from(spans)).style(Style::default().bg(super::theme::p().call_bg)), area);
+        let Keys { mute, leave, thread, view, camera, share } = keys;
+        let hints = [
+            format!("{mute} {}", if self.muted { "unmute" } else { "mute" }),
+            format!("{camera} {}", if self.camera_on() { "camera off" } else { "camera on" }),
+            format!("{share} {}", if self.is_sharing() { "stop sharing" } else { "share screen" }),
+            format!("{view} view"),
+            format!("{thread} thread"),
+            format!("{leave} leave"),
+        ];
+        [state, hints.into_iter().map(|h| piece(h, dim)).collect()]
     }
+
+    /// Rows the call bar takes at `width` cells.
+    pub fn bar_rows(&self, ws: &Workspace, media: &Media, keys: Keys, width: u16) -> u16 {
+        let groups = self.bar(ws, media, keys);
+        flow(&widths(&groups), width as usize).1.min(BAR_ROWS)
+    }
+
+    /// Draw the call bar; returns a profile picture to load, if it is not cached yet.
+    pub fn draw(&self, f: &mut Frame, area: Rect, ws: &Workspace, media: &Media, keys: Keys) -> Option<(File, (u16, u16))> {
+        let groups = self.bar(ws, media, keys);
+        let (places, rows) = flow(&widths(&groups), area.width as usize);
+        let mut lines: Vec<Vec<Span>> = vec![Vec::new(); rows as usize];
+        let mut pictures = Vec::new();
+        for (group, places) in groups.into_iter().zip(places) {
+            for (piece, (row, col)) in group.into_iter().zip(places) {
+                let line = &mut lines[row as usize];
+                line.push(Span::styled(if line.is_empty() { " " } else { SEP }, Style::default().fg(super::theme::p().dim)));
+                line.extend(piece.spans);
+                if let Some(file) = piece.avatar {
+                    pictures.push((file, Rect { x: area.x + col, y: area.y + row, width: super::media::AVATAR_SIZE.0, height: super::media::AVATAR_SIZE.1 }));
+                }
+            }
+        }
+        let lines: Vec<Line> = lines.into_iter().map(Line::from).collect();
+        f.render_widget(Paragraph::new(lines).style(Style::default().bg(super::theme::p().call_bg)), area);
+        // The pictures over their cells (those that fit in the bar).
+        let mut wanted = None;
+        for (file, slot) in pictures {
+            match media.thumbs.get(&file.id) {
+                Some(Thumb::Ready(proto)) if slot.bottom() <= area.bottom() && slot.right() <= area.right() => f.render_widget(SlicedImage::new(proto, SignedPosition { x: 0, y: 0 }), slot),
+                Some(_) => {}
+                None => wanted = Some((file, super::media::AVATAR_SIZE)),
+            }
+        }
+        wanted
+    }
+}
+
+/// The call bar is at most this many rows; more is cut off.
+const BAR_ROWS: u16 = 4;
+/// Names in the call bar are cut to this many characters.
+const SPEAKER_NAME: usize = 20;
+/// Between pieces on a row of the call bar.
+const SEP: &str = " · ";
+
+/// A piece of the call bar: kept on one row, wrapped as a whole.
+struct Piece {
+    spans: Vec<Span<'static>>,
+    /// A profile picture over the first two cells.
+    avatar: Option<File>,
+}
+
+fn widths(groups: &[Vec<Piece>]) -> Vec<Vec<usize>> {
+    groups.iter().map(|g| g.iter().map(|p| p.spans.iter().map(|s| s.width()).sum()).collect()).collect()
+}
+
+/// Lay out pieces of the given widths in rows `width` cells wide: a space before each row,
+/// [`SEP`] between pieces on a row, a piece that does not fit goes to the next row, and each
+/// group starts a row of its own. The (row, column) of each piece, and how many rows.
+fn flow(groups: &[Vec<usize>], width: usize) -> (Vec<Vec<(u16, u16)>>, u16) {
+    let sep = SEP.chars().count();
+    let mut row = 0usize;
+    let mut places = Vec::new();
+    let mut used = false;
+    for group in groups {
+        if used && !group.is_empty() {
+            row += 1;
+        }
+        let mut col: Option<usize> = None;
+        let mut at = Vec::new();
+        for &w in group {
+            let start = match col {
+                Some(c) if c + sep + w <= width => c + sep,
+                Some(_) => {
+                    row += 1;
+                    1
+                }
+                None => 1,
+            };
+            at.push((row as u16, start as u16));
+            col = Some(start + w);
+            used = true;
+        }
+        places.push(at);
+    }
+    (places, if used { row as u16 + 1 } else { 0 })
+}
+
+/// "Bob Smith" → "Bob Smi…" when longer than `max` characters.
+fn truncate(name: &str, max: usize) -> String {
+    if name.chars().count() <= max { name.to_string() } else { name.chars().take(max.saturating_sub(1)).chain(['…']).collect() }
+}
+
+/// "just you", "2 here".
+fn people(n: usize) -> String {
+    if n <= 1 { "just you".into() } else { format!("{n} here") }
+}
+
+/// The loudest of the others who is talking (not muted, above the speaking level).
+fn loudest_other(levels: &std::collections::HashMap<String, f32>, roster: &[Participant], me: &str) -> Option<String> {
+    roster
+        .iter()
+        .filter(|p| p.attendee_id != me && !p.muted)
+        .filter_map(|p| levels.get(&p.attendee_id).map(|l| (p, *l)))
+        .filter(|(_, l)| *l >= huddle::session::SPEAKING)
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(p, _)| p.attendee_id.clone())
 }
 
 /// After connecting, roster changes this soon are the people already there arriving.
@@ -481,6 +627,44 @@ mod tests {
     fn shares_from_video_sources() {
         let src = |attendee: &str| huddle::session::VideoSource { stream_id: 1, group_id: 1, attendee_id: attendee.into(), external_user_id: "T1-R1-U2".into(), max_bitrate_kbps: 1000 };
         assert_eq!(super::screen_shares(&[src("a"), src("b#content"), src("b#content")]), vec![("b#content".to_string(), "U2".to_string())]);
+    }
+
+    #[test]
+    fn bar_flow() {
+        // Wide: everything on a row each for the state and the keys.
+        let (places, rows) = super::flow(&[vec![10, 8], vec![9, 7]], 80);
+        assert_eq!((places, rows), (vec![vec![(0, 1), (0, 14)], vec![(1, 1), (1, 13)]], 2));
+        // Narrow: a piece that does not fit goes to the next row, whole.
+        let (places, rows) = super::flow(&[vec![10, 8, 5], vec![9, 7]], 22);
+        assert_eq!((places, rows), (vec![vec![(0, 1), (0, 14), (1, 1)], vec![(2, 1), (2, 13)]], 3));
+        // Exactly fitting: 1 + 10 + 3 + 8 = 22.
+        assert_eq!(super::flow(&[vec![10, 8]], 22).1, 1);
+        assert_eq!(super::flow(&[vec![10, 8]], 21).1, 2);
+        // A piece wider than the bar still gets a row of its own (cut off when drawn).
+        assert_eq!(super::flow(&[vec![50, 4]], 20), (vec![vec![(0, 1), (1, 1)]], 2));
+        assert_eq!(super::flow(&[vec![], vec![3]], 20), (vec![vec![], vec![(0, 1)]], 1), "an empty group takes no row");
+    }
+
+    #[test]
+    fn bar_words() {
+        assert_eq!(super::truncate("Dmytro Dudnyk-Longname-Here", 20), "Dmytro Dudnyk-Longn…");
+        assert_eq!(super::truncate("Bob", 20), "Bob");
+        assert_eq!(super::truncate("Ölgä Ünïcödé Näme Xyz", 20).chars().count(), 20);
+        assert_eq!(super::people(1), "just you");
+        assert_eq!(super::people(0), "just you");
+        assert_eq!(super::people(3), "3 here");
+    }
+
+    #[test]
+    fn last_speaker_is_the_loudest_other() {
+        let p = |id: &str, muted: bool| huddle::session::Participant { attendee_id: id.into(), external_user_id: format!("T0CA6QW46KB-R0CA47XA37G-U{id}"), muted };
+        let roster = [p("me", false), p("b", false), p("c", false), p("m", true)];
+        let levels = |l: &[(&str, f32)]| l.iter().map(|(k, v)| (k.to_string(), *v)).collect::<std::collections::HashMap<_, _>>();
+        assert_eq!(super::loudest_other(&levels(&[("me", 0.9), ("b", 0.3), ("c", 0.5)]), &roster, "me").as_deref(), Some("c"));
+        assert_eq!(super::loudest_other(&levels(&[("me", 0.9)]), &roster, "me"), None, "not ourselves");
+        assert_eq!(super::loudest_other(&levels(&[("b", 0.05)]), &roster, "me"), None, "below the speaking level");
+        assert_eq!(super::loudest_other(&levels(&[("m", 0.9)]), &roster, "me"), None, "muted");
+        assert_eq!(super::loudest_other(&levels(&[("x", 0.9)]), &roster, "me"), None, "not in the roster");
     }
 
     #[test]

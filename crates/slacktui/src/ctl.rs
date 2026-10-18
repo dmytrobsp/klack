@@ -57,6 +57,9 @@ pub enum Ctl {
         seconds: u64,
         #[arg(long)]
         tone: Option<f64>,
+        /// With --tone: stop the tone this many seconds after connecting and stay (quiet).
+        #[arg(long)]
+        tone_for: Option<u64>,
         #[arg(long)]
         record: Option<std::path::PathBuf>,
         /// Send the default microphone (via the same capture path as the TUI).
@@ -257,7 +260,7 @@ pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
             }
             sig.close().await;
         }
-        Ctl::HuddleMedia { channel, seconds, tone, record, mic, video_test, video_for, record_video, share_test, camera, share_screen } => {
+        Ctl::HuddleMedia { channel, seconds, tone, tone_for, record, mic, video_test, video_for, record_video, share_test, camera, share_screen } => {
             // Resolve the camera before joining, so a wrong name fails early.
             let mut camera = match camera {
                 Some(wanted) => Some(huddle::camera::find_camera(&huddle::camera::list_cameras(), &wanted)?),
@@ -350,7 +353,8 @@ pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
                         println!("camera off (staying in the huddle)");
                     }
                     _ = tick.tick() => {
-                        if let Some(hz) = tone {
+                        let tone_on = tone_for.is_none_or(|s| connected_at.is_none_or(|c| c.elapsed() < std::time::Duration::from_secs(s)));
+                        if let Some(hz) = tone.filter(|_| tone_on) {
                             let frame: Vec<i16> = (0..FRAME_SAMPLES).map(|i| (((phase + i as u64) as f64 * hz * std::f64::consts::TAU / SAMPLE_RATE as f64).sin() * 1500.0) as i16).collect();
                             phase += FRAME_SAMPLES as u64;
                             session.send_pcm(frame);

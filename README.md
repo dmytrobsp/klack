@@ -101,8 +101,11 @@ in the status bar at startup, and the default stays in place for any entry that 
 
 F3 joins (or starts) the huddle of the conversation you are in, and `H` on a message starts (or
 joins) a huddle in that message's thread; you join **muted**, and the
-microphone is only opened while you are unmuted (F4). The call bar shows who is there, who is
-speaking and who is muted. F8 (or a click on the call bar) shows the huddle view in place of
+microphone is only opened while you are unmuted (F4). The call bar at the bottom shows that you are
+still in the huddle — where, how many are there, your microphone (🎙 live with your level, or 🔇
+muted), your camera and a screen share — and the picture and name of whoever is talking, or talked
+last, instead of everyone; with its keys underneath, and it takes more rows rather than cutting
+anything off when the window is narrow. F8 (or a click on the call bar) shows the huddle view in place of
 the messages: a tile per participant with their picture or video — the border lights up while
 they speak, 🔇 in the title when muted — that shrinks as people join and scrolls (mouse wheel,
 "▲/▼ N more") when they no longer fit; a screen share takes the stage with everyone else in a
@@ -138,8 +141,8 @@ stop so words are not cut), noise suppression (RNNoise via `nnnoiseless`) and ec
 speakers; it drops the microphone above 16 kHz, which speech does not need). `+`/`-` (or Enter)
 step the levels, and a huddle you are in follows at once.
 
-Other people's cameras play in their tiles in the huddle view (F8), with 📹 next to them in the
-call bar; a screen share gets its own "🖥 <name>'s screen" tile (🖥 in the call bar).
+Other people's cameras play in their tiles in the huddle view (F8); a screen share gets its own
+"🖥 <name>'s screen" tile ("🖥 <name> is sharing" in the call bar).
 
 Your camera: choose it in F6 → Audio & video → Camera (until you do, it can never switch on), then
 F9 in a huddle switches it on and off; you see yourself in your tile. Capture goes through the

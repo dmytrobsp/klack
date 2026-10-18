@@ -131,6 +131,8 @@ struct App {
     huddle_view: Option<super::huddle_view::HuddleView>,
     /// Where the call bar was drawn (a click toggles the huddle view).
     call_bar_area: ratatui::layout::Rect,
+    /// A profile picture the call bar wants loaded.
+    call_bar_wanted: Option<(slack_core::types::File, (u16, u16))>,
     /// Open activity view (F5).
     activity: Option<super::activity::Activity>,
     /// Open "move to section" picker.
@@ -1802,7 +1804,7 @@ impl App {
     /// Start loading thumbnails that were on screen but not cached yet.
     fn request_thumbs(&mut self) {
         let view = self.huddle_view.as_mut().map(|v| std::mem::take(&mut v.wanted)).unwrap_or_default();
-        let wanted: Vec<_> = self.messages.wanted.drain(..).chain(self.thread_pane.wanted.drain(..)).chain(view).collect();
+        let wanted: Vec<_> = self.messages.wanted.drain(..).chain(self.thread_pane.wanted.drain(..)).chain(view).chain(self.call_bar_wanted.take()).collect();
         for (file, size) in wanted {
             if self.media.thumbs.contains_key(&file.id) {
                 continue;
@@ -2001,6 +2003,7 @@ async fn run_workspace(
         prefs: None,
         huddle_view: None,
         call_bar_area: Default::default(),
+        call_bar_wanted: None,
         menu: None,
         dnd_refreshing: false,
         mover: None,
@@ -2967,13 +2970,16 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     if app.huddle_view.is_none() && app.focus == Focus::Huddle {
         app.focus = Focus::Composer;
     }
-    let call_rows = if app.call.is_some() { 1 } else { 0 };
-    let [body, call_bar, status] = Layout::vertical([Constraint::Min(1), Constraint::Length(call_rows), Constraint::Length(1)]).areas(f.area());
-    app.call_bar_area = call_bar;
     let key = |a| app.keys.first_key(Context::Global, a).unwrap_or_default();
     let call_keys = (key(Action::Mute), key(Action::Huddle), key(Action::HuddleThread), key(Action::HuddleView), key(Action::Camera), key(Action::ShareScreen));
+    let bar_keys = super::huddle_view::Keys { mute: &call_keys.0, leave: &call_keys.1, thread: &call_keys.2, view: &call_keys.3, camera: &call_keys.4, share: &call_keys.5 };
+    let call_rows = app.call.as_ref().map_or(0, |call| call.bar_rows(&app.ws, &app.media, bar_keys, f.area().width));
+    let [body, call_bar, status] = Layout::vertical([Constraint::Min(1), Constraint::Length(call_rows), Constraint::Length(1)]).areas(f.area());
+    app.call_bar_area = call_bar;
     if let Some(call) = &app.call {
-        call.draw(f, call_bar, &app.ws, (&call_keys.0, &call_keys.1, &call_keys.2, &call_keys.3));
+        if let Some(w) = call.draw(f, call_bar, &app.ws, &app.media, bar_keys) {
+            app.call_bar_wanted = Some(w);
+        }
     }
     let side_w = (body.width / 4).clamp(18, 32);
     let [side, main] = Layout::horizontal([Constraint::Length(side_w), Constraint::Min(10)]).areas(body);
@@ -3002,8 +3008,7 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         app.messages.area = Default::default();
         app.messages.hover = None;
         app.composer_area = Default::default();
-        let keys = super::huddle_view::Keys { mute: &call_keys.0, leave: &call_keys.1, thread: &call_keys.2, view: &call_keys.3, camera: &call_keys.4, share: &call_keys.5 };
-        view.draw(f, main, call, &app.ws, &app.media, keys);
+        view.draw(f, main, call, &app.ws, &app.media, bar_keys);
     } else {
         let inner_w = main.width.saturating_sub(2) as usize;
         let composer_h = app.composer.rows(inner_w).clamp(1, 8) + 2;
