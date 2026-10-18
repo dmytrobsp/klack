@@ -4,6 +4,8 @@
 //! send frames with [`Session::send_pcm`], receive the meeting's mix from `audio`.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
@@ -41,6 +43,36 @@ pub fn level(volume: Option<u32>) -> f32 {
     volume.map_or(0.0, |v| ((42.0 - v as f32) / 28.0).clamp(0.0, 1.0))
 }
 
+/// Someone's video in the meeting, from INDEX.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VideoSource {
+    /// What to subscribe to.
+    pub stream_id: u32,
+    /// The publisher's tile (one group per attendee and kind of video).
+    pub group_id: u32,
+    pub attendee_id: String,
+    pub external_user_id: String,
+    pub max_bitrate_kbps: u32,
+}
+
+/// The video sources of an INDEX frame (other kinds of media left out).
+pub fn video_sources(index: &crate::proto::SdkIndexFrame) -> Vec<VideoSource> {
+    index
+        .sources
+        .iter()
+        .filter(|s| s.media_type == Some(crate::proto::SdkStreamMediaType::Video as i32))
+        .filter_map(|s| {
+            Some(VideoSource {
+                stream_id: s.stream_id?,
+                group_id: s.group_id.unwrap_or_default(),
+                attendee_id: s.attendee_id.clone().unwrap_or_default(),
+                external_user_id: s.external_user_id.clone().unwrap_or_default(),
+                max_bitrate_kbps: s.max_bitrate_kbps.unwrap_or_default(),
+            })
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone)]
 pub enum SessionEvent {
     /// Media connected: audio flows.
@@ -50,6 +82,10 @@ pub enum SessionEvent {
     /// Speaking levels (0–1) of the attendees in the last audio metadata frame, by
     /// attendee id; attendees left out are silent.
     Levels(Vec<(String, f32)>),
+    /// The videos the meeting offers (every INDEX frame; ours included).
+    VideoSources(Vec<VideoSource>),
+    /// The server accepted our camera under this stream id (SUBSCRIBE_ACK).
+    SendingVideo { stream_id: u32 },
     Error(String),
     /// The session ended (left, kicked or failed).
     Ended,
@@ -57,12 +93,15 @@ pub enum SessionEvent {
 
 enum Command {
     Pcm(Vec<i16>),
+    /// An H.264 access unit and the time it covers.
+    Video(Vec<u8>, Duration),
     Mute(bool),
     Leave,
 }
 
 pub struct Session {
     commands: mpsc::UnboundedSender<Command>,
+    keyframe: Arc<AtomicBool>,
     pub events: mpsc::UnboundedReceiver<SessionEvent>,
     /// The meeting's mix, 20 ms mono frames.
     pub audio: mpsc::UnboundedReceiver<Vec<i16>>,
@@ -78,22 +117,46 @@ impl PcmSink {
     }
 }
 
+/// Clonable handle that feeds encoded video into a session (for one started with video).
+#[derive(Clone)]
+pub struct VideoSink(mpsc::UnboundedSender<Command>, Arc<AtomicBool>);
+
+impl VideoSink {
+    /// Queue an H.264 access unit (Annex-B) covering `duration`.
+    pub fn send(&self, access_unit: Vec<u8>, duration: Duration) {
+        let _ = self.0.send(Command::Video(access_unit, duration));
+    }
+
+    /// Whether the next frame should be a keyframe (media just connected, so frames sent
+    /// before were dropped); asking clears it.
+    pub fn keyframe_wanted(&self) -> bool {
+        self.1.swap(false, Ordering::Relaxed)
+    }
+}
+
 impl Session {
     pub fn pcm_sink(&self) -> PcmSink {
         PcmSink(self.commands.clone())
     }
 
-    pub fn start(creds: Credentials, muted: bool) -> Session {
+    pub fn video_sink(&self) -> VideoSink {
+        VideoSink(self.commands.clone(), self.keyframe.clone())
+    }
+
+    /// `send_video`: offer a camera (fed through [`Session::video_sink`]).
+    pub fn start(creds: Credentials, muted: bool, send_video: bool) -> Session {
         let (commands, command_rx) = mpsc::unbounded_channel();
         let (event_tx, events) = mpsc::unbounded_channel();
         let (audio_tx, audio) = mpsc::unbounded_channel();
+        let keyframe = Arc::new(AtomicBool::new(false));
+        let kf = keyframe.clone();
         tokio::spawn(async move {
-            if let Err(e) = run(creds, muted, command_rx, event_tx.clone(), audio_tx).await {
+            if let Err(e) = run(creds, muted, send_video, kf, command_rx, event_tx.clone(), audio_tx).await {
                 let _ = event_tx.send(SessionEvent::Error(e.to_string()));
             }
             let _ = event_tx.send(SessionEvent::Ended);
         });
-        Session { commands, events, audio }
+        Session { commands, keyframe, events, audio }
     }
 
     /// Queue 20 ms of microphone audio (960 samples, 48 kHz mono).
@@ -112,6 +175,11 @@ impl Session {
 
 /// Wait for a frame of `kind`, answering pings and skipping others.
 async fn expect(sig: &mut Signaling, kind: Type) -> Result<SdkSignalFrame> {
+    expect_keeping(sig, kind, &mut Vec::new()).await
+}
+
+/// [`expect`], keeping the frames that came first (INDEX can arrive before the ACKs).
+async fn expect_keeping(sig: &mut Signaling, kind: Type, earlier: &mut Vec<SdkSignalFrame>) -> Result<SdkSignalFrame> {
     loop {
         let f = tokio::time::timeout(Duration::from_secs(15), sig.next()).await.map_err(|_| anyhow!("timed out waiting for {kind:?}"))?.ok_or_else(|| anyhow!("signaling closed"))??;
         if let Some(e) = &f.error {
@@ -123,24 +191,38 @@ async fn expect(sig: &mut Signaling, kind: Type) -> Result<SdkSignalFrame> {
         if f.r#type == kind as i32 {
             return Ok(f);
         }
+        earlier.push(f);
     }
 }
 
 async fn run(
     creds: Credentials,
     mut muted: bool,
+    send_video: bool,
+    keyframe: Arc<AtomicBool>,
     mut commands: mpsc::UnboundedReceiver<Command>,
     events: mpsc::UnboundedSender<SessionEvent>,
     audio: mpsc::UnboundedSender<Vec<i16>>,
 ) -> Result<()> {
     let mut sig = Signaling::connect(&creds).await?;
     sig.send(&signaling::join_frame(audio_session_id())).await?;
-    let ack = expect(&mut sig, Type::JoinAck).await?;
+    let mut earlier = Vec::new();
+    let ack = expect_keeping(&mut sig, Type::JoinAck, &mut earlier).await?;
     let turn = ack.joinack.and_then(|a| a.turn_credentials).ok_or_else(|| anyhow!("JOIN_ACK without TURN credentials"))?;
-    let (mut media, offer) = Media::offer(&turn).await?;
-    sig.send(&signaling::subscribe_frame(offer, &creds.meeting.media_placement.audio_host_url, &creds.attendee.attendee_id, muted)).await?;
-    let suback = expect(&mut sig, Type::SubscribeAck).await?;
-    let answer = suback.suback.and_then(|s| s.sdp_answer).ok_or_else(|| anyhow!("SUBSCRIBE_ACK without an SDP answer"))?;
+    let (mut media, offer) = Media::offer(&turn, send_video).await?;
+    // One entry per video section: just the camera's, which is 0.
+    let receive = if send_video { vec![0] } else { vec![] };
+    sig.send(&signaling::subscribe_frame(offer, &creds.meeting.media_placement.audio_host_url, &creds.attendee.attendee_id, muted, send_video, receive)).await?;
+    let suback = expect_keeping(&mut sig, Type::SubscribeAck, &mut earlier).await?.suback.unwrap_or_default();
+    // The last INDEX before SUBSCRIBE_ACK still says who is sending video.
+    if let Some(index) = earlier.iter().rev().find_map(|f| f.index.as_ref()) {
+        let _ = events.send(SessionEvent::VideoSources(video_sources(index)));
+    }
+    tracing::info!(allocations = ?suback.allocations, tracks = ?suback.tracks, "SUBSCRIBE_ACK");
+    if let Some(stream_id) = suback.allocations.iter().find(|a| a.track_label.as_deref() == Some(crate::media::VIDEO_TRACK_LABEL)).and_then(|a| a.stream_id) {
+        let _ = events.send(SessionEvent::SendingVideo { stream_id });
+    }
+    let answer = suback.sdp_answer.ok_or_else(|| anyhow!("SUBSCRIBE_ACK without an SDP answer"))?;
     media.accept(answer).await?;
 
     let mut encoder = opus::Encoder::new(SAMPLE_RATE, opus::Channels::Mono, opus::Application::Voip)?;
@@ -158,6 +240,7 @@ async fn run(
                 match state {
                     S::Connected if !connected => {
                         connected = true;
+                        keyframe.store(true, Ordering::Relaxed);
                         let _ = events.send(SessionEvent::Connected);
                     }
                     S::Failed | S::Closed => return Err(anyhow!("media connection {state}")),
@@ -183,6 +266,9 @@ async fn run(
                         .collect();
                     let _ = events.send(SessionEvent::Levels(levels));
                 }
+                if let Some(index) = &frame.index {
+                    let _ = events.send(SessionEvent::VideoSources(video_sources(index)));
+                }
                 if let Some(e) = &frame.error {
                     return Err(anyhow!("signaling error {:?}: {}", e.status, e.description.clone().unwrap_or_default()));
                 }
@@ -203,6 +289,8 @@ async fn run(
                     media.send_opus(out[..n].to_vec(), Duration::from_millis(20)).await?;
                 }
                 Some(Command::Pcm(_)) => {}
+                Some(Command::Video(access_unit, duration)) if connected => media.send_h264(access_unit, duration).await?,
+                Some(Command::Video(..)) => {}
                 Some(Command::Mute(m)) => {
                     muted = m;
                     sig.send(&signaling::mute_frame(m)).await?;

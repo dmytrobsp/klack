@@ -105,22 +105,38 @@ pub fn join_frame(audio_session_id: u64) -> SdkSignalFrame {
     f
 }
 
-/// The SUBSCRIBE frame for an audio-only session (what the web SDK sends).
-pub fn subscribe_frame(sdp_offer: String, audio_host: &str, attendee_id: &str, muted: bool) -> SdkSignalFrame {
+/// The SUBSCRIBE frame (what the web SDK sends): our audio, and with `send_video` our
+/// camera too (stream 2, group 2, as the Chime SDK does); `receive_stream_ids`: one entry
+/// per video section of the offer, 0 for the camera's.
+pub fn subscribe_frame(sdp_offer: String, audio_host: &str, attendee_id: &str, muted: bool, send_video: bool, receive_stream_ids: Vec<u32>) -> SdkSignalFrame {
     let mut f = frame(Type::Subscribe);
-    f.sub = Some(proto::SdkSubscribeFrame {
-        duplex: Some(proto::SdkStreamServiceType::Rx as i32),
-        send_streams: vec![proto::SdkStreamDescriptor {
-            media_type: Some(proto::SdkStreamMediaType::Audio as i32),
-            track_label: Some("AmazonChimeExpressAudio".into()),
+    let mut send_streams = vec![proto::SdkStreamDescriptor {
+        media_type: Some(proto::SdkStreamMediaType::Audio as i32),
+        track_label: Some("AmazonChimeExpressAudio".into()),
+        attendee_id: Some(attendee_id.into()),
+        stream_id: Some(1),
+        group_id: Some(1),
+        framerate: Some(15),
+        max_bitrate_kbps: Some(600),
+        avg_bitrate_bps: Some(400_000),
+        ..Default::default()
+    }];
+    if send_video {
+        send_streams.push(proto::SdkStreamDescriptor {
+            media_type: Some(proto::SdkStreamMediaType::Video as i32),
+            track_label: Some(crate::media::VIDEO_TRACK_LABEL.into()),
             attendee_id: Some(attendee_id.into()),
-            stream_id: Some(1),
-            group_id: Some(1),
-            framerate: Some(15),
-            max_bitrate_kbps: Some(600),
-            avg_bitrate_bps: Some(400_000),
+            stream_id: Some(2),
+            group_id: Some(2),
+            framerate: Some(crate::video::TEST_FPS),
+            max_bitrate_kbps: Some(VIDEO_MAX_KBPS),
             ..Default::default()
-        }],
+        });
+    }
+    f.sub = Some(proto::SdkSubscribeFrame {
+        duplex: Some(if send_video { proto::SdkStreamServiceType::Duplex } else { proto::SdkStreamServiceType::Rx } as i32),
+        send_streams,
+        receive_stream_ids,
         sdp_offer: Some(sdp_offer),
         audio_host: Some(audio_host.into()),
         audio_checkin: Some(false),
@@ -129,6 +145,9 @@ pub fn subscribe_frame(sdp_offer: String, audio_host: &str, attendee_id: &str, m
     });
     f
 }
+
+/// The camera's bitrate cap we announce (the encoder aims lower).
+pub const VIDEO_MAX_KBPS: u32 = 1000;
 
 /// PONG for a server PING.
 pub fn pong_frame(ping_id: u32) -> SdkSignalFrame {

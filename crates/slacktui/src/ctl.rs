@@ -62,6 +62,9 @@ pub enum Ctl {
         /// Send the default microphone (via the same capture path as the TUI).
         #[arg(long)]
         mic: bool,
+        /// Send a synthetic camera: a moving test pattern (640×360, 15 fps, H.264).
+        #[arg(long)]
+        video_test: bool,
     },
     /// List audio input/output devices (names usable in SLACKTUI_AUDIO_INPUT/OUTPUT).
     AudioDevices,
@@ -216,13 +219,41 @@ pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
             }
             sig.close().await;
         }
-        Ctl::HuddleMedia { channel, seconds, tone, record, mic } => {
+        Ctl::HuddleMedia { channel, seconds, tone, record, mic, video_test } => {
             use huddle::session::{FRAME_SAMPLES, SAMPLE_RATE, Session, SessionEvent};
             let id = resolve_channel(&client, &channel).await?;
             let creds = huddle::signaling::Credentials::from_rooms_join(&client.call_raw("rooms.join", &[("channel_id", id)]).await?)?;
             println!("room {} attendee {}", creds.room_id, creds.attendee.attendee_id);
-            let mut session = Session::start(creds, false);
+            let mut session = Session::start(creds, false, video_test);
             let sink = session.pcm_sink();
+            // The test pattern is encoded on its own thread, paced at the frame rate.
+            let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let sent = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+            if video_test {
+                use huddle::video::{H264Encoder, TEST_FPS, TEST_HEIGHT, TEST_WIDTH, test_pattern};
+                let (video, stop, sent) = (session.video_sink(), stop.clone(), sent.clone());
+                let mut encoder = H264Encoder::new(TEST_WIDTH, TEST_HEIGHT, TEST_FPS, 600_000)?;
+                std::thread::spawn(move || {
+                    let period = std::time::Duration::from_secs_f64(1.0 / TEST_FPS as f64);
+                    let start = std::time::Instant::now();
+                    for n in 0u64.. {
+                        if stop.load(std::sync::atomic::Ordering::Relaxed) {
+                            break;
+                        }
+                        if video.keyframe_wanted() {
+                            encoder.request_keyframe();
+                        }
+                        match encoder.encode_rgb(&test_pattern(n, TEST_WIDTH, TEST_HEIGHT)) {
+                            Ok(au) => {
+                                sent.fetch_add(au.len() as u64, std::sync::atomic::Ordering::Relaxed);
+                                video.send(au, period);
+                            }
+                            Err(e) => eprintln!("{e}"),
+                        }
+                        std::thread::sleep((start + period * (n as u32 + 1)).saturating_duration_since(std::time::Instant::now()));
+                    }
+                });
+            }
             let _mic = if mic { Some(huddle::devices::Microphone::start(std::env::var(huddle::devices::INPUT_ENV).ok(), move |frame| sink.send(frame))?) } else { None };
             let mut file = match &record {
                 Some(p) => Some(std::fs::File::create(p)?),
@@ -257,6 +288,10 @@ pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
                         }
                     }
                 }
+            }
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            if video_test {
+                println!("encoded {} kB of video", sent.load(std::sync::atomic::Ordering::Relaxed) / 1000);
             }
             session.leave();
             let _ = tokio::time::timeout(std::time::Duration::from_secs(5), async { while let Some(ev) = session.events.recv().await { if matches!(ev, SessionEvent::Ended) { break; } } }).await;

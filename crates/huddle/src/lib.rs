@@ -5,3 +5,4 @@ pub mod media;
 pub mod proto;
 pub mod session;
 pub mod signaling;
+pub mod video;

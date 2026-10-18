@@ -21,3 +21,4 @@ async-trait = "0.1.92"
 bytes = "1.12.1"
 cpal = "0.18.2"
 nnnoiseless = { version = "0.5.2", default-features = false }
+openh264 = "0.9.9"

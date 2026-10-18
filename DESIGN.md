@@ -10,7 +10,7 @@ client, using a browser-session token (`xoxc-…`) plus the `d` cookie (see
 | Crate | Role |
 |---|---|
 | `crates/slack-core` | Session/auth import, Web API client, RTM websocket, data model, mrkdwn/rich_text parsing. No terminal code. |
-| `crates/huddle` | Huddles: Chime SDK signaling (prost subset of `SignalingProtocol.proto`), WebRTC audio (webrtc-rs, Opus), audio devices (cpal: microphone, speaker, resampling, levels, volume) and microphone processing (gain, speaking gate, RNNoise noise suppression via `nnnoiseless`). |
+| `crates/huddle` | Huddles: Chime SDK signaling (prost subset of `SignalingProtocol.proto`), WebRTC audio (webrtc-rs, Opus), audio devices (cpal: microphone, speaker, resampling, levels, volume) and microphone processing (gain, speaking gate, RNNoise noise suppression via `nnnoiseless`); video (`video.rs`: H.264 via `openh264` built from source, a synthetic test pattern). |
 | `crates/slacktui` | Binary: TUI (ratatui + crossterm), media (images, video and audio), notifications and sounds, huddle UI, preferences, keymap, themes, i18n, and the `ctl` scripting CLI used for end-to-end tests. |
 
 ## Local files

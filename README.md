@@ -109,7 +109,10 @@ speaking threshold (quieter microphone input is sent as silence, held open 300 m
 stop so words are not cut) and noise suppression (RNNoise via `nnnoiseless`). `+`/`-` (or Enter)
 step the levels, and a huddle you are in follows at once.
 
-No video, screen sharing or echo cancellation yet.
+Video is in progress: `slacktui ctl huddle-media <channel> --video-test` joins with a synthetic
+camera (a moving test pattern, H.264 via OpenH264 built from source — note that H.264 is
+patent-encumbered when you distribute binaries); showing other people's video comes next. No
+screen sharing or echo cancellation yet.
 
 ## Other settings
 

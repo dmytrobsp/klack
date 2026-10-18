@@ -50,7 +50,7 @@ impl Call {
     /// Start the session (muted) and play the meeting's audio on the default output.
     /// `devices`: (microphone, speaker) names, None for the system default.
     pub fn start(channel: String, creds: Credentials, devices: (Option<String>, Option<String>), audio_settings: &super::settings::Audio) -> Call {
-        let mut session = Session::start(creds, true);
+        let mut session = Session::start(creds, true, false);
         let sink = session.pcm_sink();
         let (_, empty) = tokio::sync::mpsc::unbounded_channel();
         let mut audio = std::mem::replace(&mut session.audio, empty);
@@ -132,6 +132,8 @@ impl Call {
             SessionEvent::Roster(r) => self.roster = r,
             SessionEvent::Levels(l) => self.levels = l.into_iter().collect(),
             SessionEvent::Error(e) => tracing::warn!("huddle: {e}"),
+            // Video arrives with item 14.
+            SessionEvent::VideoSources(_) | SessionEvent::SendingVideo { .. } => {}
             SessionEvent::Ended => return true,
         }
         false
