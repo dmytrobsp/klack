@@ -76,7 +76,8 @@ react = "R"
 pin = []            # unbound
 ```
 
-Keys are written like `ctrl+k`, `alt+up`, `shift+tab`, `G`, `f5`, `space`, `pageup`. Set
+The same can be done in the preferences (F6 → Keys): Enter, then press the new key (the
+leader first for a chord); Delete unbinds, `r` restores the default. Keys are written like `ctrl+k`, `alt+up`, `shift+tab`, `G`, `f5`, `space`, `pageup`. Set
 `leader = "ctrl+b"` (at the top) to use chords such as `"<leader> k"`; while a chord is
 being typed the status bar shows it. Plain
 characters cannot be bound where you type (global, composer, search fields). Problems are shown

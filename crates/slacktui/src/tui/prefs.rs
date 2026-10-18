@@ -8,6 +8,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
+use super::keymap::{ACTIONS, Keymap};
 use super::settings::Settings;
 use super::state::{LEVELS, Workspace, level_label};
 use super::text::DIM;
@@ -17,6 +18,10 @@ pub const DATE_FORMATS: &[&str] = &["%A, %B %-d", "%a %-d %b", "%d.%m.%Y", "%Y-%
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Field {
+    /// The leader key for chords.
+    Leader,
+    /// An action's keys (index into `keymap::ACTIONS`).
+    Binding(usize),
     Compact,
     InlineImages,
     Avatars,
@@ -55,8 +60,17 @@ pub const CATEGORIES: &[(&str, &[Field])] = &[
 ];
 
 impl Field {
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> String {
         match self {
+            Field::Leader => "Leader key (for chords such as Leader k)".into(),
+            Field::Binding(i) => format!("{} · {}", ACTIONS[i].context.title(), ACTIONS[i].description),
+            other => other.fixed_label().into(),
+        }
+    }
+
+    fn fixed_label(self) -> &'static str {
+        match self {
+            Field::Leader | Field::Binding(_) => "",
             Field::Compact => "Compact list (no gap between authors)",
             Field::InlineImages => "Show image thumbnails",
             Field::Avatars => "Show profile pictures",
@@ -76,11 +90,20 @@ impl Field {
         }
     }
 
-    pub fn value(self, ws: &Workspace, current: Option<&str>) -> String {
+    pub fn value(self, ws: &Workspace, current: Option<&str>, keys: &Keymap) -> String {
         let s = &ws.settings;
+        match self {
+            Field::Leader => return keys.leader.map(|k| k.label()).unwrap_or_else(|| "none".into()),
+            Field::Binding(i) => {
+                let label = keys.keys_label(ACTIONS[i].context, ACTIONS[i].name);
+                return if label.is_empty() { "(unbound)".into() } else { label };
+            }
+            _ => {}
+        }
         let yes = |b: bool| if b { "on" } else { "off" }.to_string();
         let device = |d: &Option<String>| d.clone().unwrap_or_else(|| "system default".into());
         match self {
+            Field::Leader | Field::Binding(_) => String::new(),
             Field::Compact => yes(s.appearance.compact),
             Field::InlineImages => yes(s.messages.inline_images),
             Field::Avatars => yes(s.messages.avatars),
@@ -148,7 +171,7 @@ impl Field {
             }
             Field::Desktop => s.notifications.desktop ^= true,
             // Slack-side: see `Prefs::change`.
-            Field::ConversationLevel | Field::ChannelDefault | Field::Keywords | Field::Vips | Field::Status | Field::Away | Field::Pause => {}
+            Field::ConversationLevel | Field::ChannelDefault | Field::Keywords | Field::Vips | Field::Status | Field::Away | Field::Pause | Field::Leader | Field::Binding(_) => {}
             Field::Input => s.audio.input = next(&s.audio.input, &devices.0),
             Field::Output => s.audio.output = next(&s.audio.output, &devices.1),
         }
@@ -174,6 +197,10 @@ fn next_level(level: &str) -> String {
 pub struct Prefs {
     /// Text being typed into a field (keywords).
     pub editing: Option<String>,
+    /// Waiting for the key(s) to bind to the selected Keys entry.
+    pub capturing: Option<Vec<super::keymap::Key>>,
+    /// First row shown in the settings list.
+    scroll: usize,
     pub category: usize,
     pub selected: usize,
     /// Audio devices as ids (listed when the menu opens; only names, nothing is opened).
@@ -189,13 +216,26 @@ impl Prefs {
         Prefs { devices, ..Default::default() }
     }
 
-    pub fn fields(&self) -> &'static [Field] {
-        CATEGORIES[self.category].1
+    pub fn fields(&self) -> Vec<Field> {
+        match CATEGORIES.get(self.category) {
+            Some((_, fields)) => fields.to_vec(),
+            // The last category: key bindings.
+            None => std::iter::once(Field::Leader).chain((0..ACTIONS.len()).map(Field::Binding)).collect(),
+        }
+    }
+
+    pub fn category_name(&self) -> &'static str {
+        CATEGORIES.get(self.category).map_or("Keys", |c| c.0)
     }
 
     pub fn switch_category(&mut self, delta: isize) {
-        self.category = (self.category as isize + delta).rem_euclid(CATEGORIES.len() as isize) as usize;
+        self.category = (self.category as isize + delta).rem_euclid(CATEGORIES.len() as isize + 1) as usize;
         self.selected = 0;
+        self.scroll = 0;
+    }
+
+    pub fn selected_field(&self) -> Option<Field> {
+        self.fields().get(self.selected).copied()
     }
 
     pub fn move_by(&mut self, delta: isize) {
@@ -205,8 +245,12 @@ impl Prefs {
     /// Change the selected setting: local ones in `ws.settings` (the caller saves them),
     /// Slack-side ones returned for the caller to send. A text field starts editing first.
     pub fn change(&mut self, ws: &mut Workspace, current: Option<&str>) -> Option<SlackChange> {
-        let field = *self.fields().get(self.selected)?;
+        let field = self.selected_field()?;
         match field {
+            Field::Leader | Field::Binding(_) => {
+                self.capturing = Some(Vec::new());
+                None
+            }
             Field::ConversationLevel => {
                 let channel = current?.to_string();
                 let mpim = ws.conversations.get(&channel).is_some_and(|c| c.is_mpim);
@@ -251,12 +295,12 @@ impl Prefs {
 
     /// Whether the selected field is kept on Slack (nothing to save locally).
     pub fn on_slack(&self) -> bool {
-        matches!(self.fields().get(self.selected), Some(Field::ConversationLevel | Field::ChannelDefault | Field::Keywords | Field::Vips | Field::Status | Field::Away | Field::Pause))
+        matches!(self.selected_field(), Some(Field::Leader | Field::Binding(_) | Field::ConversationLevel | Field::ChannelDefault | Field::Keywords | Field::Vips | Field::Status | Field::Away | Field::Pause))
     }
 
-    pub fn draw(&self, f: &mut Frame, area: Rect, ws: &Workspace, current: Option<&str>) {
+    pub fn draw(&mut self, f: &mut Frame, area: Rect, ws: &Workspace, current: Option<&str>, keys: &Keymap) {
         let [popup] = Layout::horizontal([Constraint::Length(84.min(area.width))]).flex(Flex::Center).areas(area);
-        let [popup] = Layout::vertical([Constraint::Length(18.min(area.height))]).flex(Flex::Center).areas(popup);
+        let [popup] = Layout::vertical([Constraint::Length(22.min(area.height))]).flex(Flex::Center).areas(popup);
         f.render_widget(Clear, popup);
         let saved = match &self.saved {
             Some(Ok(path)) => format!(" saved to {path} "),
@@ -274,38 +318,52 @@ impl Prefs {
         let highlight = Style::default().bg(Color::Rgb(0x2c, 0x3e, 0x5c));
         let cats: Vec<Line> = CATEGORIES
             .iter()
+            .map(|c| c.0)
+            .chain(["Keys"])
             .enumerate()
-            .map(|(n, (name, _))| {
+            .map(|(n, name)| {
                 let line = Line::raw(format!(" {name}"));
                 if n == self.category { line.style(highlight.add_modifier(Modifier::BOLD)) } else { line }
             })
             .collect();
         f.render_widget(Paragraph::new(cats), left);
         let mut rows: Vec<Line> = Vec::new();
-        let label_w = self.fields().iter().map(|f| f.label().chars().count()).max().unwrap_or(0) + 2;
-        for (n, field) in self.fields().iter().enumerate() {
-            let value = match (&self.editing, n == self.selected) {
-                (Some(text), true) => format!("{text}▏"),
-                _ => field.value(ws, current),
+        let fields = self.fields();
+        let label_w = (fields.iter().map(|f| f.label().chars().count()).max().unwrap_or(0) + 2).min(right.width as usize / 2 + 8);
+        // Keep the selection in view (the Keys list is long).
+        let room = right.height.saturating_sub(5).max(1) as usize;
+        if self.selected < self.scroll {
+            self.scroll = self.selected;
+        } else if self.selected >= self.scroll + room {
+            self.scroll = self.selected + 1 - room;
+        }
+        for (n, field) in fields.iter().enumerate().skip(self.scroll).take(room) {
+            let value = match (&self.editing, &self.capturing, n == self.selected) {
+                (Some(text), _, true) => format!("{text}▏"),
+                (_, Some(seq), true) if seq.is_empty() => "press the new key…".into(),
+                (_, Some(seq), true) => format!("{} …", super::keymap::sequence_label(seq)),
+                _ => field.value(ws, current, keys),
             };
-            let line = Line::from(vec![Span::raw(format!(" {:<label_w$}", field.label())), Span::styled(value, Style::default().fg(Color::Rgb(0x98, 0xc3, 0x79)))]);
+            let label: String = field.label().chars().take(label_w.saturating_sub(1)).collect();
+            let line = Line::from(vec![Span::raw(format!(" {label:<label_w$}")), Span::styled(value, Style::default().fg(Color::Rgb(0x98, 0xc3, 0x79)))]);
             rows.push(if n == self.selected { line.style(highlight) } else { line });
         }
-        if CATEGORIES[self.category].0 == "Availability" {
+        if self.category_name() == "Keys" {
+            rows.push(Line::raw(""));
+            rows.push(Line::styled(" Enter, then press the key (Leader first for a chord). Delete unbinds, r resets.", Style::default().fg(DIM)));
+        }
+        if self.category_name() == "Availability" {
             rows.push(Line::raw(""));
             rows.push(Line::styled(" Status: \":emoji: text for 30m\" (or today); empty clears.", Style::default().fg(DIM)));
         }
-        if CATEGORIES[self.category].0 == "Notifications" {
+        if self.category_name() == "Notifications" {
             rows.push(Line::raw(""));
             rows.push(Line::styled(" All but the first are kept on Slack. Keywords: comma-separated.", Style::default().fg(DIM)));
         }
-        if CATEGORIES[self.category].0 == "Audio" {
+        if self.category_name() == "Audio" {
             rows.push(Line::raw(""));
             rows.push(Line::styled(" SLACKTUI_AUDIO_INPUT / _OUTPUT, when set, win over these.", Style::default().fg(DIM)));
         }
-        rows.push(Line::raw(""));
-        rows.push(Line::styled(" Keys are set in keys.toml (F1 lists them).", Style::default().fg(DIM)));
-        rows.push(Line::styled(" Your status: /status, /away, /dnd.", Style::default().fg(DIM)));
         f.render_widget(Paragraph::new(rows).wrap(Wrap { trim: false }), right);
     }
 }
@@ -379,7 +437,9 @@ mod tests {
     fn categories_cycle() {
         let mut p = Prefs::default();
         p.switch_category(-1);
-        assert_eq!(p.category, CATEGORIES.len() - 1);
+        assert_eq!((p.category, p.category_name()), (CATEGORIES.len(), "Keys"));
+        assert_eq!(p.fields().len(), ACTIONS.len() + 1);
+        p.switch_category(-1);
         p.move_by(10);
         assert_eq!(p.selected, p.fields().len() - 1);
     }

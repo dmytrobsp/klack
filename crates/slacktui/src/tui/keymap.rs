@@ -90,6 +90,39 @@ impl Key {
         Ok(Key::new(code, mods))
     }
 
+    /// The key as written in keys.toml (`ctrl+k`, `alt+up`, `shift+tab`, `G`, `space`); parses back to itself.
+    pub fn spec(&self) -> String {
+        let mut out = String::new();
+        for (m, name) in [(KeyModifiers::CONTROL, "ctrl+"), (KeyModifiers::ALT, "alt+"), (KeyModifiers::SHIFT, "shift+")] {
+            if self.mods.contains(m) {
+                out += name;
+            }
+        }
+        out += &match self.code {
+            KeyCode::Up => "up".into(),
+            KeyCode::Down => "down".into(),
+            KeyCode::Left => "left".into(),
+            KeyCode::Right => "right".into(),
+            KeyCode::Home => "home".into(),
+            KeyCode::End => "end".into(),
+            KeyCode::PageUp => "pageup".into(),
+            KeyCode::PageDown => "pagedown".into(),
+            KeyCode::Tab => "tab".into(),
+            KeyCode::BackTab => "shift+tab".into(),
+            KeyCode::Enter => "enter".into(),
+            KeyCode::Esc => "esc".into(),
+            KeyCode::Backspace => "backspace".into(),
+            KeyCode::Delete => "delete".into(),
+            KeyCode::Insert => "insert".into(),
+            KeyCode::Char(' ') => "space".into(),
+            KeyCode::Char('+') => "plus".into(),
+            KeyCode::Char(c) => c.to_string(),
+            KeyCode::F(n) => format!("f{n}"),
+            other => format!("{other:?}").to_lowercase(),
+        };
+        out
+    }
+
     /// How the key is shown in help: `Ctrl+K`, `Alt+↑`, `Shift+Tab`, `G`, `F5`.
     pub fn label(&self) -> String {
         let mut out = String::new();
@@ -248,6 +281,8 @@ pub enum Action {
     Huddle,
     Mute,
     Activity,
+    Unbind,
+    Reset,
     Vip,
     Preferences,
     PrevConversation,
@@ -503,7 +538,9 @@ actions! {
         Down "down" "next setting" ["down", "j"]
         PrevTab "previous_category" "previous category" ["left", "h", "shift+tab"]
         NextTab "next_category" "next category" ["right", "l", "tab"]
-        Open "change" "change the setting" ["enter", "space"]
+        Open "change" "change the setting (Keys: press the new key next)" ["enter", "space"]
+        Unbind "unbind" "Keys: remove the action's keys" ["delete", "backspace"]
+        Reset "reset" "Keys: back to the default keys" ["r"]
         Close "close" "close" ["esc", "q", "f6"]
     }
     Help {
@@ -711,6 +748,42 @@ impl Keymap {
     }
 }
 
+impl Keymap {
+    /// The sequences bound to an action now.
+    pub fn sequences(&self, context: Context, name: &str) -> Vec<Vec<Key>> {
+        self.keys.iter().find(|((c, n), _)| *c == context && *n == name).map(|(_, s)| s.clone()).unwrap_or_default()
+    }
+
+    /// keys.toml text for these bindings, with `change` applied (an action's new sequences,
+    /// or a new leader); only entries that differ from the defaults are written.
+    pub fn to_toml(&self, change: Option<(Context, &str, Vec<Vec<Key>>)>, leader: Option<Option<Key>>) -> String {
+        let leader = leader.unwrap_or(self.leader);
+        let defaults = Keymap::load("").0;
+        let spec = |seq: &[Key]| seq.iter().map(|k| if Some(*k) == leader && seq.len() > 1 { "<leader>".to_string() } else { k.spec() }).collect::<Vec<_>>().join(" ");
+        let mut out = String::new();
+        if let Some(l) = leader {
+            out += &format!("leader = \"{}\"\n", l.spec());
+        }
+        for context in Context::ALL {
+            let mut entries = Vec::new();
+            for info in ACTIONS.iter().filter(|a| a.context == context) {
+                let seqs = match &change {
+                    Some((c, n, s)) if *c == context && *n == info.name => s.clone(),
+                    _ => self.sequences(context, info.name),
+                };
+                if seqs != defaults.sequences(context, info.name) {
+                    let list: Vec<String> = seqs.iter().map(|s| format!("\"{}\"", spec(s).replace('\\', "\\\\").replace('"', "\\\""))).collect();
+                    entries.push(format!("{} = [{}]\n", info.name, list.join(", ")));
+                }
+            }
+            if !entries.is_empty() {
+                out += &format!("\n[{}]\n{}", context.name(), entries.concat());
+            }
+        }
+        out
+    }
+}
+
 pub fn sequence_label(seq: &[Key]) -> String {
     seq.iter().map(Key::label).collect::<Vec<_>>().join(" ")
 }
@@ -832,6 +905,25 @@ mod tests {
         assert!(!h.contains("edit"), "unbound actions get no hint: {h}");
         assert!(h.ends_with("Esc back · F1 help · Ctrl+K jump · Ctrl+F search · Tab focus"), "{h}");
         assert_eq!(map.hints(&[Context::Global, Context::Confirm]), "y yes · F1 help · Ctrl+K jump · Ctrl+F search · Tab focus");
+    }
+
+    #[test]
+    fn specs_round_trip_and_overrides_are_written() {
+        for s in ["ctrl+k", "alt+up", "shift+tab", "G", "f5", "space", "pageup", "?", "*", "plus", "ctrl+alt+x", "shift+enter"] {
+            let k = Key::parse(s).unwrap();
+            assert_eq!(Key::parse(&k.spec()), Ok(k), "{s} → {}", k.spec());
+        }
+        let (map, _) = Keymap::load("");
+        assert_eq!(map.to_toml(None, None), "", "defaults write nothing");
+        let k = |s: &str| Key::parse(s).unwrap();
+        let text = map.to_toml(Some((Context::Messages, "react", vec![vec![k("R")]])), Some(Some(k("ctrl+b"))));
+        assert!(text.starts_with("leader = \"ctrl+b\""), "{text}");
+        let (again, warnings) = Keymap::load(&text);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(again.lookup(Context::Messages, &[], k("R")), Lookup::Action(Action::React));
+        let chord = again.to_toml(Some((Context::Global, "jump_to", vec![vec![k("ctrl+b"), k("k")]])), None);
+        assert!(chord.contains("jump_to = [\"<leader> k\"]"), "{chord}");
+        assert!(chord.contains("react = [\"R\"]"), "keeps earlier changes: {chord}");
     }
 
     #[test]

@@ -930,6 +930,50 @@ impl App {
         });
     }
 
+    /// A key pressed while the preferences wait for a new binding: the leader waits for one
+    /// more key; then the sequence replaces the action's keys (or becomes the leader).
+    fn capture_key(&mut self, key: Key) {
+        let leader = self.keys.leader;
+        let Some(p) = self.prefs.as_mut() else { return };
+        let field = p.selected_field();
+        let Some(seq) = p.capturing.as_mut() else { return };
+        if matches!(field, Some(super::prefs::Field::Binding(_))) && seq.is_empty() && Some(key) == leader {
+            seq.push(key);
+            return;
+        }
+        seq.push(key);
+        let seq = p.capturing.take().unwrap_or_default();
+        let text = match field {
+            Some(super::prefs::Field::Binding(i)) => {
+                let info = &super::keymap::ACTIONS[i];
+                self.keys.to_toml(Some((info.context, info.name, vec![seq])), None)
+            }
+            Some(super::prefs::Field::Leader) => self.keys.to_toml(None, Some(Some(key))),
+            _ => return,
+        };
+        self.save_keys(&text);
+    }
+
+    /// Write keys.toml and use it; problems are shown under the preferences.
+    fn save_keys(&mut self, text: &str) {
+        let (map, warnings) = Keymap::load(text);
+        let written = super::keymap::config_path().ok_or_else(|| "no config directory".to_string()).and_then(|path| {
+            if let Some(dir) = path.parent() {
+                std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+            }
+            std::fs::write(&path, text).map_err(|e| e.to_string()).map(|_| path.display().to_string())
+        });
+        if written.is_ok() {
+            self.keys = map;
+        }
+        if let Some(p) = self.prefs.as_mut() {
+            p.saved = Some(match (written, warnings.first()) {
+                (Ok(_), Some(w)) => Err(w.trim_start_matches("keys.toml: ").to_string()),
+                (result, _) => result,
+            });
+        }
+    }
+
     /// Enter in the preferences: change a local setting (and save the file) or send a
     /// Slack-side one (applied here at once; on failure the prefs are fetched again).
     fn change_preference(&mut self) {
@@ -1035,6 +1079,11 @@ impl App {
         self.action_in(Context::Global, k)
     }
 
+    /// The preferences wait for a key to bind: every key goes to them.
+    fn capturing_key(&self) -> bool {
+        self.prefs.as_ref().is_some_and(|p| p.capturing.is_some())
+    }
+
     /// The contexts a key press is looked up in now: the open overlay's, or the focused
     /// pane's; plus global.
     fn active_contexts(&self) -> Vec<Context> {
@@ -1087,6 +1136,9 @@ impl App {
     /// Before a key is handled: hold it if it only starts a sequence (the leader), drop it
     /// if it ends a sequence that means nothing. True when the key was used up here.
     fn hold_sequence(&mut self, k: &crossterm::event::KeyEvent) -> bool {
+        if self.capturing_key() {
+            return false;
+        }
         let key = Key::from_event(k);
         let results: Vec<Lookup> = self.active_contexts().into_iter().map(|c| self.keys.lookup(c, &self.pending, key)).collect();
         if results.iter().any(|r| matches!(r, Lookup::Action(_))) {
@@ -1386,7 +1438,8 @@ pub async fn run(profile: slack_core::session::Profile, team: Option<&str>) -> R
         let client = Client::new(sessions[index].clone())?;
         // Read again on every switch, so changes made in the preferences carry over.
         let (settings, settings_problem) = super::settings::load();
-        let mut keymap = keymap.clone();
+        // Keys may have been rebound in the preferences meanwhile.
+        let mut keymap = super::keymap::load_user();
         keymap.1.extend(settings_problem);
         let (next, kept_media, kept_clipboard) = run_workspace(client, (labels.clone(), index), &keymap, &settings, &mut terminal, &mut events, media, clipboard).await?;
         (media, clipboard) = (kept_media, kept_clipboard);
@@ -1543,7 +1596,7 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
 
 fn handle_event(app: &mut App, ev: Event) -> bool {
     match ev {
-        Event::Key(k) if k.kind != KeyEventKind::Release && app.global(&k) == Some(Action::Quit) => return false,
+        Event::Key(k) if k.kind != KeyEventKind::Release && app.global(&k) == Some(Action::Quit) && !app.capturing_key() => return false,
         Event::Key(k) if k.kind != KeyEventKind::Release && app.help.is_some() => {
             let action = app.action_in(Context::Help, &k);
             let Some(h) = app.help.as_mut() else { return true };
@@ -1556,6 +1609,7 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
                 _ => {}
             }
         }
+        Event::Key(k) if k.kind != KeyEventKind::Release && app.prefs.as_ref().is_some_and(|p| p.capturing.is_some()) => app.capture_key(Key::from_event(&k)),
         Event::Key(k) if k.kind != KeyEventKind::Release && app.prefs.as_ref().is_some_and(|p| p.editing.is_some()) => {
             let action = app.action_in(Context::TextField, &k);
             let Some(p) = app.prefs.as_mut() else { return true };
@@ -1583,6 +1637,26 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
                 Some(Action::PrevTab) => p.switch_category(-1),
                 Some(Action::NextTab) => p.switch_category(1),
                 Some(Action::Open) => app.change_preference(),
+                Some(Action::Unbind) => match p.selected_field() {
+                    Some(super::prefs::Field::Binding(i)) => {
+                        let info = &super::keymap::ACTIONS[i];
+                        let text = app.keys.to_toml(Some((info.context, info.name, vec![])), None);
+                        app.save_keys(&text);
+                    }
+                    Some(super::prefs::Field::Leader) => {
+                        let text = app.keys.to_toml(None, Some(None));
+                        app.save_keys(&text);
+                    }
+                    _ => {}
+                },
+                Some(Action::Reset) => {
+                    if let Some(super::prefs::Field::Binding(i)) = p.selected_field() {
+                        let info = &super::keymap::ACTIONS[i];
+                        let defaults = Keymap::load("").0.sequences(info.context, info.name);
+                        let text = app.keys.to_toml(Some((info.context, info.name, defaults)), None);
+                        app.save_keys(&text);
+                    }
+                }
                 _ => {}
             }
         }
@@ -2390,8 +2464,8 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     if let Some(m) = &app.mover {
         m.draw(f, body, &app.ws);
     }
-    if let Some(p) = &app.prefs {
-        p.draw(f, body, &app.ws, app.current.as_deref());
+    if let Some(p) = app.prefs.as_mut() {
+        p.draw(f, body, &app.ws, app.current.as_deref(), &app.keys);
     }
     if let Some(h) = app.help.as_mut() {
         h.draw(f, body, &app.keys);
