@@ -50,7 +50,7 @@ Remaining dead-code warnings: `Composer::cursor/is_multiline`, `Sidebar::select_
 
 ## Next (in order, each as a small, separately verified step)
 
-1. Huddles, follow-ups: verify the microphone path with a virtual PipeWire source; incoming huddle invites/rings in DMs; device selection.
+1. Huddles, follow-ups: explicit device selection (and only then a live microphone test against a chosen virtual device); incoming huddle invites/rings in DMs.
 2. Portability check (macOS/Windows builds), docs (README), packaging.
 
 ## Known gaps / not verified
@@ -70,6 +70,7 @@ Remaining dead-code warnings: `Composer::cursor/is_multiline`, `Sidebar::select_
 - `@here/@channel/@everyone` are offered in DMs too.
 - Video: no seeking; audio/video sync is by wall clock (both start together, no drift correction); each frame is a new kitty image (kitty evicts old ones by its storage quota); videos in the thread pane play the same way but were not tested there; needs `ffmpeg`/`ffprobe` on PATH (a clear error otherwise).
 - Search: only the first 50 matches (no paging); a hit older than the loaded history is not scrolled to (the conversation opens, nothing is selected).
+- Microphone: the capture pipeline (`MicConverter`: mixdown, resampling, 20 ms framing) is unit-tested with a synthetic 44.1 kHz stereo tone; opening the device is not verified live. A live attempt with `PIPEWIRE_NODE` pointing at a temporary null sink did **not** route the capture there — the default microphone (the user's headset) was used for ~12 s into the private test huddle; the recording was deleted. Do not run microphone tests without explicit device selection.
 - Huddles: roster departures follow the SDK rule (an AUDIO_STREAM_ID_INFO entry with neither attendee id nor muted = left), found when B kept A after A had left; no echo cancellation or noise suppression on the microphone; no device selection (default input/output); no ringing/notifications for huddle invites; no video or screen share.
 - `/upload` reads the whole file into memory and shows no progress; other `/commands` are not recognised (they are sent as text).
 - Thumbnails: only tested in kitty (sixel/iTerm2/half-block paths untested); not tested inside the thread pane; a failed thumbnail leaves its reserved rows blank (no error text); GIFs show their first frame only.

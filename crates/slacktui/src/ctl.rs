@@ -39,6 +39,9 @@ pub enum Ctl {
         tone: Option<f64>,
         #[arg(long)]
         record: Option<std::path::PathBuf>,
+        /// Send the default microphone (via the same capture path as the TUI).
+        #[arg(long)]
+        mic: bool,
     },
     /// Leave a huddle via `rooms.leave`.
     HuddleLeave { channel: String, call_id: String, attendee_id: String },
@@ -164,12 +167,14 @@ pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
             }
             sig.close().await;
         }
-        Ctl::HuddleMedia { channel, seconds, tone, record } => {
+        Ctl::HuddleMedia { channel, seconds, tone, record, mic } => {
             use huddle::session::{FRAME_SAMPLES, SAMPLE_RATE, Session, SessionEvent};
             let id = resolve_channel(&client, &channel).await?;
             let creds = huddle::signaling::Credentials::from_rooms_join(&client.call_raw("rooms.join", &[("channel_id", id)]).await?)?;
             println!("room {} attendee {}", creds.room_id, creds.attendee.attendee_id);
             let mut session = Session::start(creds, false);
+            let sink = session.pcm_sink();
+            let _mic = if mic { Some(huddle::devices::Microphone::start(move |frame| sink.send(frame))?) } else { None };
             let mut file = match &record {
                 Some(p) => Some(std::fs::File::create(p)?),
                 None => None,

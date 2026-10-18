@@ -52,6 +52,31 @@ pub fn to_mono(data: &[f32], channels: usize) -> Vec<f32> {
     data.chunks(channels).map(|c| c.iter().sum::<f32>() / c.len() as f32).collect()
 }
 
+/// Turns device input (any rate, interleaved channels, `f32`) into 20 ms 48 kHz mono frames.
+#[derive(Debug, Clone)]
+pub struct MicConverter {
+    channels: usize,
+    resampler: Resampler,
+    pending: Vec<i16>,
+}
+
+impl MicConverter {
+    pub fn new(rate: u32, channels: usize) -> MicConverter {
+        MicConverter { channels, resampler: Resampler::new(rate, SAMPLE_RATE), pending: Vec::with_capacity(FRAME_SAMPLES * 2) }
+    }
+
+    /// Feed one device buffer; returns the complete frames it produced.
+    pub fn push(&mut self, data: &[f32]) -> Vec<Vec<i16>> {
+        let mono = self.resampler.process(&to_mono(data, self.channels));
+        self.pending.extend(mono.iter().map(|s| (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16));
+        let mut frames = Vec::new();
+        while self.pending.len() >= FRAME_SAMPLES {
+            frames.push(self.pending.drain(..FRAME_SAMPLES).collect());
+        }
+        frames
+    }
+}
+
 /// Microphone capture; dropping it stops the stream.
 pub struct Microphone {
     _stop: Sender<()>,
@@ -66,16 +91,12 @@ impl Microphone {
             let build = || -> Result<cpal::Stream> {
                 let device = cpal::default_host().default_input_device().ok_or_else(|| anyhow!("no microphone"))?;
                 let config = device.default_input_config()?.config();
-                let (rate, channels) = (config.sample_rate, config.channels as usize);
-                let mut resampler = Resampler::new(rate, SAMPLE_RATE);
-                let mut pending: Vec<i16> = Vec::with_capacity(FRAME_SAMPLES * 2);
+                let mut converter = MicConverter::new(config.sample_rate, config.channels as usize);
                 let stream = device.build_input_stream::<f32, _, _>(
                     config,
                     move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                        let mono = resampler.process(&to_mono(data, channels));
-                        pending.extend(mono.iter().map(|s| (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16));
-                        while pending.len() >= FRAME_SAMPLES {
-                            on_frame(pending.drain(..FRAME_SAMPLES).collect());
+                        for frame in converter.push(data) {
+                            on_frame(frame);
                         }
                     },
                     |e| tracing::warn!("microphone error: {e}"),
@@ -180,6 +201,29 @@ mod tests {
         let b = r.process(&(480..960).map(|i| i as f32).collect::<Vec<_>>());
         let all: Vec<f32> = a.into_iter().chain(b).collect();
         assert!(all.windows(2).all(|w| w[1] >= w[0]), "not monotonic");
+    }
+
+    #[test]
+    fn mic_converter_keeps_a_tone() {
+        // One second of a 660 Hz tone from a 44.1 kHz stereo device, in 10 ms buffers.
+        let mut conv = MicConverter::new(44_100, 2);
+        let mut frames = Vec::new();
+        for chunk in 0..100 {
+            let buf: Vec<f32> = (0..441).flat_map(|i| {
+                let t = (chunk * 441 + i) as f32 / 44_100.0;
+                let s = (t * 660.0 * std::f32::consts::TAU).sin() * 0.5;
+                [s, s]
+            }).collect();
+            frames.extend(conv.push(&buf));
+        }
+        assert_eq!(frames.len(), 50, "1 s = 50 frames of 20 ms");
+        assert!(frames.iter().all(|f| f.len() == FRAME_SAMPLES));
+        // Count zero crossings over the whole second: about 2 × 660.
+        let all: Vec<i16> = frames.concat();
+        let crossings = all.windows(2).filter(|w| (w[0] < 0) != (w[1] < 0)).count();
+        assert!((1300..=1340).contains(&crossings), "{crossings}");
+        let rms = (all.iter().map(|s| (*s as f64).powi(2)).sum::<f64>() / all.len() as f64).sqrt();
+        assert!((10_000.0..13_500.0).contains(&rms), "{rms}");
     }
 
     #[test]
