@@ -54,11 +54,13 @@ pub struct Region {
     pub date_format: String,
     /// IANA time zone for shown times (e.g. `Europe/Kyiv`); empty: the system's.
     pub timezone: String,
+    /// Interface language: `en`, or the code of a file in `locales/`.
+    pub language: String,
 }
 
 impl Default for Region {
     fn default() -> Self {
-        Region { clock_24h: true, date_format: "%A, %B %-d".into(), timezone: String::new() }
+        Region { clock_24h: true, date_format: "%A, %B %-d".into(), timezone: String::new(), language: "en".into() }
     }
 }
 

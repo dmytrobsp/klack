@@ -11,6 +11,9 @@ use slack_core::types::Conversation;
 pub enum Ctl {
     /// Show who this profile is signed in as.
     Whoami,
+    /// Print a locale file with every translatable string (save it as
+    /// locales/<code>.toml next to settings.toml and fill in the translations).
+    LocaleTemplate,
     /// List conversations (`-` marks public channels you are not in).
     Channels,
     /// Join a public channel.
@@ -128,6 +131,7 @@ pub async fn resolve_channel(client: &Client, spec: &str) -> Result<String> {
 pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
     let client = client(profile, team)?;
     match cmd {
+        Ctl::LocaleTemplate => print!("{}", crate::tui::i18n::template()),
         Ctl::Whoami => {
             let a = client.auth_test().await?;
             println!("{} ({}) in {} ({}) — {}", a.user, a.user_id, a.team, a.team_id, a.url);

@@ -28,6 +28,7 @@ pub enum Field {
     Clock24,
     DateFormat,
     TimeZone,
+    Language,
     Desktop,
     /// Slack: the level for the conversation on screen.
     ConversationLevel,
@@ -54,7 +55,7 @@ pub const CATEGORIES: &[(&str, &[Field])] = &[
     ("Availability", &[Field::Status, Field::Away, Field::Pause]),
     ("Appearance", &[Field::Theme, Field::Compact]),
     ("Messages & media", &[Field::InlineImages, Field::Avatars, Field::EmojiAsNames]),
-    ("Language & region", &[Field::Clock24, Field::DateFormat, Field::TimeZone]),
+    ("Language & region", &[Field::Clock24, Field::DateFormat, Field::TimeZone, Field::Language]),
     ("Notifications", &[Field::Desktop, Field::ConversationLevel, Field::ChannelDefault, Field::Keywords, Field::Vips]),
     ("Audio", &[Field::Input, Field::Output]),
 ];
@@ -62,9 +63,9 @@ pub const CATEGORIES: &[(&str, &[Field])] = &[
 impl Field {
     pub fn label(self) -> String {
         match self {
-            Field::Leader => "Leader key (for chords such as Leader k)".into(),
-            Field::Binding(i) => format!("{} · {}", ACTIONS[i].context.title(), ACTIONS[i].description),
-            other => other.fixed_label().into(),
+            Field::Leader => super::i18n::tr(LEADER_LABEL).into_owned(),
+            Field::Binding(i) => format!("{} · {}", super::i18n::tr(ACTIONS[i].context.title()), super::i18n::tr(ACTIONS[i].description)),
+            other => super::i18n::tr(other.fixed_label()).into_owned(),
         }
     }
 
@@ -79,6 +80,7 @@ impl Field {
             Field::Clock24 => "24-hour clock",
             Field::DateFormat => "Date format",
             Field::TimeZone => "Time zone",
+            Field::Language => "Language (locales/<code>.toml)",
             Field::Desktop => "Desktop notifications",
             Field::ConversationLevel => "This conversation notifies about",
             Field::ChannelDefault => "Channels notify about (default)",
@@ -113,6 +115,8 @@ impl Field {
             Field::EmojiAsNames => yes(s.messages.emoji_as_names),
             Field::Clock24 => yes(s.region.clock_24h),
             Field::DateFormat => super::clock::now().format(&s.region.date_format).to_string(),
+            Field::Language if s.region.language.is_empty() || s.region.language == "en" => "en (built in)".into(),
+            Field::Language => s.region.language.clone(),
             Field::TimeZone if s.region.timezone.is_empty() => format!("system ({})", super::clock::now().format("%:z")),
             Field::TimeZone => format!("{} ({})", s.region.timezone, super::clock::now().format("%H:%M")),
             Field::Desktop => yes(s.notifications.desktop),
@@ -165,7 +169,7 @@ impl Field {
             }
         };
         match self {
-            Field::TimeZone => {}
+            Field::TimeZone | Field::Language => {}
             Field::Theme => {
                 s.appearance.theme = super::theme::next(&s.appearance.theme).into();
                 super::theme::set(&s.appearance.theme);
@@ -201,6 +205,17 @@ pub enum SlackChange {
 fn next_level(level: &str) -> String {
     let i = LEVELS.iter().position(|l| *l == level).map_or(0, |i| (i + 1) % LEVELS.len());
     LEVELS[i].to_string()
+}
+
+const LEADER_LABEL: &str = "Leader key (for chords such as Leader k)";
+
+/// Category names and fixed labels, for translation templates.
+pub fn translatable() -> Vec<String> {
+    let all = [
+        Field::Theme, Field::Compact, Field::InlineImages, Field::Avatars, Field::EmojiAsNames, Field::Clock24, Field::DateFormat, Field::TimeZone, Field::Language, Field::Desktop,
+        Field::ConversationLevel, Field::ChannelDefault, Field::Keywords, Field::Vips, Field::Status, Field::Away, Field::Pause, Field::Input, Field::Output,
+    ];
+    CATEGORIES.iter().map(|c| c.0).chain(["Keys", LEADER_LABEL]).chain(all.iter().map(|f| f.fixed_label())).map(String::from).collect()
 }
 
 #[derive(Debug, Default)]
@@ -259,6 +274,16 @@ impl Prefs {
         match field {
             Field::Leader | Field::Binding(_) => {
                 self.capturing = Some(Vec::new());
+                None
+            }
+            Field::Language => {
+                match self.editing.take() {
+                    Some(text) => match super::i18n::set(&text) {
+                        Ok(_) => ws.settings.region.language = text.trim().to_string(),
+                        Err(e) => self.saved = Some(Err(e)),
+                    },
+                    None => self.editing = Some(ws.settings.region.language.clone()),
+                }
                 None
             }
             // A text field: Enter starts editing, Enter again applies (the caller saves).
@@ -331,7 +356,7 @@ impl Prefs {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(super::theme::p().accent))
-            .title(" Preferences ")
+            .title(format!(" {} ", super::i18n::tr("Preferences")))
             .title_bottom(Line::styled(saved, Style::default().fg(super::theme::p().dim)));
         let inner = block.inner(popup);
         f.render_widget(block, popup);
@@ -343,7 +368,7 @@ impl Prefs {
             .chain(["Keys"])
             .enumerate()
             .map(|(n, name)| {
-                let line = Line::raw(format!(" {name}"));
+                let line = Line::raw(format!(" {}", super::i18n::tr(name)));
                 if n == self.category { line.style(highlight.add_modifier(Modifier::BOLD)) } else { line }
             })
             .collect();

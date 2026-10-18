@@ -110,6 +110,12 @@ No video, screen sharing, echo cancellation or noise suppression yet.
 | `SLACKTUI_DOWNLOAD_DIR` | where `s` saves attachments (default: your downloads folder) |
 | `SLACKTUI_AVATARS=0` | no profile pictures next to names (they are also off on terminals without real graphics) |
 
+### Translations
+
+The interface can be translated: `slacktui ctl locale-template > ~/.config/slacktui/locales/de.toml`,
+fill in the right-hand sides, then choose `de` in F6 → Language & region. Only the help, the
+preferences, overlay titles and the status-bar hints go through translation so far.
+
 ## Scripting
 
 `slacktui ctl …` exposes the API for automation and tests: `whoami`, `channels`,

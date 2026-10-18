@@ -735,12 +735,19 @@ pub fn hints_for(context: Context) -> &'static [(Action, &'static str)] {
     }
 }
 
+/// Every word used in status-bar hints (for translation templates).
+pub fn hint_words() -> Vec<&'static str> {
+    let mut out: Vec<&str> = Context::ALL.iter().flat_map(|c| hints_for(*c).iter().map(|(_, w)| *w)).collect();
+    out.push("help");
+    out
+}
+
 impl Keymap {
     /// Status-bar hints for the active contexts ("r react · e edit · F1 help · Ctrl+K jump"):
     /// the most specific context first, then help, then the global ones (which a narrow
     /// window cuts off first); actions without a key are left out.
     pub fn hints(&self, contexts: &[Context]) -> String {
-        let hint = |c: Context, (action, word): &(Action, &str)| self.first_key(c, *action).map(|k| format!("{k} {word}"));
+        let hint = |c: Context, (action, word): &(Action, &str)| self.first_key(c, *action).map(|k| format!("{k} {}", super::i18n::tr(word)));
         let mut parts: Vec<String> = contexts.iter().rev().filter(|c| **c != Context::Global).flat_map(|&c| hints_for(c).iter().filter_map(move |h| hint(c, h))).collect();
         parts.extend(hint(Context::Global, &(Action::Help, "help")));
         parts.extend(hints_for(Context::Global).iter().filter_map(|h| hint(Context::Global, h)));

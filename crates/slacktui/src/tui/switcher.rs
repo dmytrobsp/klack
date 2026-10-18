@@ -45,7 +45,7 @@ impl Switcher {
         let [popup] = Layout::horizontal([Constraint::Length(60.min(area.width))]).flex(Flex::Center).areas(area);
         let [popup] = Layout::vertical([Constraint::Length(18.min(area.height))]).flex(Flex::Center).areas(popup);
         f.render_widget(Clear, popup);
-        let block = Block::default().borders(Borders::ALL).border_style(Style::default().fg(super::theme::p().accent)).title(" Jump to… ");
+        let block = Block::default().borders(Borders::ALL).border_style(Style::default().fg(super::theme::p().accent)).title(format!(" {} ", super::i18n::tr("Jump to…")));
         let inner = block.inner(popup);
         f.render_widget(block, popup);
         let [input, list] = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(inner);

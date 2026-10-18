@@ -70,7 +70,7 @@ impl Search {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(super::theme::p().accent))
-            .title(" Search messages ")
+            .title(format!(" {} ", super::i18n::tr("Search messages")))
             .title_bottom(Line::styled(status, Style::default().fg(super::theme::p().dim)).right_aligned());
         let inner = block.inner(popup);
         f.render_widget(block, popup);

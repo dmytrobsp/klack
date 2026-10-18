@@ -41,7 +41,7 @@ impl ProfileCard {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(super::theme::p().accent))
-            .title(" Profile ")
+            .title(format!(" {} ", super::i18n::tr("Profile")))
             .title_bottom(Line::styled(keys, Style::default().fg(super::theme::p().dim)).right_aligned());
         let lines = match ws.users.get(self.user()) {
             Some(u) => {

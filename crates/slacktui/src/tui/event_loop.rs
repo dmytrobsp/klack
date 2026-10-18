@@ -1447,6 +1447,9 @@ pub async fn run(profile: slack_core::session::Profile, team: Option<&str>) -> R
         if let Err(e) = super::clock::set(&settings.region.timezone) {
             settings_problem.get_or_insert(e);
         }
+        if let Err(e) = super::i18n::set(&settings.region.language) {
+            settings_problem.get_or_insert(e);
+        }
         // Keys may have been rebound in the preferences meanwhile.
         let mut keymap = super::keymap::load_user();
         keymap.1.extend(settings_problem);

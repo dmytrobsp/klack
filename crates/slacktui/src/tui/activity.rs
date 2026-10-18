@@ -128,7 +128,7 @@ impl Activity {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(super::theme::p().accent))
-            .title(" Activity ");
+            .title(format!(" {} ", super::i18n::tr("Activity")));
         let inner = block.inner(popup);
         f.render_widget(block, popup);
         self.height = (inner.height / 3) as usize;
