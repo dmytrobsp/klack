@@ -248,7 +248,7 @@ impl App {
             }
             self.save_drafts();
             self.current = selected.clone();
-            self.messages.scroll = 0;
+            self.messages.to_bottom();
             self.messages.selected = None;
             self.close_thread();
             if let Some(hit) = self.pending_hit.take().filter(|h| Some(&h.channel) == selected.as_ref()) {
@@ -365,9 +365,9 @@ impl App {
         c.push_history(c.text());
         c.clear();
         if thread {
-            self.thread_pane.scroll = 0;
+            self.thread_pane.to_bottom();
         } else {
-            self.messages.scroll = 0;
+            self.messages.to_bottom();
         }
         let (client, tx) = (self.client.clone(), self.net.clone());
         tokio::spawn(async move {
@@ -958,7 +958,7 @@ impl App {
             }
             self.save_drafts();
         }
-        self.thread_pane.scroll = 0;
+        self.thread_pane.to_bottom();
         self.thread_pane.selected = None;
         self.focus = Focus::Thread;
         let tl = self.ws.threads.entry(super::state::thread_key(&channel, &parent)).or_default();

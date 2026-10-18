@@ -40,13 +40,16 @@ const BUILD_CHUNK: usize = 100;
 
 #[derive(Debug, Default)]
 pub struct MessagePane {
-    /// Lines scrolled up from the bottom (0 = newest visible).
-    pub scroll: usize,
+    /// The message at the bottom edge of the view (None: the newest, following new ones), so a
+    /// draw builds only the messages around the view however far up it is.
+    anchor: Option<String>,
+    /// Lines of the anchor message (of everything, when following) hidden below the view.
+    scroll: usize,
+    /// Lines to scroll down past the anchor, applied at the next draw.
+    down: usize,
     pub area: Rect,
-    /// Total rendered lines on the last draw (to detect reaching the top).
-    pub total_lines: usize,
-    /// The last draw built only the newest messages (older ones are further up).
-    partial: bool,
+    /// The top of the loaded history was on screen at the last draw.
+    top: bool,
     /// Selected message ts (message focus).
     pub selected: Option<String>,
     /// Message ts owning each visible row of the last draw (for clicks).
@@ -68,17 +71,25 @@ impl MessagePane {
     }
 
     pub fn scroll_up(&mut self, n: usize) {
-        self.scroll = self.scroll.saturating_add(n);
+        let back = n.min(self.down);
+        self.down -= back;
+        self.scroll = self.scroll.saturating_add(n - back);
     }
 
     pub fn scroll_down(&mut self, n: usize) {
-        self.scroll = self.scroll.saturating_sub(n);
+        let here = n.min(self.scroll);
+        self.scroll -= here;
+        self.down += n - here;
+    }
+
+    /// Back to the newest message, following new ones.
+    pub fn to_bottom(&mut self) {
+        (self.anchor, self.scroll, self.down) = (None, 0, 0);
     }
 
     /// True once the top of the loaded history is on screen.
     pub fn at_top(&self) -> bool {
-        let height = self.area.height.saturating_sub(2) as usize;
-        !self.partial && (self.total_lines <= height || self.scroll + height >= self.total_lines)
+        self.top
     }
 
     /// Move the selection by `delta` messages among the shown ones (`order` = ts list).
@@ -122,35 +133,64 @@ impl MessagePane {
         let thumb_size = |file: &File, max_cols: u16| media.thumb_size(file, max_cols).filter(|_| ws.settings.messages.inline_images);
         let avatars = media.avatars && ws.settings.messages.avatars;
         let order: Vec<&str> = timeline.map(|t| shown_messages(t, self.thread).map(|m| m.ts.as_str()).collect()).unwrap_or_default();
+        let height = inner.height as usize;
+        // The part of the timeline that is built: `from..to` among the shown messages.
+        let (mut from, mut to) = (0, order.len());
         let (mut lines, mut owners, mut slots) = match timeline {
             Some(t) if t.loaded || !t.messages.is_empty() => {
-                // Building costs time for every line, on every frame: only the newest messages
-                // that cover the view (with a screen to spare), the selection and the message
-                // being edited are built. A thread is built whole.
-                let shown = &order;
-                let need = self.scroll + 2 * inner.height as usize;
-                let kept = [&self.selected, &self.editing].into_iter().flatten().filter_map(|ts| shown.iter().position(|s| *s == ts.as_str())).min();
-                let mut take = BUILD_CHUNK.max(kept.map_or(0, |i| shown.len() - i));
+                // Building costs time for every line, on every frame: only the messages around
+                // the view (with a screen to spare), the selection and the message being edited
+                // are built, up to the anchor at the view's bottom edge. A thread is built whole.
+                let last = order.len();
+                let anchored = self.anchor.as_deref().and_then(|a| order.iter().rposition(|o| *o == a));
+                if self.anchor.is_some() && anchored.is_none() {
+                    // The anchor went away (deleted): back to the newest.
+                    self.to_bottom();
+                }
+                to = anchored.map_or(last, |i| i + 1);
+                // The view's bottom edge: the build reaches up from here.
+                let edge = to;
+                let kept: Vec<usize> = [&self.selected, &self.editing].into_iter().flatten().filter_map(|ts| order.iter().rposition(|s| *s == ts.as_str())).collect();
+                if let Some(&k) = kept.iter().max() {
+                    to = to.max(k + 1);
+                }
+                let kept_first = kept.iter().min().copied();
+                let mut take = BUILD_CHUNK;
+                let mut more = BUILD_CHUNK;
                 loop {
-                    let from = if self.thread { 0 } else { shown.len().saturating_sub(take) };
-                    let built = build_lines_from(ws, t, from, width, self.thread, &thumb_size, avatars);
-                    if from == 0 || built.0.len() >= need {
-                        self.partial = from > 0;
+                    from = if self.thread { 0 } else { edge.saturating_sub(take) };
+                    if let Some(k) = kept_first {
+                        from = from.min(k);
+                    }
+                    let end = if self.thread { last } else { to };
+                    let built = build_lines_range(ws, t, from, end, width, self.thread, &thumb_size, avatars);
+                    // Lines after the anchor message (to scroll down past it).
+                    let below_anchor = anchored.and_then(|i| order.get(i)).and_then(|a| built.1.iter().rposition(|o| o.as_deref() == Some(*a))).map_or(0, |l| built.0.len() - 1 - l);
+                    let enough_above = from == 0 || built.0.len() - below_anchor >= self.scroll + 2 * height;
+                    let enough_below = self.down <= below_anchor || end == last;
+                    if enough_above && enough_below {
+                        to = end;
+                        // Scrolling down past the anchor: the lines after it, less those asked.
+                        if anchored.is_some() {
+                            self.scroll = (self.scroll + below_anchor).saturating_sub(self.down);
+                        }
+                        self.down = 0;
                         break built;
                     }
-                    take *= 2;
+                    if !enough_above {
+                        take *= 2;
+                    }
+                    if !enough_below {
+                        to = (to + more).min(last);
+                        more *= 2;
+                    }
                 }
             }
-            Some(_) => {
-                self.partial = false;
-                (vec![Line::styled("Loading messages…", Style::default().fg(super::theme::p().dim))], vec![None], vec![])
-            }
-            None => {
-                self.partial = false;
-                (vec![], vec![], vec![])
-            }
+            Some(_) => (vec![Line::styled("Loading messages…", Style::default().fg(super::theme::p().dim))], vec![None], vec![]),
+            None => (vec![], vec![], vec![]),
         };
-        if let Some(t) = timeline.filter(|_| !self.thread && !self.partial) {
+        let partial = from > 0;
+        if let Some(t) = timeline.filter(|_| !self.thread && !partial) {
             let note = if t.loading && t.loaded {
                 Some("Loading older messages…")
             } else if t.loaded && !t.has_more && !t.messages.is_empty() {
@@ -192,24 +232,33 @@ impl MessagePane {
         if let Some(ts) = &self.editing {
             mark_editing(&mut lines, &owners, ts, highlight);
         }
-        self.total_lines = lines.len();
-        let height = inner.height as usize;
+        let total = lines.len();
         // Keep the selection (or, from the composer, the message being edited) on screen.
         let keep = if focused { self.selected.as_ref() } else { self.editing.as_ref() };
         if let Some(sel) = keep {
             if let (Some(first), Some(last)) = (owners.iter().position(|o| o.as_ref() == Some(sel)), owners.iter().rposition(|o| o.as_ref() == Some(sel))) {
-                let end = self.total_lines.saturating_sub(self.scroll);
+                let end = total.saturating_sub(self.scroll);
                 let start = end.saturating_sub(height);
                 if last >= end {
-                    self.scroll = self.total_lines - (last + 1);
+                    self.scroll = total - (last + 1);
                 } else if first < start {
-                    self.scroll = self.total_lines.saturating_sub(first + height);
+                    self.scroll = total.saturating_sub(first + height);
                 }
             }
         }
-        self.scroll = self.scroll.min(self.total_lines.saturating_sub(height));
-        let end = self.total_lines.saturating_sub(self.scroll);
+        self.scroll = self.scroll.min(total.saturating_sub(height));
+        let end = total.saturating_sub(self.scroll);
         let start = end.saturating_sub(height);
+        self.top = !partial && start == 0;
+        // Anchor the view to the message at its bottom row (or the next one, for a separator
+        // row), unless it shows the newest message's end: then it follows new ones.
+        if to == order.len() && end == total {
+            (self.anchor, self.scroll) = (None, 0);
+        } else if let Some((at, owner)) = owners.iter().enumerate().skip(end.saturating_sub(1)).find_map(|(n, o)| o.as_ref().map(|o| (n, o))) {
+            let last_line = owners.iter().rposition(|o| o.as_ref() == Some(owner)).unwrap_or(at);
+            self.anchor = Some(owner.clone());
+            self.scroll = last_line + 1 - end.min(last_line + 1);
+        }
         let mut visible: Vec<Line> = lines[start..end].to_vec();
         let mut rows: Vec<Option<String>> = owners[start..end].to_vec();
         // Anchor short timelines to the bottom like a chat.
@@ -374,7 +423,14 @@ pub fn build_lines_owned(ws: &Workspace, t: &Timeline, width: usize, thread: boo
 
 /// [`build_lines_owned`] from the `from`-th shown message on: the same lines as the end of the
 /// whole build (grouping and day separators carry on from the message before it).
+#[cfg(test)]
 pub fn build_lines_from(ws: &Workspace, t: &Timeline, from: usize, width: usize, thread: bool, thumb_size: ThumbSize, avatars: bool) -> (Vec<Line<'static>>, Vec<Option<String>>, Vec<ImageSlot>) {
+    build_lines_range(ws, t, from, usize::MAX, width, thread, thumb_size, avatars)
+}
+
+/// [`build_lines_from`] up to (not including) the `to`-th shown message.
+#[allow(clippy::too_many_arguments)]
+pub fn build_lines_range(ws: &Workspace, t: &Timeline, from: usize, to: usize, width: usize, thread: bool, thumb_size: ThumbSize, avatars: bool) -> (Vec<Line<'static>>, Vec<Option<String>>, Vec<ImageSlot>) {
     let mut out: Vec<Line<'static>> = Vec::new();
     let mut owners: Vec<Option<String>> = Vec::new();
     let mut slots: Vec<ImageSlot> = Vec::new();
@@ -383,7 +439,7 @@ pub fn build_lines_from(ws: &Workspace, t: &Timeline, from: usize, width: usize,
     // What the whole build would carry over: a system message ends a group.
     let mut prev: Option<&Message> = before.filter(|p| !is_system(p));
     let mut last_day: Option<f64> = before.map(|p| p.time());
-    for (n, m) in shown.into_iter().enumerate().skip(from) {
+    for (n, m) in shown.into_iter().enumerate().skip(from).take(to.saturating_sub(from)) {
         let ts = m.time();
         owners.resize(out.len(), None);
         if thread && n == 1 {
@@ -642,8 +698,87 @@ mod tests {
                 build_lines_from(&ws, &t, n - super::BUILD_CHUNK, 100, false, &|_, _| None, false);
             }
             let newest = start.elapsed().as_secs_f64() * 1000.0 / runs as f64;
-            println!("{n} messages ({rows} rows): whole {whole:.1} ms, newest {} {newest:.2} ms per frame", super::BUILD_CHUNK);
+            // A frame of the pane itself, at the bottom and far up (anchored).
+            let media = Media { picker: ratatui_image::picker::Picker::halfblocks(), thumbs: Default::default(), avatars: false };
+            let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(104, 40)).unwrap();
+            let mut pane = MessagePane::default();
+            let mut frame = |pane: &mut MessagePane, runs: usize| {
+                let start = std::time::Instant::now();
+                for _ in 0..runs {
+                    terminal.draw(|f| pane.draw(f, f.area(), &ws, "t", Some(&t), false, &media)).unwrap();
+                }
+                start.elapsed().as_secs_f64() * 1000.0 / runs as f64
+            };
+            let bottom = frame(&mut pane, runs);
+            pane.scroll_up(rows * 3 / 4);
+            // The jump itself builds the whole way once; the frames after it are anchored.
+            let jump = frame(&mut pane, 1);
+            let far = frame(&mut pane, runs);
+            println!("{n} messages ({rows} rows): whole build {whole:.1} ms, newest {} {newest:.2} ms; pane frame at the bottom {bottom:.2} ms, jumping 3/4 up {jump:.1} ms, then {far:.2} ms", super::BUILD_CHUNK);
         }
+    }
+
+    #[test]
+    fn anchored_view_matches_lines_from_the_bottom() {
+        let mut ws = Workspace::default();
+        for (id, name) in [("U1", "ann"), ("U2", "bob"), ("U3", "carol")] {
+            ws.users.insert(id.into(), slack_core::types::User { id: id.into(), name: name.into(), ..Default::default() });
+        }
+        let texts = ["short", "a longer message that wraps over a few rows of this narrow pane, as chat does", "line one\nline two\nline three"];
+        let mut t = Timeline { loaded: true, ..Default::default() };
+        // 400 messages over several days, in groups and alone.
+        for i in 0..400usize {
+            let at = 1_700_000_000.0 + (i as f64) * 900.0 * if i % 7 == 0 { 30.0 } else { 1.0 };
+            t.upsert(msg(&format!("{at:.6}"), ["U1", "U2", "U3"][(i / 3) % 3], texts[i % 3]));
+        }
+        let media = Media { picker: ratatui_image::picker::Picker::halfblocks(), thumbs: Default::default(), avatars: false };
+        let (w, h) = (60u16, 22u16);
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
+        let mut pane = MessagePane::default();
+        let mut draw = |pane: &mut MessagePane, t: &Timeline| {
+            terminal.draw(|f| pane.draw(f, f.area(), &ws, "t", Some(t), false, &media)).unwrap();
+        };
+        // The old way: everything built, the view counted in lines from the bottom (with the
+        // "beginning of conversation" note on top).
+        let width = (w - 2 - 1 - super::GUTTER) as usize;
+        let mut whole: Vec<Option<String>> = vec![None];
+        whole.extend(build_lines_owned(&ws, &t, width, false, &|_, _| None, false).1);
+        let rows = (h - 2) as usize;
+        let window = |s: usize| whole[whole.len() - s - rows..whole.len() - s].to_vec();
+        draw(&mut pane, &t);
+        assert_eq!(pane.rows, window(0));
+        let mut s = 0usize;
+        for (up, n) in [(true, 3), (true, 40), (true, 500), (false, 7), (true, 1), (true, 2000), (false, 900), (false, 1), (true, 5000), (false, 333), (false, 99999)] {
+            if up {
+                pane.scroll_up(n);
+                s = (s + n).min(whole.len() - rows);
+            } else {
+                pane.scroll_down(n);
+                s = s.saturating_sub(n);
+            }
+            draw(&mut pane, &t);
+            assert_eq!(pane.rows, window(s), "after {} {n} (at {s} lines from the bottom)", if up { "up" } else { "down" });
+            assert_eq!(pane.at_top(), s == whole.len() - rows, "at the top only there");
+        }
+        // Scrolled up, a new message leaves the view where it is; at the bottom it shows.
+        pane.scroll_up(150);
+        draw(&mut pane, &t);
+        let before = pane.rows.clone();
+        let mut t2 = t.clone();
+        t2.upsert(msg("1800000000.000000", "U1", "brand new"));
+        draw(&mut pane, &t2);
+        assert_eq!(pane.rows, before, "the view stays on what you were reading");
+        pane.to_bottom();
+        draw(&mut pane, &t2);
+        let mut t3 = t2.clone();
+        t3.upsert(msg("1800000100.000000", "U2", "newer still"));
+        draw(&mut pane, &t3);
+        assert_eq!(pane.rows.last().cloned().flatten().as_deref(), Some("1800000100.000000"), "following the newest");
+        // Selecting a message far above the view brings it into view.
+        let far = t3.messages[20].ts.clone();
+        pane.selected = Some(far.clone());
+        terminal.draw(|f| pane.draw(f, f.area(), &ws, "t", Some(&t3), true, &media)).unwrap();
+        assert!(pane.rows.contains(&Some(far)), "the selection is on screen");
     }
 
     #[test]
