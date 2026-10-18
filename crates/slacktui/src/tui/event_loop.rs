@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use anyhow::Result;
-use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
+use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, MouseButton, MouseEventKind};
 use futures_util::StreamExt;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::widgets::Paragraph;
@@ -13,7 +13,7 @@ use slack_core::types::{HistoryPage, User};
 use tokio::sync::mpsc;
 
 use super::composer::{Composer, KeyOutcome};
-use super::keymap::{Action, Context, Keymap, Lookup};
+use super::keymap::{Action, Context, Key, Keymap, Lookup};
 use super::messages::MessagePane;
 use super::picker::EmojiPicker;
 use super::sidebar::Sidebar;
@@ -1374,10 +1374,8 @@ async fn run_workspace(
 /// Returns false to quit.
 fn handle_terminal(app: &mut App, ev: Event) -> bool {
     match ev {
+        Event::Key(k) if k.kind != KeyEventKind::Release && app.global(&k) == Some(Action::Quit) => return false,
         Event::Key(k) if k.kind != KeyEventKind::Release && app.help.is_some() => {
-            if app.global(&k) == Some(Action::Quit) {
-                return false;
-            }
             let action = app.action_in(Context::Help, &k);
             let Some(h) = app.help.as_mut() else { return true };
             match action {
@@ -1391,55 +1389,62 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
         }
         Event::Key(k) if k.kind != KeyEventKind::Release && app.switcher.is_some() => {
             let len = app.switcher.as_ref().map(|s| s.entries(&app.ws).len()).unwrap_or(0);
+            let action = app.action_in(Context::Switcher, &k);
             let Some(sw) = app.switcher.as_mut() else { return true };
-            match k.code {
-                KeyCode::Esc => app.switcher = None,
-                KeyCode::Up => sw.move_by(-1, len),
-                KeyCode::Down | KeyCode::Tab => sw.move_by(1, len),
-                KeyCode::Enter => app.switch(),
-                KeyCode::Backspace => {
+            match action {
+                Some(Action::Close) => app.switcher = None,
+                Some(Action::Up) => sw.move_by(-1, len),
+                Some(Action::Down) => sw.move_by(1, len),
+                Some(Action::Open) => app.switch(),
+                Some(Action::Erase) => {
                     sw.query.pop();
                     sw.selected = 0;
                 }
-                KeyCode::Char('q') if k.modifiers.contains(KeyModifiers::CONTROL) => return false,
-                KeyCode::Char(c) if !k.modifiers.contains(KeyModifiers::CONTROL) => {
-                    sw.query.push(c);
-                    sw.selected = 0;
+                _ => {
+                    if let (KeyCode::Char(c), true) = (k.code, Key::from_event(&k).is_text()) {
+                        sw.query.push(c);
+                        sw.selected = 0;
+                    }
                 }
-                _ => {}
             }
         }
         Event::Key(k) if k.kind != KeyEventKind::Release && app.mover.is_some() => {
+            let naming = app.mover.as_ref().is_some_and(|m| m.naming.is_some());
+            let action = app.action_in(if naming { Context::SectionName } else { Context::Mover }, &k);
             let Some(m) = app.mover.as_mut() else { return true };
             let on_new = *m.choice() == super::sections::Choice::New;
-            match (&mut m.naming, k.code) {
-                (_, KeyCode::Char('q')) if k.modifiers.contains(KeyModifiers::CONTROL) => return false,
-                (Some(_), KeyCode::Esc) => m.naming = None,
-                (Some(name), KeyCode::Backspace) => {
+            match (&mut m.naming, action) {
+                (Some(_), Some(Action::Close)) => m.naming = None,
+                (Some(name), Some(Action::Erase)) => {
                     name.pop();
                 }
-                (Some(name), KeyCode::Char(c)) if !k.modifiers.contains(KeyModifiers::CONTROL) => name.push(c),
-                (None, KeyCode::Esc | KeyCode::Char('q')) => app.mover = None,
-                (None, KeyCode::Up | KeyCode::Char('k')) => m.move_by(-1),
-                (None, KeyCode::Down | KeyCode::Char('j')) => m.move_by(1),
-                (None, KeyCode::Home | KeyCode::Char('g')) => m.move_by(isize::MIN / 2),
-                (None, KeyCode::End | KeyCode::Char('G')) => m.move_by(isize::MAX / 2),
-                (None, KeyCode::Enter) if on_new => m.naming = Some(String::new()),
-                (_, KeyCode::Enter) => app.finish_move(),
+                (Some(_), Some(Action::Open)) => app.finish_move(),
+                (Some(name), _) => {
+                    if let (KeyCode::Char(c), true) = (k.code, Key::from_event(&k).is_text()) {
+                        name.push(c);
+                    }
+                }
+                (None, Some(Action::Close)) => app.mover = None,
+                (None, Some(Action::Up)) => m.move_by(-1),
+                (None, Some(Action::Down)) => m.move_by(1),
+                (None, Some(Action::Top)) => m.move_by(isize::MIN / 2),
+                (None, Some(Action::Bottom)) => m.move_by(isize::MAX / 2),
+                (None, Some(Action::Open)) if on_new => m.naming = Some(String::new()),
+                (None, Some(Action::Open)) => app.finish_move(),
                 _ => {}
             }
         }
         Event::Key(k) if k.kind != KeyEventKind::Release && app.activity.is_some() => {
+            let action = app.action_in(Context::Activity, &k);
             let Some(a) = app.activity.as_mut() else { return true };
-            match k.code {
-                KeyCode::Char('q') if k.modifiers.contains(KeyModifiers::CONTROL) => return false,
-                KeyCode::Esc | KeyCode::F(5) | KeyCode::Char('q') => app.activity = None,
-                KeyCode::Up | KeyCode::Char('k') => a.move_by(-1),
-                KeyCode::Down | KeyCode::Char('j') => a.move_by(1),
-                KeyCode::PageUp => a.move_by(-(a.height.max(1) as isize)),
-                KeyCode::PageDown => a.move_by(a.height.max(1) as isize),
-                KeyCode::Char('r') => app.open_activity(),
-                KeyCode::Enter => {
+            match action {
+                Some(Action::Close) => app.activity = None,
+                Some(Action::Up) => a.move_by(-1),
+                Some(Action::Down) => a.move_by(1),
+                Some(Action::PageUp) => a.move_by(-(a.height.max(1) as isize)),
+                Some(Action::PageDown) => a.move_by(a.height.max(1) as isize),
+                Some(Action::Refresh) => app.open_activity(),
+                Some(Action::Open) => {
                     if let Some((channel, ts, thread_ts)) = a.target() {
                         app.activity = None;
                         app.open_hit(super::search::Hit { channel, ts, thread_ts, user: None, text: String::new() });
@@ -1450,13 +1455,13 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
         }
         Event::Key(k) if k.kind != KeyEventKind::Release && app.global(&k) == Some(Action::Activity) => app.open_activity(),
         Event::Key(k) if k.kind != KeyEventKind::Release && app.profile.is_some() => {
+            let action = app.action_in(Context::Profile, &k);
             let Some(card) = app.profile.as_mut() else { return true };
-            match k.code {
-                KeyCode::Char('q') if k.modifiers.contains(KeyModifiers::CONTROL) => return false,
-                KeyCode::Esc | KeyCode::Char('q') => app.profile = None,
-                KeyCode::Left | KeyCode::BackTab => card.step(-1),
-                KeyCode::Right | KeyCode::Tab => card.step(1),
-                KeyCode::Enter | KeyCode::Char('m') => {
+            match action {
+                Some(Action::Close) => app.profile = None,
+                Some(Action::PrevTab) => card.step(-1),
+                Some(Action::NextTab) => card.step(1),
+                Some(Action::Open) => {
                     let user = card.user().to_string();
                     app.profile = None;
                     app.details = None;
@@ -1466,7 +1471,7 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
                         app.open_dm_with(user);
                     }
                 }
-                KeyCode::Char('h') => {
+                Some(Action::Huddle) => {
                     let user = card.user().to_string();
                     app.profile = None;
                     app.details = None;
@@ -1476,15 +1481,15 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
             }
         }
         Event::Key(k) if k.kind != KeyEventKind::Release && app.details.is_some() => {
+            let action = app.action_in(Context::Details, &k);
             let Some(d) = app.details.as_mut() else { return true };
-            match k.code {
-                KeyCode::Char('q') if k.modifiers.contains(KeyModifiers::CONTROL) => return false,
-                KeyCode::Esc | KeyCode::F(2) | KeyCode::Char('q') => app.details = None,
-                KeyCode::Left | KeyCode::Char('h') | KeyCode::BackTab => d.switch_tab(-1),
-                KeyCode::Right | KeyCode::Char('l') | KeyCode::Tab => d.switch_tab(1),
-                KeyCode::Up | KeyCode::Char('k') => d.move_by(-1),
-                KeyCode::Down | KeyCode::Char('j') => d.move_by(1),
-                KeyCode::Enter => app.details_enter(),
+            match action {
+                Some(Action::Close) => app.details = None,
+                Some(Action::PrevTab) => d.switch_tab(-1),
+                Some(Action::NextTab) => d.switch_tab(1),
+                Some(Action::Up) => d.move_by(-1),
+                Some(Action::Down) => d.move_by(1),
+                Some(Action::Open) => app.details_enter(),
                 _ => {}
             }
         }
@@ -1498,18 +1503,21 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
             }
         }
         Event::Key(k) if k.kind != KeyEventKind::Release && app.search.is_some() => {
+            let action = app.action_in(Context::Search, &k);
             let Some(search) = app.search.as_mut() else { return true };
-            match k.code {
-                KeyCode::Esc => app.search = None,
-                KeyCode::Up => search.move_by(-1),
-                KeyCode::Down | KeyCode::Tab => search.move_by(1),
-                KeyCode::Enter => app.search_enter(),
-                KeyCode::Backspace => {
+            match action {
+                Some(Action::Close) => app.search = None,
+                Some(Action::Up) => search.move_by(-1),
+                Some(Action::Down) => search.move_by(1),
+                Some(Action::Open) => app.search_enter(),
+                Some(Action::Erase) => {
                     search.query.pop();
                 }
-                KeyCode::Char('q') if k.modifiers.contains(KeyModifiers::CONTROL) => return false,
-                KeyCode::Char(c) if !k.modifiers.contains(KeyModifiers::CONTROL) => search.query.push(c),
-                _ => {}
+                _ => {
+                    if let (KeyCode::Char(c), true) = (k.code, Key::from_event(&k).is_text()) {
+                        search.query.push(c);
+                    }
+                }
             }
         }
         Event::Key(k) if k.kind != KeyEventKind::Release && app.global(&k) == Some(Action::Search) => {
@@ -1527,26 +1535,26 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
             app.help = Some(super::help::Help::default());
         }
         Event::Key(k) if k.kind != KeyEventKind::Release && app.player.is_some() => {
+            let action = app.action_in(Context::Player, &k);
             let Some(p) = app.player.as_mut() else { return true };
-            match k.code {
-                KeyCode::Char('q') if k.modifiers.contains(KeyModifiers::CONTROL) => return false,
-                KeyCode::Esc | KeyCode::Char('q') => app.player = None,
-                KeyCode::Char(' ') | KeyCode::Char('p') => p.toggle_pause(),
+            match action {
+                Some(Action::Close) => app.player = None,
+                Some(Action::Pause) => p.toggle_pause(),
                 _ => {}
             }
         }
         Event::Key(k) if k.kind != KeyEventKind::Release && app.snippet.is_some() => {
+            let action = app.action_in(Context::Snippet, &k);
             let Some(v) = app.snippet.as_mut() else { return true };
-            match k.code {
-                KeyCode::Char('q') if k.modifiers.contains(KeyModifiers::CONTROL) => return false,
-                KeyCode::Esc | KeyCode::Char('q') => app.snippet = None,
-                KeyCode::Up | KeyCode::Char('k') => v.scroll_by(-1),
-                KeyCode::Down | KeyCode::Char('j') => v.scroll_by(1),
-                KeyCode::PageUp => v.scroll_by(-v.page()),
-                KeyCode::PageDown | KeyCode::Char(' ') => v.scroll_by(v.page()),
-                KeyCode::Home | KeyCode::Char('g') => v.scroll_by(isize::MIN / 2),
-                KeyCode::End | KeyCode::Char('G') => v.scroll_by(isize::MAX / 2),
-                KeyCode::Char('y') => {
+            match action {
+                Some(Action::Close) => app.snippet = None,
+                Some(Action::Up) => v.scroll_by(-1),
+                Some(Action::Down) => v.scroll_by(1),
+                Some(Action::PageUp) => v.scroll_by(-v.page()),
+                Some(Action::PageDown) => v.scroll_by(v.page()),
+                Some(Action::Top) => v.scroll_by(isize::MIN / 2),
+                Some(Action::Bottom) => v.scroll_by(isize::MAX / 2),
+                Some(Action::Copy) => {
                     if let Some(Ok(text)) = &v.text {
                         let how = app.clipboard.copy(text);
                         app.status = format!("copied the snippet to the {how}");
@@ -1556,17 +1564,18 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
             }
         }
         Event::Key(k) if k.kind != KeyEventKind::Release && app.viewer.is_some() => {
+            let action = app.action_in(Context::Viewer, &k);
             let Some(v) = app.viewer.as_mut() else { return true };
-            match k.code {
-                KeyCode::Char('q') if k.modifiers.contains(KeyModifiers::CONTROL) => return false,
-                KeyCode::Esc | KeyCode::Char('q') => app.viewer = None,
-                KeyCode::Left | KeyCode::Char('h') if v.step(-1) => app.load_viewer_image(),
-                KeyCode::Right | KeyCode::Char('l') if v.step(1) => app.load_viewer_image(),
+            match action {
+                Some(Action::Close) => app.viewer = None,
+                Some(Action::PrevTab) if v.step(-1) => app.load_viewer_image(),
+                Some(Action::NextTab) if v.step(1) => app.load_viewer_image(),
                 _ => {}
             }
         }
         Event::Key(k) if k.kind != KeyEventKind::Release && app.confirm.is_some() => {
-            if let Some(confirm) = app.confirm.take().filter(|_| matches!(k.code, KeyCode::Char('y') | KeyCode::Char('Y'))) {
+            let yes = app.action_in(Context::Confirm, &k) == Some(Action::Yes);
+            if let Some(confirm) = app.confirm.take().filter(|_| yes) {
                 match confirm {
                     Confirm::Delete { channel, ts } => app.delete(channel, ts),
                     Confirm::Leave(channel) => app.leave_channel(channel),
@@ -1574,23 +1583,13 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
                 }
             }
         }
-        Event::Key(k)
-            if k.kind != KeyEventKind::Release
-                && app.completion.is_some()
-                && k.modifiers.difference(KeyModifiers::SHIFT).is_empty()
-                && matches!(k.code, KeyCode::Up | KeyCode::Down | KeyCode::Tab | KeyCode::BackTab | KeyCode::Enter | KeyCode::Esc) =>
-        {
+        Event::Key(k) if k.kind != KeyEventKind::Release && app.completion.is_some() && app.action_in(Context::Completion, &k).is_some() => {
+            let action = app.action_in(Context::Completion, &k);
             let Some(c) = app.completion.as_mut() else { return true };
-            match k.code {
-                KeyCode::Up | KeyCode::BackTab => c.move_by(-1),
-                KeyCode::Down => c.move_by(1),
-                KeyCode::Enter if k.modifiers.contains(KeyModifiers::SHIFT) => {
-                    // Shift+Enter keeps its newline meaning.
-                    let thread = c.thread;
-                    app.completion = None;
-                    app.composer_for(thread).insert('\n');
-                }
-                KeyCode::Tab | KeyCode::Enter => app.accept_completion(),
+            match action {
+                Some(Action::Up) => c.move_by(-1),
+                Some(Action::Down) => c.move_by(1),
+                Some(Action::Accept) => app.accept_completion(),
                 _ => {
                     app.completion_dismissed = Some((c.thread, c.start));
                     app.completion = None;
@@ -1599,30 +1598,32 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
         }
         Event::Key(k) if k.kind != KeyEventKind::Release && app.picker.is_some() => {
             let custom: Vec<String> = app.ws.custom_emoji.keys().cloned().collect();
+            let action = app.action_in(Context::Picker, &k);
             let Some((picker, _, _)) = app.picker.as_mut() else { return true };
             let len = picker.candidates(&custom).len();
-            match k.code {
-                KeyCode::Esc => app.picker = None,
-                KeyCode::Up => picker.move_by(-1, len),
-                KeyCode::Down => picker.move_by(1, len),
-                KeyCode::PageUp => picker.move_by(-10, len),
-                KeyCode::PageDown => picker.move_by(10, len),
-                KeyCode::Backspace => {
+            match action {
+                Some(Action::Close) => app.picker = None,
+                Some(Action::Up) => picker.move_by(-1, len),
+                Some(Action::Down) => picker.move_by(1, len),
+                Some(Action::PageUp) => picker.move_by(-10, len),
+                Some(Action::PageDown) => picker.move_by(10, len),
+                Some(Action::Erase) => {
                     picker.query.pop();
                     picker.selected = 0;
                 }
-                KeyCode::Char(c) if !k.modifiers.contains(KeyModifiers::CONTROL) => {
-                    picker.query.push(c);
-                    picker.selected = 0;
-                }
-                KeyCode::Enter => {
+                Some(Action::Open) => {
                     if let Some((picker, channel, ts)) = app.picker.take() {
                         if let Some(choice) = picker.candidates(&custom).get(picker.selected) {
                             app.toggle_reaction(channel, ts, choice.name.clone());
                         }
                     }
                 }
-                _ => {}
+                _ => {
+                    if let (KeyCode::Char(c), true) = (k.code, Key::from_event(&k).is_text()) {
+                        picker.query.push(c);
+                        picker.selected = 0;
+                    }
+                }
             }
         }
         Event::Key(k) if k.kind != KeyEventKind::Release => {
