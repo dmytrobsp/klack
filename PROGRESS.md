@@ -139,9 +139,19 @@ Tests: `cargo test` → slack-core 9, huddle 33, slacktui 142, all passing. `car
 
 ## Next (in order, each as a small, separately verified step)
 
-**NEXT UP: ask the user** — queue E is done (E5, the call bar, was the last). Open bits to offer: the
-prefs popup wraps long values; the workspace watchers keep a second RTM connection; the call bar's own-mic
-meter (🎙 live) is not seen live (no live mic tests); see also Known gaps.
+**NEXT UP: F1** (queue F below).
+
+F. Agreed with the user on 2026-10-19 after queue E ("proceed with proposed order"); run autonomously, one
+   verified commit per step:
+  F1 (NEXT). The preferences popup wraps long values (device names, paths) onto extra rows — keep each
+      setting on one row (cut the value with "…"; the full value where there is room).
+  F2. The other-workspace watchers keep a second RTM connection (and a second copy of the users) for the
+      workspace that is shown — pause the shown workspace's watcher, resume it when switching away.
+  F3. Known gaps, the actionable ones, in this order: F3a drafts survive a quit / workspace switch (saved
+      per profile and workspace); F3b a failed thumbnail says so instead of leaving blank rows; F3c the
+      stray fragment at the move-picker's right edge; F3d the 🖼 icon drawn over the following space after a
+      layout change; F3e `ctl huddle-media` right after a huddle ended gets the old room (investigate);
+      F3f scrolling cost with a large channel (synthetic timeline, measure `build_lines`).
 
 The roadmap (items 1–15) is complete. Queue from the user (2026-10-18), in this order; run autonomously,
 one verified commit per step:
