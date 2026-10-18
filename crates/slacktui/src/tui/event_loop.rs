@@ -106,6 +106,8 @@ struct App {
     key_warnings: Vec<String>,
     /// The profile's workspaces (labels) and which one this is.
     workspaces: Vec<String>,
+    /// Unread state of the other workspaces (polled in the background).
+    others: super::others::Badges,
     workspace: usize,
     /// Leave this workspace for another (index into `workspaces`).
     switch_to: Option<usize>,
@@ -1829,6 +1831,10 @@ pub async fn run(profile: slack_core::session::Profile, team: Option<&str>) -> R
     let mut index = sessions.iter().position(|s| s.team_id == start.team_id && s.user_id == start.user_id).unwrap_or(0);
     let labels = workspace_labels(&sessions);
     let keymap = super::keymap::load_user();
+    let shown = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(index));
+    let badges: super::others::Badges = Default::default();
+    let wake = std::sync::Arc::new(tokio::sync::Notify::new());
+    super::others::spawn(sessions.clone(), shown.clone(), badges.clone(), wake.clone());
 
     for w in &keymap.1 {
         tracing::warn!("{w}");
@@ -1841,6 +1847,10 @@ pub async fn run(profile: slack_core::session::Profile, team: Option<&str>) -> R
     let mut events = EventStream::new();
     loop {
         let client = Client::new(sessions[index].clone())?;
+        shown.store(index, std::sync::atomic::Ordering::Relaxed);
+        badges.lock().unwrap_or_else(|e| e.into_inner()).remove(&index);
+        // The workspace just left gets its badge now, not at the next poll.
+        wake.notify_one();
         // Read again on every switch, so changes made in the preferences carry over.
         let (settings, settings_problem) = super::settings::load();
         let mut settings_problem = settings_problem;
@@ -1856,7 +1866,7 @@ pub async fn run(profile: slack_core::session::Profile, team: Option<&str>) -> R
         // Keys may have been rebound in the preferences meanwhile.
         let mut keymap = super::keymap::load_user();
         keymap.1.extend(settings_problem);
-        let (next, kept_media, kept_clipboard) = run_workspace(client, (labels.clone(), index), &keymap, &settings, &mut terminal, &mut events, media, clipboard).await?;
+        let (next, kept_media, kept_clipboard) = run_workspace(client, (labels.clone(), index, badges.clone()), &keymap, &settings, &mut terminal, &mut events, media, clipboard).await?;
         (media, clipboard) = (kept_media, kept_clipboard);
         match next {
             Some(i) => index = i,
@@ -1879,7 +1889,7 @@ fn workspace_labels(sessions: &[slack_core::session::WorkspaceSession]) -> Vec<S
 /// One workspace until quit (None) or a switch (Some(index)); hands back what outlives it.
 async fn run_workspace(
     client: Client,
-    workspaces: (Vec<String>, usize),
+    workspaces: (Vec<String>, usize, super::others::Badges),
     keymap: &(Keymap, Vec<String>),
     settings: &super::settings::Settings,
     terminal: &mut super::terminal::Tui,
@@ -1898,6 +1908,7 @@ async fn run_workspace(
         pending: Vec::new(),
         workspaces: workspaces.0,
         workspace: workspaces.1,
+        others: workspaces.2,
         switch_to: None,
         media,
         viewer: None,
@@ -2911,7 +2922,8 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         live = format!("{live} · {me}");
     }
     let (unread, mentions) = app.ws.total_unread();
-    let info = if app.status.is_empty() { format!("{unread} unread · {mentions} mentions") } else { app.status.clone() };
+    let others = super::others::label(&app.others.lock().unwrap_or_else(|e| e.into_inner()), app.workspace);
+    let info = if app.status.is_empty() { format!("{unread} unread · {mentions} mentions{others}") } else { app.status.clone() };
     if let Some(sw) = &app.switcher {
         sw.draw(f, body, &app.ws);
     }

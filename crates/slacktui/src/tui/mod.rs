@@ -20,6 +20,7 @@ pub mod media;
 pub mod menu;
 pub mod messages;
 pub mod notify;
+pub mod others;
 pub mod picker;
 pub mod prefs;
 pub mod profile;
