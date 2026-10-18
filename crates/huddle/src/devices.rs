@@ -131,6 +131,7 @@ impl Microphone {
             let build = || -> Result<cpal::Stream> {
                 let device = pick(true, device.as_deref())?;
                 let config = device.default_input_config()?.config();
+                tracing::info!("microphone: {} ({} Hz, {} ch)", device_label(&device), config.sample_rate, config.channels);
                 let mut converter = MicConverter::new(config.sample_rate, config.channels as usize);
                 let stream = device.build_input_stream::<f32, _, _>(
                     config,
@@ -372,6 +373,7 @@ impl Speaker {
             let build = || -> Result<(cpal::Stream, u32)> {
                 let device = pick(false, device.as_deref())?;
                 let config = device.default_output_config()?.config();
+                tracing::info!("speaker: {} ({} Hz, {} ch)", device_label(&device), config.sample_rate, config.channels);
                 let (rate, channels) = (config.sample_rate, config.channels as usize);
                 let stream = device.build_output_stream::<f32, _, _>(
                     config,
