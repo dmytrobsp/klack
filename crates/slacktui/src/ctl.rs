@@ -43,6 +43,8 @@ pub enum Ctl {
         #[arg(long)]
         mic: bool,
     },
+    /// List audio input/output devices (names usable in SLACKTUI_AUDIO_INPUT/OUTPUT).
+    AudioDevices,
     /// Leave a huddle via `rooms.leave`.
     HuddleLeave { channel: String, call_id: String, attendee_id: String },
     /// Call any Web API method with key=value arguments; prints the response with
@@ -174,7 +176,7 @@ pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
             println!("room {} attendee {}", creds.room_id, creds.attendee.attendee_id);
             let mut session = Session::start(creds, false);
             let sink = session.pcm_sink();
-            let _mic = if mic { Some(huddle::devices::Microphone::start(move |frame| sink.send(frame))?) } else { None };
+            let _mic = if mic { Some(huddle::devices::Microphone::start(std::env::var(huddle::devices::INPUT_ENV).ok(), move |frame| sink.send(frame))?) } else { None };
             let mut file = match &record {
                 Some(p) => Some(std::fs::File::create(p)?),
                 None => None,
@@ -213,6 +215,13 @@ pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
             let _ = tokio::time::timeout(std::time::Duration::from_secs(5), async { while let Some(ev) = session.events.recv().await { if matches!(ev, SessionEvent::Ended) { break; } } }).await;
             let rms = if received > 0 { (sum_sq / received as f64).sqrt() } else { 0.0 };
             println!("received {:.1} s of audio, rms {rms:.0}", received as f64 / SAMPLE_RATE as f64);
+        }
+        Ctl::AudioDevices => {
+            let (inputs, outputs) = huddle::devices::list_devices()?;
+            println!("inputs (SLACKTUI_AUDIO_INPUT):");
+            inputs.iter().for_each(|d| println!("  {d}"));
+            println!("outputs (SLACKTUI_AUDIO_OUTPUT):");
+            outputs.iter().for_each(|d| println!("  {d}"));
         }
         Ctl::HuddleLeave { channel, call_id, attendee_id } => {
             let id = resolve_channel(&client, &channel).await?;

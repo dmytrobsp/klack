@@ -52,6 +52,44 @@ pub fn to_mono(data: &[f32], channels: usize) -> Vec<f32> {
     data.chunks(channels).map(|c| c.iter().sum::<f32>() / c.len() as f32).collect()
 }
 
+/// Environment variables naming the devices to use (a case-insensitive part of the name).
+pub const INPUT_ENV: &str = "SLACKTUI_AUDIO_INPUT";
+pub const OUTPUT_ENV: &str = "SLACKTUI_AUDIO_OUTPUT";
+
+/// Does a device called `name` match the user's `wanted` text?
+pub fn name_matches(name: &str, wanted: &str) -> bool {
+    name.to_lowercase().contains(&wanted.trim().to_lowercase())
+}
+
+/// The named device (`wanted`), or the default one. A device that was asked for by name but
+/// is missing is an error, never a silent fallback to the default.
+fn pick(input: bool, wanted: Option<&str>) -> Result<cpal::Device> {
+    let host = cpal::default_host();
+    match wanted.filter(|w| !w.trim().is_empty()) {
+        Some(w) => {
+            let mut devices = if input { host.input_devices()? } else { host.output_devices()? };
+            devices.find(|d| name_matches(&device_label(d), w)).ok_or_else(|| anyhow!("no {} device matching {w:?}", if input { "input" } else { "output" }))
+        }
+        None => if input { host.default_input_device() } else { host.default_output_device() }.ok_or_else(|| anyhow!("no default {} device", if input { "input" } else { "output" })),
+    }
+}
+
+/// "`<id>` — `<name>`": ALSA names repeat, the id tells devices apart; both can be matched.
+fn device_label(d: &cpal::Device) -> String {
+    match d.id() {
+        Ok(id) => format!("{id} — {d}"),
+        Err(_) => d.to_string(),
+    }
+}
+
+/// Labels of the input and output devices.
+pub fn list_devices() -> Result<(Vec<String>, Vec<String>)> {
+    let host = cpal::default_host();
+    let inputs = host.input_devices()?.map(|d| device_label(&d)).collect();
+    let outputs = host.output_devices()?.map(|d| device_label(&d)).collect();
+    Ok((inputs, outputs))
+}
+
 /// Turns device input (any rate, interleaved channels, `f32`) into 20 ms 48 kHz mono frames.
 #[derive(Debug, Clone)]
 pub struct MicConverter {
@@ -83,13 +121,14 @@ pub struct Microphone {
 }
 
 impl Microphone {
-    /// Capture the default input device and call `on_frame` with each 20 ms 48 kHz mono frame.
-    pub fn start(mut on_frame: impl FnMut(Vec<i16>) + Send + 'static) -> Result<Microphone> {
+    /// Capture `device` (part of its name; the default input if None) and call `on_frame`
+    /// with each 20 ms 48 kHz mono frame.
+    pub fn start(device: Option<String>, mut on_frame: impl FnMut(Vec<i16>) + Send + 'static) -> Result<Microphone> {
         let (stop_tx, stop_rx) = channel::<()>();
         let (ready_tx, ready_rx) = channel::<Result<()>>();
         std::thread::spawn(move || {
             let build = || -> Result<cpal::Stream> {
-                let device = cpal::default_host().default_input_device().ok_or_else(|| anyhow!("no microphone"))?;
+                let device = pick(true, device.as_deref())?;
                 let config = device.default_input_config()?.config();
                 let mut converter = MicConverter::new(config.sample_rate, config.channels as usize);
                 let stream = device.build_input_stream::<f32, _, _>(
@@ -132,14 +171,15 @@ pub struct Speaker {
 const MAX_QUEUE: usize = SAMPLE_RATE as usize / 2;
 
 impl Speaker {
-    pub fn start() -> Result<Speaker> {
+    /// Play on `device` (part of its name; the default output if None).
+    pub fn start(device: Option<String>) -> Result<Speaker> {
         let queue: Arc<Mutex<VecDeque<f32>>> = Arc::new(Mutex::new(VecDeque::new()));
         let (stop_tx, stop_rx) = channel::<()>();
         let (ready_tx, ready_rx): (Sender<Result<u32>>, Receiver<Result<u32>>) = channel();
         let q = Arc::clone(&queue);
         std::thread::spawn(move || {
             let build = || -> Result<(cpal::Stream, u32)> {
-                let device = cpal::default_host().default_output_device().ok_or_else(|| anyhow!("no speaker"))?;
+                let device = pick(false, device.as_deref())?;
                 let config = device.default_output_config()?.config();
                 let (rate, channels) = (config.sample_rate, config.channels as usize);
                 let stream = device.build_output_stream::<f32, _, _>(
@@ -224,6 +264,13 @@ mod tests {
         assert!((1300..=1340).contains(&crossings), "{crossings}");
         let rms = (all.iter().map(|s| (*s as f64).powi(2)).sum::<f64>() / all.len() as f64).sqrt();
         assert!((10_000.0..13_500.0).contains(&rms), "{rms}");
+    }
+
+    #[test]
+    fn device_names() {
+        assert!(name_matches("HyperX Cloud III Wireless Analog Stereo", "hyperx"));
+        assert!(name_matches("pipewire", " PipeWire "));
+        assert!(!name_matches("default", "hdmi"));
     }
 
     #[test]

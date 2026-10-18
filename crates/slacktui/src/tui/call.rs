@@ -36,7 +36,7 @@ impl Call {
         let sink = session.pcm_sink();
         let (_, empty) = tokio::sync::mpsc::unbounded_channel();
         let mut audio = std::mem::replace(&mut session.audio, empty);
-        let speaker_error = match Speaker::start() {
+        let speaker_error = match Speaker::start(std::env::var(huddle::devices::OUTPUT_ENV).ok()) {
             Ok(mut speaker) => {
                 tokio::spawn(async move {
                     while let Some(frame) = audio.recv().await {
@@ -57,7 +57,7 @@ impl Call {
     pub fn toggle_mute(&mut self) -> anyhow::Result<()> {
         if self.muted {
             let sink = self.sink.clone();
-            self.mic = Some(Microphone::start(move |frame| sink.send(frame))?);
+            self.mic = Some(Microphone::start(std::env::var(huddle::devices::INPUT_ENV).ok(), move |frame| sink.send(frame))?);
             self.muted = false;
         } else {
             self.mic = None;
