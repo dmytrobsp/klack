@@ -129,7 +129,7 @@ Added by the user on 2026-10-18 (after item 13, before the video items):
 13i. Huddle view (added by the user on 2026-10-18; must come before the video items): a separate panel/view for the huddle instead of only the bottom call bar — one tile per participant (name, picture, speaking meter, mute state), your own controls, and the place where item 14's video and screen share will be drawn.
 Hard (huddles video; the user's real camera/screen must not be captured in tests without them):
 14. View other participants' webcam and screen share (receive video over WebRTC, decode, draw like the video player).
-15. Send your own webcam, then screen share (camera capture, VP8/H.264 encode; Wayland needs the screen-cast portal + PipeWire).
+15. Send your own webcam, then screen share (camera capture, VP8/H.264 encode; Wayland needs the screen-cast portal + PipeWire). This machine has no webcam (the user, 2026-10-18): test with a simulated camera — first a synthetic source in slacktui (`ctl huddle-media --video-test`, like `--tone`), then optionally a `v4l2loopback` virtual device fed by ffmpeg `testsrc` for the real capture path (needs `v4l2loopback-dkms` + `sudo modprobe`, done by the user).
 
 ## Known gaps / not verified
 
