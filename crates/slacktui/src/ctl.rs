@@ -65,6 +65,9 @@ pub enum Ctl {
         /// Send a synthetic camera: a moving test pattern (640×360, 15 fps, H.264).
         #[arg(long)]
         video_test: bool,
+        /// Save others' video into this folder: a PNG per person every 2 seconds.
+        #[arg(long)]
+        record_video: Option<std::path::PathBuf>,
     },
     /// List audio input/output devices (names usable in SLACKTUI_AUDIO_INPUT/OUTPUT).
     AudioDevices,
@@ -219,7 +222,7 @@ pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
             }
             sig.close().await;
         }
-        Ctl::HuddleMedia { channel, seconds, tone, record, mic, video_test } => {
+        Ctl::HuddleMedia { channel, seconds, tone, record, mic, video_test, record_video } => {
             use huddle::session::{FRAME_SAMPLES, SAMPLE_RATE, Session, SessionEvent};
             let id = resolve_channel(&client, &channel).await?;
             let creds = huddle::signaling::Credentials::from_rooms_join(&client.call_raw("rooms.join", &[("channel_id", id)]).await?)?;
@@ -263,6 +266,8 @@ pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
             let deadline = tokio::time::sleep(std::time::Duration::from_secs(seconds));
             tokio::pin!(deadline);
             let (mut phase, mut received, mut sum_sq) = (0u64, 0usize, 0f64);
+            // Pictures received per attendee, and when each was last saved.
+            let mut pictures: std::collections::BTreeMap<String, (u64, usize, usize, Option<std::time::Instant>)> = Default::default();
             loop {
                 tokio::select! {
                     _ = &mut deadline => break,
@@ -278,6 +283,20 @@ pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
                         Some(SessionEvent::Levels(_)) => {}
                         Some(ev) => println!("{ev:?}"),
                     },
+                    Some(frame) = session.video.recv() => {
+                        let entry = pictures.entry(frame.attendee_id.clone()).or_insert((0, 0, 0, None));
+                        entry.0 += 1;
+                        (entry.1, entry.2) = (frame.width, frame.height);
+                        if let Some(dir) = &record_video {
+                            if entry.3.is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(2)) {
+                                entry.3 = Some(std::time::Instant::now());
+                                std::fs::create_dir_all(dir)?;
+                                let who = if frame.attendee_id.is_empty() { "unknown".to_string() } else { frame.attendee_id.chars().take(8).collect() };
+                                let path = dir.join(format!("{who}-{:04}.png", entry.0));
+                                image::RgbImage::from_raw(frame.width as u32, frame.height as u32, frame.rgb.to_vec()).ok_or_else(|| anyhow::anyhow!("bad frame size"))?.save(&path)?;
+                            }
+                        }
+                    }
                     Some(pcm) = session.audio.recv() => {
                         received += pcm.len();
                         sum_sq += pcm.iter().map(|s| (*s as f64).powi(2)).sum::<f64>();
@@ -292,6 +311,9 @@ pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
             stop.store(true, std::sync::atomic::Ordering::Relaxed);
             if video_test {
                 println!("encoded {} kB of video", sent.load(std::sync::atomic::Ordering::Relaxed) / 1000);
+            }
+            for (who, (n, w, h, _)) in &pictures {
+                println!("video from {who}: {n} pictures, {w}×{h}");
             }
             session.leave();
             let _ = tokio::time::timeout(std::time::Duration::from_secs(5), async { while let Some(ev) = session.events.recv().await { if matches!(ev, SessionEvent::Ended) { break; } } }).await;

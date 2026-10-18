@@ -25,6 +25,9 @@ pub const MAX_SCALE: u16 = 3;
 pub struct HuddleView {
     /// Pictures that were on screen but not loaded yet (the caller fetches them).
     pub wanted: Vec<(File, (u16, u16))>,
+    /// Each participant's video picture as encoded for the terminal, with the frame it came
+    /// from and the size it was encoded for (re-encoded only when either changes).
+    encoded: std::collections::HashMap<String, (std::sync::Arc<Vec<u8>>, ratatui::layout::Size, ratatui_image::protocol::Protocol)>,
 }
 
 /// Where `n` tiles go in `area`, and their scale (1…MAX_SCALE): the largest whole scale
@@ -156,6 +159,14 @@ impl HuddleView {
             return;
         }
         // The picture, centred at the top; the initial while it loads (or without graphics).
+        // Someone's video fills the tile above the meter and state lines.
+        if let Some(frame) = call.video(&p.attendee_id) {
+            let area = Rect { height: inner.height.saturating_sub(2), ..inner };
+            self.draw_video(f, area, &p.attendee_id, &frame, media);
+            let below = Rect { y: area.y + area.height, height: inner.height - area.height, ..inner };
+            self.draw_state(f, below, me, level, speaking, muted, gated);
+            return;
+        }
         // Leave a row above the picture once the tile is large.
         let top = if inner.height > picture.1 + 4 { 1 } else { 0 };
         let pic = Rect { x: inner.x + inner.width.saturating_sub(picture.0) / 2, y: inner.y + top, width: picture.0.min(inner.width), height: picture.1.min(inner.height - top) };
@@ -181,12 +192,45 @@ impl HuddleView {
             f.render_widget(Paragraph::new(initial).style(Style::default().add_modifier(Modifier::BOLD)).alignment(Alignment::Center), mid);
         }
         let below = Rect { y: pic.y + pic.height + top, height: inner.height.saturating_sub(pic.height + 2 * top), ..inner };
+        self.draw_state(f, below, me, level, speaking, muted, gated);
+    }
+
+    /// The meter and the state line, centred.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_state(&self, f: &mut Frame, area: Rect, me: bool, level: f32, speaking: bool, muted: bool, gated: bool) {
+        let green = Style::default().fg(super::theme::p().own);
+        let dim = Style::default().fg(super::theme::p().dim);
         let meter_line = if muted { Line::styled("🔇", dim) } else { Line::styled(meter(level), if speaking { green } else { dim }) };
         let mut lines = vec![meter_line.alignment(Alignment::Center)];
         let text = state_text(muted, speaking, gated);
         let text = if me && text.is_empty() { "you" } else { text };
         lines.push(Line::styled(text, if speaking { green } else { dim }).alignment(Alignment::Center));
-        f.render_widget(Paragraph::new(lines), below);
+        f.render_widget(Paragraph::new(lines), area);
+    }
+
+    /// A video picture fitted into `area` (keeping its aspect), centred.
+    fn draw_video(&mut self, f: &mut Frame, area: Rect, attendee: &str, frame: &huddle::session::VideoFrame, media: &Media) {
+        use ratatui::layout::{Constraint, Flex, Layout, Size};
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+        let size = Size::new(area.width, area.height);
+        let fresh = self.encoded.get(attendee).is_some_and(|(rgb, s, _)| std::sync::Arc::ptr_eq(rgb, &frame.rgb) && *s == size);
+        if !fresh {
+            let Some(img) = image::RgbImage::from_raw(frame.width as u32, frame.height as u32, frame.rgb.to_vec()) else { return };
+            match media.picker.new_protocol(image::DynamicImage::ImageRgb8(img), size, ratatui_image::Resize::Fit(None)) {
+                Ok(proto) => {
+                    self.encoded.insert(attendee.to_string(), (frame.rgb.clone(), size, proto));
+                }
+                Err(e) => tracing::debug!("video picture: {e}"),
+            }
+        }
+        if let Some((_, _, proto)) = self.encoded.get(attendee) {
+            let fit = proto.size();
+            let [x] = Layout::horizontal([Constraint::Length(fit.width)]).flex(Flex::Center).areas(area);
+            let [cell] = Layout::vertical([Constraint::Length(fit.height)]).flex(Flex::Center).areas(x);
+            f.render_widget(ratatui_image::Image::new(proto), cell);
+        }
     }
 }
 

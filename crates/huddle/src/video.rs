@@ -103,6 +103,46 @@ impl H264Decoder {
     }
 }
 
+/// Reassembles H.264 access units (Annex-B) from RTP packets: payloads are depacketized
+/// (single NALs, STAP-A, FU-A) and collected until the marker bit. A sequence gap spoils the
+/// unit being collected (it is dropped; the caller should ask for a keyframe).
+#[derive(Default)]
+pub struct AccessUnitAssembler {
+    depacketizer: rtc::rtp::codec::h264::H264Packet,
+    buf: Vec<u8>,
+    last_seq: Option<u16>,
+    broken: bool,
+    /// Units dropped because of a gap or a bad payload.
+    pub dropped: u64,
+}
+
+impl AccessUnitAssembler {
+    /// Feed one packet; a complete access unit when this packet ends one.
+    pub fn push(&mut self, packet: &rtc::rtp::packet::Packet) -> Option<Vec<u8>> {
+        use rtc::rtp::packetizer::Depacketizer;
+        let seq = packet.header.sequence_number;
+        if self.last_seq.is_some_and(|last| seq != last.wrapping_add(1)) {
+            self.broken = true;
+        }
+        self.last_seq = Some(seq);
+        match self.depacketizer.depacketize(&packet.payload) {
+            Ok(bytes) => self.buf.extend_from_slice(&bytes),
+            Err(_) => self.broken = true,
+        }
+        if !packet.header.marker {
+            return None;
+        }
+        let unit = std::mem::take(&mut self.buf);
+        let broken = std::mem::replace(&mut self.broken, false);
+        if broken || unit.is_empty() {
+            self.dropped += 1;
+            self.depacketizer = Default::default();
+            return None;
+        }
+        Some(unit)
+    }
+}
+
 /// NAL unit types in an Annex-B access unit (start codes 00 00 01 or 00 00 00 01).
 pub fn nal_types(annex_b: &[u8]) -> Vec<u8> {
     let mut types = Vec::new();
@@ -177,5 +217,66 @@ mod tests {
         enc.request_keyframe();
         assert!(nal_types(&enc.encode_rgb(&test_pattern(11, w, h)).unwrap()).contains(&5));
         assert!(enc.encode_rgb(&[0; 3]).is_err(), "wrong size");
+    }
+
+    /// RTP packets for `units`, as webrtc-rs's own H.264 payloader makes them.
+    fn packetize(units: &[Vec<u8>], first_seq: u16) -> Vec<rtc::rtp::packet::Packet> {
+        use rtc::rtp::packetizer::Payloader;
+        let mut payloader = rtc::rtp::codec::h264::H264Payloader::default();
+        let mut seq = first_seq;
+        let mut out = Vec::new();
+        for unit in units {
+            let payloads = payloader.payload(1200, &bytes::Bytes::from(unit.clone())).unwrap();
+            let n = payloads.len();
+            for (i, payload) in payloads.into_iter().enumerate() {
+                let mut p = rtc::rtp::packet::Packet { payload, ..Default::default() };
+                p.header.sequence_number = seq;
+                p.header.marker = i + 1 == n;
+                seq = seq.wrapping_add(1);
+                out.push(p);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn rtp_round_trip_and_gaps() {
+        let (w, h) = (TEST_WIDTH, TEST_HEIGHT);
+        let mut enc = H264Encoder::new(w, h, TEST_FPS, 600_000).unwrap();
+        // Noise in the dark band makes the keyframe span many packets.
+        let mut seed = 7u32;
+        let noisy = |n: u64, seed: &mut u32| {
+            let mut rgb = test_pattern(n, w, h);
+            for px in rgb[w * h * 2..].iter_mut() {
+                *seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                *px = (*seed >> 24) as u8;
+            }
+            rgb
+        };
+        let units: Vec<Vec<u8>> = (0..5).map(|n| enc.encode_rgb(&noisy(n, &mut seed)).unwrap()).collect();
+        // Across the sequence number wrap.
+        let packets = packetize(&units, u16::MAX - 2);
+        assert!(packets.len() > units.len(), "the keyframe needs several packets");
+        let mut asm = AccessUnitAssembler::default();
+        let mut dec = H264Decoder::new().unwrap();
+        let mut pictures = 0;
+        for p in &packets {
+            if let Some(unit) = asm.push(p) {
+                if let Some((dw, dh, rgb)) = dec.decode(&unit).unwrap() {
+                    assert_eq!((dw, dh), (w, h));
+                    assert!(pixel(&rgb, w, 5, 5)[0] > 200, "white bar");
+                    pictures += 1;
+                }
+            }
+        }
+        assert_eq!((pictures, asm.dropped), (5, 0));
+        // A lost packet inside the keyframe spoils that unit only.
+        let mut packets = packetize(&units, 100);
+        let end = packets.iter().position(|p| p.header.marker).unwrap();
+        assert!(end >= 2);
+        packets.remove(end - 1);
+        let mut asm = AccessUnitAssembler::default();
+        let got = packets.iter().filter_map(|p| asm.push(p)).count();
+        assert_eq!((got, asm.dropped), (4, 1));
     }
 }

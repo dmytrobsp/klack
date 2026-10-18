@@ -47,10 +47,90 @@ pub fn udp_turn_uris(turn: &SdkTurnCredentials) -> Vec<String> {
     turn.uris.iter().filter(|u| u.starts_with("turn:") && !u.contains("transport=tcp")).cloned().collect()
 }
 
+/// A decoded picture from a remote video track.
+#[derive(Debug, Clone)]
+pub struct DecodedFrame {
+    /// The track's SSRC (SUBSCRIBE_ACK maps it to a stream).
+    pub ssrc: u32,
+    /// The track's MediaStream id from the answer's msid (`v_<mid>` by Chime's convention).
+    pub msid: String,
+    pub width: usize,
+    pub height: usize,
+    /// Packed RGB.
+    pub rgb: Arc<Vec<u8>>,
+}
+
 struct Handler {
     gathered: watch::Sender<bool>,
     state: watch::Sender<RTCPeerConnectionState>,
     incoming: mpsc::UnboundedSender<Bytes>,
+    frames: mpsc::UnboundedSender<DecodedFrame>,
+}
+
+/// How often to ask for a keyframe while none has decoded yet (or after a loss).
+const PLI_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Receive one remote video track: RTP → access units → a decoder thread → frames. Asks for
+/// a keyframe (PLI) until a picture decodes, and again after a lost packet or a decode error.
+async fn receive_video(track: Arc<dyn TrackRemote>, frames: mpsc::UnboundedSender<DecodedFrame>) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let msid = track.stream_id().await;
+    let (units_tx, units_rx) = std::sync::mpsc::channel::<(u32, Vec<u8>)>();
+    let want_keyframe = Arc::new(AtomicBool::new(true));
+    let want = want_keyframe.clone();
+    let id = msid.clone();
+    std::thread::spawn(move || {
+        let mut decoder = match crate::video::H264Decoder::new() {
+            Ok(d) => d,
+            Err(e) => return tracing::warn!("video {id}: {e}"),
+        };
+        for (ssrc, unit) in units_rx {
+            match decoder.decode(&unit) {
+                Ok(Some((width, height, rgb))) => {
+                    if frames.send(DecodedFrame { ssrc, msid: id.clone(), width, height, rgb: Arc::new(rgb) }).is_err() {
+                        break;
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::debug!("video {id}: {e}");
+                    want.store(true, Ordering::Relaxed);
+                }
+            }
+        }
+    });
+    let mut assembler = crate::video::AccessUnitAssembler::default();
+    let mut decoded_once = false;
+    let mut last_pli: Option<Instant> = None;
+    let mut dropped = 0;
+    while let Some(evt) = track.poll().await {
+        let TrackRemoteEvent::OnRtpPacket(packet) = evt else { continue };
+        let ssrc = packet.header.ssrc;
+        if let Some(unit) = assembler.push(&packet) {
+            if !decoded_once && crate::video::nal_types(&unit).contains(&5) {
+                decoded_once = true;
+                want_keyframe.store(false, Ordering::Relaxed);
+            }
+            if units_tx.send((ssrc, unit)).is_err() {
+                break;
+            }
+        }
+        if assembler.dropped != dropped {
+            dropped = assembler.dropped;
+            want_keyframe.store(true, Ordering::Relaxed);
+        }
+        if want_keyframe.load(Ordering::Relaxed) && last_pli.is_none_or(|t| t.elapsed() >= PLI_INTERVAL) {
+            last_pli = Some(Instant::now());
+            if decoded_once {
+                want_keyframe.store(false, Ordering::Relaxed);
+            }
+            let pli = rtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication { sender_ssrc: 0, media_ssrc: ssrc };
+            if let Err(e) = track.write_rtcp(vec![Box::new(pli)]).await {
+                tracing::debug!("PLI: {e}");
+            }
+        }
+    }
+    tracing::info!("video track {msid} ended");
 }
 
 #[async_trait::async_trait]
@@ -67,6 +147,11 @@ impl PeerConnectionEventHandler for Handler {
     }
 
     async fn on_track(&self, track: Arc<dyn TrackRemote>) {
+        if track.kind().await == RtpCodecKind::Video {
+            tracing::info!("video track {} (ssrcs {:?})", track.stream_id().await, track.ssrcs().await);
+            tokio::spawn(receive_video(track, self.frames.clone()));
+            return;
+        }
         if track.kind().await != RtpCodecKind::Audio {
             return;
         }
@@ -90,6 +175,10 @@ pub struct Media {
     ssrc: u32,
     /// The camera track and its SSRC, when sending video.
     video: Option<(Arc<TrackLocalStaticSample>, u32)>,
+    /// Receive-only video sections, in SDP order after the camera's.
+    receivers: Vec<Arc<dyn webrtc::rtp_transceiver::RtpTransceiver>>,
+    /// Pictures decoded from other people's video.
+    pub frames: mpsc::UnboundedReceiver<DecodedFrame>,
     /// Opus payloads received from the meeting (the server's mix).
     pub incoming: mpsc::UnboundedReceiver<Bytes>,
     pub state: watch::Receiver<RTCPeerConnectionState>,
@@ -102,9 +191,8 @@ impl Media {
         let codec = RTCRtpCodec { mime_type: MIME_TYPE_OPUS.to_owned(), clock_rate: 48000, channels: 2, sdp_fmtp_line: "minptime=10;useinbandfec=1".to_owned(), rtcp_feedback: vec![] };
         let mut media_engine = MediaEngine::default();
         media_engine.register_codec(RTCRtpCodecParameters { rtp_codec: codec.clone(), payload_type: OPUS_PAYLOAD_TYPE, ..Default::default() }, RtpCodecKind::Audio)?;
-        if send_video {
-            media_engine.register_codec(RTCRtpCodecParameters { rtp_codec: h264_codec(), payload_type: H264_PAYLOAD_TYPE, ..Default::default() }, RtpCodecKind::Video)?;
-        }
+        // Registered even when not sending, to receive others' video.
+        media_engine.register_codec(RTCRtpCodecParameters { rtp_codec: h264_codec(), payload_type: H264_PAYLOAD_TYPE, ..Default::default() }, RtpCodecKind::Video)?;
         let registry = register_default_interceptors(Registry::new(), &mut media_engine)?;
         let uris = udp_turn_uris(turn);
         if uris.is_empty() {
@@ -117,7 +205,8 @@ impl Media {
         let (gathered_tx, mut gathered) = watch::channel(false);
         let (state_tx, state) = watch::channel(RTCPeerConnectionState::New);
         let (incoming_tx, incoming) = mpsc::unbounded_channel();
-        let handler = Arc::new(Handler { gathered: gathered_tx, state: state_tx, incoming: incoming_tx });
+        let (frames_tx, frames) = mpsc::unbounded_channel();
+        let handler = Arc::new(Handler { gathered: gathered_tx, state: state_tx, incoming: incoming_tx, frames: frames_tx });
         let pc = PeerConnectionBuilder::new()
             .with_configuration(config)
             .with_media_engine(media_engine)
@@ -165,7 +254,7 @@ impl Media {
         tokio::time::timeout(Duration::from_secs(10), gathered.wait_for(|g| *g)).await.map_err(|_| anyhow!("ICE gathering timed out"))??;
         let sdp = pc.local_description().await.ok_or_else(|| anyhow!("no local description"))?.sdp;
         tracing::debug!("SDP offer:\n{}", sdp_summary(&sdp));
-        Ok((Media { pc, track, ssrc, video, incoming, state }, sdp))
+        Ok((Media { pc, track, ssrc, video, receivers: Vec::new(), frames, incoming, state }, sdp))
     }
 
     /// Apply the server's SDP answer (from SUBSCRIBE_ACK).
@@ -180,6 +269,28 @@ impl Media {
         let sample = rtc::media::Sample { data: Bytes::from(frame), timestamp: Instant::now(), duration, packet_timestamp: 0, prev_dropped_packets: 0, prev_padding_packets: 0 };
         self.track.write_sample(self.ssrc, OPUS_PAYLOAD_TYPE, &sample, &[]).await?;
         Ok(())
+    }
+
+    /// A new offer with one receive-only video section per entry of `slots` (true: receiving,
+    /// false: inactive), after the camera's; sections are only ever added, never removed.
+    pub async fn reoffer(&mut self, slots: &[bool]) -> Result<String> {
+        use webrtc::rtp_transceiver::RtpTransceiver;
+        let dir = |on: bool| if on { RTCRtpTransceiverDirection::Recvonly } else { RTCRtpTransceiverDirection::Inactive };
+        for (t, on) in self.receivers.iter().zip(slots) {
+            if t.direction().await? != dir(*on) {
+                t.set_direction(dir(*on)).await?;
+            }
+        }
+        for on in slots.iter().skip(self.receivers.len()) {
+            let init = RTCRtpTransceiverInit { direction: dir(*on), streams: vec![], send_encodings: vec![] };
+            let t: Arc<dyn RtpTransceiver> = self.pc.add_transceiver_from_kind(RtpCodecKind::Video, Some(init)).await?;
+            self.receivers.push(t);
+        }
+        let offer = self.pc.create_offer(None).await?;
+        self.pc.set_local_description(offer).await?;
+        let sdp = self.pc.local_description().await.ok_or_else(|| anyhow!("no local description"))?.sdp;
+        tracing::debug!("SDP re-offer:\n{}", sdp_summary(&sdp));
+        Ok(sdp)
     }
 
     /// Send one H.264 access unit (Annex-B) covering `duration`; nothing without a camera section.

@@ -37,7 +37,14 @@ pub struct Call {
     mic: Option<Microphone>,
     /// Why there is no sound, if the speaker could not be opened.
     pub speaker_error: Option<String>,
+    /// The latest picture of each participant's video and when it came, by attendee id.
+    pub videos: Videos,
 }
+
+pub type Videos = std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, huddle::session::VideoFrame)>>>;
+
+/// A picture older than this means the video has stopped.
+pub const VIDEO_STALE: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// A four-bar level meter ("▂▄▆█" when loud, "▂···" when quiet).
 pub fn meter(level: f32) -> String {
@@ -54,6 +61,16 @@ impl Call {
         let sink = session.pcm_sink();
         let (_, empty) = tokio::sync::mpsc::unbounded_channel();
         let mut audio = std::mem::replace(&mut session.audio, empty);
+        // Keep only the latest picture per person (decoding already happened off this task).
+        let (_, no_video) = tokio::sync::mpsc::unbounded_channel();
+        let mut video = std::mem::replace(&mut session.video, no_video);
+        let videos: Videos = Default::default();
+        let latest = videos.clone();
+        tokio::spawn(async move {
+            while let Some(frame) = video.recv().await {
+                latest.lock().unwrap_or_else(|e| e.into_inner()).insert(frame.attendee_id.clone(), (std::time::Instant::now(), frame));
+            }
+        });
         let (volume, speaker_error) = match Speaker::start(devices.1) {
             Ok(mut speaker) => {
                 let volume = speaker.volume();
@@ -85,6 +102,7 @@ impl Call {
             sink,
             mic: None,
             speaker_error,
+            videos,
         };
         call.set_audio(audio_settings);
         call
@@ -156,6 +174,12 @@ impl Call {
         (level, level >= huddle::session::SPEAKING && !gated && !muted, muted, gated)
     }
 
+    /// The participant's latest picture, if their video is running.
+    pub fn video(&self, attendee_id: &str) -> Option<huddle::session::VideoFrame> {
+        let videos = self.videos.lock().unwrap_or_else(|e| e.into_inner());
+        videos.get(attendee_id).filter(|(at, _)| at.elapsed() < VIDEO_STALE).map(|(_, f)| f.clone())
+    }
+
     /// `keys`: the mute, huddle, thread and view keys, for the hint.
     pub fn draw(&self, f: &mut Frame, area: Rect, ws: &Workspace, keys: (&str, &str, &str, &str)) {
         let place = self.place(ws);
@@ -171,6 +195,9 @@ impl Call {
             let (level, speaking, muted, _) = self.participant_state(p, &ws.self_id);
             let style = if speaking { green.add_modifier(Modifier::BOLD) } else { Style::default() };
             spans.push(Span::styled(ws.person_label(p.user_id()), style));
+            if self.video(&p.attendee_id).is_some() {
+                spans.push(Span::raw(" 📹"));
+            }
             if muted {
                 spans.push(Span::styled(" 🔇", Style::default().fg(super::theme::p().dim)));
             } else {

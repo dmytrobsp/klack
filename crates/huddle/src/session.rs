@@ -73,6 +73,55 @@ pub fn video_sources(index: &crate::proto::SdkIndexFrame) -> Vec<VideoSource> {
         .collect()
 }
 
+/// The most videos we subscribe to (the server's limit may be lower).
+pub const MAX_VIDEOS: usize = 9;
+
+/// A picture from someone's video.
+#[derive(Debug, Clone)]
+pub struct VideoFrame {
+    pub attendee_id: String,
+    pub stream_id: u32,
+    pub width: usize,
+    pub height: usize,
+    /// Packed RGB.
+    pub rgb: Arc<Vec<u8>>,
+}
+
+/// Which streams to receive, as the SDK's default policy picks them: per publisher (group)
+/// the source with the highest bitrate, never our own (nor our own content share), at most
+/// `limit`, in group order.
+pub fn choose_streams(sources: &[VideoSource], self_attendee: &str, limit: usize) -> Vec<u32> {
+    let mut best: BTreeMap<u32, &VideoSource> = BTreeMap::new();
+    for s in sources.iter().filter(|s| !s.attendee_id.starts_with(self_attendee) || self_attendee.is_empty()) {
+        let slot = best.entry(s.group_id).or_insert(s);
+        if s.max_bitrate_kbps > slot.max_bitrate_kbps {
+            *slot = s;
+        }
+    }
+    best.values().take(limit).map(|s| s.stream_id).collect()
+}
+
+/// Receive slots (one per receive-only video section, 0 = unused) after `wanted` changed:
+/// streams still wanted keep their section, the others free it, new ones take a free
+/// section or a new one at the end (sections are never removed).
+pub fn assign_slots(current: &[u32], wanted: &[u32]) -> Vec<u32> {
+    let mut slots: Vec<u32> = current.iter().map(|s| if wanted.contains(s) { *s } else { 0 }).collect();
+    for w in wanted {
+        if !slots.contains(w) {
+            match slots.iter_mut().find(|s| **s == 0) {
+                Some(free) => *free = *w,
+                None => slots.push(*w),
+            }
+        }
+    }
+    slots
+}
+
+/// SUBSCRIBE's `receive_stream_ids`: one per video section in SDP order — 0 for the camera's.
+pub fn receive_ids(camera: bool, slots: &[u32]) -> Vec<u32> {
+    camera.then_some(0).into_iter().chain(slots.iter().copied()).collect()
+}
+
 #[derive(Debug, Clone)]
 pub enum SessionEvent {
     /// Media connected: audio flows.
@@ -105,6 +154,8 @@ pub struct Session {
     pub events: mpsc::UnboundedReceiver<SessionEvent>,
     /// The meeting's mix, 20 ms mono frames.
     pub audio: mpsc::UnboundedReceiver<Vec<i16>>,
+    /// Pictures from other people's video.
+    pub video: mpsc::UnboundedReceiver<VideoFrame>,
 }
 
 /// Clonable handle that feeds microphone frames into a session (e.g. from an audio thread).
@@ -148,15 +199,16 @@ impl Session {
         let (commands, command_rx) = mpsc::unbounded_channel();
         let (event_tx, events) = mpsc::unbounded_channel();
         let (audio_tx, audio) = mpsc::unbounded_channel();
+        let (video_tx, video) = mpsc::unbounded_channel();
         let keyframe = Arc::new(AtomicBool::new(false));
         let kf = keyframe.clone();
         tokio::spawn(async move {
-            if let Err(e) = run(creds, muted, send_video, kf, command_rx, event_tx.clone(), audio_tx).await {
+            if let Err(e) = run(creds, muted, send_video, kf, command_rx, event_tx.clone(), audio_tx, video_tx).await {
                 let _ = event_tx.send(SessionEvent::Error(e.to_string()));
             }
             let _ = event_tx.send(SessionEvent::Ended);
         });
-        Session { commands, keyframe, events, audio }
+        Session { commands, keyframe, events, audio, video }
     }
 
     /// Queue 20 ms of microphone audio (960 samples, 48 kHz mono).
@@ -203,11 +255,13 @@ async fn run(
     mut commands: mpsc::UnboundedReceiver<Command>,
     events: mpsc::UnboundedSender<SessionEvent>,
     audio: mpsc::UnboundedSender<Vec<i16>>,
+    video: mpsc::UnboundedSender<VideoFrame>,
 ) -> Result<()> {
     let mut sig = Signaling::connect(&creds).await?;
     sig.send(&signaling::join_frame(audio_session_id())).await?;
     let mut earlier = Vec::new();
     let ack = expect_keeping(&mut sig, Type::JoinAck, &mut earlier).await?;
+    let limit = ack.joinack.as_ref().and_then(|a| a.video_subscription_limit).map_or(MAX_VIDEOS, |l| (l as usize).min(MAX_VIDEOS));
     let turn = ack.joinack.and_then(|a| a.turn_credentials).ok_or_else(|| anyhow!("JOIN_ACK without TURN credentials"))?;
     let (mut media, offer) = Media::offer(&turn, send_video).await?;
     // One entry per video section: just the camera's, which is 0.
@@ -215,15 +269,23 @@ async fn run(
     sig.send(&signaling::subscribe_frame(offer, &creds.meeting.media_placement.audio_host_url, &creds.attendee.attendee_id, muted, send_video, receive)).await?;
     let suback = expect_keeping(&mut sig, Type::SubscribeAck, &mut earlier).await?.suback.unwrap_or_default();
     // The last INDEX before SUBSCRIBE_ACK still says who is sending video.
-    if let Some(index) = earlier.iter().rev().find_map(|f| f.index.as_ref()) {
-        let _ = events.send(SessionEvent::VideoSources(video_sources(index)));
+    let mut sources = earlier.iter().rev().find_map(|f| f.index.as_ref()).map(video_sources).unwrap_or_default();
+    if !sources.is_empty() {
+        let _ = events.send(SessionEvent::VideoSources(sources.clone()));
     }
     tracing::info!(allocations = ?suback.allocations, tracks = ?suback.tracks, "SUBSCRIBE_ACK");
     if let Some(stream_id) = suback.allocations.iter().find(|a| a.track_label.as_deref() == Some(crate::media::VIDEO_TRACK_LABEL)).and_then(|a| a.stream_id) {
         let _ = events.send(SessionEvent::SendingVideo { stream_id });
     }
+    let mut ssrc_streams: std::collections::HashMap<u32, u32> = suback.tracks.iter().filter_map(|t| Some((t.ssrc?, t.stream_id?))).collect();
     let answer = suback.sdp_answer.ok_or_else(|| anyhow!("SUBSCRIBE_ACK without an SDP answer"))?;
     media.accept(answer).await?;
+
+    // Receiving video: one receive-only section per subscribed stream; a change means a new
+    // offer in a new SUBSCRIBE (one at a time: a change meanwhile waits for its ACK).
+    let me = creds.attendee.attendee_id.clone();
+    let mut slots: Vec<u32> = Vec::new();
+    let (mut subscribing, mut resubscribe) = (false, true);
 
     let mut encoder = opus::Encoder::new(SAMPLE_RATE, opus::Channels::Mono, opus::Application::Voip)?;
     let mut decoder = opus::Decoder::new(SAMPLE_RATE, opus::Channels::Mono)?;
@@ -232,7 +294,23 @@ async fn run(
     let mut out = vec![0u8; 4000];
     let mut pcm = vec![0i16; FRAME_SAMPLES * 6];
     loop {
+        if resubscribe && !subscribing {
+            resubscribe = false;
+            let wanted = assign_slots(&slots, &choose_streams(&sources, &me, limit));
+            if wanted != slots {
+                slots = wanted;
+                let offer = media.reoffer(&slots.iter().map(|s| *s != 0).collect::<Vec<_>>()).await?;
+                tracing::info!(?slots, "subscribing to video");
+                sig.send(&signaling::subscribe_frame(offer, &creds.meeting.media_placement.audio_host_url, &me, muted, send_video, receive_ids(send_video, &slots))).await?;
+                subscribing = true;
+            }
+        }
         tokio::select! {
+            Some(f) = media.frames.recv() => {
+                let stream_id = ssrc_streams.get(&f.ssrc).copied().unwrap_or_default();
+                let attendee_id = sources.iter().find(|s| s.stream_id == stream_id).map(|s| s.attendee_id.clone()).unwrap_or_default();
+                let _ = video.send(VideoFrame { attendee_id, stream_id, width: f.width, height: f.height, rgb: f.rgb });
+            }
             changed = media.state.changed() => {
                 if changed.is_err() { break; }
                 let state = *media.state.borrow();
@@ -267,7 +345,18 @@ async fn run(
                     let _ = events.send(SessionEvent::Levels(levels));
                 }
                 if let Some(index) = &frame.index {
-                    let _ = events.send(SessionEvent::VideoSources(video_sources(index)));
+                    sources = video_sources(index);
+                    let _ = events.send(SessionEvent::VideoSources(sources.clone()));
+                    resubscribe = true;
+                }
+                if let Some(ack) = frame.suback.clone().filter(|_| frame.r#type == Type::SubscribeAck as i32) {
+                    subscribing = false;
+                    tracing::info!(tracks = ?ack.tracks, "SUBSCRIBE_ACK (video)");
+                    ssrc_streams = ack.tracks.iter().filter_map(|t| Some((t.ssrc?, t.stream_id?))).collect();
+                    match ack.sdp_answer {
+                        Some(answer) => media.accept(answer).await?,
+                        None => tracing::warn!("SUBSCRIBE_ACK without an answer"),
+                    }
                 }
                 if let Some(e) = &frame.error {
                     return Err(anyhow!("signaling error {:?}: {}", e.status, e.description.clone().unwrap_or_default()));
@@ -368,6 +457,20 @@ mod tests {
         // a reconnects under stream 3: stream 1 goes away.
         apply_stream_info(&mut r, &F { streams: vec![join(3, "a")] });
         assert_eq!(r.keys().copied().collect::<Vec<_>>(), vec![3]);
+    }
+
+    #[test]
+    fn video_subscriptions() {
+        let src = |stream_id: u32, group_id: u32, attendee: &str, kbps: u32| VideoSource { stream_id, group_id, attendee_id: attendee.into(), external_user_id: String::new(), max_bitrate_kbps: kbps };
+        let sources = vec![src(7, 3, "b", 300), src(8, 3, "b", 1200), src(4, 2, "me", 1000), src(9, 5, "c", 600), src(10, 6, "me#content", 900)];
+        assert_eq!(choose_streams(&sources, "me", 9), vec![8, 9], "best per group, never our own");
+        assert_eq!(choose_streams(&sources, "me", 1), vec![8]);
+        // Slots keep their streams; freed ones are reused before new sections are added.
+        assert_eq!(assign_slots(&[], &[8, 9]), vec![8, 9]);
+        assert_eq!(assign_slots(&[8, 9], &[9]), vec![0, 9]);
+        assert_eq!(assign_slots(&[0, 9], &[9, 11, 12]), vec![11, 9, 12]);
+        assert_eq!(receive_ids(true, &[0, 9]), vec![0, 0, 9]);
+        assert_eq!(receive_ids(false, &[5]), vec![5]);
     }
 
     #[test]
