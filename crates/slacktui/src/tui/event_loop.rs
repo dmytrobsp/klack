@@ -23,6 +23,8 @@ use super::terminal::TerminalGuard;
 /// Results of background API calls.
 enum Net {
     Boot { boot: Value, users: Vec<User>, counts: Option<Value> },
+    /// A desktop notification was clicked.
+    NotificationClicked(super::notify::Target),
     /// A person looked up with `users.info`.
     UserInfo(User),
     /// Public channels, including those we are not in.
@@ -1021,6 +1023,15 @@ impl App {
                 self.focus = Focus::Messages;
             }
         }
+    }
+
+    /// What clicking a desktop notification about `target` does: open it here (a click
+    /// after switching workspace finds this session gone and does nothing).
+    fn on_click(&self, target: super::notify::Target) -> Box<dyn FnOnce() + Send> {
+        let net = self.net.clone();
+        Box::new(move || {
+            let _ = net.send(Net::NotificationClicked(target));
+        })
     }
 
     /// Show conversation `id` and put the cursor in the composer. A channel we are not in
@@ -2383,7 +2394,8 @@ fn handle_rtm(app: &mut App, ev: slack_core::rtm::RtmEvent) {
                 let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64();
                 if let Some((title, body)) = super::notify::huddle_notification(&app.ws, &channel, &user, in_it, now, &app.keys.first_key(Context::Global, Action::Huddle).unwrap_or_default()) {
                     if app.ws.settings.notifications.desktop {
-                        super::notify::show(title, body, &app.ws.settings);
+                        let target = super::notify::Target { channel: channel.clone(), ts: None, thread_ts: None };
+                        super::notify::show(title, body, &app.ws.settings, Some(app.on_click(target)));
                     }
                 }
             }
@@ -2398,7 +2410,8 @@ fn handle_rtm(app: &mut App, ev: slack_core::rtm::RtmEvent) {
                 tracing::debug!(channel, ts = m.ts, in_view, focused = app.terminal_focused, dnd = ?app.ws.dnd, notify = note.is_some(), "incoming message");
                 if let Some((title, body)) = note {
                     if app.ws.settings.notifications.desktop {
-                        super::notify::show(title, body, &app.ws.settings);
+                        let target = super::notify::Target::message(&channel, &m);
+                        super::notify::show(title, body, &app.ws.settings, Some(app.on_click(target)));
                     }
                 }
             }
@@ -2408,6 +2421,13 @@ fn handle_rtm(app: &mut App, ev: slack_core::rtm::RtmEvent) {
 
 fn handle_net(app: &mut App, msg: Net) {
     match msg {
+        Net::NotificationClicked(target) => {
+            tracing::debug!(?target, "notification clicked");
+            match target.ts {
+                Some(ts) => app.open_hit(super::search::Hit { channel: target.channel, ts, thread_ts: target.thread_ts, user: None, text: String::new() }),
+                None => app.jump_to(&target.channel),
+            }
+        }
         Net::Boot { boot, users, counts } => {
             for u in users {
                 app.ws.users.insert(u.id.clone(), u);

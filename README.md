@@ -98,6 +98,11 @@ strip. Arrows select a tile, Enter (or a second click) maximizes it, Esc shows a
 and then leaves the tiles; F8 again, or opening a conversation, brings the messages back. Someone starting a huddle in a DM with you sends a
 desktop notification.
 
+Clicking a desktop notification (Linux desktops with an XDG notification server) opens its
+conversation in slacktui — a thread reply opens the thread with the reply selected — for 30
+minutes after it was shown. The terminal window is not raised (a terminal program cannot do
+that portably).
+
 Under the hood a huddle is an Amazon Chime SDK meeting: `rooms.join` hands out the meeting
 credentials, `crates/huddle` speaks Chime's signaling protocol and runs WebRTC audio (webrtc-rs,
 Opus). See `../notes/huddles.md` for how this was worked out.

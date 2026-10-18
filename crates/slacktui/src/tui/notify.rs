@@ -63,21 +63,66 @@ pub fn huddle_notification(ws: &Workspace, channel: &str, user: &str, in_it: boo
     Some((title, format!("Press {join_key} in slacktui to join")))
 }
 
+/// Where clicking a notification takes you: a conversation, and the message in it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Target {
+    pub channel: String,
+    pub ts: Option<String>,
+    /// The thread the message is in.
+    pub thread_ts: Option<String>,
+}
+
+impl Target {
+    pub fn message(channel: &str, m: &Message) -> Target {
+        Target { channel: channel.to_string(), ts: Some(m.ts.clone()), thread_ts: m.thread_ts.clone().filter(|_| m.is_reply()) }
+    }
+}
+
+/// How long a click on a notification still counts (the notification centre keeps them).
+#[cfg(all(unix, not(target_os = "macos")))]
+const CLICK_WAIT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
 /// Show a desktop notification without blocking the UI, with the sound from the settings.
-pub fn show(title: String, body: String, settings: &super::settings::Settings) {
+/// `on_click` runs when the notification is clicked (XDG desktops only; elsewhere a click
+/// does what the system does).
+pub fn show(title: String, body: String, settings: &super::settings::Settings, on_click: Option<Box<dyn FnOnce() + Send>>) {
     let sound = settings.notifications.sound.clone();
     super::sound::play(&sound, super::settings::Settings::device(huddle::devices::OUTPUT_ENV, &settings.audio.output), settings.audio.sound_volume);
-    tokio::task::spawn_blocking(move || {
-        let mut n = notify_rust::Notification::new();
-        n.appname("slacktui").summary(&title).body(&body);
-        if sound == "system" {
-            n.sound_name(super::sound::system_sound_name());
+    let mut n = notify_rust::Notification::new();
+    n.appname("slacktui").summary(&title).body(&body);
+    if sound == "system" {
+        n.sound_name(super::sound::system_sound_name());
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    tokio::spawn(async move {
+        // A click invokes the "default" action, which servers only offer when it is declared.
+        if on_click.is_some() {
+            n.action("default", "Open");
         }
-        let result = n.show();
-        if let Err(e) = result {
-            tracing::warn!("notification failed: {e}");
+        match n.show_async().await {
+            Ok(handle) => {
+                tracing::debug!(id = handle.id(), "notification shown");
+                if let Some(f) = on_click {
+                    let clicked = handle.wait_for_action_async(|r| {
+                        if matches!(r, notify_rust::NotificationResponse::Default) {
+                            f();
+                        }
+                    });
+                    let _ = tokio::time::timeout(CLICK_WAIT, clicked).await;
+                }
+            }
+            Err(e) => tracing::warn!("notification failed: {e}"),
         }
     });
+    #[cfg(not(all(unix, not(target_os = "macos"))))]
+    {
+        drop(on_click);
+        tokio::task::spawn_blocking(move || {
+            if let Err(e) = n.show() {
+                tracing::warn!("notification failed: {e}");
+            }
+        });
+    }
 }
 
 #[cfg(test)]
@@ -106,6 +151,18 @@ mod tests {
         assert_eq!(notification(&w, "C1", &msg("U2", "hey <@UME>"), false, 0.0).map(|n| n.0), Some("Bob in #general".into()));
         assert_eq!(notification(&w, "C1", &msg("U2", "<!here> lunch"), false, 0.0).map(|n| n.1), Some("@here lunch".into()));
         assert!(notification(&w, "C1", &msg("U2", "plain chatter"), false, 0.0).is_none());
+    }
+
+    #[test]
+    fn click_targets() {
+        let top = msg("U2", "hi");
+        assert_eq!(Target::message("C1", &top), Target { channel: "C1".into(), ts: Some("10.0".into()), thread_ts: None });
+        let mut parent = msg("U2", "a thread");
+        parent.thread_ts = Some("10.0".into());
+        assert_eq!(Target::message("C1", &parent).thread_ts, None, "a thread's parent opens in the channel");
+        let mut reply = msg("U2", "a reply");
+        (reply.ts, reply.thread_ts) = ("12.0".into(), Some("10.0".into()));
+        assert_eq!(Target::message("C1", &reply), Target { channel: "C1".into(), ts: Some("12.0".into()), thread_ts: Some("10.0".into()) });
     }
 
     #[test]
