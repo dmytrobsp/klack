@@ -14,6 +14,7 @@ use tokio::sync::mpsc;
 
 use super::composer::Composer;
 use super::messages::MessagePane;
+use super::picker::EmojiPicker;
 use super::sidebar::Sidebar;
 use super::state::Workspace;
 use super::terminal::TerminalGuard;
@@ -36,6 +37,8 @@ enum Focus {
 }
 
 struct App {
+    /// Open reaction picker, with the message it targets.
+    picker: Option<(EmojiPicker, String, String)>,
     rtm_commands: mpsc::UnboundedSender<slack_core::rtm::RtmCommand>,
     connected: bool,
     last_typing_sent: Option<std::time::Instant>,
@@ -106,6 +109,34 @@ impl App {
         });
     }
 
+    /// Toggle our reaction `name` on message `ts` in `channel` (optimistic, then API).
+    fn toggle_reaction(&mut self, channel: String, ts: String, name: String) {
+        let me = self.ws.self_id.clone();
+        let Some(msg) = self.ws.timelines.get_mut(&channel).and_then(|t| t.messages.iter_mut().find(|m| m.ts == ts)) else { return };
+        let had = msg.reactions.iter().any(|r| r.name == name && r.users.contains(&me));
+        match msg.reactions.iter().position(|r| r.name == name) {
+            Some(i) if had => {
+                let r = &mut msg.reactions[i];
+                r.users.retain(|u| *u != me);
+                r.count = r.count.saturating_sub(1);
+                if r.count == 0 {
+                    msg.reactions.remove(i);
+                }
+            }
+            Some(i) => {
+                msg.reactions[i].users.push(me);
+                msg.reactions[i].count += 1;
+            }
+            None => msg.reactions.push(slack_core::types::Reaction { name: name.clone(), users: vec![me], count: 1 }),
+        }
+        let (client, tx) = (self.client.clone(), self.net.clone());
+        tokio::spawn(async move {
+            if let Err(e) = client.react(&channel, &ts, &name, !had).await {
+                let _ = tx.send(Net::Error(format!("reaction failed: {e}")));
+            }
+        });
+    }
+
     /// Tell the other side we are typing (at most every 3 s).
     fn notify_typing(&mut self) {
         let Some(channel) = self.current.clone() else { return };
@@ -162,6 +193,7 @@ pub async fn run(client: Client) -> Result<()> {
     spawn_boot(client.clone(), net_tx.clone());
     let mut rtm = slack_core::rtm::spawn(client.clone());
     let mut app = App {
+        picker: None,
         rtm_commands: rtm.commands.clone(),
         connected: false,
         last_typing_sent: None,
@@ -210,6 +242,34 @@ pub async fn run(client: Client) -> Result<()> {
 /// Returns false to quit.
 fn handle_terminal(app: &mut App, ev: Event) -> bool {
     match ev {
+        Event::Key(k) if k.kind != KeyEventKind::Release && app.picker.is_some() => {
+            let custom: Vec<String> = app.ws.custom_emoji.keys().cloned().collect();
+            let Some((picker, _, _)) = app.picker.as_mut() else { return true };
+            let len = picker.candidates(&custom).len();
+            match k.code {
+                KeyCode::Esc => app.picker = None,
+                KeyCode::Up => picker.move_by(-1, len),
+                KeyCode::Down => picker.move_by(1, len),
+                KeyCode::PageUp => picker.move_by(-10, len),
+                KeyCode::PageDown => picker.move_by(10, len),
+                KeyCode::Backspace => {
+                    picker.query.pop();
+                    picker.selected = 0;
+                }
+                KeyCode::Char(c) if !k.modifiers.contains(KeyModifiers::CONTROL) => {
+                    picker.query.push(c);
+                    picker.selected = 0;
+                }
+                KeyCode::Enter => {
+                    if let Some((picker, channel, ts)) = app.picker.take() {
+                        if let Some(choice) = picker.candidates(&custom).get(picker.selected) {
+                            app.toggle_reaction(channel, ts, choice.name.clone());
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
         Event::Key(k) if k.kind != KeyEventKind::Release => {
             let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
             let alt = k.modifiers.contains(KeyModifiers::ALT);
@@ -279,6 +339,11 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
                         KeyCode::Home | KeyCode::Char('g') => app.messages.move_selection(&order, isize::MIN / 2),
                         KeyCode::End | KeyCode::Char('G') => app.messages.move_selection(&order, isize::MAX / 2),
                         KeyCode::Esc | KeyCode::Char('i') => app.focus = Focus::Composer,
+                        KeyCode::Char('r') => {
+                            if let (Some(channel), Some(ts)) = (app.current.clone(), app.messages.selected.clone()) {
+                                app.picker = Some((EmojiPicker::default(), channel, ts));
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -411,6 +476,10 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     let timeline = current.as_deref().and_then(|c| app.ws.timelines.get(c));
     app.messages.draw(f, msgs, &app.ws, current.as_deref(), timeline, app.focus == Focus::Messages);
     draw_composer(f, comp, app);
+    if let Some((picker, _, _)) = &app.picker {
+        let custom: Vec<String> = app.ws.custom_emoji.keys().cloned().collect();
+        picker.draw(f, main, &custom);
+    }
     let live = if app.connected { "● live" } else { "○ connecting" };
     let (unread, mentions) = app.ws.total_unread();
     let info = if app.status.is_empty() { format!("{unread} unread · {mentions} mentions") } else { app.status.clone() };
