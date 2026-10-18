@@ -49,6 +49,8 @@ Press **F1** (or `?`) in the app for the full list. The essentials:
 | Enter · Alt+Enter | send · new line |
 | @ # : | mention, channel, emoji autocomplete |
 | `/upload <path> [text]` | upload a file |
+| `/join [#channel]` · `/leave` | join (default: the channel you are previewing) · leave the current channel |
+| `/create <name>` · `/create-private <name>` | create a channel |
 | Ctrl+Q | quit |
 
 ## Huddles

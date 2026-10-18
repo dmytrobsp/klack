@@ -3,6 +3,7 @@
 pub mod autocomplete;
 pub mod call;
 pub mod clipboard;
+pub mod commands;
 pub mod composer;
 pub mod details;
 pub mod event_loop;

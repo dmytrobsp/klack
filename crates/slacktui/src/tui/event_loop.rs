@@ -24,6 +24,10 @@ enum Net {
     Boot { boot: Value, users: Vec<User>, counts: Option<Value> },
     /// Public channels, including those we are not in.
     Channels(Vec<slack_core::types::Conversation>),
+    /// A channel we joined or created.
+    Joined { channel: slack_core::types::Conversation, created: bool },
+    /// We left a channel.
+    Left(String),
     /// A page of history; `older` pages are prepended.
     History { channel: String, page: HistoryPage, older: bool },
     /// Our own message, as returned by chat.postMessage.
@@ -53,6 +57,11 @@ enum Net {
     /// An optimistic change failed: put the original message back.
     Restore { channel: String, message: slack_core::types::Message, error: String },
     Error(String),
+}
+
+enum Confirm {
+    Delete { channel: String, ts: String },
+    Leave(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,8 +111,8 @@ struct App {
     /// Thread replies are also sent to the channel.
     broadcast: bool,
     clipboard: super::clipboard::Clipboard,
-    /// Message (channel, ts) awaiting y/n delete confirmation.
-    confirm_delete: Option<(String, String)>,
+    /// An action awaiting y/n confirmation.
+    confirm: Option<Confirm>,
     /// Open reaction picker, with the message it targets.
     picker: Option<(EmojiPicker, String, String)>,
     rtm_commands: mpsc::UnboundedSender<slack_core::rtm::RtmCommand>,
@@ -237,19 +246,24 @@ impl App {
             return;
         }
         let broadcast = thread && self.broadcast;
+        let outside = self.ws.is_outside(&channel).then(|| self.ws.channel_label(&channel));
         let c = self.composer_for(thread);
         if c.is_empty() {
             return;
         }
-        match super::files::parse_upload(&c.text()) {
+        match super::commands::parse(&c.text()) {
             Some(Ok(cmd)) => {
                 c.push_history(c.text());
                 c.clear();
-                self.upload(channel, cmd, thread_ts);
+                self.run_command(channel, cmd, thread_ts);
                 return;
             }
             Some(Err(e)) => {
                 self.status = e;
+                return;
+            }
+            None if outside.is_some() => {
+                self.status = format!("you are not in #{} — /join to post", outside.unwrap_or_default());
                 return;
             }
             None => {}
@@ -269,6 +283,62 @@ impl App {
                 Err(e) => Net::Error(format!("send failed: {e}")),
             };
             let _ = tx.send(msg);
+        });
+    }
+
+    fn run_command(&mut self, channel: String, cmd: super::commands::Command, thread_ts: Option<String>) {
+        use super::commands::Command;
+        match cmd {
+            Command::Upload(cmd) => self.upload(channel, cmd, thread_ts),
+            Command::Join(None) => self.join_channel(channel),
+            Command::Join(Some(name)) => match self.ws.conversations.values().find(|c| !c.is_dm() && c.name == name) {
+                Some(c) if c.is_member => {
+                    let id = c.id.clone();
+                    self.jump_to(&id);
+                }
+                Some(c) => self.join_channel(c.id.clone()),
+                None => self.status = format!("no channel #{name} (private channels need an invitation)"),
+            },
+            Command::Leave => match self.ws.conversations.get(&channel) {
+                Some(c) if c.is_dm() => self.status = "/leave works in channels; direct messages cannot be left".into(),
+                Some(c) if !c.is_member => self.status = format!("you are not in #{}", c.name),
+                Some(_) => self.confirm = Some(Confirm::Leave(channel)),
+                None => {}
+            },
+            Command::Create { name, private } => {
+                self.status = format!("creating #{name}…");
+                let (client, tx) = (self.client.clone(), self.net.clone());
+                tokio::spawn(async move {
+                    let _ = tx.send(match client.create_channel(&name, private).await {
+                        Ok(channel) => Net::Joined { channel, created: true },
+                        Err(e) => Net::Error(format!("creating #{name} failed: {e}")),
+                    });
+                });
+            }
+        }
+    }
+
+    fn join_channel(&mut self, channel: String) {
+        if !self.ws.is_outside(&channel) {
+            self.status = "you are already in this conversation".into();
+            return;
+        }
+        let (client, tx) = (self.client.clone(), self.net.clone());
+        tokio::spawn(async move {
+            let _ = tx.send(match client.join(&channel).await {
+                Ok(channel) => Net::Joined { channel, created: false },
+                Err(e) => Net::Error(format!("joining failed: {e}")),
+            });
+        });
+    }
+
+    fn leave_channel(&mut self, channel: String) {
+        let (client, tx) = (self.client.clone(), self.net.clone());
+        tokio::spawn(async move {
+            let _ = tx.send(match client.leave(&channel).await {
+                Ok(()) => Net::Left(channel),
+                Err(e) => Net::Error(format!("leaving failed: {e}")),
+            });
         });
     }
 
@@ -338,7 +408,7 @@ impl App {
         let Some(channel) = self.current.clone() else { return };
         let own = self.ws.find_message(&channel, ts).is_some_and(|m| m.user.as_deref() == Some(self.ws.self_id.as_str()));
         if own {
-            self.confirm_delete = Some((channel, ts.to_string()));
+            self.confirm = Some(Confirm::Delete { channel, ts: ts.to_string() });
         } else {
             self.status = "you can only delete your own messages".into();
         }
@@ -811,7 +881,7 @@ pub async fn run(client: Client) -> Result<()> {
         thread_composer: Composer::default(),
         broadcast: false,
         clipboard: Default::default(),
-        confirm_delete: None,
+        confirm: None,
         picker: None,
         rtm_commands: rtm.commands.clone(),
         connected: false,
@@ -973,10 +1043,11 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
                 _ => {}
             }
         }
-        Event::Key(k) if k.kind != KeyEventKind::Release && app.confirm_delete.is_some() => {
-            if let Some((channel, ts)) = app.confirm_delete.take() {
-                if matches!(k.code, KeyCode::Char('y') | KeyCode::Char('Y')) {
-                    app.delete(channel, ts);
+        Event::Key(k) if k.kind != KeyEventKind::Release && app.confirm.is_some() => {
+            if let Some(confirm) = app.confirm.take().filter(|_| matches!(k.code, KeyCode::Char('y') | KeyCode::Char('Y'))) {
+                match confirm {
+                    Confirm::Delete { channel, ts } => app.delete(channel, ts),
+                    Confirm::Leave(channel) => app.leave_channel(channel),
                 }
             }
         }
@@ -1260,6 +1331,24 @@ fn handle_net(app: &mut App, msg: Net) {
             });
         }
         Net::Channels(list) => app.ws.add_channels(list),
+        Net::Joined { mut channel, created } => {
+            channel.is_member = true;
+            let id = channel.id.clone();
+            app.status = format!("{} #{}", if created { "created" } else { "joined" }, channel.name);
+            app.ws.conversations.insert(id.clone(), channel);
+            if app.ws.preview.as_deref() == Some(id.as_str()) {
+                app.ws.preview = None;
+            }
+            app.sidebar.rebuild(&app.ws);
+            app.jump_to(&id);
+        }
+        Net::Left(id) => {
+            if let Some(c) = app.ws.conversations.get_mut(&id) {
+                c.is_member = false;
+                app.status = format!("left #{}", c.name);
+            }
+            app.sidebar.rebuild(&app.ws);
+        }
         Net::History { channel, page, older } => {
             let tl = app.ws.timelines.entry(channel).or_default();
             if older {
@@ -1418,8 +1507,10 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         let custom: Vec<String> = app.ws.custom_emoji.keys().cloned().collect();
         picker.draw(f, main, &custom);
     }
-    if app.confirm_delete.is_some() {
-        draw_confirm(f, main, "Delete this message? y / n");
+    match &app.confirm {
+        Some(Confirm::Delete { .. }) => draw_confirm(f, main, "Delete this message? y / n"),
+        Some(Confirm::Leave(channel)) => draw_confirm(f, main, &format!("Leave #{}? y / n", app.ws.channel_label(channel))),
+        None => {}
     }
     if let Some(v) = app.viewer.as_mut() {
         v.draw(f, body, &app.media.picker);

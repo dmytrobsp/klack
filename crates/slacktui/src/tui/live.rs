@@ -183,10 +183,13 @@ pub fn apply(ws: &mut Workspace, ev: &Value, current: Option<&str>) -> Effects {
                 if ev["type"] == "im_created" {
                     c.is_im = true;
                 }
-                if ev["type"] != "channel_created" {
+                if ev["type"] == "channel_created" {
+                    // Only news if we did not know it: our own create may have been applied already.
+                    ws.conversations.entry(c.id.clone()).or_insert(c);
+                } else {
                     c.is_member = true;
+                    ws.conversations.insert(c.id.clone(), c);
                 }
-                ws.conversations.insert(c.id.clone(), c);
                 fx.rebuild_sidebar = true;
             }
         }
@@ -325,6 +328,20 @@ mod tests {
         assert_eq!(t.messages.len(), 1);
         assert_eq!(t.messages[0].reply_count, 1);
         assert_eq!(t.messages[0].latest_reply.as_deref(), Some("11.0"));
+    }
+
+    #[test]
+    fn channel_membership_events() {
+        let mut w = ws();
+        w.conversations.insert("C9".into(), Conversation { id: "C9".into(), name: "mine".into(), is_member: true, ..Default::default() });
+        apply(&mut w, &json!({"type":"channel_created","channel":{"id":"C9","name":"mine","creator":"UME"}}), None);
+        assert!(w.conversations["C9"].is_member, "our own create, already applied, is not undone");
+        apply(&mut w, &json!({"type":"channel_created","channel":{"id":"C8","name":"theirs"}}), None);
+        assert!(!w.conversations["C8"].is_member);
+        apply(&mut w, &json!({"type":"channel_joined","channel":{"id":"C8","name":"theirs"}}), None);
+        assert!(w.conversations["C8"].is_member);
+        let fx = apply(&mut w, &json!({"type":"channel_left","channel":"C8"}), None);
+        assert!(fx.rebuild_sidebar && !w.conversations["C8"].is_member);
     }
 
     #[test]
