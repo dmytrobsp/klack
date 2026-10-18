@@ -14,6 +14,13 @@ pub enum Ctl {
     /// Print a locale file with every translatable string (save it as
     /// locales/<code>.toml next to settings.toml and fill in the translations).
     LocaleTemplate,
+    /// Print a complete theme file based on a built-in theme (dark, light, terminal).
+    ThemeTemplate {
+        #[arg(default_value = "dark")]
+        base: String,
+    },
+    /// Check a theme file and install it (as themes/<file name>), for F6 → Appearance.
+    ThemeImport { path: std::path::PathBuf },
     /// List conversations (`-` marks public channels you are not in).
     Channels,
     /// Join a public channel.
@@ -132,6 +139,17 @@ pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
     let client = client(profile, team)?;
     match cmd {
         Ctl::LocaleTemplate => print!("{}", crate::tui::i18n::template()),
+        Ctl::ThemeTemplate { base } => print!("{}", crate::tui::theme::template(&base).map_err(anyhow::Error::msg)?),
+        Ctl::ThemeImport { path } => {
+            let name = path.file_stem().and_then(|n| n.to_str()).ok_or_else(|| anyhow!("bad file name"))?.to_string();
+            let text = std::fs::read_to_string(&path)?;
+            crate::tui::theme::parse(&name, &text).map_err(|e| anyhow!("{}: {e}", path.display()))?;
+            let dir = crate::tui::theme::dir().ok_or_else(|| anyhow!("no config directory"))?;
+            std::fs::create_dir_all(&dir)?;
+            let target = dir.join(format!("{name}.toml"));
+            std::fs::write(&target, text)?;
+            println!("installed theme '{name}' at {} — choose it in F6 → Appearance", target.display());
+        }
         Ctl::Whoami => {
             let a = client.auth_test().await?;
             println!("{} ({}) in {} ({}) — {}", a.user, a.user_id, a.team, a.team_id, a.url);

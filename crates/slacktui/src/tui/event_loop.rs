@@ -1623,8 +1623,10 @@ pub async fn run(profile: slack_core::session::Profile, team: Option<&str>) -> R
         let client = Client::new(sessions[index].clone())?;
         // Read again on every switch, so changes made in the preferences carry over.
         let (settings, settings_problem) = super::settings::load();
-        super::theme::set(&settings.appearance.theme);
         let mut settings_problem = settings_problem;
+        if let Err(e) = super::theme::set(&settings.appearance.theme) {
+            settings_problem.get_or_insert(e);
+        }
         if let Err(e) = super::clock::set(&settings.region.timezone) {
             settings_problem.get_or_insert(e);
         }

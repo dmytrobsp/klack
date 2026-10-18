@@ -125,19 +125,124 @@ pub fn p() -> Palette {
     *CURRENT.read().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Use the theme called `name` (unknown names: dark).
-pub fn set(name: &str) {
-    *CURRENT.write().unwrap_or_else(|e| e.into_inner()) = by_name(name);
+/// Use the theme called `name`: a built-in one or `themes/<name>.toml`. On failure the
+/// current theme stays.
+pub fn set(name: &str) -> Result<(), String> {
+    let palette = match ALL.into_iter().find(|t| t.name == name) {
+        Some(p) => p,
+        None => load(name)?,
+    };
+    *CURRENT.write().unwrap_or_else(|e| e.into_inner()) = palette;
+    Ok(())
 }
 
+#[cfg(test)]
 pub fn by_name(name: &str) -> Palette {
     ALL.into_iter().find(|t| t.name == name).unwrap_or(DARK)
 }
 
+/// Where custom themes live: `themes/` next to settings.toml.
+pub fn dir() -> Option<std::path::PathBuf> {
+    super::keymap::config_path().map(|p| p.with_file_name("themes"))
+}
+
+/// Built-in themes, then the custom ones (sorted).
+pub fn names() -> Vec<String> {
+    let mut custom: Vec<String> = dir()
+        .and_then(|d| std::fs::read_dir(d).ok())
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok()?.path().file_name()?.to_str()?.strip_suffix(".toml").map(String::from))
+        .filter(|n| !ALL.iter().any(|t| t.name == n))
+        .collect();
+    custom.sort();
+    ALL.iter().map(|t| t.name.to_string()).chain(custom).collect()
+}
+
 /// The theme after `name`, for cycling in the preferences.
-pub fn next(name: &str) -> &'static str {
-    let i = ALL.iter().position(|t| t.name == name).map_or(0, |i| (i + 1) % ALL.len());
-    ALL[i].name
+pub fn next(name: &str) -> String {
+    let names = names();
+    let i = names.iter().position(|t| t == name).map_or(0, |i| (i + 1) % names.len());
+    names[i].clone()
+}
+
+fn load(name: &str) -> Result<Palette, String> {
+    let path = dir().ok_or("no config directory")?.join(format!("{name}.toml"));
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("theme {name}: {e}"))?;
+    parse(name, &text).map_err(|e| format!("theme {name}: {e}"))
+}
+
+/// A theme file: `base = "dark"` (or light/terminal) and any palette entries as colours
+/// (`"#61afef"`, ANSI names such as `"light-red"`, or 0–255), `authors` as a list of ten,
+/// `syntax` as a syntect theme name.
+pub fn parse(name: &str, text: &str) -> Result<Palette, String> {
+    let table: toml::Table = toml::from_str(text).map_err(|e| e.to_string())?;
+    let base = table.get("base").and_then(|b| b.as_str()).unwrap_or("dark");
+    let mut p = ALL.into_iter().find(|t| t.name == base).ok_or_else(|| format!("unknown base theme '{base}'"))?;
+    p.name = Box::leak(name.to_string().into_boxed_str());
+    for (key, value) in &table {
+        let color = |v: &toml::Value| -> Result<Color, String> {
+            let s = v.as_str().map(String::from).or_else(|| v.as_integer().map(|i| i.to_string())).ok_or(format!("{key}: expected a colour"))?;
+            s.parse::<Color>().map_err(|_| format!("{key}: '{s}' is not a colour"))
+        };
+        match key.as_str() {
+            "base" => {}
+            "syntax" => p.syntax = Box::leak(value.as_str().ok_or("syntax: expected a name")?.to_string().into_boxed_str()),
+            "authors" => {
+                let list = value.as_array().ok_or("authors: expected a list of colours")?;
+                for (slot, v) in p.authors.iter_mut().zip(list) {
+                    *slot = color(v)?;
+                }
+            }
+            _ => *field(&mut p, key).ok_or_else(|| format!("unknown entry '{key}'"))? = color(value)?,
+        }
+    }
+    Ok(p)
+}
+
+const FIELDS: [&str; 16] = ["accent", "selection", "hover", "dim", "strong", "good", "danger", "own", "mention", "link", "code_fg", "code_bg", "quote_bar", "badge_fg", "badge_bg", "pin"];
+
+fn field<'a>(p: &'a mut Palette, key: &str) -> Option<&'a mut Color> {
+    Some(match key {
+        "accent" => &mut p.accent,
+        "selection" => &mut p.selection,
+        "hover" => &mut p.hover,
+        "dim" => &mut p.dim,
+        "strong" => &mut p.strong,
+        "good" => &mut p.good,
+        "danger" => &mut p.danger,
+        "own" => &mut p.own,
+        "mention" => &mut p.mention,
+        "link" => &mut p.link,
+        "code_fg" => &mut p.code_fg,
+        "code_bg" => &mut p.code_bg,
+        "quote_bar" => &mut p.quote_bar,
+        "badge_fg" => &mut p.badge_fg,
+        "badge_bg" => &mut p.badge_bg,
+        "pin" => &mut p.pin,
+        "call_bg" => &mut p.call_bg,
+        _ => return None,
+    })
+}
+
+fn color_text(c: Color) -> String {
+    match c {
+        Color::Rgb(r, g, b) => format!("\"#{r:02x}{g:02x}{b:02x}\""),
+        Color::Indexed(i) => i.to_string(),
+        named => format!("\"{}\"", format!("{named:?}").to_lowercase()),
+    }
+}
+
+/// A complete theme file for `base` (to copy and edit).
+pub fn template(base: &str) -> Result<String, String> {
+    let mut p = ALL.into_iter().find(|t| t.name == base).ok_or_else(|| format!("unknown base theme '{base}'"))?;
+    let mut out = format!("# slacktui theme: save as themes/<name>.toml next to settings.toml; omitted entries come from the base.\nbase = \"{base}\"\nsyntax = \"{}\"\n", p.syntax);
+    for key in FIELDS.iter().chain(&["call_bg"]) {
+        let c = *field(&mut p, key).expect("known field");
+        out += &format!("{key} = {}\n", color_text(c));
+    }
+    out += &format!("authors = [{}]\n", p.authors.iter().map(|c| color_text(*c)).collect::<Vec<_>>().join(", "));
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -148,7 +253,22 @@ mod tests {
     fn themes_by_name() {
         assert_eq!(by_name("light").name, "light");
         assert_eq!(by_name("nope").name, "dark");
-        assert_eq!((next("dark"), next("light"), next("terminal")), ("light", "terminal", "dark"));
         assert_eq!(DARK.accent, Color::Rgb(0x61, 0xaf, 0xef), "the dark theme keeps the original colours");
+    }
+
+    #[test]
+    fn theme_files() {
+        let p = parse("sunset", "base = \"light\"\naccent = \"#ff8800\"\nselection = \"light-blue\"\nhover = 236\nauthors = [\"red\", \"#010203\"]\n").unwrap();
+        assert_eq!((p.name, p.accent, p.selection, p.hover), ("sunset", Color::Rgb(0xff, 0x88, 0), Color::LightBlue, Color::Indexed(236)));
+        assert_eq!((p.authors[0], p.authors[1], p.authors[2]), (Color::Red, Color::Rgb(1, 2, 3), LIGHT.authors[2]), "unlisted authors from the base");
+        assert_eq!(p.code_bg, LIGHT.code_bg, "omitted entries from the base");
+        assert!(parse("x", "accent = \"not a colour\"").unwrap_err().contains("accent"));
+        assert!(parse("x", "sparkle = \"red\"").unwrap_err().contains("unknown entry"));
+        assert!(parse("x", "base = \"nope\"").is_err());
+        // A template is a complete file that gives back its base.
+        for base in ["dark", "light", "terminal"] {
+            let again = parse(base, &template(base).unwrap()).unwrap();
+            assert_eq!(again, by_name(base), "{base}");
+        }
     }
 }

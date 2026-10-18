@@ -173,9 +173,10 @@ impl Field {
         };
         match self {
             Field::TimeZone | Field::Language => {}
+            // Custom theme files are checked in `Prefs::change`.
             Field::Theme => {
-                s.appearance.theme = super::theme::next(&s.appearance.theme).into();
-                super::theme::set(&s.appearance.theme);
+                s.appearance.theme = super::theme::next(&s.appearance.theme);
+                let _ = super::theme::set(&s.appearance.theme);
             }
             Field::Compact => s.appearance.compact ^= true,
             Field::InlineImages => s.messages.inline_images ^= true,
@@ -297,6 +298,20 @@ impl Prefs {
                 None
             }
             // A text field: Enter starts editing, Enter again applies (the caller saves).
+            Field::Theme => {
+                // Skip theme files that do not load, saying why.
+                let start = ws.settings.appearance.theme.clone();
+                let mut name = super::theme::next(&start);
+                while let Err(e) = super::theme::set(&name) {
+                    self.saved = Some(Err(e));
+                    name = super::theme::next(&name);
+                    if name == start {
+                        break;
+                    }
+                }
+                ws.settings.appearance.theme = name;
+                None
+            }
             Field::TimeZone => {
                 match self.editing.take() {
                     Some(text) => match super::clock::set(&text) {

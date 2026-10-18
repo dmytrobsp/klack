@@ -111,6 +111,14 @@ No video, screen sharing, echo cancellation or noise suppression yet.
 | `SLACKTUI_DOWNLOAD_DIR` | where `s` saves attachments (default: your downloads folder) |
 | `SLACKTUI_AVATARS=0` | no profile pictures next to names (they are also off on terminals without real graphics) |
 
+### Themes
+
+F6 → Appearance → Colour theme cycles dark, light, terminal and your own themes. A theme is
+a TOML file in `themes/` next to `settings.toml`: `base = "dark"` plus any colours to change
+(`"#ff8800"`, ANSI names such as `"light-red"`, or 0–255). Start from
+`slacktui ctl theme-template dark > sunset.toml`, edit it, and install it (checked first) with
+`slacktui ctl theme-import sunset.toml`; share themes by passing the file around.
+
 ### Translations
 
 The interface can be translated: `slacktui ctl locale-template > ~/.config/slacktui/locales/de.toml`,
