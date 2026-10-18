@@ -1,23 +1,22 @@
 //! The huddle view (F8): instead of the message pane, a tile per participant with their
-//! picture, speaking meter and mute state, and the call's controls underneath.
+//! picture or video (the border lights up while they speak, 🔇 in the title when muted),
+//! and the call's controls underneath.
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 use ratatui_image::sliced::{SignedPosition, SlicedImage};
 use slack_core::types::File;
 
-use super::call::{Call, meter};
+use super::call::Call;
 use super::media::{Media, Thumb};
 use super::state::Workspace;
 
 /// A participant's tile at the smallest scale, in cells.
 pub const TILE_W: u16 = 26;
 pub const TILE_H: u16 = 9;
-/// The picture inside a tile at the smallest scale (about square).
-pub const PICTURE: (u16, u16) = (8, 4);
 /// Tiles grow up to this many times their smallest size when there is room.
 pub const MAX_SCALE: u16 = 3;
 
@@ -105,17 +104,23 @@ pub fn audio_summary(a: &super::settings::Audio, width: usize) -> String {
     }
 }
 
-/// What a tile says under the meter.
-pub fn state_text(muted: bool, speaking: bool, gated: bool) -> &'static str {
-    if muted {
-        "muted"
-    } else if gated {
-        "below the speaking threshold"
-    } else if speaking {
-        "speaking"
-    } else {
-        ""
-    }
+/// A tile's title: the name, and 🔇 when muted.
+pub fn tile_title(name: &str, muted: bool) -> String {
+    if muted { format!(" {name} 🔇 ") } else { format!(" {name} ") }
+}
+
+/// A picture's size in cells for a tile's inside: about square (cells are twice as tall as
+/// wide), as large as fits, in a few steps so each size is cached once; None when tiny.
+pub fn picture_size(inner: Rect) -> Option<(u16, u16)> {
+    const STEPS: [u16; 9] = [2, 3, 4, 5, 6, 8, 10, 12, 16];
+    let fit = inner.height.min(inner.width / 2);
+    STEPS.iter().rev().find(|s| **s <= fit).map(|h| (h * 2, *h))
+}
+
+/// A tile's border: lit (green, thick) while the person speaks.
+fn tile_block(title: Span<'static>, speaking: bool) -> Block<'static> {
+    let (style, kind) = if speaking { (Style::default().fg(super::theme::p().own).add_modifier(Modifier::BOLD), BorderType::Thick) } else { (Style::default().fg(super::theme::p().dim), BorderType::Plain) };
+    Block::default().borders(Borders::ALL).border_type(kind).border_style(style).title(title)
 }
 
 impl HuddleView {
@@ -145,12 +150,11 @@ impl HuddleView {
         // Screen shares first, then the people.
         let shares = call.shown_shares(&ws.self_id);
         let tiles = shares.len() + call.roster.len();
-        let (rects, scale) = grid(tiles, tiles_area);
-        let picture = (PICTURE.0 * scale, PICTURE.1 * scale);
+        let (rects, _) = grid(tiles, tiles_area);
         for (n, rect) in rects.iter().enumerate() {
             match shares.get(n) {
                 Some((share, user)) => self.draw_share(f, *rect, call, share, user, ws, media),
-                None => self.draw_tile(f, *rect, picture, call, &call.roster[n - shares.len()], ws, media),
+                None => self.draw_tile(f, *rect, call, &call.roster[n - shares.len()], ws, media),
             }
         }
         if rects.len() < tiles {
@@ -162,40 +166,35 @@ impl HuddleView {
         f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), footer);
     }
 
-    fn draw_tile(&mut self, f: &mut Frame, rect: Rect, picture: (u16, u16), call: &Call, p: &huddle::session::Participant, ws: &Workspace, media: &Media) {
-        let me = p.user_id() == ws.self_id;
-        let (level, speaking, muted, gated) = call.participant_state(p, &ws.self_id);
-        let green = Style::default().fg(super::theme::p().own);
-        let dim = Style::default().fg(super::theme::p().dim);
+    fn draw_tile(&mut self, f: &mut Frame, rect: Rect, call: &Call, p: &huddle::session::Participant, ws: &Workspace, media: &Media) {
+        let (_, speaking, muted, gated) = call.participant_state(p, &ws.self_id);
         let name = ws.person_label(p.user_id());
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(if speaking { green.add_modifier(Modifier::BOLD) } else { dim })
-            .title(Span::styled(format!(" {name} "), if speaking { green.add_modifier(Modifier::BOLD) } else { Style::default() }));
+        // Below the speaking threshold our own name is dimmed: nothing is being sent.
+        let title_style = if speaking { Style::default().fg(super::theme::p().own).add_modifier(Modifier::BOLD) } else if gated { Style::default().fg(super::theme::p().dim) } else { Style::default() };
+        let block = tile_block(Span::styled(tile_title(&name, muted), title_style), speaking);
         let inner = block.inner(rect);
         f.render_widget(block, rect);
         if inner.height == 0 {
             return;
         }
-        // The picture, centred at the top; the initial while it loads (or without graphics).
-        // Someone's video fills the tile above the meter and state lines.
+        // Someone's video fills the tile.
         if let Some(frame) = call.video(&p.attendee_id) {
-            let area = Rect { height: inner.height.saturating_sub(2), ..inner };
-            self.draw_video(f, area, &p.attendee_id, &frame, media);
-            let below = Rect { y: area.y + area.height, height: inner.height - area.height, ..inner };
-            self.draw_state(f, below, me, level, speaking, muted, gated);
+            self.draw_video(f, inner, &p.attendee_id, &frame, media);
             return;
         }
-        // Leave a row above the picture once the tile is large.
-        let top = if inner.height > picture.1 + 4 { 1 } else { 0 };
-        let pic = Rect { x: inner.x + inner.width.saturating_sub(picture.0) / 2, y: inner.y + top, width: picture.0.min(inner.width), height: picture.1.min(inner.height - top) };
+        // Otherwise their picture, centred; the initial while it loads (or without graphics).
+        let picture = picture_size(inner);
+        let (pw, ph) = picture.unwrap_or((1, 1));
+        let pic = Rect { x: inner.x + inner.width.saturating_sub(pw) / 2, y: inner.y + inner.height.saturating_sub(ph) / 2, width: pw.min(inner.width), height: ph.min(inner.height) };
         // Each size is its own cache entry (thumbnails are encoded for one size).
-        let file = ws.users.get(p.user_id()).and_then(|u| super::media::avatar_file_sized(u, true)).filter(|_| media.avatars && ws.settings.messages.avatars).map(|mut file| {
-            file.id = format!("{}:{}x{}", file.id, picture.0, picture.1);
-            file
+        let file = picture.and_then(|picture| {
+            ws.users.get(p.user_id()).and_then(|u| super::media::avatar_file_sized(u, true)).filter(|_| media.avatars && ws.settings.messages.avatars).map(|mut file| {
+                file.id = format!("{}:{}x{}", file.id, picture.0, picture.1);
+                (file, picture)
+            })
         });
         let mut drawn = false;
-        if let Some(file) = file {
+        if let Some((file, picture)) = file {
             match media.thumbs.get(&file.id) {
                 Some(Thumb::Ready(proto)) => {
                     f.render_widget(SlicedImage::new(proto, SignedPosition { x: 0, y: 0 }), pic);
@@ -210,8 +209,6 @@ impl HuddleView {
             let mid = Rect { y: pic.y + pic.height / 2, height: 1.min(pic.height), ..pic };
             f.render_widget(Paragraph::new(initial).style(Style::default().add_modifier(Modifier::BOLD)).alignment(Alignment::Center), mid);
         }
-        let below = Rect { y: pic.y + pic.height + top, height: inner.height.saturating_sub(pic.height + 2 * top), ..inner };
-        self.draw_state(f, below, me, level, speaking, muted, gated);
     }
 
     /// Someone's screen share: their name and the picture filling the tile.
@@ -229,19 +226,6 @@ impl HuddleView {
                 f.render_widget(Paragraph::new("waiting for the picture…").style(Style::default().fg(super::theme::p().dim)).alignment(Alignment::Center), mid);
             }
         }
-    }
-
-    /// The meter and the state line, centred.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_state(&self, f: &mut Frame, area: Rect, me: bool, level: f32, speaking: bool, muted: bool, gated: bool) {
-        let green = Style::default().fg(super::theme::p().own);
-        let dim = Style::default().fg(super::theme::p().dim);
-        let meter_line = if muted { Line::styled("🔇", dim) } else { Line::styled(meter(level), if speaking { green } else { dim }) };
-        let mut lines = vec![meter_line.alignment(Alignment::Center)];
-        let text = state_text(muted, speaking, gated);
-        let text = if me && text.is_empty() { "you" } else { text };
-        lines.push(Line::styled(text, if speaking { green } else { dim }).alignment(Alignment::Center));
-        f.render_widget(Paragraph::new(lines), area);
     }
 
     /// A video picture fitted into `area` (keeping its aspect), centred.
@@ -310,10 +294,13 @@ mod tests {
     }
 
     #[test]
-    fn tile_states() {
-        assert_eq!(state_text(true, false, false), "muted");
-        assert_eq!(state_text(false, true, false), "speaking");
-        assert_eq!(state_text(false, true, true), "below the speaking threshold");
-        assert_eq!(state_text(false, false, false), "");
+    fn titles_and_pictures() {
+        assert_eq!(tile_title("Ann", true), " Ann 🔇 ");
+        assert_eq!(tile_title("Ann", false), " Ann ");
+        // About square in pixels (cells are 1:2), in steps, the largest that fits.
+        assert_eq!(picture_size(Rect::new(0, 0, 50, 16)), Some((32, 16)));
+        assert_eq!(picture_size(Rect::new(0, 0, 13, 16)), Some((12, 6)), "width-bound");
+        assert_eq!(picture_size(Rect::new(0, 0, 40, 7)), Some((12, 6)), "between steps: the smaller");
+        assert_eq!(picture_size(Rect::new(0, 0, 40, 1)), None, "tiny: the initial instead");
     }
 }
