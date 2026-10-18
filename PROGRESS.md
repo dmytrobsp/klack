@@ -151,7 +151,27 @@ Tests: `cargo test` → slack-core 9, huddle 33, slacktui 152 (+1 ignored: the `
 
 ## Next (in order, each as a small, separately verified step)
 
-**NEXT UP: ask the user** — queue F is done (F1–F5). Open bits to offer: see Known gaps (e.g. no line cache for far-up scrolling; thumbnails in sixel/iTerm2; drafts lost on a crash since the last switch).
+**NEXT UP: G1** (queue G below).
+
+G. Agreed with the user on 2026-10-19 after queue F ("proceed with proposed order"); run autonomously, one
+   verified commit per step:
+  G1 (NEXT). Far-up scrolling in a long history: a frame still builds every message from the view down to the
+      newest — keep built lines per message (a cache keyed by what they depend on) so a frame builds only
+      what changed.
+  G2. Thumbnails and profile pictures in terminals other than kitty (sixel, iTerm2, half blocks): try them in
+      a sixel terminal here (install one if needed; record it in ../INSTALLED_PACKAGES.md).
+  G3. Drafts typed since the last conversation switch are lost on a crash: save them as you type (debounced).
+
+H. Added by the user on 2026-10-19 (after queue G), in this order:
+  H1. Separation: move slacktui into a standalone project that neither relies on nor references slack-rea or
+      rslack (its own repository; the RE notes and tools it needs come along or are rewritten for it).
+  H2. Rebranding: an existing open-source Go client is already called `slack-tui`; choose a distinct name
+      (propose candidates to the user) and change docs, comments and code to it.
+  H3. Contribution: make sure it does not depend on this machine's setup and builds and runs elsewhere
+      (documented prerequisites, no hard-coded paths, clean-checkout build in a fresh container).
+  H4. UI pass: study the Go `slack-tui` project's interface and lift good design decisions from it.
+  H5. Distribution: push to GitHub, set up CI, and work out distribution for Linux, Windows and macOS (the
+      push and the repository's name/visibility need the user's go-ahead first).
 
 F. Agreed with the user on 2026-10-19 after queue E ("proceed with proposed order"); run autonomously, one
    verified commit per step:
