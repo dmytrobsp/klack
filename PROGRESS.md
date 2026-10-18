@@ -9,7 +9,7 @@ background is in `../REPORT.md` and `../notes/`.
 - **UNIT**: covered by `cargo test` only.
 - **NONE**: written but not exercised.
 
-## Status (HEAD `5ab8258`, branch `master`, clean)
+## Status (branch `master`; every step is one commit)
 
 | Area | State | Verified | Commit |
 |---|---|---|---|
@@ -23,31 +23,34 @@ background is in `../REPORT.md` and `../notes/`.
 | Live updates: edits, deletes, thread replies, typing display | done | UNIT only — NOT seen live | 104b768 |
 | Message selection (↑/↓, j/k, g/G, click), Tab focus cycle | done | LIVE | 9936455 |
 | Reaction picker (`r`): search, favourites, custom emoji, optimistic toggle | done | LIVE (🚀 added, no double count from the RTM echo). Server-side state NOT read back independently. | 5ab8258 |
+| Edit own messages: `e` on a selected message or ↑ in an empty composer; mentions/channels/@here back to composer mentions; Enter = `chat.update`, Esc cancels; optimistic with rollback | done | LIVE (edited a message with a mention, `&` and `<…>`; B's `ctl history` read back the right `<@U…>`/`&amp;`/`&lt;` text; `e` path and Esc cancel checked by screenshot) + UNIT (round trip) | d2cdb2f |
+| Delete own messages: `d` → y/n popup → `chat.delete`; optimistic with rollback; refuses others' messages | done | LIVE (`n` keeps it, `y` removes it, B's history no longer has it; `d` on B's message shows a refusal) | see git log |
 
-Tests: `cargo test` → slack-core 8, slacktui 24, all passing. `cargo build` has no errors.
+Tests: `cargo test` → slack-core 8, slacktui 25, all passing. `cargo build` has no errors.
 There are dead-code warnings for the planned autocomplete API (`Composer::trigger/complete`).
 
 ## Next (in order, each as a small, separately verified step)
 
-1. **Edit/delete own messages.** `e` on a selected own message, or ↑ in an empty composer, loads it for
-   editing: turn `<@U…>`/`<#C…|name>` back into `@display`/`#name` and register them as composer
-   mentions. Enter saves with `chat.update`; Esc cancels. `d` deletes after a y/n confirm, via
-   `chat.delete`. Both optimistic. The API methods already exist in `slack-core/src/api.rs`.
-2. Copy message text (`y`, via arboard) and the permalink.
-3. Threads pane: Enter on a message opens its replies (`conversations.replies`). The composer then
+1. Copy message text (`y`, via arboard) and the permalink.
+2. Threads pane: Enter on a message opens its replies (`conversations.replies`). The composer then
    targets the thread (`thread_ts`); the thread state map already exists (`Workspace::threads`).
-4. Autocomplete popup for `@user`, `#channel` and `:emoji:` (composer `trigger()`/`complete()` already exist and are tested).
-5. Desktop notifications (notify-rust) for DMs, mentions and @here, honouring DND and muted channels and the terminal focus events.
-6. Images inline (ratatui-image, kitty protocol; `File::preview_url`), an image viewer, upload from a path.
-7. Video playback with sound (ffmpeg-next → frames via ratatui-image; cpal audio).
-8. Huddles: reverse engineer the signalling first (observe the web client inside RSlack), then audio.
-9. Search, channel info/members, pins, quick switcher (Ctrl+K), help overlay.
+3. Autocomplete popup for `@user`, `#channel` and `:emoji:` (composer `trigger()`/`complete()` already exist and are tested).
+4. Desktop notifications (notify-rust) for DMs, mentions and @here, honouring DND and muted channels and the terminal focus events.
+5. Images inline (ratatui-image, kitty protocol; `File::preview_url`), an image viewer, upload from a path.
+6. Video playback with sound (ffmpeg-next → frames via ratatui-image; cpal audio).
+7. Huddles: reverse engineer the signalling first (observe the web client inside RSlack), then audio.
+8. Search, channel info/members, pins, quick switcher (Ctrl+K), help overlay.
 
 ## Known gaps / not verified
 
 - Older-history paging, and the edit/delete/thread-reply RTM paths, have never been exercised live.
 - The test workspace has very little history, so scrolling performance with large channels is unknown.
 - The reaction picker's server-side effect is inferred from the absence of an API error plus the RTM echo.
+- Edit/delete rollback (`Net::Restore`) has not been exercised against a real API failure.
+- The RTM `message_changed`/`message_deleted` paths for *other people's* edits are still UNIT only (there is no `ctl edit`/`ctl delete` yet to drive them from B).
+- Status-bar messages (errors, refusals) stay until the next one replaces them; they are never cleared on a timer.
+- The message being edited is not highlighted while the composer has focus.
+- Reaction chips with VS16 emoji (❤️) sometimes render with an extra blank cell (`[❤  1]`); seen in screenshots, not investigated.
 
 ## Bug log
 

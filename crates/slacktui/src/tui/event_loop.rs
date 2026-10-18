@@ -39,6 +39,8 @@ enum Focus {
 }
 
 struct App {
+    /// Message (channel, ts) awaiting y/n delete confirmation.
+    confirm_delete: Option<(String, String)>,
     /// Open reaction picker, with the message it targets.
     picker: Option<(EmojiPicker, String, String)>,
     rtm_commands: mpsc::UnboundedSender<slack_core::rtm::RtmCommand>,
@@ -217,6 +219,36 @@ impl App {
         });
     }
 
+    /// Ask to delete our own message `ts` in the current conversation.
+    fn ask_delete(&mut self, ts: &str) {
+        let Some(channel) = self.current.clone() else { return };
+        let own = self.ws.timelines.get(&channel).and_then(|t| t.messages.iter().find(|m| m.ts == ts)).is_some_and(|m| m.user.as_deref() == Some(self.ws.self_id.as_str()));
+        if own {
+            self.confirm_delete = Some((channel, ts.to_string()));
+        } else {
+            self.status = "you can only delete your own messages".into();
+        }
+    }
+
+    /// Delete a message (optimistic, then chat.delete).
+    fn delete(&mut self, channel: String, ts: String) {
+        let Some(t) = self.ws.timelines.get_mut(&channel) else { return };
+        let Some(original) = t.messages.iter().find(|m| m.ts == ts).cloned() else { return };
+        t.remove(&ts);
+        if self.messages.selected.as_deref() == Some(ts.as_str()) {
+            self.messages.selected = None;
+        }
+        if self.composer.editing.as_deref() == Some(ts.as_str()) {
+            self.composer.clear();
+        }
+        let (client, tx) = (self.client.clone(), self.net.clone());
+        tokio::spawn(async move {
+            if let Err(e) = client.delete_message(&channel, &ts).await {
+                let _ = tx.send(Net::Restore { channel, message: original, error: format!("delete failed: {e}") });
+            }
+        });
+    }
+
     /// Load older history once the top is visible.
     fn maybe_load_older(&mut self) {
         if let Some(id) = self.current.clone() {
@@ -243,6 +275,7 @@ pub async fn run(client: Client) -> Result<()> {
     spawn_boot(client.clone(), net_tx.clone());
     let mut rtm = slack_core::rtm::spawn(client.clone());
     let mut app = App {
+        confirm_delete: None,
         picker: None,
         rtm_commands: rtm.commands.clone(),
         connected: false,
@@ -292,6 +325,13 @@ pub async fn run(client: Client) -> Result<()> {
 /// Returns false to quit.
 fn handle_terminal(app: &mut App, ev: Event) -> bool {
     match ev {
+        Event::Key(k) if k.kind != KeyEventKind::Release && app.confirm_delete.is_some() => {
+            if let Some((channel, ts)) = app.confirm_delete.take() {
+                if matches!(k.code, KeyCode::Char('y') | KeyCode::Char('Y')) {
+                    app.delete(channel, ts);
+                }
+            }
+        }
         Event::Key(k) if k.kind != KeyEventKind::Release && app.picker.is_some() => {
             let custom: Vec<String> = app.ws.custom_emoji.keys().cloned().collect();
             let Some((picker, _, _)) = app.picker.as_mut() else { return true };
@@ -397,6 +437,11 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
                         KeyCode::Char('e') => {
                             if let Some(ts) = app.messages.selected.clone() {
                                 app.start_edit(&ts);
+                            }
+                        }
+                        KeyCode::Char('d') => {
+                            if let Some(ts) = app.messages.selected.clone() {
+                                app.ask_delete(&ts);
                             }
                         }
                         _ => {}
@@ -547,10 +592,24 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         let custom: Vec<String> = app.ws.custom_emoji.keys().cloned().collect();
         picker.draw(f, main, &custom);
     }
+    if app.confirm_delete.is_some() {
+        draw_confirm(f, main, "Delete this message? y / n");
+    }
     let live = if app.connected { "● live" } else { "○ connecting" };
     let (unread, mentions) = app.ws.total_unread();
     let info = if app.status.is_empty() { format!("{unread} unread · {mentions} mentions") } else { app.status.clone() };
     f.render_widget(Paragraph::new(format!(" {live} · {info} · Enter send · Alt+Enter newline · Tab focus · Alt+↑↓ channel · PgUp/PgDn scroll · Ctrl+Q quit")), status);
+}
+
+fn draw_confirm(f: &mut ratatui::Frame, area: ratatui::layout::Rect, question: &str) {
+    use ratatui::layout::Flex;
+    use ratatui::style::{Color, Style};
+    use ratatui::widgets::{Block, Borders, Clear};
+    let [popup] = Layout::horizontal([Constraint::Length(question.chars().count() as u16 + 4)]).flex(Flex::Center).areas(area);
+    let [popup] = Layout::vertical([Constraint::Length(3)]).flex(Flex::Center).areas(popup);
+    f.render_widget(Clear, popup);
+    let block = Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::Rgb(0xe0, 0x6c, 0x75)));
+    f.render_widget(Paragraph::new(format!(" {question}")).block(block), popup);
 }
 
 fn draw_composer(f: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &App) {
