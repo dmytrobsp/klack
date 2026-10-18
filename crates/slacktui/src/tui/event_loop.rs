@@ -52,6 +52,10 @@ enum Net {
     VideoReady { title: String, result: Result<std::path::PathBuf, String> },
     /// Result of a file save or upload, shown in the status bar.
     FileDone(String),
+    /// The activity feed.
+    ActivityFeed(Result<Value, String>),
+    /// A message an activity item is about.
+    ActivityMessage { channel: String, ts: String, message: Option<slack_core::types::Message> },
     /// A snippet's full text for the snippet view.
     SnippetText { id: String, result: Result<String, String> },
     /// A full-size image for the viewer.
@@ -89,6 +93,8 @@ struct App {
     details: Option<super::details::Details>,
     /// Open profile card.
     profile: Option<super::profile::ProfileCard>,
+    /// Open activity view (F5).
+    activity: Option<super::activity::Activity>,
     /// Open "move to section" picker.
     mover: Option<super::sections::MovePicker>,
     /// Join the huddle of the DM with this person once it is open.
@@ -833,6 +839,34 @@ impl App {
         });
     }
 
+    /// F5: open the activity view and load the feed.
+    fn open_activity(&mut self) {
+        self.activity = Some(super::activity::Activity::default());
+        let (client, tx) = (self.client.clone(), self.net.clone());
+        tokio::spawn(async move {
+            let _ = tx.send(Net::ActivityFeed(client.activity_feed(50).await.map_err(|e| e.to_string())));
+        });
+    }
+
+    /// Fetch the messages of the activity items around the selection.
+    fn request_activity_messages(&mut self) {
+        let Some(a) = self.activity.as_mut() else { return };
+        for (channel, ts) in a.wanted() {
+            a.requested.insert((channel.clone(), ts.clone()));
+            let (client, tx) = (self.client.clone(), self.net.clone());
+            tokio::spawn(async move {
+                let message = match client.message_at(&channel, &ts).await {
+                    Ok(m) => m,
+                    Err(e) => {
+                        tracing::warn!("activity message {channel}/{ts}: {e}");
+                        None
+                    }
+                };
+                let _ = tx.send(Net::ActivityMessage { channel, ts, message });
+            });
+        }
+    }
+
     /// Profile card `h`: a huddle in the DM with `user`.
     fn huddle_with(&mut self, user: String) {
         if user == self.ws.self_id {
@@ -1088,6 +1122,7 @@ pub async fn run(client: Client) -> Result<()> {
         search: None,
         details: None,
         profile: None,
+        activity: None,
         mover: None,
         huddle_after_open: None,
         presence_subscribed: false,
@@ -1133,6 +1168,7 @@ pub async fn run(client: Client) -> Result<()> {
     loop {
         terminal.draw(|f| draw(f, &mut app))?;
         app.request_thumbs();
+        app.request_activity_messages();
         tokio::select! {
             ev = events.next() => {
                 let Some(ev) = ev else { break };
@@ -1219,6 +1255,26 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
                 _ => {}
             }
         }
+        Event::Key(k) if k.kind != KeyEventKind::Release && app.activity.is_some() => {
+            let Some(a) = app.activity.as_mut() else { return true };
+            match k.code {
+                KeyCode::Char('q') if k.modifiers.contains(KeyModifiers::CONTROL) => return false,
+                KeyCode::Esc | KeyCode::F(5) | KeyCode::Char('q') => app.activity = None,
+                KeyCode::Up | KeyCode::Char('k') => a.move_by(-1),
+                KeyCode::Down | KeyCode::Char('j') => a.move_by(1),
+                KeyCode::PageUp => a.move_by(-(a.height.max(1) as isize)),
+                KeyCode::PageDown => a.move_by(a.height.max(1) as isize),
+                KeyCode::Char('r') => app.open_activity(),
+                KeyCode::Enter => {
+                    if let Some((channel, ts, thread_ts)) = a.target() {
+                        app.activity = None;
+                        app.open_hit(super::search::Hit { channel, ts, thread_ts, user: None, text: String::new() });
+                    }
+                }
+                _ => {}
+            }
+        }
+        Event::Key(k) if k.kind != KeyEventKind::Release && k.code == KeyCode::F(5) => app.open_activity(),
         Event::Key(k) if k.kind != KeyEventKind::Release && app.profile.is_some() => {
             let Some(card) = app.profile.as_mut() else { return true };
             match k.code {
@@ -1757,6 +1813,22 @@ fn handle_net(app: &mut App, msg: Net) {
                 Err(e) => app.status = format!("cannot play video: {e}"),
             }
         }
+        Net::ActivityFeed(result) => match result {
+            Ok(v) => {
+                if let Some(a) = app.activity.as_mut() {
+                    a.items = Some(super::activity::parse(&v));
+                }
+            }
+            Err(e) => {
+                app.activity = None;
+                app.status = format!("activity failed: {e}");
+            }
+        },
+        Net::ActivityMessage { channel, ts, message } => {
+            if let Some(a) = app.activity.as_mut() {
+                a.messages.insert((channel, ts), message);
+            }
+        }
         Net::SnippetText { id, result } => {
             if let Some(v) = app.snippet.as_mut().filter(|v| v.file.id == id) {
                 v.set_text(result);
@@ -1868,6 +1940,9 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     }
     if let Some(d) = &app.details {
         d.draw(f, body, &app.ws);
+    }
+    if let Some(a) = app.activity.as_mut() {
+        a.draw(f, body, &app.ws);
     }
     if let Some(card) = &app.profile {
         card.draw(f, body, &app.ws);

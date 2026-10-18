@@ -15,6 +15,7 @@ pub const KEYS: &[(&str, &[(&str, &str)])] = &[
         ("Alt+↑ / Alt+↓", "previous / next conversation"),
         ("Ctrl+K", "jump to a conversation or person (# alone: every channel)"),
         ("Ctrl+F", "search messages"),
+        ("F5", "activity: mentions, reactions, threads (Enter opens)"),
         ("F2", "conversation details: about, members (Enter: profile), pins"),
         ("F3 / F4", "join or leave the huddle / mute or unmute"),
         ("PgUp / PgDn", "scroll messages"),

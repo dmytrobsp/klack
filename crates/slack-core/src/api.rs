@@ -210,6 +210,21 @@ impl Client {
         self.call_raw("users.channelSections.channels.bulkUpdate", &[("insert", item(to)), ("remove", item(from))]).await.map(|_| ())
     }
 
+    // ---- activity (web client method, see ../notes/activity.md) ----------------------
+
+    /// The activity feed, newest first: mentions, reactions to your messages, threads.
+    pub async fn activity_feed(&self, limit: u32) -> Result<Value> {
+        let types = "at_user,at_user_group,at_channel,at_everyone,keyword,message_reaction,thread_v2";
+        self.call_raw("activity.feed", &[("mode", "chrono_reads_and_unreads".into()), ("types", types.into()), ("limit", limit.to_string())]).await
+    }
+
+    /// One message by its ts, whether it is top level or a thread reply.
+    pub async fn message_at(&self, channel: &str, ts: &str) -> Result<Option<Message>> {
+        let params: Params = vec![("channel", channel.into()), ("ts", ts.into()), ("latest", ts.into()), ("oldest", ts.into()), ("inclusive", "true".into()), ("limit", "1".into())];
+        let page: HistoryPage = self.call("conversations.replies", &params).await?;
+        Ok(page.messages.into_iter().find(|m| m.ts == ts))
+    }
+
     // ---- users ------------------------------------------------------------------------
 
     pub async fn users_list(&self) -> Result<Vec<User>> {
