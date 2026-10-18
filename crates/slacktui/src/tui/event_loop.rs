@@ -1770,7 +1770,8 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
                         app.broadcast = !app.broadcast;
                         return true;
                     }
-                    match app.composer_for(thread).handle_key(k) {
+                    let composer = if thread { &mut app.thread_composer } else { &mut app.composer };
+                    match composer.handle_key(k, &app.keys) {
                         KeyOutcome::Done => {}
                         KeyOutcome::Typed => app.notify_typing(),
                         KeyOutcome::Submit if app.composer_for(thread).editing.is_some() => app.save_edit(thread),

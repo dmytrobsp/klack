@@ -1,6 +1,8 @@
 //! Multi-line message composer with mrkdwn formatting helpers and mention tracking.
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent};
+
+use super::keymap::{Action, Context, Key, Keymap, Lookup};
 use unicode_width::UnicodeWidthChar;
 
 /// What a key press in the composer asks the app to do.
@@ -39,46 +41,47 @@ pub struct Composer {
 }
 
 impl Composer {
-    /// Apply an editing key.
-    pub fn handle_key(&mut self, k: KeyEvent) -> KeyOutcome {
-        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
-        let alt = k.modifiers.contains(KeyModifiers::ALT);
-        let shift = k.modifiers.contains(KeyModifiers::SHIFT);
-        match k.code {
-            KeyCode::Esc if self.editing.is_some() => self.clear(),
-            KeyCode::Esc => return KeyOutcome::Leave,
-            KeyCode::Enter if alt || shift => self.insert('\n'),
-            KeyCode::Char('j') if ctrl => self.insert('\n'),
-            KeyCode::Enter => return KeyOutcome::Submit,
-            KeyCode::Char('b') if alt => self.toggle_marker('*'),
-            KeyCode::Char('i') if alt => self.toggle_marker('_'),
-            KeyCode::Char('s') if alt => self.toggle_marker('~'),
-            KeyCode::Char('c') if alt => self.toggle_marker('`'),
-            KeyCode::Char('w') if ctrl => self.delete_word_left(),
-            KeyCode::Char('u') if ctrl => self.kill_line(),
-            KeyCode::Char('a') if ctrl => self.home(),
-            KeyCode::Char('e') if ctrl => self.end(),
-            KeyCode::Char(ch) if !ctrl && !alt => {
-                self.insert(ch);
-                return KeyOutcome::Typed;
-            }
-            KeyCode::Backspace if ctrl || alt => self.delete_word_left(),
-            KeyCode::Backspace => self.backspace(),
-            KeyCode::Delete => self.delete(),
-            KeyCode::Left if ctrl => self.word_left(),
-            KeyCode::Right if ctrl => self.word_right(),
-            KeyCode::Left => self.left(),
-            KeyCode::Right => self.right(),
-            KeyCode::Home => self.home(),
-            KeyCode::End => self.end(),
-            KeyCode::Up if self.is_empty() && self.editing.is_none() => return KeyOutcome::UpWhenEmpty,
-            KeyCode::Up => {
+    /// Apply an editing key (bindings from the `composer` context of `keys`); plain
+    /// characters are typed.
+    pub fn handle_key(&mut self, k: KeyEvent, keys: &Keymap) -> KeyOutcome {
+        let key = Key::from_event(&k);
+        let action = match keys.lookup(Context::Composer, &[], key) {
+            Lookup::Action(a) => Some(a),
+            Lookup::Pending | Lookup::None => None,
+        };
+        match action {
+            Some(Action::Leave) if self.editing.is_some() => self.clear(),
+            Some(Action::Leave) => return KeyOutcome::Leave,
+            Some(Action::Newline) => self.insert('\n'),
+            Some(Action::Send) => return KeyOutcome::Submit,
+            Some(Action::Bold) => self.toggle_marker('*'),
+            Some(Action::Italic) => self.toggle_marker('_'),
+            Some(Action::Strike) => self.toggle_marker('~'),
+            Some(Action::Code) => self.toggle_marker('`'),
+            Some(Action::DeleteWord) => self.delete_word_left(),
+            Some(Action::DeleteLine) => self.kill_line(),
+            Some(Action::LineStart) => self.home(),
+            Some(Action::LineEnd) => self.end(),
+            Some(Action::WordLeft) => self.word_left(),
+            Some(Action::WordRight) => self.word_right(),
+            Some(Action::Left) => self.left(),
+            Some(Action::Right) => self.right(),
+            Some(Action::Backspace) => self.backspace(),
+            Some(Action::DeleteForward) => self.delete(),
+            Some(Action::Up) if self.is_empty() && self.editing.is_none() => return KeyOutcome::UpWhenEmpty,
+            Some(Action::Up) => {
                 self.up();
             }
-            KeyCode::Down => {
+            Some(Action::Down) => {
                 self.down();
             }
-            _ => {}
+            Some(_) => {}
+            None => {
+                if let (KeyCode::Char(ch), true) = (k.code, key.is_text()) {
+                    self.insert(ch);
+                    return KeyOutcome::Typed;
+                }
+            }
         }
         KeyOutcome::Done
     }
@@ -456,6 +459,7 @@ pub fn escape_text(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crossterm::event::KeyModifiers;
 
     #[test]
     fn editing_and_lines() {
@@ -475,16 +479,27 @@ mod tests {
     #[test]
     fn key_outcomes() {
         let key = |code, mods| KeyEvent::new(code, mods);
+        let keys = Keymap::load("").0;
         let mut c = Composer::default();
-        assert_eq!(c.handle_key(key(KeyCode::Up, KeyModifiers::NONE)), KeyOutcome::UpWhenEmpty);
-        assert_eq!(c.handle_key(key(KeyCode::Char('h'), KeyModifiers::NONE)), KeyOutcome::Typed);
-        assert_eq!(c.handle_key(key(KeyCode::Enter, KeyModifiers::ALT)), KeyOutcome::Done);
+        assert_eq!(c.handle_key(key(KeyCode::Up, KeyModifiers::NONE), &keys), KeyOutcome::UpWhenEmpty);
+        assert_eq!(c.handle_key(key(KeyCode::Char('h'), KeyModifiers::NONE), &keys), KeyOutcome::Typed);
+        assert_eq!(c.handle_key(key(KeyCode::Enter, KeyModifiers::ALT), &keys), KeyOutcome::Done);
         assert_eq!(c.text(), "h\n");
-        assert_eq!(c.handle_key(key(KeyCode::Enter, KeyModifiers::NONE)), KeyOutcome::Submit);
-        assert_eq!(c.handle_key(key(KeyCode::Esc, KeyModifiers::NONE)), KeyOutcome::Leave);
+        assert_eq!(c.handle_key(key(KeyCode::Enter, KeyModifiers::NONE), &keys), KeyOutcome::Submit);
+        assert_eq!(c.handle_key(key(KeyCode::Esc, KeyModifiers::NONE), &keys), KeyOutcome::Leave);
         c.editing = Some("1.0".into());
-        assert_eq!(c.handle_key(key(KeyCode::Esc, KeyModifiers::NONE)), KeyOutcome::Done);
+        assert_eq!(c.handle_key(key(KeyCode::Esc, KeyModifiers::NONE), &keys), KeyOutcome::Done);
         assert!(c.editing.is_none() && c.text().is_empty());
+        // Rebound: Ctrl+S sends, Enter does nothing, Ctrl+W is no longer delete-word.
+        let (keys, warnings) = Keymap::load("[composer]\nsend = \"ctrl+s\"\ndelete_word = \"alt+w\"\n");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        c.insert_str("two words");
+        assert_eq!(c.handle_key(key(KeyCode::Enter, KeyModifiers::NONE), &keys), KeyOutcome::Done);
+        assert_eq!(c.handle_key(key(KeyCode::Char('s'), KeyModifiers::CONTROL), &keys), KeyOutcome::Submit);
+        c.handle_key(key(KeyCode::Char('w'), KeyModifiers::CONTROL), &keys);
+        assert_eq!(c.text(), "two words");
+        c.handle_key(key(KeyCode::Char('w'), KeyModifiers::ALT), &keys);
+        assert_eq!(c.text(), "two ");
     }
 
     #[test]
