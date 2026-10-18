@@ -180,7 +180,7 @@ impl Client {
         self.call_field("conversations.members", "members", &[("channel", channel.into()), ("limit", "1000".into())]).await
     }
 
-    // ---- sidebar: stars and sections (web client methods, see ../notes/sections.md) -----
+    // ---- sidebar: stars and sections (web client methods, see docs/protocol/sections.md) -----
 
     pub async fn star_channel(&self, channel: &str, add: bool) -> Result<()> {
         let method = if add { "stars.add" } else { "stars.remove" };
@@ -210,7 +210,7 @@ impl Client {
         self.call_raw("users.channelSections.channels.bulkUpdate", &[("insert", item(to)), ("remove", item(from))]).await.map(|_| ())
     }
 
-    // ---- activity (web client method, see ../notes/activity.md) ----------------------
+    // ---- activity (web client method, see docs/protocol/activity.md) ----------------------
 
     /// The activity feed, newest first: mentions, reactions to your messages, threads.
     pub async fn activity_feed(&self, limit: u32) -> Result<Value> {
@@ -269,7 +269,7 @@ impl Client {
     }
 
     /// A notification pref: for one conversation (`desktop`, `muted`, …) or global
-    /// (`global_desktop`, `global_keywords`, …); see ../notes/notifications.md.
+    /// (`global_desktop`, `global_keywords`, …); see docs/protocol/notifications.md.
     pub async fn set_notification_pref(&self, name: &str, value: &str, channel: Option<&str>) -> Result<()> {
         let mut params: Params = vec![("name", name.into()), ("value", value.into()), ("global", channel.is_none().to_string())];
         if let Some(c) = channel {

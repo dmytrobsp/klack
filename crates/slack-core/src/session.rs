@@ -1,7 +1,7 @@
 //! Browser-session credentials (`xoxc-…` token + `d` cookie) and how to obtain them.
 //!
 //! The Slack web/desktop client authenticates API calls with a per-workspace `xoxc`
-//! token plus the `d` session cookie (see `../../notes/main-process.md` §4.6, §5.3).
+//! token plus the `d` session cookie (see `docs/protocol/auth.md`).
 //! Tokens are never logged; session files are written owner-only.
 
 use std::path::{Path, PathBuf};
@@ -166,47 +166,6 @@ pub async fn session_from_cookie(workspace_url: &str, cookie_d: &str) -> Result<
         token,
         cookie_d: cookie_d.to_string(),
     })
-}
-
-/// Where RSlack keeps a profile's WebKit data and state.
-fn rslack_dirs(profile: Option<&str>) -> Result<(PathBuf, PathBuf)> {
-    let base = directories::BaseDirs::new().ok_or_else(|| anyhow!("no home directory"))?;
-    let name = match profile {
-        Some(p) => format!("rslack-{p}"),
-        None => "rslack".to_string(),
-    };
-    Ok((base.data_dir().join(&name), base.config_dir().join(&name)))
-}
-
-/// Import every workspace signed in to an RSlack profile.
-pub async fn import_rslack(profile: Option<&str>) -> Result<Vec<WorkspaceSession>> {
-    let (data, config) = rslack_dirs(profile)?;
-    let db_path = data.join("cookies.sqlite");
-    let cookie_d = {
-        let db = rusqlite::Connection::open_with_flags(&db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .with_context(|| format!("cannot open {}", db_path.display()))?;
-        db.query_row("SELECT value FROM moz_cookies WHERE name = 'd' AND host = '.slack.com'", [], |r| r.get::<_, String>(0))
-            .context("RSlack profile has no Slack session cookie — sign in with RSlack first")?
-    };
-    let state: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(config.join("state.json"))?)?;
-    let mut urls: Vec<String> = state["workspaces"]
-        .as_object()
-        .map(|m| m.values().filter_map(|w| w["url"].as_str().map(String::from)).collect())
-        .unwrap_or_default();
-    if urls.is_empty() {
-        urls = state["teams"]
-            .as_object()
-            .map(|m| m.values().filter_map(|t| t["team_url"].as_str().map(String::from)).collect())
-            .unwrap_or_default();
-    }
-    if urls.is_empty() {
-        bail!("RSlack profile knows no workspaces yet");
-    }
-    let mut out = Vec::new();
-    for url in urls {
-        out.push(session_from_cookie(&url, &cookie_d).await.with_context(|| format!("importing {url}"))?);
-    }
-    Ok(out)
 }
 
 #[cfg(test)]

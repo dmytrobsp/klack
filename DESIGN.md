@@ -3,7 +3,7 @@
 A native Slack client for the terminal, written in Rust. It is Linux-first, and macOS
 and Windows stay buildable. It talks to the same endpoints as Slack's web/desktop
 client, using a browser-session token (`xoxc-…`) plus the `d` cookie (see
-`../notes/`).
+`docs/protocol/`).
 
 ## Crates
 
@@ -19,7 +19,7 @@ All next to the profiles in the config directory (`~/.config/slacktui/` on Linux
 `<profile>/session.json` (0600), `keys.toml` (key bindings, `keymap.rs`), `settings.toml` (local
 preferences, `settings.rs`), `themes/<name>.toml` (`theme.rs`), `locales/<code>.toml` (`i18n.rs`).
 Slack-side preferences (notification levels, keywords, VIPs, sections, stars, status) stay on Slack;
-the reverse-engineered endpoints are documented in `../notes/` (sections, activity, notifications, huddles).
+the reverse-engineered endpoints are documented in `docs/protocol/` (sign-in, sections, activity, notifications, snippets, huddles).
 
 ## Portability rules
 
@@ -28,13 +28,13 @@ the reverse-engineered endpoints are documented in `../notes/` (sections, activi
 - **Syntax highlighting:** syntect with its pure-Rust regex engine (`default-fancy`), so there is no C dependency (no Oniguruma).
 - **Notifications:** notify-rust (D-Bus, macOS NSUserNotification, Windows toast).
 - **Paths:** `directories`. Session files are created with owner-only permissions (0600 on unix).
-- **Optional dependencies:** importing a session from RSlack needs SQLite (bundled). No other code may depend on Linux-only APIs unless it is behind `cfg`.
+- **No Linux-only APIs** outside `cfg`-gated code.
 
 ## Auth
 
-`slacktui login` creates a session in one of two ways:
-1. `--import-rslack [PROFILE]`: read the `d` cookie from RSlack's WebKit cookie DB, then fetch the `xoxc` token from a server-rendered workspace page (`/customize/emoji` embeds `"api_token"`).
-2. `--workspace URL` with the browser's `d` cookie (`--cookie`, `$SLACKTUI_COOKIE_D` or a prompt): the same token fetch, then `auth.test`. This is the way in on macOS and Windows.
+`slacktui login --workspace URL` with the browser's `d` cookie (`--cookie`, `$SLACKTUI_COOKIE_D` or a
+prompt): the `xoxc` token is fetched from a server-rendered workspace page (`/customize/emoji` embeds
+`"api_token"`), then checked with `auth.test` (`docs/protocol/auth.md`).
 
 (The desktop magic-link flow, `auth.loginMagicBulk`, was planned but is not implemented.)
 
@@ -55,6 +55,6 @@ Sessions are stored at `~/.config/slacktui/<profile>/session.json` (0600). Token
 3. Messaging: rendering of mrkdwn/rich_text/blocks/attachments, edit/delete/react, threads pane, @user, #channel and :emoji: autocomplete, formatting shortcuts.
 4. Notifications: mentions, DMs and keywords, honouring DND and muted channels.
 5. Media: inline images (kitty graphics), image viewer, file upload/download, video playback with audio.
-6. Huddles: reverse engineer the web client's huddle signalling via RSlack, then implement audio huddles (join/leave/mute) in Rust.
+6. Huddles: reverse engineer the web client's huddle signalling, then implement audio huddles (join/leave/mute) in Rust.
 7. Extras: search, channel info/members, pins, typing indicators, presence, status, emoji list, unread jump.
 8. Docs, packaging and portability review.

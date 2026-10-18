@@ -33,7 +33,6 @@ runtime).
   `slack.com` (devtools → Application → Cookies), then
   `slacktui login --workspace acme.slack.com` and paste it at the prompt (or set
   `SLACKTUI_COOKIE_D`). slacktui fetches the token itself and checks it with `auth.test`.
-- **From RSlack** (the companion Linux desktop shell): `slacktui login --import-rslack default`.
 
 Sessions are saved per profile in `~/.config/slacktui/<profile>/session.json` (owner-only
 permissions). Use `--profile NAME` to keep several accounts apart. Signing in to more workspaces
@@ -121,7 +120,7 @@ that portably).
 
 Under the hood a huddle is an Amazon Chime SDK meeting: `rooms.join` hands out the meeting
 credentials, `crates/huddle` speaks Chime's signaling protocol and runs WebRTC audio (webrtc-rs,
-Opus). See `../notes/huddles.md` for how this was worked out.
+Opus). See `docs/protocol/huddles.md` for how this was worked out.
 
 Pick audio devices with `SLACKTUI_AUDIO_INPUT` / `SLACKTUI_AUDIO_OUTPUT` (part of a device id or
 name from `slacktui ctl audio-devices`). A device that is named but missing is an error; there is
