@@ -57,7 +57,6 @@ impl Timeline {
 
 #[derive(Debug, Default)]
 pub struct Workspace {
-    pub team_id: String,
     pub team_name: String,
     pub self_id: String,
     pub users: HashMap<String, User>,

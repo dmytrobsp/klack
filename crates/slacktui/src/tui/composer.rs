@@ -91,6 +91,7 @@ impl Composer {
         self.chars.iter().all(|c| c.is_whitespace())
     }
 
+    #[cfg(test)]
     pub fn cursor(&self) -> usize {
         self.cursor
     }
@@ -189,10 +190,6 @@ impl Composer {
         let start = self.line_start();
         self.chars.drain(start..self.cursor);
         self.cursor = start;
-    }
-
-    pub fn is_multiline(&self) -> bool {
-        self.chars.contains(&'\n')
     }
 
     /// Move to the previous line; returns false if already on the first line.

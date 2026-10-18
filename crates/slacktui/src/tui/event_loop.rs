@@ -811,7 +811,6 @@ pub async fn run(client: Client) -> Result<()> {
         client: client.clone(),
         net: net_tx.clone(),
         ws: Workspace {
-            team_id: client.session.team_id.clone(),
             team_name: client.session.team_name.clone(),
             self_id: client.session.user_id.clone(),
             ..Default::default()

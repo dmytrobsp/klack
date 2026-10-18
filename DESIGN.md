@@ -22,10 +22,11 @@ client, using a browser-session token (`xoxc-…`) plus the `d` cookie (see
 
 ## Auth
 
-`slacktui login` creates a session in one of three ways:
+`slacktui login` creates a session in one of two ways:
 1. `--import-rslack [PROFILE]`: read the `d` cookie from RSlack's WebKit cookie DB, then fetch the `xoxc` token from a server-rendered workspace page (`/customize/emoji` embeds `"api_token"`).
-2. `--magic-link slack://…`: run the desktop sign-in flow (`auth.loginMagicBulk`), then do the same token fetch.
-3. `--token xoxc-… --cookie d=…`: manual.
+2. `--workspace URL` with the browser's `d` cookie (`--cookie`, `$SLACKTUI_COOKIE_D` or a prompt): the same token fetch, then `auth.test`. This is the way in on macOS and Windows.
+
+(The desktop magic-link flow, `auth.loginMagicBulk`, was planned but is not implemented.)
 
 Sessions are stored at `~/.config/slacktui/<profile>/session.json` (0600). Tokens are never logged.
 

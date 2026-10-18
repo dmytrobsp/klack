@@ -27,8 +27,16 @@ enum Command {
     /// Create or refresh the session for this profile.
     Login {
         /// Import from an RSlack profile ("default" for RSlack's default profile).
-        #[arg(long, value_name = "RSLACK_PROFILE")]
+        #[arg(long, value_name = "RSLACK_PROFILE", conflicts_with = "workspace")]
         import_rslack: Option<String>,
+        /// Sign in with a browser session: the workspace URL (https://acme.slack.com) plus the
+        /// `d` cookie from --cookie, $SLACKTUI_COOKIE_D, or a prompt.
+        #[arg(long, value_name = "URL")]
+        workspace: Option<String>,
+        /// Value of the browser's `d` cookie for slack.com (prefer the env var or the prompt,
+        /// so it does not end up in your shell history).
+        #[arg(long, requires = "workspace")]
+        cookie: Option<String>,
     },
     /// Scriptable commands (used for automation and end-to-end tests).
     Ctl {
@@ -57,9 +65,26 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     init_logging(&cli.profile)?;
     match cli.command {
-        Some(Command::Login { import_rslack }) => {
-            let rslack_profile = import_rslack.as_deref().filter(|p| *p != "default");
-            let sessions = session::import_rslack(rslack_profile).await.context("import from RSlack failed")?;
+        Some(Command::Login { import_rslack, workspace, cookie }) => {
+            let sessions = match workspace {
+                Some(url) => {
+                    let cookie = match cookie.or_else(|| std::env::var("SLACKTUI_COOKIE_D").ok()) {
+                        Some(c) => c,
+                        None => {
+                            eprint!("value of the `d` cookie: ");
+                            let mut line = String::new();
+                            std::io::stdin().read_line(&mut line)?;
+                            line
+                        }
+                    };
+                    let url = if url.starts_with("https://") { url } else { format!("https://{url}") };
+                    vec![session::session_from_cookie(&url, cookie.trim().trim_start_matches("d=")).await.context("sign-in with the cookie failed")?]
+                }
+                None => {
+                    let rslack_profile = import_rslack.as_deref().filter(|p| *p != "default");
+                    session::import_rslack(rslack_profile).await.context("import from RSlack failed")?
+                }
+            };
             let mut profile = Profile::load(&cli.profile).unwrap_or_default();
             for ws in sessions {
                 println!("signed in to {} ({}) as {} ({})", ws.team_name, ws.team_id, ws.user_name, ws.user_id);
