@@ -101,11 +101,27 @@ Tests: `cargo test` → slack-core 9, huddle 26, slacktui 116, all passing. `car
 
 ## Next (in order, each as a small, separately verified step)
 
-**The roadmap (items 1–15) is complete.** Nothing is queued; ask the user what next. Candidates from the
-known gaps below: echo cancellation, answering keyframe requests (PLI) from the sender, camera/screen
-capture on macOS/Windows/X11 (written for macOS/Windows cameras but untested; screen share is
-Linux/Wayland only), larger tiles for screen shares, the older live-verification gaps (history paging,
-edits/deletes from others). VP8/VP9 are not needed: with slacktui in the call the meeting's
+**The roadmap (items 1–15) is complete.** New queue from the user (2026-10-18), in this order; run
+autonomously, one verified commit per step:
+
+A. Never verified live (first):
+  A1. Older-history paging (B posts enough messages into a dedicated test channel).
+  A2. Other people's edits, deletes, thread replies and typing live (new `ctl edit`/`ctl delete`/`ctl typing`);
+      fix typing from the reply box not carrying `thread_ts`.
+  A3. Edit/delete rollback (`Net::Restore`) against a real API failure.
+  A4. OSC 52 as the primary copy path (no system clipboard in the environment).
+  A5. Thumbnails, video and long-snippet scrolling inside the thread pane.
+  A6. Huddle: someone stopping their video but staying; cancelling the share picker and the "Your screen"
+      title (both need the user at the picker).
+B. Huddle tiling (user's request; choices made by Claude):
+  B1. Subtle speaking indicator: the tile border lights up green; no meter/state lines; mute as an icon
+      in the title.
+  B2. Tiles shrink as people join, down to a minimum; overflow scrolls with a clear "▲ N more / ▼ N more".
+  B3. Screen shares get a large stage, people in a strip beside/below it.
+  B4. Select and maximize any tile (arrows select, Enter maximizes/restores, mouse click).
+C. Then: answer keyframe requests (PLI); echo cancellation; clicking a notification jumps to the
+   conversation; keep thread drafts; clear status-bar messages on a timer; search paging; camera/screen
+   capture on X11/macOS/Windows (written only, untestable here). VP8/VP9 are not needed: with slacktui in the call the meeting's
 receive-codec intersection is H.264 CB and real clients send that (verified with the web client).
 
 The original roadmap is done. On 2026-10-18 the user asked for the missing features below, in this
