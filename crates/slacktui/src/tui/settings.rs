@@ -12,6 +12,21 @@ pub struct Settings {
     pub notifications: Notifications,
     pub audio: Audio,
     pub video: Video,
+    pub huddle: Huddle,
+}
+
+/// Sounds for huddle events: a name from `sound::HUDDLE_SOUNDS`, "off" for none.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Huddle {
+    /// When you join (once the huddle is connected).
+    pub join_sound: String,
+}
+
+impl Default for Huddle {
+    fn default() -> Self {
+        Huddle { join_sound: "rise".into() }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

@@ -6,6 +6,9 @@ use std::f32::consts::PI;
 /// The choices, in the order the preferences cycle through them.
 pub const SOUNDS: &[&str] = &["off", "chime", "ping", "knock", "system"];
 
+/// The choices for huddle events (no "system": the desktop has no such sounds).
+pub const HUDDLE_SOUNDS: &[&str] = &["off", "rise", "chime", "ping", "knock"];
+
 const RATE: f32 = huddle::session::SAMPLE_RATE as f32;
 
 /// A decaying sine burst of `ms` milliseconds.
@@ -31,6 +34,8 @@ pub fn samples(name: &str) -> Vec<i16> {
         "chime" => [tone(880.0, 140, 0.35), tone(1318.5, 220, 0.35)].concat(),
         "ping" => tone(1760.0, 180, 0.3),
         "knock" => [tone(196.0, 60, 0.6), silence(70), tone(196.0, 60, 0.6)].concat(),
+        // Joining a huddle: a soft rising C major arpeggio.
+        "rise" => [tone(523.25, 90, 0.25), tone(659.25, 90, 0.25), tone(783.99, 200, 0.25)].concat(),
         _ => vec![],
     };
     f.into_iter().map(|s| (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16).collect()
@@ -77,5 +82,9 @@ mod tests {
         assert!(chime.iter().map(|s| s.unsigned_abs()).max().unwrap() > 5_000, "audible");
         assert!(chime.len() < huddle::session::SAMPLE_RATE as usize / 2, "fits the speaker's 0.5 s queue");
         assert!(samples("knock").len() < samples("chime").len());
+        for name in HUDDLE_SOUNDS.iter().filter(|n| **n != "off") {
+            let s = samples(name);
+            assert!(!s.is_empty() && s.len() < huddle::session::SAMPLE_RATE as usize / 2, "{name}: audible and short");
+        }
     }
 }

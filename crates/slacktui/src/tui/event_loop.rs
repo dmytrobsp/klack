@@ -2018,6 +2018,11 @@ async fn run_workspace(
                     None => std::future::pending().await,
                 }
             } => {
+                // The join sound, once the huddle is connected.
+                if matches!(ev, huddle::session::SessionEvent::Connected) && !app.call.as_ref().is_some_and(|c| c.connected) {
+                    let s = &app.ws.settings;
+                    super::sound::play(&s.huddle.join_sound, super::settings::Settings::device(huddle::devices::OUTPUT_ENV, &s.audio.output), s.audio.sound_volume);
+                }
                 if app.call.as_mut().is_some_and(|c| c.apply(ev)) {
                     app.call = None;
                     app.status = "left the huddle".into();

@@ -55,6 +55,7 @@ pub enum Field {
     EchoCancellation,
     /// The camera for huddles (one of the cameras found; never a default).
     Camera,
+    JoinSound,
 }
 
 /// Pause lengths offered, in minutes (0: not paused).
@@ -67,6 +68,7 @@ pub const CATEGORIES: &[(&str, &[Field])] = &[
     ("Language & region", &[Field::Clock24, Field::DateFormat, Field::TimeZone, Field::Language]),
     ("Notifications", &[Field::Desktop, Field::Sound, Field::ConversationLevel, Field::ChannelDefault, Field::Keywords, Field::Vips]),
     ("Audio & video", &[Field::Input, Field::Output, Field::HuddleVolume, Field::SoundVolume, Field::MicGain, Field::SpeakingThreshold, Field::NoiseSuppression, Field::EchoCancellation, Field::Camera]),
+    ("Huddles", &[Field::JoinSound]),
 ];
 
 /// Volumes offered, in percent.
@@ -126,6 +128,7 @@ impl Field {
             Field::NoiseSuppression => "Noise suppression",
             Field::EchoCancellation => "Echo cancellation",
             Field::Camera => "Camera (F9 in a huddle)",
+            Field::JoinSound => "Sound when you join",
         }
     }
 
@@ -197,6 +200,7 @@ impl Field {
             Field::NoiseSuppression => yes(s.audio.noise_suppression),
             Field::EchoCancellation => yes(s.audio.echo_cancellation),
             Field::Camera => s.video.camera.clone().unwrap_or_else(|| "none (the camera stays off)".into()),
+            Field::JoinSound => s.huddle.join_sound.clone(),
         }
     }
 
@@ -242,6 +246,10 @@ impl Field {
                 s.region.date_format = DATE_FORMATS[i].into();
             }
             Field::Desktop => s.notifications.desktop ^= true,
+            Field::JoinSound => {
+                s.huddle.join_sound = next_sound(&s.huddle.join_sound);
+                super::sound::play(&s.huddle.join_sound, Settings::device(huddle::devices::OUTPUT_ENV, &s.audio.output), s.audio.sound_volume);
+            }
             Field::Sound => {
                 let sounds = super::sound::SOUNDS;
                 let i = sounds.iter().position(|x| *x == s.notifications.sound).map_or(0, |i| (i + 1) % sounds.len());
@@ -283,6 +291,12 @@ fn next_conversation_level(own: Option<&str>) -> String {
     }
 }
 
+/// The huddle sound after `current` (then back to "off").
+fn next_sound(current: &str) -> String {
+    let sounds = super::sound::HUDDLE_SOUNDS;
+    sounds[sounds.iter().position(|x| *x == current).map_or(0, |i| (i + 1) % sounds.len())].to_string()
+}
+
 fn next_level(level: &str) -> String {
     let i = LEVELS.iter().position(|l| *l == level).map_or(0, |i| (i + 1) % LEVELS.len());
     LEVELS[i].to_string()
@@ -295,7 +309,7 @@ pub fn translatable() -> Vec<String> {
     let all = [
         Field::Theme, Field::Compact, Field::InlineImages, Field::Avatars, Field::EmojiAsNames, Field::Clock24, Field::DateFormat, Field::TimeZone, Field::Language, Field::Desktop, Field::Sound,
         Field::ConversationLevel, Field::ChannelDefault, Field::Keywords, Field::Vips, Field::Status, Field::Away, Field::Pause, Field::Input, Field::Output,
-        Field::HuddleVolume, Field::SoundVolume, Field::MicGain, Field::SpeakingThreshold, Field::NoiseSuppression, Field::EchoCancellation, Field::Camera,
+        Field::HuddleVolume, Field::SoundVolume, Field::MicGain, Field::SpeakingThreshold, Field::NoiseSuppression, Field::EchoCancellation, Field::Camera, Field::JoinSound,
     ];
     CATEGORIES.iter().map(|c| c.0).chain(["Keys", LEADER_LABEL]).chain(all.iter().map(|f| f.fixed_label())).map(String::from).collect()
 }
@@ -576,6 +590,19 @@ mod tests {
         Field::EchoCancellation.change(&mut s, &Default::default());
         assert!(!s.audio.echo_cancellation, "on by default, so the first change turns it off");
         assert!(!Field::Compact.adjust(&mut s, true, false), "not a level");
+    }
+
+    #[test]
+    fn huddle_sounds_cycle() {
+        assert_eq!(Settings::default().huddle.join_sound, "rise", "on by default");
+        let mut s = "off".to_string();
+        let mut seen = Vec::new();
+        for _ in 0..super::super::sound::HUDDLE_SOUNDS.len() {
+            s = next_sound(&s);
+            seen.push(s.clone());
+        }
+        assert_eq!(seen, ["rise", "chime", "ping", "knock", "off"]);
+        assert_eq!(next_sound("unknown"), "off", "a hand-edited name starts over");
     }
 
     #[test]

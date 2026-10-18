@@ -123,6 +123,9 @@ Pick audio devices with `SLACKTUI_AUDIO_INPUT` / `SLACKTUI_AUDIO_OUTPUT` (part o
 name from `slacktui ctl audio-devices`). A device that is named but missing is an error; there is
 no silent fallback.
 
+F6 → Huddles has the huddle sounds (at the notification sound volume; each can be turned off): a soft
+rising arpeggio when you join.
+
 F6 → Audio also has the huddle volume, the notification sound volume, a microphone gain, a
 speaking threshold (quieter microphone input is sent as silence, held open 300 ms after you
 stop so words are not cut), noise suppression (RNNoise via `nnnoiseless`) and echo cancellation
