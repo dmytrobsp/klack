@@ -75,7 +75,7 @@ Easy (standard API or a small client endpoint):
 1. ~~Channels: browse, join, leave, create~~ — done (see the status table).
 2. ~~Group chats~~ — done (`/dm`; named group chats are private channels from item 1). A live group DM needs a third person in the testbed.
 3. ~~Your own messages clearly marked~~ — done (gutter bar).
-4. ~~Profile cards~~ — done (`u`, F2 Members). Test account B currently has the status "☕ testing slacktui" (set for this test).
+4. ~~Profile cards~~ — done (`u`, F2 Members). (B's test status was cleared afterwards.)
 5. ~~Text snippets~~ — done (inline preview, `o` view, highlighting, `/snippet`).
 6. ~~Favourites and channel sections~~ — done (`../notes/sections.md`; `*`, `m`, `/section`).
 7. ~~Activity feed~~ — done (F5; `../notes/activity.md`).
