@@ -199,6 +199,34 @@ pub fn apply(ws: &mut Workspace, ev: &Value, current: Option<&str>) -> Effects {
                 fx.rebuild_sidebar = true;
             }
         }
+        "star_added" | "star_removed" if ev["item"]["type"] == "channel" => {
+            if let Some(id) = ev["item"]["channel"].as_str() {
+                if ev["type"] == "star_added" {
+                    ws.starred.insert(id.to_string());
+                } else {
+                    ws.starred.remove(id);
+                }
+                fx.rebuild_sidebar = true;
+            }
+        }
+        "channel_section_upserted" => {
+            ws.upsert_section(ev);
+            fx.rebuild_sidebar = true;
+        }
+        "channel_section_deleted" => {
+            ws.remove_section(ev["channel_section_id"].as_str().unwrap_or_default());
+            fx.rebuild_sidebar = true;
+        }
+        "channel_sections_channels_upserted" | "channel_sections_channels_removed" => {
+            let section = ev["channel_section_id"].as_str().unwrap_or_default();
+            let ids: Vec<String> = ev["channel_ids"].as_array().into_iter().flatten().filter_map(|c| c.as_str()).map(String::from).collect();
+            if ev["type"] == "channel_sections_channels_upserted" {
+                ws.place_in_section(section, &ids);
+            } else {
+                ws.remove_from_section(section, &ids);
+            }
+            fx.rebuild_sidebar = true;
+        }
         "channel_rename" | "group_rename" => {
             let id = ev["channel"]["id"].as_str().unwrap_or_default();
             if let (Some(c), Some(name)) = (ws.conversations.get_mut(id), ev["channel"]["name"].as_str()) {
@@ -328,6 +356,23 @@ mod tests {
         assert_eq!(t.messages.len(), 1);
         assert_eq!(t.messages[0].reply_count, 1);
         assert_eq!(t.messages[0].latest_reply.as_deref(), Some("11.0"));
+    }
+
+    #[test]
+    fn star_and_section_events() {
+        let mut w = ws();
+        // Real payloads captured with `ctl listen`.
+        let fx = apply(&mut w, &json!({"event_ts":"1792332670.021900","item":{"channel":"C1","date_create":1792332670,"type":"channel"},"type":"star_added","user":"UME"}), None);
+        assert!(fx.rebuild_sidebar && w.starred.contains("C1"));
+        apply(&mut w, &json!({"event_ts":"1792332670.021800","item":{"channel":"C1","date_create":0,"type":"channel"},"type":"star_removed","user":"UME"}), None);
+        assert!(w.starred.is_empty());
+        apply(&mut w, &json!({"channel_section_id":"L1","channel_section_type":"standard","emoji":"","event_ts":"1","is_redacted":false,"last_update":1,"name":"Work","next_channel_section_id":null,"type":"channel_section_upserted"}), None);
+        apply(&mut w, &json!({"channel_ids":["C1"],"channel_section_id":"L1","event_ts":"2","type":"channel_sections_channels_upserted"}), None);
+        assert_eq!(w.section_of("C1").map(|s| s.name.as_str()), Some("Work"));
+        apply(&mut w, &json!({"channel_ids":["C1"],"channel_section_id":"L1","event_ts":"3","last_update":3,"type":"channel_sections_channels_removed"}), None);
+        assert!(w.section_of("C1").is_none());
+        apply(&mut w, &json!({"channel_section_id":"L1","event_ts":"4","last_update":4,"type":"channel_section_deleted"}), None);
+        assert!(w.sections.is_empty());
     }
 
     #[test]

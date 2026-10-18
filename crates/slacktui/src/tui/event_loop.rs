@@ -24,6 +24,8 @@ enum Net {
     Boot { boot: Value, users: Vec<User>, counts: Option<Value> },
     /// Public channels, including those we are not in.
     Channels(Vec<slack_core::types::Conversation>),
+    /// `users.channelSections.list`.
+    Sections(Value),
     /// A channel we joined or created.
     Joined { channel: slack_core::types::Conversation, created: bool },
     /// We left a channel.
@@ -1477,6 +1479,12 @@ fn handle_net(app: &mut App, msg: Net) {
             app.subscribe_presence();
             let (client, tx) = (app.client.clone(), app.net.clone());
             tokio::spawn(async move {
+                match client.channel_sections().await {
+                    Ok(v) => {
+                        let _ = tx.send(Net::Sections(v));
+                    }
+                    Err(e) => tracing::warn!("channel sections failed: {e}"),
+                }
                 match client.conversations_list("public_channel").await {
                     Ok(list) => {
                         let _ = tx.send(Net::Channels(list));
@@ -1486,6 +1494,10 @@ fn handle_net(app: &mut App, msg: Net) {
             });
         }
         Net::Channels(list) => app.ws.add_channels(list),
+        Net::Sections(v) => {
+            app.ws.apply_sections(&v);
+            app.sidebar.rebuild(&app.ws);
+        }
         Net::Joined { mut channel, created } => {
             channel.is_member = true;
             let id = channel.id.clone();

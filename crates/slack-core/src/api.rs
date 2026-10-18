@@ -180,6 +180,36 @@ impl Client {
         self.call_field("conversations.members", "members", &[("channel", channel.into()), ("limit", "1000".into())]).await
     }
 
+    // ---- sidebar: stars and sections (web client methods, see ../notes/sections.md) -----
+
+    pub async fn star_channel(&self, channel: &str, add: bool) -> Result<()> {
+        let method = if add { "stars.add" } else { "stars.remove" };
+        self.call_raw(method, &[("channel", channel.into())]).await.map(|_| ())
+    }
+
+    pub async fn channel_sections(&self) -> Result<Value> {
+        self.call_raw("users.channelSections.list", &[]).await
+    }
+
+    /// Create a section (appended at the end); returns its id.
+    pub async fn create_section(&self, name: &str) -> Result<String> {
+        self.call_field("users.channelSections.create", "channel_section_id", &[("name", name.into()), ("emoji", String::new())]).await
+    }
+
+    pub async fn rename_section(&self, id: &str, name: &str) -> Result<()> {
+        self.call_raw("users.channelSections.set", &[("channel_section_id", id.into()), ("name", name.into()), ("emoji", String::new())]).await.map(|_| ())
+    }
+
+    pub async fn delete_section(&self, id: &str) -> Result<()> {
+        self.call_raw("users.channelSections.delete", &[("channel_section_id", id.into())]).await.map(|_| ())
+    }
+
+    /// Move `channel` out of section `from` and/or into section `to` in one call.
+    pub async fn move_to_section(&self, channel: &str, from: Option<&str>, to: Option<&str>) -> Result<()> {
+        let item = |s: Option<&str>| serde_json::json!(s.map(|s| vec![serde_json::json!({"channel_section_id": s, "channel_ids": [channel]})]).unwrap_or_default()).to_string();
+        self.call_raw("users.channelSections.channels.bulkUpdate", &[("insert", item(to)), ("remove", item(from))]).await.map(|_| ())
+    }
+
     // ---- users ------------------------------------------------------------------------
 
     pub async fn users_list(&self) -> Result<Vec<User>> {

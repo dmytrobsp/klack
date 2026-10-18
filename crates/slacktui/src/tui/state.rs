@@ -75,6 +75,38 @@ pub struct Workspace {
     pub huddles: HashMap<String, (String, Vec<String>)>,
     /// A channel we are not in, shown in the sidebar while it is being looked at.
     pub preview: Option<String>,
+    /// Starred conversations.
+    pub starred: std::collections::HashSet<String>,
+    /// Sidebar sections in display order (`users.channelSections.list`).
+    pub sections: Vec<Section>,
+}
+
+/// A sidebar section. `kind` is Slack's type: `standard` (made by the user), `stars`,
+/// `channels`, `direct_messages`, and others slacktui does not show.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Section {
+    pub id: String,
+    pub kind: String,
+    pub name: String,
+    pub emoji: String,
+    pub channels: Vec<String>,
+    /// The section after this one (Slack keeps the order as a linked list).
+    pub next: Option<String>,
+}
+
+impl Section {
+    fn from_json(v: &Value) -> Option<Section> {
+        let str_of = |k: &str| v[k].as_str().unwrap_or_default().to_string();
+        let ids = v["channel_ids_page"]["channel_ids"].as_array().into_iter().flatten().filter_map(|c| c.as_str()).map(String::from).collect();
+        Some(Section {
+            id: v["channel_section_id"].as_str()?.to_string(),
+            kind: v["channel_section_type"].as_str().or(v["type"].as_str()).unwrap_or("standard").to_string(),
+            name: str_of("name"),
+            emoji: str_of("emoji"),
+            channels: ids,
+            next: v["next_channel_section_id"].as_str().map(String::from),
+        })
+    }
 }
 
 /// Do Not Disturb, as `dnd.info` / `dnd_updated` report it (times in epoch seconds).
@@ -107,6 +139,21 @@ impl Dnd {
         });
         self.snooze_until.is_some_and(|t| now < t) || scheduled
     }
+}
+
+/// Sections in linked-list order (the head is the one no other points to); anything off the
+/// chain keeps its listed order at the end.
+fn order_sections(mut list: Vec<Section>) -> Vec<Section> {
+    let pointed: std::collections::HashSet<String> = list.iter().filter_map(|s| s.next.clone()).collect();
+    let mut out = Vec::new();
+    let mut cur = list.iter().position(|s| !pointed.contains(&s.id));
+    while let Some(i) = cur {
+        let s = list.remove(i);
+        cur = s.next.as_ref().and_then(|n| list.iter().position(|x| x.id == *n));
+        out.push(s);
+    }
+    out.extend(list);
+    out
 }
 
 pub fn thread_key(channel: &str, ts: &str) -> String {
@@ -189,6 +236,100 @@ impl Workspace {
         m.username.clone().unwrap_or_else(|| "bot".into())
     }
 
+    /// Replace the sections with a `users.channelSections.list` result, in linked-list order.
+    pub fn apply_sections(&mut self, v: &Value) {
+        let list: Vec<Section> = v["channel_sections"].as_array().into_iter().flatten().filter_map(Section::from_json).collect();
+        self.sections = order_sections(list);
+    }
+
+    /// `channel_section_upserted`: a new or renamed/moved section.
+    pub fn upsert_section(&mut self, v: &Value) {
+        let Some(mut s) = Section::from_json(v) else { return };
+        if let Some(pos) = self.sections.iter().position(|x| x.id == s.id) {
+            s.channels = self.sections.remove(pos).channels;
+        }
+        let at = s.next.as_ref().and_then(|n| self.sections.iter().position(|x| x.id == *n)).unwrap_or(self.sections.len());
+        self.sections.insert(at, s);
+    }
+
+    pub fn remove_section(&mut self, id: &str) {
+        self.sections.retain(|s| s.id != id);
+    }
+
+    /// Put conversations into section `id` (a conversation is in at most one section).
+    pub fn place_in_section(&mut self, id: &str, channels: &[String]) {
+        for s in &mut self.sections {
+            if s.id == id {
+                for c in channels {
+                    if !s.channels.contains(c) {
+                        s.channels.push(c.clone());
+                    }
+                }
+            } else {
+                s.channels.retain(|c| !channels.contains(c));
+            }
+        }
+    }
+
+    pub fn remove_from_section(&mut self, id: &str, channels: &[String]) {
+        if let Some(s) = self.sections.iter_mut().find(|s| s.id == id) {
+            s.channels.retain(|c| !channels.contains(c));
+        }
+    }
+
+    /// The user-made section holding conversation `id`.
+    pub fn section_of(&self, id: &str) -> Option<&Section> {
+        self.sections.iter().find(|s| s.kind == "standard" && s.channels.iter().any(|c| c == id))
+    }
+
+    /// The sidebar as (header, conversations): Starred, then the sections in Slack's order,
+    /// with Channels and Direct messages holding whatever no other section shows.
+    pub fn sidebar_groups(&self) -> Vec<(String, Vec<String>)> {
+        let (channels, dms) = self.sidebar();
+        let shown = |id: &String| channels.contains(id) || dms.contains(id);
+        let label = |id: &String| self.conversations.get(id).map(|c| self.conversation_label(c).to_lowercase()).unwrap_or_default();
+        let starred: Vec<String> = channels.iter().chain(&dms).filter(|id| self.starred.contains(*id)).cloned().collect();
+        let mut placed: std::collections::HashSet<&String> = starred.iter().collect();
+        let mut custom: HashMap<&str, Vec<String>> = HashMap::new();
+        for s in self.sections.iter().filter(|s| s.kind == "standard") {
+            let mut ids: Vec<String> = s.channels.iter().filter(|id| shown(id) && !placed.contains(id)).cloned().collect();
+            ids.sort_by_key(|id| label(id));
+            placed.extend(s.channels.iter().filter(|id| shown(id)));
+            custom.insert(&s.id, ids);
+        }
+        let rest = |list: &Vec<String>| list.iter().filter(|id| !placed.contains(id)).cloned().collect::<Vec<_>>();
+        let (rest_channels, rest_dms) = (rest(&channels), rest(&dms));
+        let mut out = Vec::new();
+        let push = |name: &str, ids: Vec<String>, out: &mut Vec<(String, Vec<String>)>| out.push((name.to_string(), ids));
+        if !self.sections.iter().any(|s| s.kind == "stars") && !starred.is_empty() {
+            push("Starred", starred.clone(), &mut out);
+        }
+        let mut seen_channels = false;
+        let mut seen_dms = false;
+        for s in &self.sections {
+            match s.kind.as_str() {
+                "stars" if !starred.is_empty() => push("Starred", starred.clone(), &mut out),
+                "standard" => push(&s.name, custom.remove(s.id.as_str()).unwrap_or_default(), &mut out),
+                "channels" if !seen_channels => {
+                    seen_channels = true;
+                    push("Channels", rest_channels.clone(), &mut out);
+                }
+                "direct_messages" if !seen_dms => {
+                    seen_dms = true;
+                    push("Direct messages", rest_dms.clone(), &mut out);
+                }
+                _ => {}
+            }
+        }
+        if !seen_channels {
+            push("Channels", rest_channels, &mut out);
+        }
+        if !seen_dms {
+            push("Direct messages", rest_dms, &mut out);
+        }
+        out
+    }
+
     /// Sidebar order: channels (alphabetical), then DMs (open ones), Slackbot last.
     pub fn sidebar(&self) -> (Vec<String>, Vec<String>) {
         let shown = |c: &Conversation| c.is_member || self.preview.as_deref() == Some(c.id.as_str());
@@ -220,6 +361,7 @@ impl Workspace {
             }
         }
         self.dnd = Dnd::from_json(&boot["dnd"]);
+        self.starred = boot["starred"].as_array().into_iter().flatten().filter_map(|s| s.as_str()).map(String::from).collect();
         if let Some(prefs) = boot["prefs"]["muted_channels"].as_str() {
             self.muted = prefs.split(',').filter(|s| !s.is_empty()).map(String::from).collect();
         }
@@ -338,6 +480,46 @@ mod tests {
         assert_eq!(ws.sidebar().0, vec!["C1"]);
         ws.preview = Some("C2".into());
         assert_eq!(ws.sidebar().0, vec!["C1", "C2"]);
+    }
+
+    fn sections_ws() -> Workspace {
+        let mut ws = Workspace::default();
+        for (id, name) in [("C1", "alpha"), ("C2", "beta"), ("C3", "gamma")] {
+            ws.conversations.insert(id.into(), Conversation { id: id.into(), name: name.into(), is_channel: true, is_member: true, ..Default::default() });
+        }
+        ws.conversations.insert("D1".into(), Conversation { id: "D1".into(), is_im: true, user: Some("U2".into()), ..Default::default() });
+        // Shaped like the real users.channelSections.list, out of order on purpose.
+        ws.apply_sections(&serde_json::json!({"channel_sections": [
+            {"channel_section_id":"L3","type":"direct_messages","name":"Direct Messages","next_channel_section_id":"L5","channel_ids_page":{"channel_ids":[]}},
+            {"channel_section_id":"L1","type":"stars","name":"","next_channel_section_id":"L2","channel_ids_page":{"channel_ids":[]}},
+            {"channel_section_id":"L5","type":"standard","name":"Work","next_channel_section_id":null,"channel_ids_page":{"channel_ids":["C3","D1","C9"]}},
+            {"channel_section_id":"L2","type":"channels","name":"Channels","next_channel_section_id":"L3","channel_ids_page":{"channel_ids":[]}}
+        ]}));
+        ws
+    }
+
+    #[test]
+    fn sections_follow_the_linked_list() {
+        let mut ws = sections_ws();
+        assert_eq!(ws.sections.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), vec!["L1", "L2", "L3", "L5"]);
+        ws.starred.insert("C2".into());
+        let groups = ws.sidebar_groups();
+        let names: Vec<(&str, Vec<&str>)> = groups.iter().map(|(n, ids)| (n.as_str(), ids.iter().map(String::as_str).collect())).collect();
+        assert_eq!(names, vec![("Starred", vec!["C2"]), ("Channels", vec!["C1"]), ("Direct messages", vec![]), ("Work", vec!["C3", "D1"])]);
+    }
+
+    #[test]
+    fn section_events() {
+        let mut ws = sections_ws();
+        ws.upsert_section(&serde_json::json!({"channel_section_id":"L6","channel_section_type":"standard","name":"New","next_channel_section_id":"L2"}));
+        assert_eq!(ws.sections.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), vec!["L1", "L6", "L2", "L3", "L5"]);
+        ws.place_in_section("L6", &["C3".into()]);
+        assert_eq!(ws.section_of("C3").map(|s| s.name.as_str()), Some("New"), "moved out of Work");
+        ws.upsert_section(&serde_json::json!({"channel_section_id":"L6","channel_section_type":"standard","name":"Renamed","next_channel_section_id":null}));
+        assert_eq!((ws.sections.last().unwrap().name.as_str(), ws.sections.last().unwrap().channels.len()), ("Renamed", 1), "rename keeps channels");
+        ws.remove_from_section("L6", &["C3".into()]);
+        ws.remove_section("L5");
+        assert!(ws.section_of("C3").is_none() && ws.section_of("D1").is_none());
     }
 
     #[test]

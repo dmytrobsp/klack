@@ -115,6 +115,12 @@ fn about(ws: &Workspace, conv: Option<&Conversation>) -> Vec<Line<'static>> {
     if let Some(created) = c.created.and_then(|t| Local.timestamp_opt(t as i64, 0).single()) {
         out.push(field("Created", created.format("%B %e, %Y").to_string()));
     }
+    if let Some(s) = ws.section_of(&c.id) {
+        out.push(field("Section", s.name.clone()));
+    }
+    if ws.starred.contains(&c.id) {
+        out.push(field("Starred", "yes".into()));
+    }
     if ws.muted.contains(&c.id) {
         out.push(field("Muted", "yes".into()));
     }

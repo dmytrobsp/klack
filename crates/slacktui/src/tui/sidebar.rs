@@ -11,7 +11,7 @@ use super::text::DIM;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Item {
-    Header(&'static str),
+    Header(String),
     Conversation(String),
 }
 
@@ -30,12 +30,11 @@ impl Sidebar {
     /// Rebuild the item list from the workspace, keeping the selected conversation.
     pub fn rebuild(&mut self, ws: &Workspace) {
         let keep = self.selected_id().map(String::from);
-        let (channels, dms) = ws.sidebar();
         self.items.clear();
-        self.items.push(Item::Header("Channels"));
-        self.items.extend(channels.into_iter().map(Item::Conversation));
-        self.items.push(Item::Header("Direct messages"));
-        self.items.extend(dms.into_iter().map(Item::Conversation));
+        for (header, ids) in ws.sidebar_groups() {
+            self.items.push(Item::Header(header));
+            self.items.extend(ids.into_iter().map(Item::Conversation));
+        }
         self.selected = keep
             .and_then(|id| self.items.iter().position(|i| *i == Item::Conversation(id.clone())))
             .or_else(|| self.items.iter().position(|i| matches!(i, Item::Conversation(_))))
