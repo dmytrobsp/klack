@@ -72,9 +72,15 @@ pub enum Ctl {
         /// (`<attendee>#content`), the way Slack shares a screen.
         #[arg(long)]
         share_test: bool,
+        /// Send this camera (part of its name or path; see `ctl cameras`), switched on once
+        /// connected. Only the named camera is ever opened.
+        #[arg(long)]
+        camera: Option<String>,
     },
     /// List audio input/output devices (names usable in SLACKTUI_AUDIO_INPUT/OUTPUT).
     AudioDevices,
+    /// List cameras (names usable with `huddle-media --camera` and in the preferences).
+    Cameras,
     /// Leave a huddle via `rooms.leave`.
     HuddleLeave { channel: String, call_id: String, attendee_id: String },
     /// Call any Web API method with key=value arguments; prints the response with
@@ -226,7 +232,13 @@ pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
             }
             sig.close().await;
         }
-        Ctl::HuddleMedia { channel, seconds, tone, record, mic, video_test, record_video, share_test } => {
+        Ctl::HuddleMedia { channel, seconds, tone, record, mic, video_test, record_video, share_test, camera } => {
+            // Resolve the camera before joining, so a wrong name fails early.
+            let mut camera = match camera {
+                Some(wanted) => Some(huddle::camera::find_camera(&huddle::camera::list_cameras(), &wanted)?),
+                None => None,
+            };
+            let mut capture: Option<huddle::camera::Camera> = None;
             use huddle::session::{FRAME_SAMPLES, Options, SAMPLE_RATE, Session, SessionEvent};
             let id = resolve_channel(&client, &channel).await?;
             let creds = huddle::signaling::Credentials::from_rooms_join(&client.call_raw("rooms.join", &[("channel_id", id)]).await?)?;
@@ -286,6 +298,14 @@ pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
                     ev = session.events.recv() => match ev {
                         Some(SessionEvent::Ended) | None => { println!("session ended"); break; }
                         Some(SessionEvent::Levels(_)) => {}
+                        Some(SessionEvent::Connected) => {
+                            println!("Connected");
+                            if let Some(info) = camera.take() {
+                                session.set_camera(true);
+                                capture = Some(start_camera(&info, session.video_sink(), sent.clone())?);
+                                println!("camera on: {} ({})", info.name, info.id);
+                            }
+                        }
                         Some(ev) => println!("{ev:?}"),
                     },
                     Some(frame) = session.video.recv() => {
@@ -314,6 +334,7 @@ pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
                 }
             }
             stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            drop(capture);
             if video_test {
                 println!("encoded {} kB of video", sent.load(std::sync::atomic::Ordering::Relaxed) / 1000);
             }
@@ -328,6 +349,11 @@ pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
             let _ = tokio::time::timeout(std::time::Duration::from_secs(5), async { while let Some(ev) = session.events.recv().await { if matches!(ev, SessionEvent::Ended) { break; } } }).await;
             let rms = if received > 0 { (sum_sq / received as f64).sqrt() } else { 0.0 };
             println!("received {:.1} s of audio, rms {rms:.0}", received as f64 / SAMPLE_RATE as f64);
+        }
+        Ctl::Cameras => {
+            for c in huddle::camera::list_cameras() {
+                println!("{}  {}", c.id, c.name);
+            }
         }
         Ctl::AudioDevices => {
             let (inputs, outputs) = huddle::devices::list_devices()?;
@@ -482,4 +508,23 @@ fn spawn_test_video(video: huddle::session::VideoSink, stop: std::sync::Arc<std:
         }
     });
     Ok(())
+}
+
+/// Capture `camera` at the test size and rate, encode it and feed `video`; `sent` counts bytes.
+fn start_camera(camera: &huddle::camera::CameraInfo, video: huddle::session::VideoSink, sent: std::sync::Arc<std::sync::atomic::AtomicU64>) -> Result<huddle::camera::Camera> {
+    use huddle::video::{H264Encoder, TEST_FPS, TEST_HEIGHT, TEST_WIDTH};
+    let mut encoder = H264Encoder::new(TEST_WIDTH, TEST_HEIGHT, TEST_FPS, 600_000)?;
+    let period = std::time::Duration::from_secs_f64(1.0 / TEST_FPS as f64);
+    huddle::camera::Camera::start(camera, TEST_WIDTH, TEST_HEIGHT, TEST_FPS, move |rgb| {
+        if video.keyframe_wanted() {
+            encoder.request_keyframe();
+        }
+        match encoder.encode_rgb(&rgb) {
+            Ok(au) => {
+                sent.fetch_add(au.len() as u64, std::sync::atomic::Ordering::Relaxed);
+                video.send(au, period);
+            }
+            Err(e) => eprintln!("{e}"),
+        }
+    })
 }

@@ -1,6 +1,6 @@
 //! WebRTC for a Chime meeting: a relay-only peer connection (Chime hands out TURN
-//! credentials) with one Opus send/receive audio track and, when sending video, an H.264
-//! camera section after it (mid 1, sendrecv, as the Chime SDK lays it out).
+//! credentials) with one Opus send/receive audio track and an H.264 camera section after it
+//! (mid 1: inactive until the camera is on, then sendrecv, as the Chime SDK lays it out).
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -173,8 +173,10 @@ pub struct Media {
     pc: Arc<dyn PeerConnection>,
     track: Arc<TrackLocalStaticSample>,
     ssrc: u32,
-    /// The camera track and its SSRC, when sending video.
-    video: Option<(Arc<TrackLocalStaticSample>, u32)>,
+    /// The camera track and its SSRC (sent only while the camera is on).
+    video: (Arc<TrackLocalStaticSample>, u32),
+    camera: Arc<dyn webrtc::rtp_transceiver::RtpTransceiver>,
+    camera_on: bool,
     /// Receive-only video sections, in SDP order after the camera's.
     receivers: Vec<Arc<dyn webrtc::rtp_transceiver::RtpTransceiver>>,
     /// Pictures decoded from other people's video.
@@ -186,7 +188,7 @@ pub struct Media {
 
 impl Media {
     /// Build the connection and return it with its SDP offer (after ICE gathering, so the
-    /// offer carries the relay candidates). `send_video`: add the camera section.
+    /// offer carries the relay candidates). `send_video`: the camera is on from the start.
     pub async fn offer(turn: &SdkTurnCredentials, send_video: bool) -> Result<(Media, String)> {
         let codec = RTCRtpCodec { mime_type: MIME_TYPE_OPUS.to_owned(), clock_rate: 48000, channels: 2, sdp_fmtp_line: "minptime=10;useinbandfec=1".to_owned(), rtcp_feedback: vec![] };
         let mut media_engine = MediaEngine::default();
@@ -230,7 +232,7 @@ impl Media {
         )?);
         pc.add_track(Arc::clone(&track) as Arc<dyn TrackLocal>).await?;
 
-        let video = if send_video {
+        let video = {
             let ssrc = rand_u32();
             let video = Arc::new(TrackLocalStaticSample::new(
                 Instant::now(),
@@ -242,19 +244,21 @@ impl Media {
                     vec![RTCRtpEncodingParameters { rtp_coding_parameters: RTCRtpCodingParameters { ssrc: Some(ssrc), ..Default::default() }, codec: h264_codec(), ..Default::default() }],
                 ),
             )?);
-            let init = RTCRtpTransceiverInit { direction: RTCRtpTransceiverDirection::Sendrecv, streams: vec![], send_encodings: vec![] };
-            pc.add_transceiver_from_track(Arc::clone(&video) as Arc<dyn TrackLocal>, Some(init)).await?;
-            Some((video, ssrc))
-        } else {
-            None
+            (video, ssrc)
         };
+        // A track-backed transceiver must start sending; switch it off before the first offer.
+        let init = RTCRtpTransceiverInit { direction: RTCRtpTransceiverDirection::Sendrecv, streams: vec![], send_encodings: vec![] };
+        let camera = pc.add_transceiver_from_track(Arc::clone(&video.0) as Arc<dyn TrackLocal>, Some(init)).await?;
+        if !send_video {
+            camera.set_direction(camera_direction(false)).await?;
+        }
 
         let offer = pc.create_offer(None).await?;
         pc.set_local_description(offer).await?;
         tokio::time::timeout(Duration::from_secs(10), gathered.wait_for(|g| *g)).await.map_err(|_| anyhow!("ICE gathering timed out"))??;
         let sdp = pc.local_description().await.ok_or_else(|| anyhow!("no local description"))?.sdp;
         tracing::debug!("SDP offer:\n{}", sdp_summary(&sdp));
-        Ok((Media { pc, track, ssrc, video, receivers: Vec::new(), frames, incoming, state }, sdp))
+        Ok((Media { pc, track, ssrc, video, camera, camera_on: send_video, receivers: Vec::new(), frames, incoming, state }, sdp))
     }
 
     /// Apply the server's SDP answer (from SUBSCRIBE_ACK).
@@ -268,6 +272,14 @@ impl Media {
     pub async fn send_opus(&self, frame: Vec<u8>, duration: Duration) -> Result<()> {
         let sample = rtc::media::Sample { data: Bytes::from(frame), timestamp: Instant::now(), duration, packet_timestamp: 0, prev_dropped_packets: 0, prev_padding_packets: 0 };
         self.track.write_sample(self.ssrc, OPUS_PAYLOAD_TYPE, &sample, &[]).await?;
+        Ok(())
+    }
+
+    /// Turn the camera section on (sendrecv) or off (inactive); takes effect with the next
+    /// [`Media::reoffer`].
+    pub async fn set_camera(&mut self, on: bool) -> Result<()> {
+        self.camera_on = on;
+        self.camera.set_direction(camera_direction(on)).await?;
         Ok(())
     }
 
@@ -293,9 +305,12 @@ impl Media {
         Ok(sdp)
     }
 
-    /// Send one H.264 access unit (Annex-B) covering `duration`; nothing without a camera section.
+    /// Send one H.264 access unit (Annex-B) covering `duration`; nothing while the camera is off.
     pub async fn send_h264(&self, access_unit: Vec<u8>, duration: Duration) -> Result<()> {
-        let Some((track, ssrc)) = &self.video else { return Ok(()) };
+        if !self.camera_on {
+            return Ok(());
+        }
+        let (track, ssrc) = &self.video;
         let sample = rtc::media::Sample { data: Bytes::from(access_unit), timestamp: Instant::now(), duration, packet_timestamp: 0, prev_dropped_packets: 0, prev_padding_packets: 0 };
         track.write_sample(*ssrc, H264_PAYLOAD_TYPE, &sample, &[]).await?;
         Ok(())
@@ -311,6 +326,10 @@ impl Media {
 pub fn sdp_summary(sdp: &str) -> String {
     const KEEP: &[&str] = &["m=", "a=mid", "a=rtpmap", "a=fmtp", "a=sendrecv", "a=sendonly", "a=recvonly", "a=inactive", "a=msid", "a=ssrc", "a=rtcp-fb", "a=extmap", "a=group"];
     sdp.lines().filter(|l| KEEP.iter().any(|k| l.starts_with(k))).collect::<Vec<_>>().join("\n")
+}
+
+fn camera_direction(on: bool) -> RTCRtpTransceiverDirection {
+    if on { RTCRtpTransceiverDirection::Sendrecv } else { RTCRtpTransceiverDirection::Inactive }
 }
 
 /// A random SSRC (no rand dependency: hash the time and the address of a local).

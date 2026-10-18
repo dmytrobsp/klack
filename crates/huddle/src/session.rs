@@ -151,6 +151,8 @@ enum Command {
     Pcm(Vec<i16>),
     /// An H.264 access unit and the time it covers.
     Video(Vec<u8>, Duration),
+    /// Turn the camera on or off.
+    Camera(bool),
     Mute(bool),
     Leave,
 }
@@ -240,6 +242,11 @@ impl Session {
         let _ = self.commands.send(Command::Pcm(frame));
     }
 
+    /// Turn the camera section on or off (feed it through [`Session::video_sink`]).
+    pub fn set_camera(&self, on: bool) {
+        let _ = self.commands.send(Command::Camera(on));
+    }
+
     pub fn set_muted(&self, muted: bool) {
         let _ = self.commands.send(Command::Mute(muted));
     }
@@ -274,7 +281,7 @@ async fn expect_keeping(sig: &mut Signaling, kind: Type, earlier: &mut Vec<SdkSi
 async fn run(
     creds: Credentials,
     mut muted: bool,
-    send_video: bool,
+    mut send_video: bool,
     receive_video: bool,
     keyframe: Arc<AtomicBool>,
     mut commands: mpsc::UnboundedReceiver<Command>,
@@ -290,7 +297,7 @@ async fn run(
     let turn = ack.joinack.and_then(|a| a.turn_credentials).ok_or_else(|| anyhow!("JOIN_ACK without TURN credentials"))?;
     let (mut media, offer) = Media::offer(&turn, send_video).await?;
     // One entry per video section: just the camera's, which is 0.
-    let receive = if send_video { vec![0] } else { vec![] };
+    let receive = receive_ids(true, &[]);
     sig.send(&signaling::subscribe_frame(offer, &creds.meeting.media_placement.audio_host_url, &creds.attendee.attendee_id, muted, send_video, receive)).await?;
     let suback = expect_keeping(&mut sig, Type::SubscribeAck, &mut earlier).await?.suback.unwrap_or_default();
     // The last INDEX before SUBSCRIBE_ACK still says who is sending video.
@@ -311,6 +318,8 @@ async fn run(
     let me = creds.attendee.attendee_id.clone();
     let mut slots: Vec<u32> = Vec::new();
     let (mut subscribing, mut resubscribe) = (false, receive_video);
+    // Subscribe again even if the slots did not change (the camera was switched).
+    let mut camera_changed = false;
     let mut codecs: Vec<String> = Vec::new();
 
     let mut encoder = opus::Encoder::new(SAMPLE_RATE, opus::Channels::Mono, opus::Application::Voip)?;
@@ -320,14 +329,15 @@ async fn run(
     let mut out = vec![0u8; 4000];
     let mut pcm = vec![0i16; FRAME_SAMPLES * 6];
     loop {
-        if resubscribe && !subscribing {
+        if (resubscribe || camera_changed) && !subscribing {
             resubscribe = false;
-            let wanted = assign_slots(&slots, &choose_streams(&sources, &me, limit));
-            if wanted != slots {
+            let wanted = if receive_video { assign_slots(&slots, &choose_streams(&sources, &me, limit)) } else { slots.clone() };
+            if wanted != slots || camera_changed {
+                camera_changed = false;
                 slots = wanted;
                 let offer = media.reoffer(&slots.iter().map(|s| *s != 0).collect::<Vec<_>>()).await?;
-                tracing::info!(?slots, "subscribing to video");
-                sig.send(&signaling::subscribe_frame(offer, &creds.meeting.media_placement.audio_host_url, &me, muted, send_video, receive_ids(send_video, &slots))).await?;
+                tracing::info!(?slots, camera = send_video, "subscribing again");
+                sig.send(&signaling::subscribe_frame(offer, &creds.meeting.media_placement.audio_host_url, &me, muted, send_video, receive_ids(true, &slots))).await?;
                 subscribing = true;
             }
         }
@@ -383,7 +393,10 @@ async fn run(
                 }
                 if let Some(ack) = frame.suback.clone().filter(|_| frame.r#type == Type::SubscribeAck as i32) {
                     subscribing = false;
-                    tracing::info!(tracks = ?ack.tracks, "SUBSCRIBE_ACK (video)");
+                    tracing::info!(allocations = ?ack.allocations, tracks = ?ack.tracks, "SUBSCRIBE_ACK (again)");
+                    if let Some(stream_id) = ack.allocations.iter().find(|a| a.track_label.as_deref() == Some(crate::media::VIDEO_TRACK_LABEL)).and_then(|a| a.stream_id).filter(|_| send_video) {
+                        let _ = events.send(SessionEvent::SendingVideo { stream_id });
+                    }
                     ssrc_streams = ack.tracks.iter().filter_map(|t| Some((t.ssrc?, t.stream_id?))).collect();
                     match ack.sdp_answer {
                         Some(answer) => media.accept(answer).await?,
@@ -412,6 +425,14 @@ async fn run(
                 Some(Command::Pcm(_)) => {}
                 Some(Command::Video(access_unit, duration)) if connected => media.send_h264(access_unit, duration).await?,
                 Some(Command::Video(..)) => {}
+                Some(Command::Camera(on)) if on != send_video => {
+                    send_video = on;
+                    media.set_camera(on).await?;
+                    camera_changed = true;
+                    // The first picture after switching on must be a keyframe.
+                    keyframe.store(on, Ordering::Relaxed);
+                }
+                Some(Command::Camera(_)) => {}
                 Some(Command::Mute(m)) => {
                     muted = m;
                     sig.send(&signaling::mute_frame(m)).await?;

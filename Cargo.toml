@@ -18,3 +18,8 @@ tracing = "0.1"
 [profile.release]
 lto = "thin"
 strip = true
+
+# OpenH264 is C code built by the crate; unoptimised it cannot encode a camera in real time,
+# which makes debug builds useless for video tests.
+[profile.dev.package.openh264-sys2]
+opt-level = 3
