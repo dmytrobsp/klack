@@ -76,6 +76,9 @@ impl SnippetView {
             }
         };
         f.render_widget(Paragraph::new(lines).block(block), area);
+        if matches!(self.text, Some(Ok(_))) {
+            super::scroll::indicator(f, area, self.scroll, self.height, self.lines.len(), Style::default().fg(super::theme::p().accent));
+        }
     }
 }
 

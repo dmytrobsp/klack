@@ -90,6 +90,7 @@ impl EmojiPicker {
             .collect();
         let lines = if lines.is_empty() { vec![Line::styled(" no matching emoji", Style::default().fg(super::theme::p().dim))] } else { lines };
         f.render_widget(Paragraph::new(lines), list);
+        super::scroll::indicator_beside(f, popup, list, start, height, cands.len(), Style::default().fg(super::theme::p().accent));
     }
 }
 

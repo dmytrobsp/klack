@@ -28,6 +28,12 @@ pub fn indicator(f: &mut Frame, area: Rect, first: usize, shown: usize, total: u
     }
 }
 
+/// [`indicator`] on the right border of the bordered `popup`, beside the list in `rows` only.
+pub fn indicator_beside(f: &mut Frame, popup: Rect, rows: Rect, first: usize, shown: usize, total: usize, border: Style) {
+    let area = Rect { x: popup.x, y: rows.y.saturating_sub(1), width: popup.width, height: rows.height + 2 };
+    indicator(f, area, first, shown, total, border);
+}
+
 /// Where the thumb goes on a track of `track` cells: (first cell, length), or None when
 /// everything fits. Its length follows the part on screen but is at least [`MIN_THUMB`]; it
 /// touches the top only at the top and the bottom only at the end.

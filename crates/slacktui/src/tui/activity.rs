@@ -153,6 +153,10 @@ impl Activity {
             }
         };
         f.render_widget(Paragraph::new(lines), inner);
+        if let Some(items) = &self.items {
+            let start = self.selected.saturating_sub(self.height.saturating_sub(1));
+            super::scroll::indicator_beside(f, popup, inner, start, self.height, items.len(), Style::default().fg(super::theme::p().accent));
+        }
     }
 }
 

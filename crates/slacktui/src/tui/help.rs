@@ -57,6 +57,7 @@ impl Help {
             .title(format!(" {} ", super::i18n::tr("Keys")))
             .title_bottom(Line::styled(format!(" {close} {} · {} ", tr("close"), tr("rebind in keys.toml")), Style::default().fg(super::theme::p().dim)).right_aligned());
         f.render_widget(Paragraph::new(lines).scroll((self.scroll as u16, 0)).block(block), popup);
+        super::scroll::indicator(f, popup, self.scroll, self.height, self.lines, Style::default().fg(super::theme::p().accent));
     }
 }
 

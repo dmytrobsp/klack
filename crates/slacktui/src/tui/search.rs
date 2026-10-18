@@ -138,6 +138,8 @@ impl Search {
             lines.push(Line::styled(" no messages found", Style::default().fg(super::theme::p().dim)));
         }
         f.render_widget(Paragraph::new(lines), list);
+        // Counted in hits, out of all that Slack found (more load as you go down).
+        super::scroll::indicator_beside(f, popup, list, start, per_page, (self.total as usize).max(self.hits.len()), Style::default().fg(super::theme::p().accent));
     }
 }
 

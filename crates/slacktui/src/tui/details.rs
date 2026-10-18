@@ -75,6 +75,10 @@ impl Details {
             Tab::Pins => self.list(body.height as usize, self.pins.as_deref().map(|p| p.iter().map(|m| pin_line(ws, m, body.width as usize)).collect())),
         };
         f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), body);
+        if self.tab != Tab::About {
+            let height = body.height as usize;
+            super::scroll::indicator_beside(f, popup, body, self.selected.saturating_sub(height.saturating_sub(1)), height, self.len(), Style::default().fg(super::theme::p().accent));
+        }
     }
 
     /// A scrolled list with the selected row highlighted, or a loading note.

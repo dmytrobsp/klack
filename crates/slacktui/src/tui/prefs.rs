@@ -594,6 +594,8 @@ impl Prefs {
         };
         let shown = rows.len() as u16;
         f.render_widget(Paragraph::new(rows), right);
+        let list = Rect { height: (room as u16).min(right.height), ..right };
+        super::scroll::indicator_beside(f, popup, list, self.scroll, room, fields.len(), Style::default().fg(super::theme::p().accent));
         // The hints under a blank row, wrapped at words and indented like the rows.
         let below = Rect { x: right.x + 1, y: right.y + shown + 1, width: right.width.saturating_sub(1), height: right.height.saturating_sub(shown + 1) };
         if !hints.is_empty() && below.height > 0 {
