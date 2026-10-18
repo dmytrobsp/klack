@@ -1146,7 +1146,8 @@ impl App {
             self.status = "stopped sharing".into();
         } else {
             call.share_pending = true;
-            self.status = "choose what to share in the desktop's dialog…".into();
+            let asks = huddle::screen::Source::current().is_some_and(|s| s.asks_what_to_share());
+            self.status = if asks { "choose what to share in the desktop's dialog…" } else { "starting to share your whole screen…" }.into();
             let (creds, videos, tx) = (call.creds.clone(), call.videos.clone(), self.net.clone());
             tokio::spawn(async move {
                 let result = super::call::start_share(creds, videos).await.map_err(|e| e.to_string());

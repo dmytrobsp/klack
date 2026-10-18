@@ -290,7 +290,8 @@ pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
                         let mut encoder = huddle::video::H264Encoder::for_screen(SHARE_WIDTH, SHARE_HEIGHT, SHARE_FPS, 1_500_000)?;
                         let (video, sent) = (s.video_sink(), sent.clone());
                         let period = std::time::Duration::from_secs_f64(1.0 / SHARE_FPS as f64);
-                        println!("choose what to share in the desktop's dialog…");
+                        let asks = huddle::screen::Source::current().is_some_and(|s| s.asks_what_to_share());
+                        println!("{}", if asks { "choose what to share in the desktop's dialog…" } else { "sharing the whole screen…" });
                         let (capture, what) = huddle::screen::ScreenCapture::start(SHARE_WIDTH, SHARE_HEIGHT, SHARE_FPS, move |rgb| {
                             if video.keyframe_wanted() {
                                 encoder.request_keyframe();

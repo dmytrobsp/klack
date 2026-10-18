@@ -127,17 +127,21 @@ call bar; a screen share gets its own "🖥 <name>'s screen" tile (🖥 in the c
 
 Your camera: choose it in F6 → Audio & video → Camera (until you do, it can never switch on), then
 F9 in a huddle switches it on and off; you see yourself in your tile. Capture goes through the
-`ffmpeg` tool (V4L2 on Linux; AVFoundation/DirectShow on macOS/Windows are written but untested).
+`ffmpeg` tool (V4L2 on Linux; AVFoundation/DirectShow on macOS/Windows, where cameras are listed
+with ffmpeg's `-list_devices`, are written but have never been run).
 
 Video is H.264 (OpenH264, built from source — note that H.264 is patent-encumbered when you
 distribute binaries). For tests, `slacktui ctl huddle-media <channel> --video-test` joins with a
 synthetic camera (a moving test pattern), `--share-test` shares it as a screen, `--camera NAME`
 sends a real camera (`ctl cameras` lists them), and `--record-video DIR` saves what arrives.
 
-Your screen: F10 in a huddle asks the desktop what to share (a screen or a window; on Linux through
-the screen-cast portal, read with GStreamer's `pipewiresrc` — `gst-launch-1.0` and the GStreamer
-PipeWire plugin must be installed); F10 again stops. Others see it as your screen share; you see it
-in a "🖥 Your screen" tile. Screen sharing is Linux-only so far. No echo cancellation yet.
+Your screen: F10 in a huddle starts sharing, F10 again stops. Others see it as your screen share;
+you see it in a "🖥 Your screen" tile. In a Wayland session the desktop asks what to share (a
+screen or a window, through the screen-cast portal, read with GStreamer's `pipewiresrc` —
+`gst-launch-1.0` and the GStreamer PipeWire plugin must be installed). Elsewhere there is no picker
+and F10 shares the **whole** screen through `ffmpeg`: `x11grab` in an X11 session, the main screen
+via AVFoundation on macOS (the terminal needs the Screen Recording permission), the desktop via
+`gdigrab` on Windows. Only the Wayland portal has been tried; the others are written but untested.
 
 ## Other settings
 
