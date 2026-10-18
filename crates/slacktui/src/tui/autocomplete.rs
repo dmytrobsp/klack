@@ -110,12 +110,26 @@ pub fn suggestions(ws: &Workspace, conversation: Option<&str>, trigger: &Trigger
     }
 }
 
-/// Draw the list just above `anchor` (the composer box).
-pub fn draw(f: &mut Frame, anchor: Rect, c: &Completion) {
-    let height = c.items.len() as u16 + 2;
+/// Where the list of `items` suggestions goes: just above `anchor` (the composer box).
+fn popup_area(anchor: Rect, items: usize) -> Rect {
+    let height = items as u16 + 2;
     let width = anchor.width.min(48);
     let y = anchor.y.saturating_sub(height);
-    let area = Rect { x: anchor.x, y, width, height: height.min(anchor.y) };
+    Rect { x: anchor.x, y, width, height: height.min(anchor.y) }
+}
+
+impl Completion {
+    /// The suggestion drawn at (`col`, `row`) by [`draw`] above `anchor`.
+    pub fn row_at(&self, anchor: Rect, col: u16, row: u16) -> Option<usize> {
+        let area = popup_area(anchor, self.items.len());
+        let inner = Rect { x: area.x + 1, y: area.y + 1, width: area.width.saturating_sub(2), height: area.height.saturating_sub(2) };
+        inner.contains((col, row).into()).then(|| (row - inner.y) as usize).filter(|n| *n < self.items.len())
+    }
+}
+
+/// Draw the list just above `anchor` (the composer box).
+pub fn draw(f: &mut Frame, anchor: Rect, c: &Completion) {
+    let area = popup_area(anchor, c.items.len());
     f.render_widget(Clear, area);
     let block = Block::default().borders(Borders::ALL).border_style(Style::default().fg(super::theme::p().accent)).title(" Suggestions ");
     let lines: Vec<Line> = c
@@ -156,6 +170,19 @@ mod tests {
         assert_eq!(labels, vec!["Anna Bee", "Hannah"]);
         assert_eq!(s[0].replacement, "@Anna Bee");
         assert_eq!(s[0].id.as_deref(), Some("U1"));
+    }
+
+    #[test]
+    fn clicking_a_suggestion() {
+        let items = suggestions(&ws(), Some("C1"), &Trigger::User("an".into()));
+        let c = Completion { thread: false, start: 0, items, selected: 0 };
+        // Composer at rows 30–32: two suggestions in a box on rows 26–29, inside rows 27 and 28.
+        let anchor = Rect { x: 20, y: 30, width: 60, height: 3 };
+        assert_eq!(c.row_at(anchor, 25, 27), Some(0));
+        assert_eq!(c.row_at(anchor, 25, 28), Some(1));
+        assert_eq!(c.row_at(anchor, 25, 26), None, "the border");
+        assert_eq!(c.row_at(anchor, 25, 30), None, "the composer");
+        assert_eq!(c.row_at(anchor, 70, 27), None, "right of the box (48 wide)");
     }
 
     #[test]

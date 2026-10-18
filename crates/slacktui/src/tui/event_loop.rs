@@ -2462,7 +2462,13 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
         Event::Mouse(m) if m.kind == MouseEventKind::Down(MouseButton::Right) => app.open_menu(m.column, m.row),
         Event::Mouse(m) => match m.kind {
             MouseEventKind::Down(MouseButton::Left) => {
-                if app.huddle_view.as_mut().is_some_and(|v| v.click(m.column, m.row)) {
+                let picked = app.completion.as_ref().and_then(|c| c.row_at(if c.thread { app.thread_composer_area } else { app.composer_area }, m.column, m.row));
+                if let Some(n) = picked {
+                    if let Some(c) = app.completion.as_mut() {
+                        c.selected = n;
+                    }
+                    app.accept_completion();
+                } else if app.huddle_view.as_mut().is_some_and(|v| v.click(m.column, m.row)) {
                     app.focus = Focus::Huddle;
                 } else if app.sidebar.click(m.column, m.row) {
                     app.focus = Focus::Composer;
