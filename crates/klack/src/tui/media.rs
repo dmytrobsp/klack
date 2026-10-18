@@ -36,6 +36,8 @@ pub const GRAPHICS_ENV: &str = "KLACK_GRAPHICS";
 
 /// An avatar is two cells wide and one tall (about square).
 pub const AVATAR_SIZE: (u16, u16) = (2, 1);
+/// A two-row avatar ("Two-row profile pictures"), beside the name and the first line.
+pub const AVATAR_SIZE_LARGE: (u16, u16) = (4, 2);
 pub const AVATAR_PREFIX: &str = "avatar:";
 
 /// A Slack-hosted picture for `user`, as a pseudo file for the thumbnail cache. Gravatar
@@ -193,6 +195,7 @@ const PLACEHOLDER: char = '\u{10EEEE}';
 /// a picture, so the cell left of the popup would be a stray half (an avatar's), and the cells
 /// right of it lose their numbering and show the wrong slice.
 pub fn clear_popup(f: &mut ratatui::Frame, area: ratatui::layout::Rect) {
+    hold_pictures(f.buffer_mut(), area);
     f.render_widget(ratatui::widgets::Clear, area);
     let buf = f.buffer_mut();
     let screen = buf.area;
@@ -205,6 +208,43 @@ pub fn clear_popup(f: &mut ratatui::Frame, area: ratatui::layout::Rect) {
             blank_picture_cell(&mut buf[(x, y)]);
             x += 1;
         }
+    }
+}
+
+thread_local! {
+    /// Picture data that popups covered in this frame, put back by [`reattach_pictures`].
+    static HELD: std::cell::RefCell<Vec<(u16, u16, String)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Keep the picture data in the cells of `area` (sent before the first placeholder): kitty
+/// gets each picture once, in the first frame that draws it, so a picture first drawn under a
+/// popup would never show.
+fn hold_pictures(buf: &ratatui::buffer::Buffer, area: ratatui::layout::Rect) {
+    let area = area.intersection(buf.area);
+    HELD.with_borrow_mut(|held| {
+        for y in area.top()..area.bottom() {
+            for x in area.left()..area.right() {
+                if let Some((data, _)) = buf[(x, y)].symbol().split_once(PLACEHOLDER).filter(|(data, _)| !data.is_empty()) {
+                    held.push((x, y, data.to_string()));
+                }
+            }
+        }
+    });
+}
+
+/// Once the frame is drawn, put the held picture data back in front of whatever covers its
+/// cell (a virtual placement: it shows nothing there), or of the wide character it is part of.
+pub fn reattach_pictures(buf: &mut ratatui::buffer::Buffer) {
+    use unicode_width::UnicodeWidthStr;
+    let held: Vec<(u16, u16, String)> = HELD.take().into_iter().filter(|(x, y, _)| buf.area.contains((*x, *y).into())).collect();
+    // Where each goes, before any is attached (the data would count into the widths).
+    let at: Vec<u16> = held.iter().map(|(x, y, _)| (1..=x - buf.area.left()).find(|&k| buf[(x - k, *y)].symbol().width() > k as usize).map_or(*x, |k| x - k)).collect();
+    for ((_, y, data), x) in held.into_iter().zip(at) {
+        let cell = &mut buf[(x, y)];
+        // The terminal shows only what was there: keep its width for ratatui's diff.
+        let width = std::num::NonZeroU16::new(cell.symbol().width().max(1) as u16).unwrap_or(std::num::NonZeroU16::MIN);
+        let symbol = format!("{data}{}", cell.symbol());
+        cell.set_symbol(&symbol).set_diff_option(ratatui::buffer::CellDiffOption::ForcedWidth(width));
     }
 }
 
@@ -263,7 +303,12 @@ pub async fn load_thumb(client: slack_core::Client, picker: Picker, file: File, 
     }
     .context("download failed")?;
     tokio::task::spawn_blocking(move || {
-        let img = image::load_from_memory(&bytes).context("not a picture that can be shown")?;
+        let mut img = image::load_from_memory(&bytes).context("not a picture that can be shown")?;
+        if file.id.starts_with(AVATAR_PREFIX) {
+            // Profile pictures fill their cells (cells are not square): cut, not boxed.
+            let font = picker.font_size();
+            img = img.resize_to_fill(size.0 as u32 * font.width as u32, size.1 as u32 * font.height as u32, image::imageops::FilterType::Triangle);
+        }
         SlicedProtocol::new(&picker, img, Some(Size::new(size.0, size.1))).context("could not draw it")
     })
     .await?
@@ -320,6 +365,36 @@ mod tests {
         blank_picture_cell(&mut cell);
         assert_eq!(cell.symbol(), "\x1b_Gdata\x1b\\ ");
         assert!(is_continuation("\u{10EEEE}") && !is_continuation("\u{10EEEE}\u{305}") && !is_continuation("a"));
+    }
+
+    #[test]
+    fn pictures_first_drawn_under_a_popup_still_reach_the_terminal() {
+        use ratatui::layout::Rect;
+        use ratatui::widgets::Paragraph;
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(10, 3)).unwrap();
+        terminal
+            .draw(|f| {
+                // A picture's first cell (carrying its data) at (2, 1), then a popup with text over it.
+                f.buffer_mut()[(2, 1)].set_symbol("\x1b_Gdata\x1b\\\u{10EEEE}\u{305}\u{305}");
+                f.buffer_mut()[(6, 2)].set_symbol("\x1b_Gwide\x1b\\\u{10EEEE}\u{305}\u{305}");
+                clear_popup(f, Rect::new(1, 0, 8, 3));
+                f.render_widget(Paragraph::new(vec!["".into(), " hello".into(), "    界界".into()]), Rect::new(1, 0, 8, 3));
+                reattach_pictures(f.buffer_mut());
+                let b = f.buffer_mut();
+                assert_eq!(b[(2, 1)].symbol(), "\x1b_Gdata\x1b\\h", "the data, then what the popup drew there");
+                assert_eq!((b[(5, 2)].symbol(), b[(6, 2)].symbol()), ("\x1b_Gwide\x1b\\界", " "), "in front of the wide character it is part of");
+            })
+            .unwrap();
+        // What reaches the terminal: nothing after the data is skipped.
+        let row = |y: u16| (0..10).map(|x| terminal.backend().buffer()[(x, y)].symbol().to_string()).collect::<String>();
+        assert_eq!(row(1), "  \x1b_Gdata\x1b\\hello   ");
+        assert_eq!(row(2), "     \x1b_Gwide\x1b\\界 界  ", "(a test terminal keeps a blank after a wide character)");
+        terminal
+            .draw(|f| {
+                reattach_pictures(f.buffer_mut());
+                assert_eq!(f.buffer_mut()[(2, 1)].symbol(), " ", "held for one frame only");
+            })
+            .unwrap();
     }
 
     #[test]

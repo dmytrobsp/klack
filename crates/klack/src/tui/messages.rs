@@ -563,6 +563,11 @@ pub fn build_lines_range(ws: &Workspace, t: &Timeline, from: usize, to: usize, w
             continue;
         }
         let grouped = prev.is_some_and(|p| p.user == m.user && p.bot_id == m.bot_id && ts - p.time() < GROUP_WINDOW && !is_system(p));
+        // Two-row avatars stand beside the name and the first line; all text is indented past them.
+        let large = avatars != Avatars::Off && ws.settings.messages.large_avatars;
+        let indent = if large { super::media::AVATAR_SIZE_LARGE.0 as usize + 1 } else { 0 };
+        // The colour of the initials' second row, beside the first line.
+        let mut beside = None;
         if !grouped {
             // A blank row between author groups (not in compact mode).
             if prev.is_some() && !ws.settings.appearance.compact {
@@ -576,19 +581,36 @@ pub fn build_lines_range(ws: &Workspace, t: &Timeline, from: usize, to: usize, w
             ];
             if avatars != Avatars::Off {
                 // The initials always; a picture, once loaded, is drawn over them.
+                let (label, size) = if large { (format!(" {} ", initials(&ws.author(m))), super::media::AVATAR_SIZE_LARGE) } else { (initials(&ws.author(m)), super::media::AVATAR_SIZE) };
                 header.insert(0, Span::raw(" "));
-                header.insert(0, Span::styled(initials(&ws.author(m)), Style::default().bg(color).fg(ratatui::style::Color::Black).add_modifier(Modifier::BOLD)));
-                if let Some(file) = m.user.as_deref().and_then(|u| ws.users.get(u)).and_then(super::media::avatar_file).filter(|_| avatars == Avatars::Pictures) {
-                    slots.push(ImageSlot { line: out.len(), col: 0, file, size: super::media::AVATAR_SIZE });
+                header.insert(0, Span::styled(label, Style::default().bg(color).fg(ratatui::style::Color::Black).add_modifier(Modifier::BOLD)));
+                if let Some(file) = m.user.as_deref().and_then(|u| ws.users.get(u)).and_then(|u| super::media::avatar_file_sized(u, large)).filter(|_| avatars == Avatars::Pictures) {
+                    slots.push(ImageSlot { line: out.len(), col: 0, file, size });
+                }
+                if large {
+                    beside = Some(color);
                 }
             }
             out.push(Line::from(header));
         }
         let base = out.len();
-        let (body, body_slots) = message_body(ws, m, width, !thread, thumb_size);
+        let (mut body, body_slots) = message_body(ws, m, width.saturating_sub(indent), !thread, thumb_size);
+        if beside.is_some() && body.is_empty() {
+            body.push(Line::raw(""));
+        }
+        if indent > 0 {
+            for (n, line) in body.iter_mut().enumerate() {
+                let pad = match beside.filter(|_| n == 0) {
+                    Some(color) => vec![Span::styled(" ".repeat(indent - 1), Style::default().bg(color)), Span::raw(" ")],
+                    None => vec![Span::raw(" ".repeat(indent))],
+                };
+                line.spans.splice(0..0, pad);
+            }
+        }
         out.extend(body);
         slots.extend(body_slots.into_iter().map(|mut s| {
             s.line += base;
+            s.col += indent as u16;
             s
         }));
         owners.resize(out.len(), Some(m.ts.clone()));
@@ -1155,5 +1177,40 @@ mod tests {
         let below = 29 - (0..30).position(|i| ts(i) == last).unwrap();
         assert!(below > 0);
         assert!(screen(&terminal)[13].contains(&format!("↓ {below} newer")), "{:?}", screen(&terminal)[13]);
+    }
+
+    #[test]
+    fn two_row_avatars_indent_the_text() {
+        let mut ws = Workspace::default();
+        ws.settings.messages.large_avatars = true;
+        let mut bob = slack_core::types::User { id: "U2".into(), name: "bob".into(), ..Default::default() };
+        bob.profile.image_48 = Some("https://avatars.slack-edge.com/x_48.png".into());
+        bob.profile.image_192 = Some("https://avatars.slack-edge.com/x_192.png".into());
+        ws.users.insert("U2".into(), bob);
+        let mut t = Timeline { loaded: true, ..Default::default() };
+        t.upsert(msg("1.0", "U2", "one\nmore"));
+        let image = File { id: "F1".into(), name: "p.png".into(), mimetype: "image/png".into(), thumb_360: Some("https://x/t.png".into()), ..Default::default() };
+        t.upsert(Message { files: vec![image], ..msg("2.0", "U2", "two") });
+        let (lines, _, slots) = build_lines_owned(&ws, &t, 40, false, &|_, _| Some((10, 3)), Avatars::Pictures);
+        let p = plain(&lines);
+        let header = p.iter().position(|l| l.contains("bob")).unwrap();
+        assert!(p[header].starts_with(" BO  bob"), "four-cell initials under the picture: {p:?}");
+        assert_eq!(p[header + 1], "     one", "the picture's second row beside the first line");
+        assert_eq!(lines[header + 1].spans[0].style.bg, Some(text::user_color("U2")), "the initials' second row");
+        assert_eq!(p[header + 2], "     more");
+        assert!(p[header + 3].starts_with("     two"), "grouped messages indented the same: {p:?}");
+        assert_eq!((slots[0].line, slots[0].col, slots[0].size, slots[0].file.id.as_str()), (header, 0, (4, 2), "avatar:U2@192"));
+        assert_eq!((slots[1].file.id.as_str(), slots[1].col), ("F1", 5), "thumbnails move with the text");
+        // No text at all: a row is kept for the picture's second half.
+        let mut t = Timeline { loaded: true, ..Default::default() };
+        t.upsert(msg("1.0", "U2", ""));
+        t.upsert(msg("900.0", "U2", "later"));
+        let p = plain(&build_lines_owned(&ws, &t, 40, false, &|_, _| None, Avatars::Initials).0);
+        let header = p.iter().position(|l| l.contains("bob")).unwrap();
+        assert_eq!(p[header + 1].trim(), "", "{p:?}");
+        assert!(!p[header + 2].contains("later"), "the next author group starts below it: {p:?}");
+        // Pictures off: the setting does nothing.
+        let p = plain(&build_lines_owned(&ws, &t, 40, false, &|_, _| None, Avatars::Off).0);
+        assert!(p.iter().any(|l| l == "later"), "{p:?}");
     }
 }

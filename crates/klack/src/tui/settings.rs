@@ -70,6 +70,8 @@ pub struct Messages {
     pub inline_images: bool,
     /// Profile pictures next to names.
     pub avatars: bool,
+    /// Profile pictures two rows tall (beside the name and the first line), the text indented.
+    pub large_avatars: bool,
     /// Show emoji as `:name:` instead of the character.
     pub emoji_as_names: bool,
     /// How pictures are drawn: "auto" (asked from the terminal) or one of
@@ -79,7 +81,7 @@ pub struct Messages {
 
 impl Default for Messages {
     fn default() -> Self {
-        Messages { inline_images: true, avatars: true, emoji_as_names: false, graphics: "auto".into() }
+        Messages { inline_images: true, avatars: true, large_avatars: false, emoji_as_names: false, graphics: "auto".into() }
     }
 }
 

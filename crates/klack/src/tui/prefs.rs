@@ -24,6 +24,7 @@ pub enum Field {
     Compact,
     InlineImages,
     Avatars,
+    LargeAvatars,
     Graphics,
     EmojiAsNames,
     Clock24,
@@ -81,7 +82,7 @@ pub const PAUSES: &[u64] = &[0, 30, 60, 120, 480];
 pub const CATEGORIES: &[(&str, &[Field])] = &[
     ("Availability", &[Field::Status, Field::Away, Field::Pause]),
     ("Appearance", &[Field::Theme, Field::Compact]),
-    ("Messages & media", &[Field::InlineImages, Field::Avatars, Field::Graphics, Field::EmojiAsNames]),
+    ("Messages & media", &[Field::InlineImages, Field::Avatars, Field::LargeAvatars, Field::Graphics, Field::EmojiAsNames]),
     ("Language & region", &[Field::Clock24, Field::DateFormat, Field::TimeZone, Field::Language]),
     ("Notifications", &[Field::Desktop, Field::Sound, Field::ConversationLevel, Field::ChannelDefault, Field::Keywords, Field::Vips]),
     ("Audio & video", &[Field::Input, Field::Output, Field::HuddleVolume, Field::SoundVolume, Field::MicGain, Field::SpeakingThreshold, Field::NoiseSuppression, Field::EchoCancellation, Field::Camera]),
@@ -122,6 +123,7 @@ impl Field {
             Field::Compact => "Compact (no gaps between authors or sidebar sections)",
             Field::InlineImages => "Show image thumbnails",
             Field::Avatars => "Show profile pictures",
+            Field::LargeAvatars => "Two-row profile pictures",
             Field::Graphics => "Draw pictures with",
             Field::EmojiAsNames => "Show emoji as :names:",
             Field::Clock24 => "24-hour clock",
@@ -175,6 +177,7 @@ impl Field {
             Field::Compact => yes(s.appearance.compact),
             Field::InlineImages => yes(s.messages.inline_images),
             Field::Avatars => yes(s.messages.avatars),
+            Field::LargeAvatars => yes(s.messages.large_avatars),
             Field::Graphics => s.messages.graphics.clone(),
             Field::EmojiAsNames => yes(s.messages.emoji_as_names),
             Field::Clock24 => yes(s.region.clock_24h),
@@ -274,6 +277,7 @@ impl Field {
             Field::Compact => s.appearance.compact ^= true,
             Field::InlineImages => s.messages.inline_images ^= true,
             Field::Avatars => s.messages.avatars ^= true,
+            Field::LargeAvatars => s.messages.large_avatars ^= true,
             Field::Graphics => {
                 let i = super::media::GRAPHICS.iter().position(|g| *g == s.messages.graphics).map_or(0, |i| (i + 1) % super::media::GRAPHICS.len());
                 s.messages.graphics = super::media::GRAPHICS[i].into();
@@ -370,7 +374,7 @@ const LEADER_LABEL: &str = "Leader key (for chords such as Leader k)";
 /// Category names and fixed labels, for translation templates.
 pub fn translatable() -> Vec<String> {
     let all = [
-        Field::Theme, Field::Compact, Field::InlineImages, Field::Avatars, Field::Graphics, Field::EmojiAsNames, Field::Clock24, Field::DateFormat, Field::TimeZone, Field::Language, Field::Desktop, Field::Sound,
+        Field::Theme, Field::Compact, Field::InlineImages, Field::Avatars, Field::LargeAvatars, Field::Graphics, Field::EmojiAsNames, Field::Clock24, Field::DateFormat, Field::TimeZone, Field::Language, Field::Desktop, Field::Sound,
         Field::ConversationLevel, Field::ChannelDefault, Field::Keywords, Field::Vips, Field::Status, Field::Away, Field::Pause, Field::Input, Field::Output,
         Field::HuddleVolume, Field::SoundVolume, Field::MicGain, Field::SpeakingThreshold, Field::NoiseSuppression, Field::EchoCancellation, Field::Camera, Field::JoinSound, Field::SomeoneJoined, Field::SomeoneLeft, Field::RingSound, Field::RingTimeout, Field::AutoDecline, Field::AloneSound, Field::AloneSecs,
     ];

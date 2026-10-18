@@ -2131,7 +2131,10 @@ async fn run_workspace(
                 tracing::debug!("alone in the huddle: reminder loops");
             }
         }
-        terminal.draw(|f| draw(f, &mut app))?;
+        terminal.draw(|f| {
+            draw(f, &mut app);
+            super::media::reattach_pictures(f.buffer_mut());
+        })?;
         app.request_thumbs();
         app.request_activity_messages();
         app.refresh_dnd();
