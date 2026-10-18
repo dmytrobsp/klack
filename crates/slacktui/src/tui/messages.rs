@@ -29,6 +29,10 @@ pub type ThumbSize<'a> = &'a dyn Fn(&File) -> Option<(u16, u16)>;
 /// Messages from the same author within this many seconds share one header.
 const GROUP_WINDOW: f64 = 300.0;
 
+/// Columns left of every message row; your own messages get a bar there.
+const GUTTER: u16 = 2;
+pub const OWN_BAR: Color = Color::Rgb(0x2b, 0xac, 0x76);
+
 #[derive(Debug, Default)]
 pub struct MessagePane {
     /// Lines scrolled up from the bottom (0 = newest visible).
@@ -98,7 +102,7 @@ impl MessagePane {
         let border = if focused { Style::default().fg(Color::Rgb(0x61, 0xaf, 0xef)) } else { Style::default().fg(DIM) };
         let block = Block::default().borders(Borders::ALL).border_style(border).title(title);
         let inner = block.inner(area);
-        let width = inner.width.saturating_sub(1) as usize;
+        let width = inner.width.saturating_sub(1 + GUTTER) as usize;
         let thumb_size = |file: &File| media.thumb_size(file);
         let (mut lines, mut owners, mut slots) = match timeline {
             Some(t) if t.loaded || !t.messages.is_empty() => build_lines_owned(ws, t, width, self.thread, &thumb_size),
@@ -120,6 +124,10 @@ impl MessagePane {
                     slot.line += 1;
                 }
             }
+        }
+        if let Some(t) = timeline {
+            let own: std::collections::HashSet<&str> = t.messages.iter().filter(|m| m.user.as_deref() == Some(ws.self_id.as_str()) && !is_system(m)).map(|m| m.ts.as_str()).collect();
+            add_gutter(&mut lines, &owners, &own);
         }
         // Highlight the selected message's rows.
         let highlight = Style::default().bg(Color::Rgb(0x2c, 0x3e, 0x5c));
@@ -173,12 +181,22 @@ impl MessagePane {
             match media.thumbs.get(&slot.file.id) {
                 Some(Thumb::Ready(proto)) => {
                     let position = SignedPosition { x: 0, y: top as i16 };
-                    f.render_widget(SlicedImage::new(proto, position), inner);
+                    let beside = Rect { x: inner.x + GUTTER, width: inner.width.saturating_sub(GUTTER), ..inner };
+                    f.render_widget(SlicedImage::new(proto, position), beside);
                 }
                 Some(_) => {}
                 None => self.wanted.push((slot.file, slot.size)),
             }
         }
+    }
+}
+
+/// Prefix every line with the gutter: a bar on rows of messages in `own`, else blank.
+fn add_gutter(lines: &mut [Line<'static>], owners: &[Option<String>], own: &std::collections::HashSet<&str>) {
+    for (line, owner) in lines.iter_mut().zip(owners.iter().chain(std::iter::repeat(&None))) {
+        let mine = owner.as_deref().is_some_and(|ts| own.contains(ts));
+        let gutter = if mine { Span::styled("▎ ", Style::default().fg(OWN_BAR)) } else { Span::raw("  ") };
+        line.spans.insert(0, gutter);
     }
 }
 
@@ -355,6 +373,22 @@ mod tests {
 
     fn plain(lines: &[Line]) -> Vec<String> {
         lines.iter().map(|l| l.spans.iter().map(|s| s.content.to_string()).collect()).collect()
+    }
+
+    #[test]
+    fn own_messages_get_the_gutter_bar() {
+        let ws = Workspace { self_id: "UME".into(), ..Default::default() };
+        let mut t = Timeline { loaded: true, ..Default::default() };
+        t.upsert(msg("1.0", "U2", "theirs"));
+        t.upsert(msg("2.0", "UME", "mine\ntwo lines"));
+        let (mut lines, owners, _) = build_lines_owned(&ws, &t, 40, false, &|_| None);
+        let own = ["2.0"].into_iter().collect();
+        add_gutter(&mut lines, &owners, &own);
+        let rows = plain(&lines);
+        assert!(rows.iter().all(|r| r.starts_with("▎ ") || r.starts_with("  ")), "every row has the gutter: {rows:?}");
+        let marked: Vec<&String> = rows.iter().filter(|r| r.starts_with('▎')).collect();
+        assert_eq!(marked.len(), 3, "header and both lines of our message: {rows:?}");
+        assert!(marked.iter().all(|r| !r.contains("theirs")));
     }
 
     #[test]
