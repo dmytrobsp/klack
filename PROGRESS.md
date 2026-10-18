@@ -152,6 +152,8 @@ F. Agreed with the user on 2026-10-19 after queue E ("proceed with proposed orde
       stray fragment at the move-picker's right edge; F3d the 🖼 icon drawn over the following space after a
       layout change; F3e `ctl huddle-media` right after a huddle ended gets the old room (investigate);
       F3f scrolling cost with a large channel (synthetic timeline, measure `build_lines`).
+  F4. Added by the user on 2026-10-19: the sidebar's sections (Starred, Channels, Direct messages and
+      custom sections) should be more clearly separated from each other.
 
 The roadmap (items 1–15) is complete. Queue from the user (2026-10-18), in this order; run autonomously,
 one verified commit per step:
