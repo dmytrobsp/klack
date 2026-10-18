@@ -166,6 +166,17 @@ D. Queued by the agent on 2026-10-18 when the user said "queue next items as you
   D10. ~~Notifications: a conversation's level back to "default"~~ — done (`reset`/`default`).
   D11. ~~Other workspaces while not shown~~ — done: D11a unread badges (status bar, polled); D11b desktop
        notifications from them (headless watchers; a click switches there).
+E. Added by the user on 2026-10-18 (after queue D), in this order, after the Windows build check:
+  E1. A sound when you join a huddle (configurable, can be turned off).
+  E2. While you are in a huddle, a sound when someone else joins and a different one when someone leaves
+      (configurable, can be turned off).
+  E3. A huddle invitation rings — a repeating chime until you join or decline, like Slack's client
+      (configurable, can be turned off).
+  E4. When you are the only one left in a huddle and nobody joins for a while, a quiet, relaxing melody
+      reminds you to leave (configurable, can be turned off, the wait adjustable).
+  E5. Redesign the bottom huddle bar: more room, wrap instead of overflowing, and instead of listing every
+      participant show only the avatar and a truncated name of whoever is talking (or talked last); its job
+      is to show that you are still in the huddle and your mic/camera state.
   Needs the user (not queued for autonomous work): ~~an X11 screen-share test against Xvfb~~ — done (the
   user installed `xvfb`; see the "C7 follow-up" row); cross-compile checks for Windows/macOS (mingw-w64 / an
   SDK for the C dependencies); ~~hearing echo cancellation live~~ —
