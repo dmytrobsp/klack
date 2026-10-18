@@ -993,7 +993,7 @@ mod tests {
         let t = Timeline { messages: vec![parent, reply], loaded: true, ..Default::default() };
         let p = plain(&build_lines(&ws, &t, 60));
         assert!(!p.iter().any(|l| l == "reply"), "{p:?}");
-        assert!(p.iter().any(|l| l.contains("[👍 1]")));
+        assert!(p.iter().any(|l| l.contains("👍\u{a0}1")), "the reaction (a pill)");
         assert!(p.iter().any(|l| l.starts_with("💬 2 replies")));
     }
 }
