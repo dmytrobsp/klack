@@ -156,7 +156,7 @@ folders, as they were then.)
 | Image viewer: `o` on a message with images opens a full-window view of the large version (`thumb_1024`, else the original), fitted without upscaling and re-encoded on resize; ←/→ or h/l between the message's images; Esc/q closes | done | LIVE (B's PNG shown complete and centred; thumbnail intact after closing) + UNIT (stepping, stale results ignored) | 0721cdd |
 | Inline image thumbnails: terminal graphics detected at startup (`Picker::from_query_stdio`, half-block fallback); rows reserved from `original_w/h` (≤ 36×10 cells, no upscaling) so nothing jumps; thumbnails fetched lazily when on screen (`thumb_*` with the session cookie), decoded/encoded off the UI task, cached per file; drawn with `SlicedImage` so partly scrolled images are clipped | done | LIVE (kitty: B's 800×500 PNG shown under its file line; clipped correctly after scrolling; no remnants after switching conversation) + UNIT (sizing, reserved rows) | a113b72 |
 
-Tests: `cargo test` → slack-core 10, huddle 33, klack 155 (+1 ignored: the `build_lines_cost` measurement), all passing. `cargo build` has no errors.
+Tests: `cargo test` → slack-core 10, huddle 33, klack 156 (+1 ignored: the `build_lines_cost` measurement), all passing. `cargo build` has no errors.
 
 ## Next (in order, each as a small, separately verified step)
 
@@ -320,6 +320,8 @@ Hard (huddles video; the user's real camera/screen must not be captured in tests
 - Channels: a previewed channel is not updated live (Slack sends no RTM events for channels you are not in); the Ctrl+K list is capped at 50 entries, so in a big workspace browsing needs a query; no archive, rename, invite or topic editing; the public channel list is loaded once after boot (new channels arrive over RTM).
 
 ## Bug log
+
+- A window squeezed to a few cells crashed klack ("min > max" in `f64::clamp`): image thumbnails were sized with a maximum of 0 columns. Found in H3 by shrinking the test window step by step with popups open; a pane with no room now gets no thumbnail (regression test `no_room_no_thumbnail`).
 
 - Up on the oldest loaded message never loaded older history when the lines above it (its day separator) were off screen: `maybe_load_older` needed the very top line visible, and keeping the selection in view stops at its own lines. Found in the F3f regression test (the previous binary did the same); Up there now loads older messages directly (`load_history` guards against double loads and the end of history).
 

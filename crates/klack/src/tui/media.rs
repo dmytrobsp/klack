@@ -169,7 +169,8 @@ fn sixel_advertised() -> bool {
 /// Fit the image's pixel size (from the file metadata, 4:3 if unknown) into
 /// `max_cols` × `max_rows` cells without upscaling.
 pub fn thumb_cells(file: &File, font: FontSize, max_cols: u16, max_rows: u16) -> Option<(u16, u16)> {
-    if !file.is_image() || file.preview_url(360).is_none() {
+    // No room at all (a pane squeezed to nothing): no picture rather than an inverted range.
+    if !file.is_image() || file.preview_url(360).is_none() || max_cols == 0 || max_rows == 0 {
         return None;
     }
     let (fw, fh) = (font.width.max(1) as f64, font.height.max(1) as f64);
@@ -293,6 +294,14 @@ mod tests {
         blank_picture_cell(&mut cell);
         assert_eq!(cell.symbol(), "\x1b_Gdata\x1b\\ ");
         assert!(is_continuation("\u{10EEEE}") && !is_continuation("\u{10EEEE}\u{305}") && !is_continuation("a"));
+    }
+
+    #[test]
+    fn no_room_no_thumbnail() {
+        let font = FontSize::new(10, 20);
+        assert_eq!(thumb_cells(&image(Some(800), Some(500)), font, 0, 10), None, "a pane with no columns left");
+        assert_eq!(thumb_cells(&image(Some(800), Some(500)), font, 10, 0), None);
+        assert_eq!(thumb_cells(&image(Some(800), Some(500)), font, 1, 1), Some((1, 1)));
     }
 
     #[test]
