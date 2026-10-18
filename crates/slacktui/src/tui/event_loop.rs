@@ -28,6 +28,8 @@ enum Net {
     Posted { channel: String, message: slack_core::types::Message },
     /// All replies of a thread (parent first).
     Replies { channel: String, ts: String, page: HistoryPage },
+    /// A full-size image for the viewer.
+    FullImage { id: String, result: Result<image::DynamicImage, String> },
     /// A thumbnail finished loading.
     Thumb { id: String, result: Result<ratatui_image::sliced::SlicedProtocol, String> },
     /// A permalink to copy.
@@ -47,6 +49,8 @@ enum Focus {
 }
 
 struct App {
+    /// Open image viewer.
+    viewer: Option<super::viewer::Viewer>,
     media: super::media::Media,
     /// The terminal window has focus (focus-change reporting).
     terminal_focused: bool,
@@ -411,6 +415,29 @@ impl App {
         self.composer_for(c.thread).complete(c.start, &format!("{} ", s.replacement), s.id.as_deref());
     }
 
+    /// Open the viewer on the images of message `ts` in the current conversation.
+    fn open_viewer(&mut self, ts: &str) {
+        let Some(channel) = self.current.clone() else { return };
+        let files: Vec<slack_core::types::File> = self.ws.find_message(&channel, ts).map(|m| m.files.iter().filter(|f| f.is_image()).cloned().collect()).unwrap_or_default();
+        if files.is_empty() {
+            self.status = "no image in this message".into();
+            return;
+        }
+        self.viewer = Some(super::viewer::Viewer::new(files, 0));
+        self.load_viewer_image();
+    }
+
+    /// Fetch the viewer's current image.
+    fn load_viewer_image(&mut self) {
+        let Some(v) = &self.viewer else { return };
+        let (client, tx, file) = (self.client.clone(), self.net.clone(), v.file().clone());
+        tokio::spawn(async move {
+            let id = file.id.clone();
+            let result = super::viewer::load_full(client, file).await.map_err(|e| e.to_string());
+            let _ = tx.send(Net::FullImage { id, result });
+        });
+    }
+
     /// Start loading thumbnails that were on screen but not cached yet.
     fn request_thumbs(&mut self) {
         let wanted: Vec<_> = self.messages.wanted.drain(..).chain(self.thread_pane.wanted.drain(..)).collect();
@@ -475,6 +502,7 @@ pub async fn run(client: Client) -> Result<()> {
     let media = super::media::Media::detect();
     let mut app = App {
         media,
+        viewer: None,
         terminal_focused: true,
         completion: None,
         completion_dismissed: None,
@@ -537,6 +565,16 @@ pub async fn run(client: Client) -> Result<()> {
 /// Returns false to quit.
 fn handle_terminal(app: &mut App, ev: Event) -> bool {
     match ev {
+        Event::Key(k) if k.kind != KeyEventKind::Release && app.viewer.is_some() => {
+            let Some(v) = app.viewer.as_mut() else { return true };
+            match k.code {
+                KeyCode::Char('q') if k.modifiers.contains(KeyModifiers::CONTROL) => return false,
+                KeyCode::Esc | KeyCode::Char('q') => app.viewer = None,
+                KeyCode::Left | KeyCode::Char('h') if v.step(-1) => app.load_viewer_image(),
+                KeyCode::Right | KeyCode::Char('l') if v.step(1) => app.load_viewer_image(),
+                _ => {}
+            }
+        }
         Event::Key(k) if k.kind != KeyEventKind::Release && app.confirm_delete.is_some() => {
             if let Some((channel, ts)) = app.confirm_delete.take() {
                 if matches!(k.code, KeyCode::Char('y') | KeyCode::Char('Y')) {
@@ -677,6 +715,11 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
                                 app.copy_text(&ts);
                             }
                         }
+                        KeyCode::Char('o') => {
+                            if let Some(ts) = app.selected_ts() {
+                                app.open_viewer(&ts);
+                            }
+                        }
                         KeyCode::Char('Y') => {
                             if let Some(ts) = app.selected_ts() {
                                 app.copy_permalink(&ts);
@@ -809,6 +852,11 @@ fn handle_net(app: &mut App, msg: Net) {
             tl.loaded = true;
             tl.loading = false;
         }
+        Net::FullImage { id, result } => {
+            if let Some(v) = app.viewer.as_mut() {
+                v.set_image(&id, result);
+            }
+        }
         Net::Thumb { id, result } => {
             let thumb = match result {
                 Ok(proto) => super::media::Thumb::Ready(proto),
@@ -881,6 +929,9 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     }
     if app.confirm_delete.is_some() {
         draw_confirm(f, main, "Delete this message? y / n");
+    }
+    if let Some(v) = app.viewer.as_mut() {
+        v.draw(f, body, &app.media.picker);
     }
     let live = if app.connected { "● live" } else { "○ connecting" };
     let (unread, mentions) = app.ws.total_unread();

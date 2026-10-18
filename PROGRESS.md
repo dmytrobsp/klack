@@ -31,14 +31,15 @@ background is in `../REPORT.md` and `../notes/`.
 | `ctl replies <chan> <ts>`; `ctl history`/`replies` print reactions | done | LIVE | d0c1620 |
 | Autocomplete in both composers: `@user` (display/handle/real name; prefix, then word, then substring) plus `@here/@channel/@everyone`, `#channel`, `:emoji:` (picker ranking, custom emoji); popup above the composer; ↑↓ move, Tab/Enter insert, Esc dismisses until the token changes; mentions are sent as `<@U…>`/`<#C…>`/`<!here>` | done | LIVE (sent `hi @Dmytro Dudnyk see #social it works :tada:` — B read back `<@U0C9YM9J3RR> … <#C0CA4NBM998> … :tada:`; `@dmytro.d` completed in the thread box and arrived as `<@U…>`; Esc dismissal checked) + UNIT (ranking, specials, channels, emoji) | 2d609d0 |
 | Desktop notifications (notify-rust): DMs/group DMs, mentions incl. @here/@channel/@everyone, replies in threads you started or replied to; quiet for own/system messages, muted channels, DND (snooze + daily schedule, live `dnd_updated`), and the conversation/thread on screen while the terminal is focused (focus-change reporting) | done | LIVE (D-Bus `Notify` calls captured with `dbus-monitor`: DM elsewhere → "Dmytro"; #social without mention → none; with mention → "Dmytro in #social"; DM on screen + focused → none; same but unfocused → notified; reply in own thread → "Dmytro (thread)") + UNIT (decision rules, DND windows) | 56bda27 |
+| Image viewer: `o` on a message with images opens a full-window view of the large version (`thumb_1024`, else the original), fitted without upscaling and re-encoded on resize; ←/→ or h/l between the message's images; Esc/q closes | done | LIVE (B's PNG shown complete and centred; thumbnail intact after closing) + UNIT (stepping, stale results ignored) | see git log |
 | Inline image thumbnails: terminal graphics detected at startup (`Picker::from_query_stdio`, half-block fallback); rows reserved from `original_w/h` (≤ 36×10 cells, no upscaling) so nothing jumps; thumbnails fetched lazily when on screen (`thumb_*` with the session cookie), decoded/encoded off the UI task, cached per file; drawn with `SlicedImage` so partly scrolled images are clipped | done | LIVE (kitty: B's 800×500 PNG shown under its file line; clipped correctly after scrolling; no remnants after switching conversation) + UNIT (sizing, reserved rows) | a113b72 |
 
-Tests: `cargo test` → slack-core 8, slacktui 41, all passing. `cargo build` has no errors.
+Tests: `cargo test` → slack-core 8, slacktui 43, all passing. `cargo build` has no errors.
 Remaining dead-code warnings: `Composer::cursor/is_multiline`, `Sidebar::select_id`, `Workspace::team_id`.
 
 ## Next (in order, each as a small, separately verified step)
 
-1. Images, part 2: a full-size image viewer (Enter/`o` on an image), then upload from a path.
+1. Files: save attachments (`s`) to the downloads folder, and upload a file from a path.
 2. Video playback with sound (ffmpeg-next → frames via ratatui-image; cpal audio).
 3. Huddles: reverse engineer the signalling first (observe the web client inside RSlack), then audio.
 4. Search, channel info/members, pins, quick switcher (Ctrl+K), help overlay.
@@ -65,6 +66,8 @@ Remaining dead-code warnings: `Composer::cursor/is_multiline`, `Sidebar::select_
 - Autocomplete does not complete on a mouse click.
 
 ## Bug log
+
+- The `WideSafe` filter (previous fix) measured the raw cell symbol, so a kitty image cell carrying the image transmission escape (thousands of characters, forced width 1) looked thousands of columns wide and the rest of its row was dropped: the viewer image lost its top row. Found by screenshot; now uses `Cell::cell_width()`, which honours forced widths. Test `forced_width_cells_cover_nothing`.
 
 - VS16 emoji (❤️) shifted the rest of their row by one column (`[❤  1]`) and left stale characters after scrolling or switching conversation. Reproduced in isolation with a two-frame ratatui program in kitty. Cause: ratatui-core 0.1.2 re-emits the emoji's trailing cell right after it; the crossterm backend sees an adjacent cell and skips the cursor move, but the terminal had already advanced two columns. Fixed with a backend wrapper (`terminal::WideSafe`) that drops writes into columns covered by the wide character just written. Test `covered_columns_are_dropped`; the same live scenario is clean now.
 

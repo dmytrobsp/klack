@@ -30,8 +30,10 @@ pub fn drop_covered<'a>(cells: impl Iterator<Item = (u16, u16, &'a Cell)>) -> im
         if covered.is_some_and(|(row, end)| *y == row && *x < end) {
             return false;
         }
-        let width = cell.symbol().cell_width();
-        covered = (width > 1).then_some((*y, x + width));
+        // `Cell::cell_width` honours forced widths: kitty image cells carry long escape
+        // sequences in their symbol but occupy one column.
+        let width = cell.cell_width();
+        covered = (width > 1).then_some((*y, x.saturating_add(width)));
         true
     })
 }
@@ -136,5 +138,15 @@ mod tests {
         let diff = [(0, 0, &cells[0]), (1, 0, &cells[1]), (2, 0, &cells[2]), (3, 0, &cells[3]), (4, 0, &cells[4]), (2, 1, &cells[2])];
         let kept: Vec<(u16, u16)> = drop_covered(diff.into_iter()).map(|(x, y, _)| (x, y)).collect();
         assert_eq!(kept, vec![(0, 0), (1, 0), (3, 0), (4, 0), (2, 1)]);
+    }
+
+    #[test]
+    fn forced_width_cells_cover_nothing() {
+        let mut image = Cell::default();
+        image.set_symbol(&format!("\x1b_Ga=T;{}\x1b\\\u{10EEEE}", "A".repeat(500)));
+        image.set_diff_option(ratatui::buffer::CellDiffOption::ForcedWidth(std::num::NonZeroU16::MIN));
+        let next = Cell::default();
+        let diff = [(0, 0, &image), (1, 0, &next)];
+        assert_eq!(drop_covered(diff.into_iter()).count(), 2);
     }
 }
