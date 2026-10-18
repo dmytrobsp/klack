@@ -10,7 +10,7 @@ cookie). It is not an official Slack app.
 ## Requirements
 
 - A recent stable Rust toolchain (edition 2024).
-- **libopus** (huddles): `apt install libopus-dev` · `brew install opus` · vcpkg on Windows.
+- **cmake** (huddles: the bundled Opus is built with it): `apt install cmake` · `brew install cmake`.
 - **ALSA headers** on Linux (audio): `apt install libasound2-dev`.
 - **ffmpeg / ffprobe on PATH** at runtime, for video playback, cameras and (outside Wayland) screen sharing.
 - A terminal with graphics for real images (kitty, WezTerm, Ghostty, iTerm2, or any sixel
