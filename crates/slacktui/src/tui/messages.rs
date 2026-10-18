@@ -26,7 +26,8 @@ pub struct ImageSlot {
 }
 
 /// Thumbnail box for a file (None: no inline image).
-pub type ThumbSize<'a> = &'a dyn Fn(&File) -> Option<(u16, u16)>;
+/// A file's thumbnail size in cells when at most `max_cols` wide (None: no thumbnail).
+pub type ThumbSize<'a> = &'a dyn Fn(&File, u16) -> Option<(u16, u16)>;
 
 /// Messages from the same author within this many seconds share one header.
 const GROUP_WINDOW: f64 = 300.0;
@@ -111,7 +112,7 @@ impl MessagePane {
         let block = Block::default().borders(Borders::ALL).border_style(border).title(title);
         let inner = block.inner(area);
         let width = inner.width.saturating_sub(1 + GUTTER) as usize;
-        let thumb_size = |file: &File| media.thumb_size(file).filter(|_| ws.settings.messages.inline_images);
+        let thumb_size = |file: &File, max_cols: u16| media.thumb_size(file, max_cols).filter(|_| ws.settings.messages.inline_images);
         let (mut lines, mut owners, mut slots) = match timeline {
             Some(t) if t.loaded || !t.messages.is_empty() => build_lines_owned(ws, t, width, self.thread, &thumb_size, media.avatars && ws.settings.messages.avatars),
             Some(_) => (vec![Line::styled("Loading messages…", Style::default().fg(super::theme::p().dim))], vec![None], vec![]),
@@ -294,7 +295,7 @@ pub fn shown_messages(t: &Timeline, thread: bool) -> impl Iterator<Item = &Messa
 /// Render every message in the timeline, oldest first.
 #[cfg(test)]
 pub fn build_lines(ws: &Workspace, t: &Timeline, width: usize) -> Vec<Line<'static>> {
-    build_lines_owned(ws, t, width, false, &|_| None, false).0
+    build_lines_owned(ws, t, width, false, &|_, _| None, false).0
 }
 
 /// Lines plus the ts of the message each line belongs to.
@@ -416,8 +417,13 @@ pub fn message_body(ws: &Workspace, m: &Message, width: usize, summary: bool, th
         if file.is_snippet() {
             out.extend(snippet_preview(file, width));
         }
-        if let Some(size) = thumb_size(file).filter(|(cols, _)| (*cols as usize) <= width) {
-            slots.push(ImageSlot { line: out.len(), col: 0, file: file.clone(), size });
+        // Fitted to the pane (the thread pane is narrow); a smaller fit is cached separately.
+        if let Some(size) = thumb_size(file, width.min(u16::MAX as usize) as u16).filter(|(cols, _)| (*cols as usize) <= width) {
+            let mut file = file.clone();
+            if thumb_size(&file, u16::MAX) != Some(size) {
+                file.id = format!("{}@{}x{}", file.id, size.0, size.1);
+            }
+            slots.push(ImageSlot { line: out.len(), col: 0, file, size });
             out.extend(std::iter::repeat_n(Line::raw(""), size.1 as usize));
         }
     }
@@ -450,6 +456,22 @@ mod tests {
 
     fn plain(lines: &[Line]) -> Vec<String> {
         lines.iter().map(|l| l.spans.iter().map(|s| s.content.to_string()).collect()).collect()
+    }
+
+    #[test]
+    fn thumbnails_fit_narrow_panes() {
+        let ws = Workspace::default();
+        let file = File { id: "F1".into(), mimetype: "image/png".into(), thumb_360: Some("https://x/t.png".into()), original_w: Some(800), original_h: Some(500), ..Default::default() };
+        let m = Message { ts: "1.0".into(), user: Some("U1".into()), files: vec![file], ..Default::default() };
+        // 10×20 px cells, at most 36×10: an 800×500 image is 32×10 at full size.
+        let sizes = |f: &File, max: u16| super::super::media::thumb_cells(f, ratatui_image::FontSize::new(10, 20), 36u16.min(max), 10);
+        let (_, full) = message_body(&ws, &m, 60, true, &sizes);
+        assert_eq!((full[0].size, full[0].file.id.as_str()), ((32, 10), "F1"));
+        // The thread pane at 30 columns: smaller, and cached under its own id.
+        let (_, narrow) = message_body(&ws, &m, 30, true, &sizes);
+        assert_eq!(narrow.len(), 1, "a narrow pane still shows the thumbnail");
+        assert_eq!(narrow[0].size.0, 30);
+        assert!(narrow[0].file.id.starts_with("F1@30x"));
     }
 
     #[test]
@@ -487,12 +509,12 @@ mod tests {
         let mut t = Timeline { loaded: true, ..Default::default() };
         t.upsert(msg("1.0", "U2", "one"));
         t.upsert(msg("2.0", "U2", "two"));
-        let (lines, _, slots) = build_lines_owned(&ws, &t, 40, false, &|_| None, true);
+        let (lines, _, slots) = build_lines_owned(&ws, &t, 40, false, &|_, _| None, true);
         let header = plain(&lines).into_iter().position(|l| l.contains("bob")).unwrap();
         assert!(plain(&lines)[header].starts_with("   bob"), "room for the picture");
         assert_eq!(slots.len(), 1, "grouped messages share one header and one picture");
         assert_eq!((slots[0].line, slots[0].col, slots[0].size, slots[0].file.id.as_str()), (header, 0, (2, 1), "avatar:U2"));
-        let (_, _, none) = build_lines_owned(&ws, &t, 40, false, &|_| None, false);
+        let (_, _, none) = build_lines_owned(&ws, &t, 40, false, &|_, _| None, false);
         assert!(none.is_empty());
     }
 
@@ -503,7 +525,7 @@ mod tests {
         t.upsert(msg("1.0", "U2", "theirs"));
         t.upsert(msg("2.0", "U2", "theirs again"));
         t.upsert(msg("3.0", "UME", "mine\ntwo lines"));
-        let (mut lines, owners, _) = build_lines_owned(&ws, &t, 40, false, &|_| None, false);
+        let (mut lines, owners, _) = build_lines_owned(&ws, &t, 40, false, &|_, _| None, false);
         let own = ["3.0"].into_iter().collect();
         add_gutter(&mut lines, &owners, &own, &Default::default());
         let rows = plain(&lines);
@@ -538,7 +560,7 @@ mod tests {
         let mut join = msg("1000.0", "U1", "joined");
         join.subtype = Some("channel_join".into());
         let t = Timeline { messages: vec![join, msg("1010.0", "U2", "hello")], loaded: true, ..Default::default() };
-        let (lines, owners, _) = build_lines_owned(&ws, &t, 60, false, &|_| None, false);
+        let (lines, owners, _) = build_lines_owned(&ws, &t, 60, false, &|_, _| None, false);
         let p = plain(&lines);
         assert_eq!(p.iter().filter(|l| l.contains('─')).count(), 1, "{p:?}");
         assert_eq!(owners[0], None, "the day separator belongs to no message");
@@ -550,13 +572,13 @@ mod tests {
         let mut m = msg("1000.0", "U1", "look");
         m.files = vec![File { id: "F1".into(), name: "cat.png".into(), mimetype: "image/png".into(), ..Default::default() }];
         let t = Timeline { messages: vec![m], loaded: true, ..Default::default() };
-        let (lines, _, slots) = build_lines_owned(&ws, &t, 40, false, &|f| (f.id == "F1").then_some((20, 3)), false);
+        let (lines, _, slots) = build_lines_owned(&ws, &t, 40, false, &|f, _| (f.id == "F1").then_some((20, 3)), false);
         // day separator, header, "look", file line, 3 reserved rows
         assert_eq!(lines.len(), 7);
         assert_eq!(slots.len(), 1);
         assert_eq!((slots[0].line, slots[0].size), (4, (20, 3)));
-        // Too narrow for the thumbnail: text only.
-        let (narrow, _, none) = build_lines_owned(&ws, &t, 10, false, &|_| Some((20, 3)), false);
+        // A size that cannot fit (the sizer ignored the width): text only.
+        let (narrow, _, none) = build_lines_owned(&ws, &t, 10, false, &|_, _| Some((20, 3)), false);
         assert!(none.is_empty() && narrow.len() < 7);
     }
 
@@ -565,8 +587,8 @@ mod tests {
         let ws = Workspace::default();
         let mut m = msg("1000.0", "U1", "exactly ten");
         m.edited = Some(Default::default());
-        assert_eq!(plain(&message_body(&ws, &m, 30, true, &|_| None).0), vec!["exactly ten (edited)"]);
-        assert_eq!(plain(&message_body(&ws, &m, 12, true, &|_| None).0), vec!["exactly ten", "(edited)"]);
+        assert_eq!(plain(&message_body(&ws, &m, 30, true, &|_, _| None).0), vec!["exactly ten (edited)"]);
+        assert_eq!(plain(&message_body(&ws, &m, 12, true, &|_, _| None).0), vec!["exactly ten", "(edited)"]);
     }
 
     #[test]
@@ -578,7 +600,7 @@ mod tests {
         let mut reply = msg("1001.0", "U2", "reply");
         reply.thread_ts = Some("1000.0".into());
         let t = Timeline { messages: vec![parent, reply], loaded: true, ..Default::default() };
-        let (lines, owners, _) = build_lines_owned(&ws, &t, 30, true, &|_| None, false);
+        let (lines, owners, _) = build_lines_owned(&ws, &t, 30, true, &|_, _| None, false);
         let p = plain(&lines);
         assert_eq!(owners[2], None, "the replies rule belongs to no message");
         assert_eq!(p[1], "parent", "{p:?}");

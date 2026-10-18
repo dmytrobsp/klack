@@ -136,6 +136,9 @@ pub enum Ctl {
         /// Post it as a text snippet in this language (e.g. rust, python, text).
         #[arg(long)]
         snippet: Option<String>,
+        /// Upload into the thread under this message.
+        #[arg(long)]
+        thread: Option<String>,
     },
     /// Print live events for N seconds.
     Listen {
@@ -485,11 +488,11 @@ pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
             let id = resolve_channel(&client, &channel).await?;
             client.react(&id, &ts, emoji.trim_matches(':'), true).await?;
         }
-        Ctl::Upload { channel, path, comment, snippet } => {
+        Ctl::Upload { channel, path, comment, snippet, thread } => {
             let id = resolve_channel(&client, &channel).await?;
             let name = path.file_name().map(|n| n.to_string_lossy().to_string()).ok_or_else(|| anyhow!("bad path"))?;
             let bytes = std::fs::read(&path)?;
-            let file_id = client.upload(&id, &name, bytes, comment.as_deref(), None, snippet.as_deref()).await?;
+            let file_id = client.upload(&id, &name, bytes, comment.as_deref(), thread.as_deref(), snippet.as_deref()).await?;
             println!("{file_id}");
         }
         Ctl::Listen { seconds } => {

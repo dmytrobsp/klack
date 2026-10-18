@@ -65,9 +65,10 @@ impl Media {
         Media { picker, thumbs: HashMap::new(), avatars }
     }
 
-    /// Cells to reserve under an image file's line, or None for non-images.
-    pub fn thumb_size(&self, file: &File) -> Option<(u16, u16)> {
-        thumb_cells(file, self.picker.font_size(), MAX_COLS, MAX_ROWS)
+    /// Cells to reserve under an image file's line when at most `max_cols` wide, or None
+    /// for non-images.
+    pub fn thumb_size(&self, file: &File, max_cols: u16) -> Option<(u16, u16)> {
+        thumb_cells(file, self.picker.font_size(), MAX_COLS.min(max_cols), MAX_ROWS)
     }
 }
 
