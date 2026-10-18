@@ -50,6 +50,8 @@ pub struct MessagePane {
     pub thread: bool,
     /// Message under the mouse pointer.
     pub hover: Option<String>,
+    /// The message being edited in this pane's composer: marked whatever has focus.
+    pub editing: Option<String>,
     /// Thumbnails that were on screen but not loaded at the last draw.
     pub wanted: Vec<(File, (u16, u16))>,
 }
@@ -157,10 +159,14 @@ impl MessagePane {
                 }
             }
         }
+        if let Some(ts) = &self.editing {
+            mark_editing(&mut lines, &owners, ts, highlight);
+        }
         self.total_lines = lines.len();
         let height = inner.height as usize;
-        // Keep the selection on screen.
-        if let (true, Some(sel)) = (focused, &self.selected) {
+        // Keep the selection (or, from the composer, the message being edited) on screen.
+        let keep = if focused { self.selected.as_ref() } else { self.editing.as_ref() };
+        if let Some(sel) = keep {
             if let (Some(first), Some(last)) = (owners.iter().position(|o| o.as_ref() == Some(sel)), owners.iter().rposition(|o| o.as_ref() == Some(sel))) {
                 let end = self.total_lines.saturating_sub(self.scroll);
                 let start = end.saturating_sub(height);
@@ -231,6 +237,20 @@ fn snippet_preview(file: &File, width: usize) -> Vec<Line<'static>> {
 /// Prefix every line with the gutter, which marks where each message starts (`•`, or a
 /// heavier `▌` for your own) and runs a bar down your own messages (`own`); system
 /// messages get no marker.
+/// Highlight the lines of message `ts` and tag its first line "✎ editing".
+fn mark_editing(lines: &mut [Line<'static>], owners: &[Option<String>], ts: &str, highlight: Style) {
+    let mut first = true;
+    for (line, owner) in lines.iter_mut().zip(owners) {
+        if owner.as_deref() == Some(ts) {
+            *line = std::mem::take(line).patch_style(highlight);
+            if first {
+                line.spans.push(Span::styled("  ✎ editing", Style::default().fg(super::theme::p().accent).add_modifier(Modifier::ITALIC)));
+                first = false;
+            }
+        }
+    }
+}
+
 fn add_gutter(lines: &mut [Line<'static>], owners: &[Option<String>], own: &std::collections::HashSet<&str>, system: &std::collections::HashSet<&str>) {
     let mut previous: Option<&str> = None;
     for (line, owner) in lines.iter_mut().zip(owners.iter().chain(std::iter::repeat(&None))) {
@@ -456,6 +476,16 @@ mod tests {
 
     fn plain(lines: &[Line]) -> Vec<String> {
         lines.iter().map(|l| l.spans.iter().map(|s| s.content.to_string()).collect()).collect()
+    }
+
+    #[test]
+    fn edited_message_is_marked() {
+        let mut lines = vec![Line::raw("Bob 10:00"), Line::raw("first"), Line::raw("second"), Line::raw("other")];
+        let owners = vec![Some("1.0".to_string()), Some("2.0".into()), Some("2.0".into()), Some("3.0".into())];
+        let hl = Style::default().bg(ratatui::style::Color::Blue);
+        mark_editing(&mut lines, &owners, "2.0", hl);
+        assert_eq!(plain(&lines), vec!["Bob 10:00", "first  ✎ editing", "second", "other"]);
+        assert_eq!((lines[1].style.bg, lines[2].style.bg, lines[0].style.bg, lines[3].style.bg), (hl.bg, hl.bg, None, None));
     }
 
     #[test]

@@ -2825,6 +2825,7 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         let [pane, comp] = Layout::vertical([Constraint::Min(3), Constraint::Length(h)]).areas(area);
         let title = format!("Thread · {} · {} close", app.ws.channel_label(&channel), app.keys.first_key(Context::Messages, Action::Back).unwrap_or_default());
         let timeline = app.ws.threads.get(&super::state::thread_key(&channel, &ts));
+        app.thread_pane.editing = app.thread_composer.editing.clone();
         app.thread_pane.draw(f, pane, &app.ws, &title, timeline, app.focus == Focus::Thread, &app.media);
         app.thread_composer_area = comp;
         draw_composer(f, comp, app, true);
@@ -2844,6 +2845,7 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         let current = app.current.clone();
         let timeline = current.as_deref().and_then(|c| app.ws.timelines.get(c));
         let title = current.as_deref().map(|c| app.ws.channel_label(c)).unwrap_or_default();
+        app.messages.editing = app.composer.editing.clone();
         app.messages.draw(f, msgs, &app.ws, &title, timeline, app.focus == Focus::Messages, &app.media);
         app.composer_area = comp;
         draw_composer(f, comp, app, false);

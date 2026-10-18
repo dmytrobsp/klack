@@ -100,6 +100,7 @@ background is in `../REPORT.md` and `../notes/`.
 | C7 — camera and screen capture beyond Wayland (**written only; nothing of it has run on X11, macOS or Windows**): cameras are listed on macOS (`ffmpeg -f avfoundation -list_devices true`, by index, leaving out its "Capture screen N" entries) and Windows (`-list_devices true -f dshow`, by name, both the current `"Name" (video)` form and the older headed list); `screen::Source` picks the capture — the portal in a Wayland session, else `x11grab` of `$DISPLAY`, AVFoundation "Capture screen 0" on macOS, `gdigrab desktop` on Windows — the non-portal ones through ffmpeg (a spawn helper now shared with the camera) and without a picker, so they share the whole screen and the F10 status says so ("starting to share your whole screen…"); in a session with neither Wayland nor X11 F10 says there is no screen. The capture code is platform-independent apart from the portal, so it compiles and is unit-tested here | done | UNIT only (macOS/Windows device-list parsers on sample output written from ffmpeg's documented formats, not captured on those systems; the ffmpeg screen arguments per source). On Linux, ffmpeg accepted the x11grab options (it got as far as "Cannot open display :99"; a bogus option is rejected before that); AVFoundation/gdigrab options cannot be checked here. Not cross-compiled: only Linux/Android targets are installed and the C dependencies (OpenH264, Opus, ring) need a cross C toolchain. The Wayland portal path is unchanged code (moved into `start_portal`) and was not re-run (it shows the user's real screen). An X11 test is possible with Xvfb (not installed; needs sudo) | e6ea3b0 |
 | D1 — search hits (and notification clicks) older than the loaded history: opening one remembers it as `seeking` (the hit, or its thread's parent); each history page that arrives either contains it — the selection already points at it, so the pane scrolls there — or loads the next older page, showing "looking for the message… (N loaded)"; at the beginning of the conversation it says the message is no longer in the history; switching away drops it | done | LIVE (fresh start, Ctrl+F "paging test message 2": "(50 loaded)" → "(100 loaded)" → #history-paging with message 2 selected at the top; message 60 (one page back) likewise) + UNIT (timestamp comparison). The "no longer in the history" end was not reproduced live | db50362 |
 | D2 — `@here` / `@channel` / `@everyone` are suggested only in channels: `autocomplete::suggestions` takes the conversation the composer posts to (the thread's for the reply box) and leaves them out in DMs and group DMs; people are still offered | done | LIVE (`@he` in the DM with B: no suggestion; in #social: "@here  notify active members") + UNIT (DM and group DM get no specials, people still offered). Typing `@here` by hand in a DM is still sent as written | 23fc404 |
+| D3 — the message being edited is marked whatever has focus: each pane takes its composer's `editing` ts, highlights that message in the selection colour, tags its first line "✎ editing" and keeps it in view while the composer has focus (before, the highlight showed only while the list had focus, so an edit from the composer marked nothing) | done | LIVE (↑ in the empty DM composer: A's "draft for B" highlighted with "✎ editing" by its header; Esc cancelled and the mark went) + UNIT (marking). The thread pane uses the same code but was not tried live | (this commit) |
 | Huddle invites: a desktop notification when someone else starts a huddle in a DM / group DM ("X started a huddle · Press F3 to join"); not for channels, muted conversations, DND, or a huddle you are in | done | LIVE (B started a huddle in the DM → D-Bus `Notify` "Dmytro started a huddle" captured; DM showed 🎧1) + UNIT (rules, start vs join) | 8d57bb0 |
 | Audio device selection: `SLACKTUI_AUDIO_INPUT` / `SLACKTUI_AUDIO_OUTPUT` match a device id or name (case-insensitive part); a named device that is missing is an error, never a fallback; `ctl audio-devices` lists `<id> — <name>` | done | LIVE (listing; `SLACKTUI_AUDIO_OUTPUT=nonexistent-device` → call bar "no sound: no output device matching…", no playback stream created) + UNIT (matching) | a708e3b |
 | Huddles in the TUI: F3 joins/starts the current conversation's huddle (`rooms.join`) or leaves; joins **muted** (the microphone is opened only while unmuted); F4 mute/unmute (AUDIO_CONTROL); call bar with participants, speaking 🔊 and muted 🔇; the meeting mix plays on the default output (cpal, resampled); sidebar shows `🎧N` on conversations with an active huddle (live `sh_room_join/leave/update`) | done | LIVE (B started a huddle in #social with a 440 Hz tone → `🎧1` appeared in A's sidebar; F3 joined: call bar listed B speaking and A muted; slacktui's own PipeWire playback stream carried the tone, −29.8 dB at 440 Hz vs −77.5 dB at 2 kHz; B's roster showed A `muted: true`; F3 left and B's roster dropped A) + UNIT (resampler, mixdown, roster rules, huddle tracking). **Microphone capture NOT verified live** (not recording the user's room); the send path itself is verified with `ctl huddle-media --tone`. | 4be3870 |
@@ -115,15 +116,14 @@ background is in `../REPORT.md` and `../notes/`.
 | Image viewer: `o` on a message with images opens a full-window view of the large version (`thumb_1024`, else the original), fitted without upscaling and re-encoded on resize; ←/→ or h/l between the message's images; Esc/q closes | done | LIVE (B's PNG shown complete and centred; thumbnail intact after closing) + UNIT (stepping, stale results ignored) | 0721cdd |
 | Inline image thumbnails: terminal graphics detected at startup (`Picker::from_query_stdio`, half-block fallback); rows reserved from `original_w/h` (≤ 36×10 cells, no upscaling) so nothing jumps; thumbnails fetched lazily when on screen (`thumb_*` with the session cookie), decoded/encoded off the UI task, cached per file; drawn with `SlicedImage` so partly scrolled images are clipped | done | LIVE (kitty: B's 800×500 PNG shown under its file line; clipped correctly after scrolling; no remnants after switching conversation) + UNIT (sizing, reserved rows) | a113b72 |
 
-Tests: `cargo test` → slack-core 9, huddle 33, slacktui 129, all passing. `cargo build` has no errors.
+Tests: `cargo test` → slack-core 9, huddle 33, slacktui 130, all passing. `cargo build` has no errors.
 
 ## Next (in order, each as a small, separately verified step)
 
-**NEXT UP: D3 — highlight the message being edited while the composer has focus.** The selection
-highlight is drawn only while the message list has focus, so during an edit (`e`, or ↑ in an empty
-composer) nothing shows which message is being changed. Mark the edited message (composer `editing` ts)
-in the message pane and in the thread pane (a distinct style, e.g. the selection colour plus a ✎ or an
-"editing" label) regardless of focus. Verify live with ↑ in the DM composer on one of A's messages.
+**NEXT UP: D4 — the reply box title fits a narrow thread pane.** "Reply · [ ] also to channel (Alt+A)"
+is cut off when the pane is narrow. Build the title from the width: drop "(Alt+A)", then shorten "also to
+channel" (e.g. "[ ] +channel"), keeping the checkbox. Unit-test the title at several widths; verify live
+with the thread pane open in the default test window (it clips today).
 
 The roadmap (items 1–15) is complete. Queue from the user (2026-10-18), in this order; run autonomously,
 one verified commit per step:
@@ -145,8 +145,8 @@ D. Queued by the agent on 2026-10-18 when the user said "queue next items as you
    known gaps, small and testable here first; run autonomously, one verified commit per step):
   D1. ~~Search hits older than the loaded history~~ — done (pages back until found).
   D2. ~~`@here` / `@channel` / `@everyone` only in channels~~ — done.
-  D3. Highlight the message being edited while the composer has focus — NEXT.
-  D4. The reply box title clips "(Alt+A)" when the thread pane is narrow; shorten it to fit.
+  D3. ~~Highlight the message being edited~~ — done (✎ editing).
+  D4. The reply box title clips "(Alt+A)" when the thread pane is narrow; shorten it to fit — NEXT.
   D5. Day separators in the thread pane (a thread spanning days shows only times).
   D6. Autocomplete: complete on a mouse click on a suggestion.
   D7. Mark conversations that have a draft in the sidebar (✎), now that drafts exist (C4).
@@ -205,7 +205,6 @@ Hard (huddles video; the user's real camera/screen must not be captured in tests
 - Delete rollback has not been seen against a real API failure (Slack let the owner delete even in an archived channel; edit rollback, same `Net::Restore` path, is LIVE since A3).
 - Drafts (per conversation and thread) are kept in memory only: lost on quit or workspace switch; the sidebar does not mark conversations with a draft.
 - The reply box title clips "(Alt+A)" when the pane is narrow.
-- The message being edited is not highlighted while the composer has focus.
 - The clipboard hand-off needs the terminal to outlive slacktui: with `kitty -e slacktui` the whole kitty instance exits and the copy is lost.
 - The thread pane has no day separators, so a thread spanning several days shows only times.
 - Video: no seeking; audio/video sync is by wall clock (both start together, no drift correction); each frame is a new kitty image (kitty evicts old ones by its storage quota); needs `ffmpeg`/`ffprobe` on PATH (a clear error otherwise).
