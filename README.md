@@ -1,8 +1,11 @@
-# slacktui
+# klack
 
 A Slack client for the terminal, written in Rust (ratatui + crossterm). Messaging with
 threads, reactions, autocomplete and formatting; inline images, an image viewer and video with
 sound; desktop notifications; search; and **huddles with audio**.
+
+klack was called slacktui until October 2026; on first start it moves that name's folders
+(`~/.config/slacktui`, `~/.cache/slacktui`, …) to klack's.
 
 It talks to Slack the way the web client does: a browser session (`xoxc-…` token plus the `d`
 cookie). It is not an official Slack app.
@@ -18,23 +21,23 @@ cookie). It is not an official Slack app.
 
 ```sh
 cargo build --release
-./target/release/slacktui login --workspace acme.slack.com   # prompts for the `d` cookie
-./target/release/slacktui
+./target/release/klack login --workspace acme.slack.com   # prompts for the `d` cookie
+./target/release/klack
 ```
 
 Windows from Linux: `rustup target add x86_64-pc-windows-gnu`, `apt install mingw-w64`, then
-`cargo build --release --target x86_64-pc-windows-gnu`. The result is one `slacktui.exe` that needs no
-MinGW DLLs (`crates/slacktui/build.rs` links OpenH264's C++ runtime statically, `.cargo/config.toml` the C
+`cargo build --release --target x86_64-pc-windows-gnu`. The result is one `klack.exe` that needs no
+MinGW DLLs (`crates/klack/build.rs` links OpenH264's C++ runtime statically, `.cargo/config.toml` the C
 runtime).
 
 ## Signing in
 
 - **From a browser:** sign in to Slack in your browser, copy the value of the `d` cookie for
   `slack.com` (devtools → Application → Cookies), then
-  `slacktui login --workspace acme.slack.com` and paste it at the prompt (or set
-  `SLACKTUI_COOKIE_D`). slacktui fetches the token itself and checks it with `auth.test`.
+  `klack login --workspace acme.slack.com` and paste it at the prompt (or set
+  `KLACK_COOKIE_D`). klack fetches the token itself and checks it with `auth.test`.
 
-Sessions are saved per profile in `~/.config/slacktui/<profile>/session.json` (owner-only
+Sessions are saved per profile in `~/.config/klack/<profile>/session.json` (owner-only
 permissions). Use `--profile NAME` to keep several accounts apart. Signing in to more workspaces
 with the same profile adds them to it: inside the app, `Alt+1 … Alt+9` switches between them
 and `/workspace [name]` lists them or switches by name. The status bar notes unread messages in the
@@ -49,7 +52,7 @@ What you type is kept per conversation and per thread: leave a half-written mess
 edit in progress) and it is back when you return, until you send it; the sidebar marks such
 conversations with ✎. Drafts also survive quitting, switching workspace and crashes (they are saved two seconds after you stop typing): they are kept per
 workspace account in `drafts/<team>-<user>.json` under the local data folder
-(`~/.local/share/slacktui` on Linux), readable by you only, and the file goes once no draft is left.
+(`~/.local/share/klack` on Linux), readable by you only, and the file goes once no draft is left.
 
 | Key | |
 |---|---|
@@ -78,8 +81,8 @@ workspace account in `drafts/<team>-<user>.json` under the local data folder
 
 ### Rebinding keys
 
-Put your own bindings in `~/.config/slacktui/keys.toml` (macOS: `~/Library/Application Support/io.github.rslack.slacktui/`,
-Windows: `%APPDATA%\rslack\slacktui\config\`). Each table is a context and each entry replaces an action's
+Put your own bindings in `~/.config/klack/keys.toml` (macOS: `~/Library/Application Support/klack/`,
+Windows: `%APPDATA%\klack\config\`). Each table is a context and each entry replaces an action's
 default keys; F1 lists every context and action name, and shows the keys in effect.
 
 ```toml
@@ -114,7 +117,7 @@ and then leaves the tiles; F8 again, or opening a conversation, brings the messa
 desktop notification.
 
 Clicking a desktop notification (Linux desktops with an XDG notification server) opens its
-conversation in slacktui — a thread reply opens the thread with the reply selected — for 30
+conversation in klack — a thread reply opens the thread with the reply selected — for 30
 minutes after it was shown. The terminal window is not raised (a terminal program cannot do
 that portably).
 
@@ -122,8 +125,8 @@ Under the hood a huddle is an Amazon Chime SDK meeting: `rooms.join` hands out t
 credentials, `crates/huddle` speaks Chime's signaling protocol and runs WebRTC audio (webrtc-rs,
 Opus). See `docs/protocol/huddles.md` for how this was worked out.
 
-Pick audio devices with `SLACKTUI_AUDIO_INPUT` / `SLACKTUI_AUDIO_OUTPUT` (part of a device id or
-name from `slacktui ctl audio-devices`). A device that is named but missing is an error; there is
+Pick audio devices with `KLACK_AUDIO_INPUT` / `KLACK_AUDIO_OUTPUT` (part of a device id or
+name from `klack ctl audio-devices`). A device that is named but missing is an error; there is
 no silent fallback.
 
 F6 → Huddles has the huddle sounds (at the notification sound volume; each can be turned off): a soft
@@ -150,7 +153,7 @@ F9 in a huddle switches it on and off; you see yourself in your tile. Capture go
 with ffmpeg's `-list_devices`, are written but have never been run).
 
 Video is H.264 (OpenH264, built from source — note that H.264 is patent-encumbered when you
-distribute binaries). For tests, `slacktui ctl huddle-media <channel> --video-test` joins with a
+distribute binaries). For tests, `klack ctl huddle-media <channel> --video-test` joins with a
 synthetic camera (a moving test pattern), `--share-test` shares it as a screen, `--camera NAME`
 sends a real camera (`ctl cameras` lists them), and `--record-video DIR` saves what arrives.
 
@@ -168,28 +171,28 @@ on Windows only from an SSH session, where `gdigrab` cannot capture (no desktop)
 | Variable | |
 |---|---|
 | (F6 or `/prefs`) | preferences: theme, compact list, thumbnails, profile pictures, emoji as names, 12/24 h clock, date format, time zone, language, desktop notifications and sound, microphone and speaker, volumes, microphone gain, speaking threshold, noise suppression, echo cancellation — saved in `settings.toml` next to `keys.toml` |
-| `SLACKTUI_LOG` | log filter, e.g. `slacktui=debug` (log file: `~/.cache/slacktui/<profile>/slacktui.log`) |
-| `SLACKTUI_DOWNLOAD_DIR` | where `s` saves attachments (default: your downloads folder) |
-| `SLACKTUI_AVATARS=0` | no profile pictures next to names (they are also off on terminals without real graphics) |
-| `SLACKTUI_GRAPHICS` | how pictures are drawn: `kitty`, `sixel`, `iterm2` or `halfblocks` (default: asked from the terminal; also F6 → Messages & media → Draw pictures with) |
+| `KLACK_LOG` | log filter, e.g. `klack=debug` (log file: `~/.cache/klack/<profile>/klack.log`) |
+| `KLACK_DOWNLOAD_DIR` | where `s` saves attachments (default: your downloads folder) |
+| `KLACK_AVATARS=0` | no profile pictures next to names (they are also off on terminals without real graphics) |
+| `KLACK_GRAPHICS` | how pictures are drawn: `kitty`, `sixel`, `iterm2` or `halfblocks` (default: asked from the terminal; also F6 → Messages & media → Draw pictures with) |
 
 ### Themes
 
 F6 → Appearance → Colour theme cycles dark, light, terminal and your own themes. A theme is
 a TOML file in `themes/` next to `settings.toml`: `base = "dark"` plus any colours to change
 (`"#ff8800"`, ANSI names such as `"light-red"`, or 0–255). Start from
-`slacktui ctl theme-template dark > sunset.toml`, edit it, and install it (checked first) with
-`slacktui ctl theme-import sunset.toml`; share themes by passing the file around.
+`klack ctl theme-template dark > sunset.toml`, edit it, and install it (checked first) with
+`klack ctl theme-import sunset.toml`; share themes by passing the file around.
 
 ### Translations
 
-The interface can be translated: `slacktui ctl locale-template > ~/.config/slacktui/locales/de.toml`,
+The interface can be translated: `klack ctl locale-template > ~/.config/klack/locales/de.toml`,
 fill in the right-hand sides, then choose `de` in F6 → Language & region. Only the help, the
 preferences, overlay titles and the status-bar hints go through translation so far.
 
 ## Scripting
 
-`slacktui ctl …` exposes the API for automation and tests: `whoami`, `channels`,
+`klack ctl …` exposes the API for automation and tests: `whoami`, `channels`,
 `history`, `replies`, `post`, `react`, `pin`, `upload`, `search`, `listen`, `audio-devices`,
 `huddle-media` and a few research probes (`api`, `get`, `huddle-*`) that redact secrets.
 
@@ -197,6 +200,6 @@ preferences, overlay titles and the status-bar hints go through translation so f
 
 - `crates/slack-core` — session/auth, Web API client, RTM websocket, message formatting.
 - `crates/huddle` — Chime signaling (protobuf), WebRTC audio, Opus, audio devices.
-- `crates/slacktui` — the TUI and the `ctl` CLI.
+- `crates/klack` — the TUI and the `ctl` CLI.
 
 Status and verification notes: `PROGRESS.md`. Design: `DESIGN.md`.

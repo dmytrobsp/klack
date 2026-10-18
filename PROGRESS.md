@@ -1,8 +1,10 @@
-# slacktui — progress
+# klack — progress
 
 Canonical status. The plan and architecture are in `DESIGN.md`. The reverse-engineered
 protocol notes are in `docs/protocol/`; dev and test helpers in `tools/`. (Until H1 this repository
-lived inside a larger reverse-engineering workspace; references to it were removed then.)
+lived inside a larger reverse-engineering workspace; references to it were removed then. Until H2
+the project was called slacktui: rows before H2 use that name, its `SLACKTUI_*` variables and its
+folders, as they were then.)
 
 **Verification levels**
 - **LIVE**: exercised in a real kitty window against the `rslack-testbed` workspace and checked by
@@ -153,11 +155,11 @@ lived inside a larger reverse-engineering workspace; references to it were remov
 | Image viewer: `o` on a message with images opens a full-window view of the large version (`thumb_1024`, else the original), fitted without upscaling and re-encoded on resize; ←/→ or h/l between the message's images; Esc/q closes | done | LIVE (B's PNG shown complete and centred; thumbnail intact after closing) + UNIT (stepping, stale results ignored) | 0721cdd |
 | Inline image thumbnails: terminal graphics detected at startup (`Picker::from_query_stdio`, half-block fallback); rows reserved from `original_w/h` (≤ 36×10 cells, no upscaling) so nothing jumps; thumbnails fetched lazily when on screen (`thumb_*` with the session cookie), decoded/encoded off the UI task, cached per file; drawn with `SlicedImage` so partly scrolled images are clipped | done | LIVE (kitty: B's 800×500 PNG shown under its file line; clipped correctly after scrolling; no remnants after switching conversation) + UNIT (sizing, reserved rows) | a113b72 |
 
-Tests: `cargo test` → slack-core 9, huddle 33, slacktui 155 (+1 ignored: the `build_lines_cost` measurement), all passing. `cargo build` has no errors.
+Tests: `cargo test` → slack-core 10, huddle 33, klack 155 (+1 ignored: the `build_lines_cost` measurement), all passing. `cargo build` has no errors.
 
 ## Next (in order, each as a small, separately verified step)
 
-**NEXT UP: G2b** (queue G below) — waiting for the user to install foot and WezTerm (offered 2026-10-19); then H2b (H1, H2a done). B's test picture `g2-test.png` (F0CA1HJ6DSR) is still in #new-channel for G2b: delete it (file + message) afterwards.
+**NEXT UP: G2b** (queue G below) — waiting for the user to install foot and WezTerm (offered 2026-10-19); then H3 (H1, H2 done). B's test picture `g2-test.png` (F0CA1HJ6DSR) is still in #new-channel for G2b: delete it (file + message) afterwards.
 
 G. Agreed with the user on 2026-10-19 after queue F ("proceed with proposed order"); run autonomously, one
    verified commit per step:
@@ -173,12 +175,12 @@ H. Added by the user on 2026-10-19 (after queue G), in this order:
       rslack (its own repository; the RE notes and tools it needs come along or are rewritten for it). Decided
       2026-10-19: `~/projects/klack`, git history kept; carry the relevant Claude project memories over to the
       new project's memory folder (the user asked).
-  H2. Rebranding (H2a code — done; H2b (NEXT) docs, tools' prose, memories): an existing project is already called `slack-tui` (github.com/bmalbusca/slack-tui; also
+  H2. ~~Rebranding~~ — done (H2a code, H2b docs and memories): an existing project is already called `slack-tui` (github.com/bmalbusca/slack-tui; also
       kurenn/slack-tui in Go); the user chose **klack** (2026-10-19: one syllable, rhymes with Slack, Rust's crab
       clacks its claws, keys clack in a terminal; free on crates.io, no project found). Change docs, comments,
       code, binary, crate and config paths (`ProjectDirs` qualifier `io.github.rslack.slacktui` → klack's, with a
       move of existing config/cache/drafts) to it.
-  H3. Contribution: make sure it does not depend on this machine's setup and builds and runs elsewhere
+  H3 (NEXT). Contribution: make sure it does not depend on this machine's setup and builds and runs elsewhere
       (documented prerequisites, no hard-coded paths, clean-checkout build in a fresh container).
       Compatibility (added by the user on 2026-10-19, folded into H3 and H5): the application must launch
       reliably on other setups too — other distributions and desktops (X11/Wayland, no PipeWire, no D-Bus
@@ -300,7 +302,7 @@ Hard (huddles video; the user's real camera/screen must not be captured in tests
 - A single long jump up (e.g. 56 000 lines at once) builds the whole distance once (~116 ms for 20 000 messages, release); paging and later frames are cheap.
 - Delete rollback has not been seen against a real API failure (Slack let the owner delete even in an archived channel; edit rollback, same `Net::Restore` path, is LIVE since A3).
 - Drafts are saved 2 s after typing pauses (and on switches and leaving); a crash loses at most those last 2 s.
-- The clipboard hand-off needs the terminal to outlive slacktui: with `kitty -e slacktui` the whole kitty instance exits and the copy is lost.
+- The clipboard hand-off needs the terminal to outlive klack: with `kitty -e klack` the whole kitty instance exits and the copy is lost.
 - Video: no seeking; audio/video sync is by wall clock (both start together, no drift correction); each frame is a new kitty image (kitty evicts old ones by its storage quota); needs `ffmpeg`/`ffprobe` on PATH (a clear error otherwise).
 - Microphone: the capture pipeline (`MicConverter`: mixdown, resampling, 20 ms framing) is unit-tested with a synthetic 44.1 kHz stereo tone; opening the device is not verified live. A live attempt with `PIPEWIRE_NODE` pointing at a temporary null sink did **not** route the capture there — the default microphone (the user's headset) was used for ~12 s into the private test huddle; the recording was deleted. Do not run microphone tests without explicit device selection.
 - Huddle view: a participant's picture is not refreshed if it changes during the call; layouts with many people are verified by unit tests only — one Slack user gets the same attendee id on every join (a second session of B kicks the first; a third share got signaling error 206), so live tests top out at 2 people + their camera and share.
@@ -309,11 +311,11 @@ Hard (huddles video; the user's real camera/screen must not be captured in tests
 - `/upload` reads the whole file into memory and shows no progress; other `/commands` are not recognised (they are sent as text).
 - Thumbnails: tested in kitty, and in xterm (sixel as a VT340, half blocks) — iTerm2 not yet (G2b); a failed thumbnail says why in its reserved rows (F3b); GIFs show their first frame only.
 - Notifications: a click opens the conversation only on XDG desktops (Linux/BSD), only within 30 minutes, and does not raise the terminal window; the DND window length is computed modulo 24 h, so it can be off by an hour across a DST change.
-- A freshly opened kitty window does not report focus-out until it has had one focus-in, so right after launch an unfocused slacktui may think it is focused (harness quirk; normal use is unaffected once the window has been focused).
+- A freshly opened kitty window does not report focus-out until it has had one focus-in, so right after launch an unfocused klack may think it is focused (harness quirk; normal use is unaffected once the window has been focused).
 - Workspaces: the others are polled for unread counts every 30 s (status bar) and watched for notifications, but their timelines are not kept; switching reloads everything (no per-workspace state is kept).
 - Profile pictures: bots and apps get none (only users); pictures are cached for the session only and not refreshed when someone changes theirs; sixel/iTerm2 not tried.
 - Sections: built-in sections other than Starred/Channels/Direct messages (Slack Connect, Recent Apps, Agents, …) are not shown; section emoji are ignored; no per-section sort or collapse.
-- Snippets: Slack may relabel a tiny snippet by its content (`fn main() {}` became C++; slacktui still highlights by extension); snippets are not editable; long snippet scrolling LIVE since A5 (from the thread pane).
+- Snippets: Slack may relabel a tiny snippet by its content (`fn main() {}` became C++; klack still highlights by extension); snippets are not editable; long snippet scrolling LIVE since A5 (from the thread pane).
 - Channels: a previewed channel is not updated live (Slack sends no RTM events for channels you are not in); the Ctrl+K list is capped at 50 entries, so in a big workspace browsing needs a query; no archive, rename, invite or topic editing; the public channel list is loaded once after boot (new channels arrive over RTM).
 
 ## Bug log

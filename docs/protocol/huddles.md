@@ -26,7 +26,7 @@ gzip-compressed; decompress before searching. Labels: OBSERVED (seen in code), I
 | `rooms.request` | `app, channel` | Third-party conference apps (Zoom etc.), **not** huddles. |
 | `rooms.notifyMember`, `huddles.knock`, `huddles.knockResponse`, `huddles.get`, `huddles.history`, `huddles.readiness`, `huddles.update`, `huddles.recording.*`, `rooms.startTranscription` | — | Invites, knocking, metadata, recording, transcripts. |
 
-## Plan for slacktui (INFERRED, to be verified step by step)
+## Plan for klack (INFERRED, to be verified step by step)
 
 1. `rooms.join` with `channel_id` → Chime meeting + attendee (never print `JoinToken`).
 2. Chime signaling: WebSocket to `MediaPlacement.SignalingUrl` with protobuf `SdkSignalFrame`s
@@ -57,10 +57,10 @@ gzip-compressed; decompress before searching. Labels: OBSERVED (seen in code), I
   one send stream `{media_type=AUDIO, track_label="AmazonChimeExpressAudio", attendee_id, stream_id=1,
   group_id=1, framerate=15, max_bitrate_kbps=600, avg_bitrate_bps=400000}`; SUBSCRIBE_ACK carries `sdp_answer`.
 - JOIN_ACK may carry `turn_credentials{username,password,ttl,uris}`; otherwise `TurnControlUrl`.
-- OBSERVED (slacktui `ctl huddle-signal`, 2026-10-18): with the frames above the real Chime service answers
+- OBSERVED (klack `ctl huddle-signal`, 2026-10-18): with the frames above the real Chime service answers
   PING (id 1) → JOIN_ACK (2 TURN uris, ttl 300, video limit 25) → INDEX (num_participants 1) and LEAVE → LEAVE_ACK.
   The server pings; the client must answer PONG with the same id.
-- OBSERVED (slacktui `ctl huddle-media`, 2026-10-18): WebRTC audio works with webrtc-rs 0.21 using only the
+- OBSERVED (klack `ctl huddle-media`, 2026-10-18): WebRTC audio works with webrtc-rs 0.21 using only the
   UDP TURN uri from JOIN_ACK (`RTCIceTransportPolicy::Relay`), an Opus/48000/2 sendrecv track labelled
   `AmazonChimeExpressAudio`, and SUBSCRIBE as above; SUBSCRIBE_ACK's `sdp_answer` is accepted as is.
   Two attendees (A sending a 440 Hz sine, B recording) in one huddle: B's recording has the tone at −20 dB in
@@ -94,7 +94,7 @@ From the SDK source (`DefaultSignalingClient.subscribe`, `DefaultVideoStreamInde
   server sends us a PLI at once and another ~3 s later; answering them gets the first picture to the new
   receiver ~0.25 s after it connects (without: up to the 2 s keyframe interval).
 
-OBSERVED (slacktui `ctl huddle-media --video-test`): an offer with an H.264 (42e01f, packetization-mode=1)
+OBSERVED (klack `ctl huddle-media --video-test`): an offer with an H.264 (42e01f, packetization-mode=1)
 sendrecv section at mid 1 is answered sendrecv H.264; SUBSCRIBE_ACK allocates `{AmazonChimeExpressVideo,
 stream_id 1, group_id 1}`; the other attendee's INDEX then lists `{stream_id 1, group_id 1, attendee_id B,
 max_bitrate_kbps 1000}`; the sender's own INDEX leaves itself out. INDEX can arrive **before** SUBSCRIBE_ACK.
@@ -105,17 +105,17 @@ max_bitrate_kbps 1000}`; the sender's own INDEX leaves itself out. INDEX can arr
   is a Chime **content share**. SDK (`DefaultContentShareController.createContentShareMeetingSessionConfigure`):
   a second session with `attendeeId + "#content"`, `joinToken + "#content"`, the same external user id, and
   `NoVideoDownlinkBandwidthPolicy` (it receives no video).
-- OBSERVED (slacktui `ctl huddle-media --share-test`): such a session joins with the same rooms.join credentials
+- OBSERVED (klack `ctl huddle-media --share-test`): such a session joins with the same rooms.join credentials
   plus the suffix; others' INDEX lists `{attendee_id "<id>#content", external_user_id <same as the person>}`, and
   the content attendee may also appear in AUDIO_STREAM_ID_INFO (muted).
 
 ## Codecs with real clients (2026-10-18)
 
 - OBSERVED: INDEX field 5 `supported_receive_codec_intersection` lists all eight codecs while only full clients are
-  in the meeting, and narrows to `H264_CONSTRAINED_BASELINE_PROFILE` once a client offering only H.264 CB (slacktui)
-  is subscribed. A real Slack web client (Chrome 155, fake camera) then sends H.264: slacktui decoded 324 pictures
-  (720×720) of Chrome's fake camera, ~3 s after subscribing. The web client also shows slacktui's H.264 camera.
-  So VP8/VP9 decoding is not needed while slacktui is in the call.
+  in the meeting, and narrows to `H264_CONSTRAINED_BASELINE_PROFILE` once a client offering only H.264 CB (klack)
+  is subscribed. A real Slack web client (Chrome 155, fake camera) then sends H.264: klack decoded 324 pictures
+  (720×720) of Chrome's fake camera, ~3 s after subscribing. The web client also shows klack's H.264 camera.
+  So VP8/VP9 decoding is not needed while klack is in the call.
 
 ## Invitations (ringing), OBSERVED 2026-10-19
 

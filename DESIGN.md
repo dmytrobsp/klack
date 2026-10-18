@@ -1,4 +1,4 @@
-# slacktui — design
+# klack — design
 
 A native Slack client for the terminal, written in Rust. It is Linux-first, and macOS
 and Windows stay buildable. It talks to the same endpoints as Slack's web/desktop
@@ -11,11 +11,11 @@ client, using a browser-session token (`xoxc-…`) plus the `d` cookie (see
 |---|---|
 | `crates/slack-core` | Session/auth import, Web API client, RTM websocket, data model, mrkdwn/rich_text parsing. No terminal code. |
 | `crates/huddle` | Huddles: Chime SDK signaling (prost subset of `SignalingProtocol.proto`), WebRTC audio (webrtc-rs, Opus), audio devices (cpal: microphone, speaker, resampling, levels, volume) and microphone processing (echo cancellation — WebRTC's AEC3 via the pure-Rust `sonora`, fed with the meeting audio as it is played — gain, speaking gate, RNNoise noise suppression via `nnnoiseless`); video (`video.rs`: H.264 via `openh264` built from source, RTP access-unit assembly, a synthetic test pattern), cameras (`camera.rs`: the `ffmpeg` tool, a camera only by explicit name) and screen sharing (`screen.rs`: in a Wayland session the screen-cast portal via `ashpd` + GStreamer `pipewiresrc`; elsewhere the whole screen through `ffmpeg` — `x11grab` (tried against Xvfb), AVFoundation and `gdigrab` (untested)); video in/out shares one peer connection (camera section at mid 1, receive-only sections after it, renegotiated with a new SUBSCRIBE). |
-| `crates/slacktui` | Binary: TUI (ratatui + crossterm), media (images, video and audio), notifications and sounds, huddle UI (call bar; `huddle_view.rs`: tiles, stage, scrolling, select/maximize; `call.rs`: devices, camera, screen share), preferences, keymap, themes, i18n, and the `ctl` scripting CLI used for end-to-end tests. |
+| `crates/klack` | Binary: TUI (ratatui + crossterm), media (images, video and audio), notifications and sounds, huddle UI (call bar; `huddle_view.rs`: tiles, stage, scrolling, select/maximize; `call.rs`: devices, camera, screen share), preferences, keymap, themes, i18n, and the `ctl` scripting CLI used for end-to-end tests. |
 
 ## Local files
 
-All next to the profiles in the config directory (`~/.config/slacktui/` on Linux):
+All next to the profiles in the config directory (`~/.config/klack/` on Linux):
 `<profile>/session.json` (0600), `keys.toml` (key bindings, `keymap.rs`), `settings.toml` (local
 preferences, `settings.rs`), `themes/<name>.toml` (`theme.rs`), `locales/<code>.toml` (`i18n.rs`).
 Slack-side preferences (notification levels, keywords, VIPs, sections, stars, status) stay on Slack;
@@ -32,13 +32,13 @@ the reverse-engineered endpoints are documented in `docs/protocol/` (sign-in, se
 
 ## Auth
 
-`slacktui login --workspace URL` with the browser's `d` cookie (`--cookie`, `$SLACKTUI_COOKIE_D` or a
+`klack login --workspace URL` with the browser's `d` cookie (`--cookie`, `$KLACK_COOKIE_D` or a
 prompt): the `xoxc` token is fetched from a server-rendered workspace page (`/customize/emoji` embeds
 `"api_token"`), then checked with `auth.test` (`docs/protocol/auth.md`).
 
 (The desktop magic-link flow, `auth.loginMagicBulk`, was planned but is not implemented.)
 
-Sessions are stored at `~/.config/slacktui/<profile>/session.json` (0600). Tokens are never logged.
+Sessions are stored at `~/.config/klack/<profile>/session.json` (0600). Tokens are never logged.
 
 ## Data flow
 

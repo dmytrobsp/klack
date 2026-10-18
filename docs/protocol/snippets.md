@@ -1,6 +1,6 @@
 # Snippets (`snippet_type`)
 
-OBSERVED 2026-10-18 (rslack-testbed, uploads with `files.getUploadURLExternal` + `snippet_type`, read back
+OBSERVED 2026-10-18 (the test workspace, uploads with `files.getUploadURLExternal` + `snippet_type`, read back
 with `conversations.history`):
 
 - A valid `snippet_type` is honoured: `real.rs` + `rust` → `filetype: rust` ("Rust"); `probe.py` + `rust` →

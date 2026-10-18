@@ -1,7 +1,7 @@
 # Sidebar sections and starred conversations (web client, 2026-10-18)
 
 Found in the web client bundles (`client-boot.js`, fetchers `fetchChannelSections*`) and
-confirmed live against the testbed with `slacktui ctl api` / `ctl listen`.
+confirmed live against the testbed with `klack ctl api` / `ctl listen`.
 
 ## Starred ("favourites")
 
@@ -41,4 +41,4 @@ OBSERVED 2026-10-18 (D9): `channel_ids_page.cursor` is present on a section with
 channel id (`count` 1, one id, cursor = that id); the top-level `cursor` is the last section's id. The web
 client (`resetChannelSectionsFromListApiResponseHandler`) reads only `channel_ids_page.channel_ids` and never
 follows a cursor, and calls `users.channelSections.list` with no arguments — so the page is the whole list.
-slacktui logs a warning if `count` ever exceeds the ids sent.
+klack logs a warning if `count` ever exceeds the ids sent.

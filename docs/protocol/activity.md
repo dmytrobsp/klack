@@ -1,7 +1,7 @@
 # Activity feed (web client, 2026-10-18)
 
 From the bundles (`activityFeedFetcher` = `activity.feed`; generic fetchers convert camelCase args to
-snake_case) and live probes with `slacktui ctl api`.
+snake_case) and live probes with `klack ctl api`.
 
 - `activity.feed mode=chrono_reads_and_unreads types=<comma list> limit=N` → `{ok, items:[…]}`.
   `types` is required; without it, or with an unknown type, the answer is `invalid_arguments`.
