@@ -17,7 +17,7 @@ background is in `../REPORT.md` and `../notes/`.
 | `slacktui login --import-rslack`, `slacktui ctl whoami/channels/history/post/react/upload/listen` | done | LIVE | 21c50f0 |
 | Terminal setup/teardown (panic-safe), event loop | done | LIVE | 28c8361, 65d2f49 |
 | Sidebar: channels/DMs, unread and mention badges, keyboard and mouse | done | LIVE | 75fd9a1 |
-| Message pane: history, grouping, formatting, emoji, files (as text), reactions, thread counts, day separators, older-page loading | done | LIVE (history/formatting); older-page loading NONE (not enough history in the testbed) | 0e88600 |
+| Message pane: history, grouping, formatting, emoji, files (as text), reactions, thread counts, day separators, older-page loading | done | LIVE (history/formatting); older-page loading LIVE (A1, 2026-10-18: 130 numbered messages from B in #history-paging; scrolling up with the wheel loaded 50 → 100 → 130 and "beginning of conversation"; seamless at the page boundaries 30/31 and 80/81, no gaps or duplicates) | 0e88600 |
 | Composer: multi-line, word motions, Alt+B/I/S/C formatting, paste, Enter send | done | LIVE (sent a two-line message, read back as B) | a4f4af2 |
 | Live updates (RTM): messages, reactions, read markers, presence, typing indicator | done | LIVE (B's message and reaction appeared instantly; badge cleared) | 104b768 |
 | Live updates: edits, deletes, thread replies, typing display | done | UNIT only — NOT seen live | 104b768 |
@@ -105,7 +105,7 @@ Tests: `cargo test` → slack-core 9, huddle 26, slacktui 116, all passing. `car
 autonomously, one verified commit per step:
 
 A. Never verified live (first):
-  A1. Older-history paging (B posts enough messages into a dedicated test channel).
+  A1. ~~Older-history paging~~ — done (LIVE, #history-paging).
   A2. Other people's edits, deletes, thread replies and typing live (new `ctl edit`/`ctl delete`/`ctl typing`);
       fix typing from the reply box not carrying `thread_ts`.
   A3. Edit/delete rollback (`Net::Restore`) against a real API failure.
@@ -163,7 +163,7 @@ Hard (huddles video; the user's real camera/screen must not be captured in tests
 
 ## Known gaps / not verified
 
-- Older-history paging, and the edit/delete/thread-reply RTM paths, have never been exercised live.
+- The edit/delete/thread-reply RTM paths have never been exercised live (older-history paging now has, A1).
 - The test workspace has very little history, so scrolling performance with large channels is unknown.
 - Edit/delete rollback (`Net::Restore`) has not been exercised against a real API failure.
 - The RTM `message_changed`/`message_deleted` paths for *other people's* edits are still UNIT only (there is no `ctl edit`/`ctl delete` yet to drive them from B).
