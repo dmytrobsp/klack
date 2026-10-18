@@ -209,10 +209,16 @@ impl Workspace {
         }
     }
 
+    /// A person's name for lists, with " (You)" for yourself.
+    pub fn person_label(&self, id: &str) -> String {
+        let name = self.user_name(id);
+        if id == self.self_id { format!("{name} (You)") } else { name }
+    }
+
     /// Sidebar label for a conversation.
     pub fn conversation_label(&self, c: &Conversation) -> String {
         if c.is_im {
-            c.user.as_deref().map(|u| self.user_name(u)).unwrap_or_else(|| c.id.clone())
+            c.user.as_deref().map(|u| self.person_label(u)).unwrap_or_else(|| c.id.clone())
         } else if c.is_mpim {
             // mpdm-me--alice--bob-1 → Alice, Bob (without ourselves, display names where known)
             let me = self.users.get(&self.self_id).map(|u| u.name.as_str());
@@ -563,5 +569,8 @@ mod tests {
         bob.profile.display_name = "Bob B".into();
         ws.users.insert("U2".into(), bob);
         assert_eq!(ws.conversation_label(&c), "Bob B, carol", "without ourselves, display names where known");
+        let own = Conversation { is_im: true, user: Some("UME".into()), ..Default::default() };
+        assert_eq!(ws.conversation_label(&own), "alice (You)");
+        assert_eq!(ws.person_label("U2"), "Bob B");
     }
 }

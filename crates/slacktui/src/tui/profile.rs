@@ -49,7 +49,7 @@ impl ProfileCard {
             .title_bottom(Line::styled(keys, Style::default().fg(DIM)).right_aligned());
         let lines = match ws.users.get(self.user()) {
             Some(u) => {
-                let mut lines = vec![Line::styled(u.display().to_string(), Style::default().fg(text::user_color(&u.id)).add_modifier(Modifier::BOLD)), Line::raw("")];
+                let mut lines = vec![Line::styled(ws.person_label(&u.id), Style::default().fg(text::user_color(&u.id)).add_modifier(Modifier::BOLD)), Line::raw("")];
                 lines.extend(person_lines(ws, u, Utc::now().timestamp()));
                 lines
             }
@@ -123,7 +123,7 @@ pub fn person_lines(ws: &Workspace, u: &User, now: i64) -> Vec<Line<'static>> {
         out.push(field("Full name", real.to_string()));
     }
     let pronouns = u.profile.pronouns.as_deref().filter(|p| !p.is_empty()).map(|p| format!(" ({p})")).unwrap_or_default();
-    out.push(field("Handle", format!("@{}{pronouns}{}", u.name, if u.id == ws.self_id { " · you" } else { "" })));
+    out.push(field("Handle", format!("@{}{pronouns}", u.name)));
     if !u.profile.title.is_empty() {
         out.push(field("Title", u.profile.title.clone()));
     }

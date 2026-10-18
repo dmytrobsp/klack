@@ -98,8 +98,7 @@ impl Call {
             if n > 0 {
                 spans.push(Span::raw(", "));
             }
-            let me = p.user_id() == ws.self_id;
-            let name = ws.user_name(p.user_id()) + if me { " (you)" } else { "" };
+            let name = ws.person_label(p.user_id());
             let style = if self.speaking.contains(&p.attendee_id) { green.add_modifier(Modifier::BOLD) } else { Style::default() };
             spans.push(Span::styled(name, style));
             if p.muted {

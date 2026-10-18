@@ -101,7 +101,7 @@ fn about(ws: &Workspace, conv: Option<&Conversation>) -> Vec<Line<'static>> {
     let Some(c) = conv else { return vec![Line::styled("Loading…", Style::default().fg(DIM))] };
     let mut out = Vec::new();
     if let Some(u) = c.user.as_deref().and_then(|u| ws.users.get(u)) {
-        out.push(field("Name", u.display().to_string()));
+        out.push(field("Name", ws.person_label(&u.id)));
         out.extend(super::profile::person_lines(ws, u, chrono::Utc::now().timestamp()));
         return out;
     }
@@ -134,8 +134,7 @@ fn member_line(ws: &Workspace, id: &str) -> Line<'static> {
         None => ("·", DIM),
     };
     let handle = ws.users.get(id).map(|u| format!("  @{}", u.name)).unwrap_or_default();
-    let me = if id == ws.self_id { "  (you)" } else { "" };
-    Line::from(vec![Span::styled(format!(" {dot} "), Style::default().fg(color)), Span::raw(ws.user_name(id)), Span::styled(format!("{handle}{me}"), Style::default().fg(DIM))])
+    Line::from(vec![Span::styled(format!(" {dot} "), Style::default().fg(color)), Span::raw(ws.person_label(id)), Span::styled(handle, Style::default().fg(DIM))])
 }
 
 fn pin_line(ws: &Workspace, m: &Message, width: usize) -> Line<'static> {

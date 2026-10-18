@@ -69,7 +69,7 @@ pub fn suggestions(ws: &Workspace, trigger: &Trigger) -> Vec<Suggestion> {
                     let real = u.real_name.clone().unwrap_or_default();
                     let r = rank(&q, &[u.display(), &u.name, &real])?;
                     let detail = if u.name != u.display() { u.name.clone() } else { String::new() };
-                    Some((r, Suggestion { label: u.display().to_string(), detail, replacement: format!("@{}", u.display()), id: Some(u.id.clone()) }))
+                    Some((r, Suggestion { label: ws.person_label(&u.id), detail, replacement: format!("@{}", u.display()), id: Some(u.id.clone()) }))
                 })
                 .collect();
             for (name, detail) in [("here", "notify active members"), ("channel", "notify everyone in the channel"), ("everyone", "notify the whole workspace")] {
