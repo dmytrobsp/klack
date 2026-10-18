@@ -55,6 +55,11 @@ pub struct VideoSource {
     pub max_bitrate_kbps: u32,
 }
 
+/// Names of INDEX codec capabilities (unknown values by number).
+pub fn codec_names(caps: &[i32]) -> Vec<String> {
+    caps.iter().map(|c| crate::proto::SdkVideoCodecCapability::try_from(*c).map_or_else(|_| format!("codec {c}"), |c| format!("{c:?}"))).collect()
+}
+
 /// The video sources of an INDEX frame (other kinds of media left out).
 pub fn video_sources(index: &crate::proto::SdkIndexFrame) -> Vec<VideoSource> {
     index
@@ -133,6 +138,8 @@ pub enum SessionEvent {
     Levels(Vec<(String, f32)>),
     /// The videos the meeting offers (every INDEX frame; ours included).
     VideoSources(Vec<VideoSource>),
+    /// The video codecs everyone in the meeting can receive (INDEX), when it changes.
+    ReceiveCodecs(Vec<String>),
     /// The server accepted our camera under this stream id (SUBSCRIBE_ACK).
     SendingVideo { stream_id: u32 },
     Error(String),
@@ -304,6 +311,7 @@ async fn run(
     let me = creds.attendee.attendee_id.clone();
     let mut slots: Vec<u32> = Vec::new();
     let (mut subscribing, mut resubscribe) = (false, receive_video);
+    let mut codecs: Vec<String> = Vec::new();
 
     let mut encoder = opus::Encoder::new(SAMPLE_RATE, opus::Channels::Mono, opus::Application::Voip)?;
     let mut decoder = opus::Decoder::new(SAMPLE_RATE, opus::Channels::Mono)?;
@@ -363,6 +371,12 @@ async fn run(
                     let _ = events.send(SessionEvent::Levels(levels));
                 }
                 if let Some(index) = &frame.index {
+                    let mut names = codec_names(&index.supported_receive_codec_intersection);
+                    names.sort();
+                    if names != codecs {
+                        codecs = names;
+                        let _ = events.send(SessionEvent::ReceiveCodecs(codecs.clone()));
+                    }
                     sources = video_sources(index);
                     let _ = events.send(SessionEvent::VideoSources(sources.clone()));
                     resubscribe = receive_video;
@@ -489,6 +503,11 @@ mod tests {
         assert_eq!(assign_slots(&[0, 9], &[9, 11, 12]), vec![11, 9, 12]);
         assert_eq!(receive_ids(true, &[0, 9]), vec![0, 0, 9]);
         assert_eq!(receive_ids(false, &[5]), vec![5]);
+    }
+
+    #[test]
+    fn codec_capability_names() {
+        assert_eq!(codec_names(&[3, 1, 99]), vec!["H264ConstrainedBaselineProfile", "Vp8", "codec 99"]);
     }
 
     #[test]

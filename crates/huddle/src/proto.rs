@@ -214,6 +214,22 @@ pub struct SdkIndexFrame {
     pub paused_at_source_ids: Vec<u32>,
     #[prost(uint32, optional, tag = "4")]
     pub num_participants: Option<u32>,
+    /// Codecs everyone in the meeting can receive; senders keep to these.
+    #[prost(enumeration = "SdkVideoCodecCapability", repeated, packed = "false", tag = "5")]
+    pub supported_receive_codec_intersection: Vec<i32>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, prost::Enumeration)]
+#[repr(i32)]
+pub enum SdkVideoCodecCapability {
+    Vp8 = 1,
+    H264BaselineProfile = 2,
+    H264ConstrainedBaselineProfile = 3,
+    H264MainProfile = 4,
+    H264HighProfile = 5,
+    H264ConstrainedHighProfile = 6,
+    Vp9Profile0 = 8,
+    Av1MainProfile = 11,
 }
 
 #[derive(Clone, PartialEq, prost::Message)]

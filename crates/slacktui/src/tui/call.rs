@@ -169,6 +169,7 @@ impl Call {
             SessionEvent::Error(e) => tracing::warn!("huddle: {e}"),
             SessionEvent::VideoSources(sources) => self.shares = screen_shares(&sources),
             SessionEvent::SendingVideo { .. } => {}
+            SessionEvent::ReceiveCodecs(c) => tracing::info!("meeting receive codecs: {c:?}"),
             SessionEvent::Ended => return true,
         }
         false
