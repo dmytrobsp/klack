@@ -28,6 +28,8 @@ enum Net {
     Posted { channel: String, message: slack_core::types::Message },
     /// All replies of a thread (parent first).
     Replies { channel: String, ts: String, page: HistoryPage },
+    /// Search results for a query.
+    SearchDone { query: String, result: Result<serde_json::Value, String> },
     /// A DM opened from the quick switcher.
     DmOpened(slack_core::types::Conversation),
     /// A video downloaded to a temporary file, ready to play.
@@ -55,6 +57,10 @@ enum Focus {
 }
 
 struct App {
+    /// Open search overlay (Ctrl+F).
+    search: Option<super::search::Search>,
+    /// A search hit to select once its conversation is shown.
+    pending_hit: Option<super::search::Hit>,
     /// Open quick switcher (Ctrl+K).
     switcher: Option<super::switcher::Switcher>,
     /// Key help overlay is open.
@@ -131,6 +137,9 @@ impl App {
             self.messages.scroll = 0;
             self.messages.selected = None;
             self.close_thread();
+            if let Some(hit) = self.pending_hit.take().filter(|h| Some(&h.channel) == selected.as_ref()) {
+                self.show_hit(hit);
+            }
             if let Some(id) = selected {
                 self.load_history(&id, false);
             }
@@ -375,6 +384,11 @@ impl App {
         let Some(channel) = self.current.clone() else { return };
         let Some(m) = self.ws.find_message(&channel, ts) else { return };
         let parent = if m.is_reply() { m.thread_ts.clone().unwrap_or_default() } else { m.ts.clone() };
+        self.open_thread_at(channel, parent);
+    }
+
+    /// Open the thread whose parent is `parent` in `channel`.
+    fn open_thread_at(&mut self, channel: String, parent: String) {
         self.thread_pane.scroll = 0;
         self.thread_pane.selected = None;
         self.focus = Focus::Thread;
@@ -440,6 +454,52 @@ impl App {
         let Some(c) = self.completion.take() else { return };
         let Some(s) = c.items.get(c.selected) else { return };
         self.composer_for(c.thread).complete(c.start, &format!("{} ", s.replacement), s.id.as_deref());
+    }
+
+    /// Run the search overlay's query, or open its highlighted hit if the query is unchanged.
+    fn search_enter(&mut self) {
+        let Some(search) = self.search.as_mut() else { return };
+        let query = search.query.trim().to_string();
+        if query.is_empty() {
+            return;
+        }
+        if query == search.searched && !search.busy {
+            if let Some(hit) = search.hits.get(search.selected).cloned() {
+                self.search = None;
+                self.open_hit(hit);
+            }
+            return;
+        }
+        search.busy = true;
+        let (client, tx) = (self.client.clone(), self.net.clone());
+        tokio::spawn(async move {
+            let result = client.search_messages(&query, 50).await.map_err(|e| e.to_string());
+            let _ = tx.send(Net::SearchDone { query, result });
+        });
+    }
+
+    /// Go to a search hit: its conversation, the message selected, its thread open.
+    fn open_hit(&mut self, hit: super::search::Hit) {
+        if self.current.as_deref() == Some(hit.channel.as_str()) {
+            self.show_hit(hit);
+        } else {
+            self.sidebar.select_id(&hit.channel);
+            self.pending_hit = Some(hit);
+        }
+    }
+
+    fn show_hit(&mut self, hit: super::search::Hit) {
+        match hit.thread_ts {
+            Some(parent) => {
+                self.messages.selected = Some(parent.clone());
+                self.open_thread_at(hit.channel, parent);
+                self.thread_pane.selected = Some(hit.ts);
+            }
+            None => {
+                self.messages.selected = Some(hit.ts);
+                self.focus = Focus::Messages;
+            }
+        }
     }
 
     /// Show conversation `id` and put the cursor in the composer.
@@ -614,6 +674,8 @@ pub async fn run(client: Client) -> Result<()> {
         viewer: None,
         help: false,
         switcher: None,
+        search: None,
+        pending_hit: None,
         player: None,
         screen: Default::default(),
         terminal_focused: true,
@@ -709,6 +771,24 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
                 }
                 _ => {}
             }
+        }
+        Event::Key(k) if k.kind != KeyEventKind::Release && app.search.is_some() => {
+            let Some(search) = app.search.as_mut() else { return true };
+            match k.code {
+                KeyCode::Esc => app.search = None,
+                KeyCode::Up => search.move_by(-1),
+                KeyCode::Down | KeyCode::Tab => search.move_by(1),
+                KeyCode::Enter => app.search_enter(),
+                KeyCode::Backspace => {
+                    search.query.pop();
+                }
+                KeyCode::Char('q') if k.modifiers.contains(KeyModifiers::CONTROL) => return false,
+                KeyCode::Char(c) if !k.modifiers.contains(KeyModifiers::CONTROL) => search.query.push(c),
+                _ => {}
+            }
+        }
+        Event::Key(k) if k.kind != KeyEventKind::Release && k.code == KeyCode::Char('f') && k.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.search = Some(super::search::Search::default());
         }
         Event::Key(k) if k.kind != KeyEventKind::Release && k.code == KeyCode::Char('k') && k.modifiers.contains(KeyModifiers::CONTROL) => {
             app.switcher = Some(super::switcher::Switcher::default());
@@ -1021,6 +1101,20 @@ fn handle_net(app: &mut App, msg: Net) {
             tl.loading = false;
         }
         Net::FileDone(message) => app.status = message,
+        Net::SearchDone { query, result } => {
+            if let Some(search) = app.search.as_mut() {
+                search.busy = false;
+                match result {
+                    Ok(v) => {
+                        search.hits = super::search::parse_hits(&v);
+                        search.total = v["messages"]["total"].as_u64().unwrap_or(search.hits.len() as u64);
+                        search.searched = query;
+                        search.selected = 0;
+                    }
+                    Err(e) => app.status = format!("search failed: {e}"),
+                }
+            }
+        }
         Net::DmOpened(c) => {
             let id = c.id.clone();
             app.ws.conversations.entry(id.clone()).or_insert(c);
@@ -1129,6 +1223,9 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     let info = if app.status.is_empty() { format!("{unread} unread · {mentions} mentions") } else { app.status.clone() };
     if let Some(sw) = &app.switcher {
         sw.draw(f, body, &app.ws);
+    }
+    if let Some(search) = &app.search {
+        search.draw(f, body, &app.ws);
     }
     if app.help {
         super::help::draw(f, body);

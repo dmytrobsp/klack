@@ -229,12 +229,14 @@ pub fn build_lines_owned(ws: &Workspace, t: &Timeline, width: usize, thread: boo
             let replies = t.messages.len() - 1;
             let label = format!(" {replies} {} ", if replies == 1 { "reply" } else { "replies" });
             out.push(Line::styled(format!("{label}{}", "─".repeat(width.saturating_sub(label.chars().count()))), Style::default().fg(DIM)));
+            owners.resize(out.len(), None);
             prev = None;
         } else if !thread && last_day.is_none_or(|d| !same_day(d, ts)) {
             last_day = Some(ts);
             let label = format!(" {} ", day_label(ts));
             let side = width.saturating_sub(label.chars().count()) / 2;
             out.push(Line::styled(format!("{}{}{}", "─".repeat(side), label, "─".repeat(side)), Style::default().fg(DIM)));
+            owners.resize(out.len(), None);
             prev = None;
         }
         if is_system(m) {
@@ -370,8 +372,10 @@ mod tests {
         let mut join = msg("1000.0", "U1", "joined");
         join.subtype = Some("channel_join".into());
         let t = Timeline { messages: vec![join, msg("1010.0", "U2", "hello")], loaded: true, ..Default::default() };
-        let p = plain(&build_lines(&ws, &t, 60));
+        let (lines, owners, _) = build_lines_owned(&ws, &t, 60, false, &|_| None);
+        let p = plain(&lines);
         assert_eq!(p.iter().filter(|l| l.contains('─')).count(), 1, "{p:?}");
+        assert_eq!(owners[0], None, "the day separator belongs to no message");
     }
 
     #[test]
@@ -408,7 +412,9 @@ mod tests {
         let mut reply = msg("1001.0", "U2", "reply");
         reply.thread_ts = Some("1000.0".into());
         let t = Timeline { messages: vec![parent, reply], loaded: true, ..Default::default() };
-        let p = plain(&build_lines_owned(&ws, &t, 30, true, &|_| None).0);
+        let (lines, owners, _) = build_lines_owned(&ws, &t, 30, true, &|_| None);
+        let p = plain(&lines);
+        assert_eq!(owners[2], None, "the replies rule belongs to no message");
         assert_eq!(p[1], "parent", "{p:?}");
         assert!(p[2].starts_with(" 1 reply ─"), "{p:?}");
         assert_eq!(p[4], "reply", "{p:?}");

@@ -14,6 +14,7 @@ pub const KEYS: &[(&str, &[(&str, &str)])] = &[
         ("Tab / Shift+Tab", "move focus between panes"),
         ("Alt+↑ / Alt+↓", "previous / next conversation"),
         ("Ctrl+K", "jump to a conversation or person"),
+        ("Ctrl+F", "search messages"),
         ("PgUp / PgDn", "scroll messages"),
         ("F1 or ?", "this help"),
         ("Ctrl+Q", "quit"),

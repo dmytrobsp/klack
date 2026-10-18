@@ -31,7 +31,8 @@ background is in `../REPORT.md` and `../notes/`.
 | `ctl replies <chan> <ts>`; `ctl history`/`replies` print reactions | done | LIVE | d0c1620 |
 | Autocomplete in both composers: `@user` (display/handle/real name; prefix, then word, then substring) plus `@here/@channel/@everyone`, `#channel`, `:emoji:` (picker ranking, custom emoji); popup above the composer; ↑↓ move, Tab/Enter insert, Esc dismisses until the token changes; mentions are sent as `<@U…>`/`<#C…>`/`<!here>` | done | LIVE (sent `hi @Dmytro Dudnyk see #social it works :tada:` — B read back `<@U0C9YM9J3RR> … <#C0CA4NBM998> … :tada:`; `@dmytro.d` completed in the thread box and arrived as `<@U…>`; Esc dismissal checked) + UNIT (ranking, specials, channels, emoji) | 2d609d0 |
 | Desktop notifications (notify-rust): DMs/group DMs, mentions incl. @here/@channel/@everyone, replies in threads you started or replied to; quiet for own/system messages, muted channels, DND (snooze + daily schedule, live `dnd_updated`), and the conversation/thread on screen while the terminal is focused (focus-change reporting) | done | LIVE (D-Bus `Notify` calls captured with `dbus-monitor`: DM elsewhere → "Dmytro"; #social without mention → none; with mention → "Dmytro in #social"; DM on screen + focused → none; same but unfocused → notified; reply in own thread → "Dmytro (thread)") + UNIT (decision rules, DND windows) | 56bda27 |
-| Quick switcher (Ctrl+K): channels, DMs and group DMs ranked by name/handle (unread first on an empty query); people without a DM appear when searching and open one via `conversations.open` | done | LIVE (unread #social listed first, `soc` filtered to it, Enter jumped there and marked it read) + UNIT (ranking, new-DM entries). Opening a new DM not exercised live (both test accounts already have DMs). | see git log |
+| Search (Ctrl+F): `search.messages`, two-line results (who · where · when · "in thread", then text); Enter on a hit switches conversation, selects the message, and for replies opens the thread (parent from the permalink's `thread_ts`) with the reply selected; `ctl search` prints matches | done | LIVE (top-level hit in #social selected after the jump; reply hit opened the DM thread with the reply selected) + UNIT (hit parsing incl. thread replies) | see git log |
+| Quick switcher (Ctrl+K): channels, DMs and group DMs ranked by name/handle (unread first on an empty query); people without a DM appear when searching and open one via `conversations.open` | done | LIVE (unread #social listed first, `soc` filtered to it, Enter jumped there and marked it read) + UNIT (ranking, new-DM entries). Opening a new DM not exercised live (both test accounts already have DMs). | d1c314e |
 | Help overlay: F1 anywhere, `?` outside the composers; every key grouped by area; any key closes; status bar shortened to the essentials + "F1 help" | done | LIVE (screenshot of the overlay; closes on a key) | 4095abd |
 | Video with sound: `o` on a message with a video downloads it (Slack's `mp4` transcode, else the original) to a temp file and plays it full-window; `ffmpeg` (runtime dependency on PATH) decodes 12 fps RGB frames and f32 PCM at the output device's rate over pipes; frames drawn with ratatui-image, audio via cpal on its own thread; Space/p pauses (stream corked), Esc/q stops (processes killed, temp file removed) | done | LIVE (B's 8 s testsrc clip: frames advance while playing and freeze while paused; slacktui's own PipeWire stream recorded with `pw-record` carries the 440 Hz tone, −40.6 dB in the 440 Hz band vs −90 dB at 2 kHz; stream corked on pause; ffmpeg gone, temp file deleted and stream removed after Esc) + UNIT (probe parsing, frame fitting, frame schedule) | e973856 |
 | Files: `s` saves a message's attachments to the downloads folder (`$SLACKTUI_DOWNLOAD_DIR` overrides; never overwrites, ` (n)` suffix; remote names cannot escape the folder); `/upload <path> [message]` in either composer uploads a local file (quoted paths, `~`), into the thread from the reply box | done | LIVE (saved B's PNG: pixel-identical to the original, Slack strips PNG text chunks; uploaded a PNG with a message — B's history has it, it appeared live with its thumbnail) + UNIT (unique names, path traversal, command parsing) | f55d51a |
@@ -44,7 +45,7 @@ Remaining dead-code warnings: `Composer::cursor/is_multiline`, `Sidebar::select_
 ## Next (in order, each as a small, separately verified step)
 
 1. Huddles: reverse engineer the signalling first (observe the web client inside RSlack), then audio.
-2. Search, channel info/members, pins.
+2. Channel info/members, pins.
 
 ## Known gaps / not verified
 
@@ -62,6 +63,7 @@ Remaining dead-code warnings: `Composer::cursor/is_multiline`, `Sidebar::select_
 - The thread pane has no day separators, so a thread spanning several days shows only times.
 - `@here/@channel/@everyone` are offered in DMs too.
 - Video: no seeking; audio/video sync is by wall clock (both start together, no drift correction); each frame is a new kitty image (kitty evicts old ones by its storage quota); videos in the thread pane play the same way but were not tested there; needs `ffmpeg`/`ffprobe` on PATH (a clear error otherwise).
+- Search: only the first 50 matches (no paging); a hit older than the loaded history is not scrolled to (the conversation opens, nothing is selected).
 - `/upload` reads the whole file into memory and shows no progress; other `/commands` are not recognised (they are sent as text).
 - Thumbnails: only tested in kitty (sixel/iTerm2/half-block paths untested); not tested inside the thread pane; a failed thumbnail leaves its reserved rows blank (no error text); GIFs show their first frame only.
 - Notifications: clicking one does nothing (no jump to the conversation); per-channel notification preferences (all/mentions/nothing) and keyword alerts are not honoured; muted channels come from boot prefs only (no live pref updates); the daily DND schedule can be off by an hour across a DST change.
@@ -69,6 +71,8 @@ Remaining dead-code warnings: `Composer::cursor/is_multiline`, `Sidebar::select_
 - Autocomplete does not complete on a mouse click.
 
 ## Bug log
+
+- Day separators and the thread "N replies" rule were attributed to the next message, so selecting it highlighted the rule too. Found by screenshot after a search jump; tests now assert they belong to no message.
 
 - The `WideSafe` filter (previous fix) measured the raw cell symbol, so a kitty image cell carrying the image transmission escape (thousands of characters, forced width 1) looked thousands of columns wide and the rest of its row was dropped: the viewer image lost its top row. Found by screenshot; now uses `Cell::cell_width()`, which honours forced widths. Test `forced_width_cells_cover_nothing`.
 

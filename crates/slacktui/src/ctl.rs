@@ -19,6 +19,8 @@ pub enum Ctl {
         #[arg(short, default_value_t = 10)]
         n: u32,
     },
+    /// Search messages and print the matches as raw JSON fields.
+    Search { query: String },
     /// Print a thread (parent first).
     Replies { channel: String, ts: String },
     /// Post a message (mrkdwn).
@@ -86,6 +88,14 @@ pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
             let page = client.history(&id, None, n).await?;
             for m in page.messages.iter().rev() {
                 println!("{} {:<12} {}{}", m.ts, m.user.as_deref().or(m.username.as_deref()).unwrap_or("?"), m.text.replace('\n', " ⏎ "), reactions(m));
+            }
+        }
+        Ctl::Search { query } => {
+            let v = client.search_messages(&query, 20).await?;
+            println!("total: {}", v["messages"]["total"]);
+            for m in v["messages"]["matches"].as_array().into_iter().flatten() {
+                let keys: Vec<&String> = m.as_object().map(|o| o.keys().collect()).unwrap_or_default();
+                println!("{} #{} {} {:?} | {}", m["ts"].as_str().unwrap_or("?"), m["channel"]["name"].as_str().unwrap_or("?"), m["user"].as_str().unwrap_or("?"), m["text"].as_str().unwrap_or(""), keys.iter().map(|k| k.as_str()).collect::<Vec<_>>().join(","));
             }
         }
         Ctl::Replies { channel, ts } => {
