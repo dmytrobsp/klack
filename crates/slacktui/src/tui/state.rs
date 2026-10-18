@@ -99,6 +99,19 @@ impl Workspace {
         out
     }
 
+    /// Remove message `ts` of `channel` from its timeline and every loaded thread.
+    pub fn remove_message(&mut self, channel: &str, ts: &str) {
+        if let Some(t) = self.timelines.get_mut(channel) {
+            t.remove(ts);
+        }
+        let prefix = format!("{channel}/");
+        for (key, t) in self.threads.iter_mut() {
+            if key.starts_with(&prefix) {
+                t.remove(ts);
+            }
+        }
+    }
+
     pub fn user_name(&self, id: &str) -> String {
         match self.users.get(id) {
             Some(u) => u.display().to_string(),
@@ -235,6 +248,9 @@ mod tests {
         assert_eq!(ws.copies_mut("C1", "1.0").len(), 2);
         assert_eq!(ws.find_message("C1", "2.0").map(|m| m.ts.as_str()), Some("2.0"));
         assert!(ws.find_message("C2", "2.0").is_none());
+        ws.remove_message("C1", "1.0");
+        assert!(ws.find_message("C1", "1.0").is_none());
+        assert!(ws.find_message("C2", "1.0").is_some());
     }
 
     #[test]

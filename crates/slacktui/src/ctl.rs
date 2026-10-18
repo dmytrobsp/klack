@@ -19,6 +19,8 @@ pub enum Ctl {
         #[arg(short, default_value_t = 10)]
         n: u32,
     },
+    /// Print a thread (parent first).
+    Replies { channel: String, ts: String },
     /// Post a message (mrkdwn).
     Post {
         channel: String,
@@ -83,7 +85,14 @@ pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
             let id = resolve_channel(&client, &channel).await?;
             let page = client.history(&id, None, n).await?;
             for m in page.messages.iter().rev() {
-                println!("{} {:<12} {}", m.ts, m.user.as_deref().or(m.username.as_deref()).unwrap_or("?"), m.text.replace('\n', " ⏎ "));
+                println!("{} {:<12} {}{}", m.ts, m.user.as_deref().or(m.username.as_deref()).unwrap_or("?"), m.text.replace('\n', " ⏎ "), reactions(m));
+            }
+        }
+        Ctl::Replies { channel, ts } => {
+            let id = resolve_channel(&client, &channel).await?;
+            for m in client.replies(&id, &ts).await?.messages {
+                let kind = m.subtype.as_deref().map(|s| format!(" [{s}]")).unwrap_or_default();
+                println!("{} {:<12} {}{kind}{}", m.ts, m.user.as_deref().unwrap_or("?"), m.text.replace('\n', " ⏎ "), reactions(&m));
             }
         }
         Ctl::Post { channel, text, thread } => {
@@ -118,4 +127,9 @@ pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// ` [:name: by U1,U2]…` for a printed message.
+fn reactions(m: &slack_core::types::Message) -> String {
+    m.reactions.iter().map(|r| format!(" [:{}: by {}]", r.name, r.users.join(","))).collect()
 }

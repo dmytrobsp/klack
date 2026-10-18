@@ -1,6 +1,22 @@
 //! Multi-line message composer with mrkdwn formatting helpers and mention tracking.
 
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use unicode_width::UnicodeWidthChar;
+
+/// What a key press in the composer asks the app to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyOutcome {
+    /// Handled inside the composer (or ignored).
+    Done,
+    /// A character was typed (send a typing notification).
+    Typed,
+    /// Enter: send, or save the edit.
+    Submit,
+    /// Esc with nothing to cancel: leave the composer.
+    Leave,
+    /// ↑ in an empty composer: edit our last message.
+    UpWhenEmpty,
+}
 
 /// What an autocomplete token looks like at the cursor.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,6 +39,50 @@ pub struct Composer {
 }
 
 impl Composer {
+    /// Apply an editing key.
+    pub fn handle_key(&mut self, k: KeyEvent) -> KeyOutcome {
+        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = k.modifiers.contains(KeyModifiers::ALT);
+        let shift = k.modifiers.contains(KeyModifiers::SHIFT);
+        match k.code {
+            KeyCode::Esc if self.editing.is_some() => self.clear(),
+            KeyCode::Esc => return KeyOutcome::Leave,
+            KeyCode::Enter if alt || shift => self.insert('\n'),
+            KeyCode::Char('j') if ctrl => self.insert('\n'),
+            KeyCode::Enter => return KeyOutcome::Submit,
+            KeyCode::Char('b') if alt => self.toggle_marker('*'),
+            KeyCode::Char('i') if alt => self.toggle_marker('_'),
+            KeyCode::Char('s') if alt => self.toggle_marker('~'),
+            KeyCode::Char('c') if alt => self.toggle_marker('`'),
+            KeyCode::Char('w') if ctrl => self.delete_word_left(),
+            KeyCode::Char('u') if ctrl => self.kill_line(),
+            KeyCode::Char('a') if ctrl => self.home(),
+            KeyCode::Char('e') if ctrl => self.end(),
+            KeyCode::Char(ch) if !ctrl && !alt => {
+                self.insert(ch);
+                return KeyOutcome::Typed;
+            }
+            KeyCode::Backspace if ctrl || alt => self.delete_word_left(),
+            KeyCode::Backspace => self.backspace(),
+            KeyCode::Delete => self.delete(),
+            KeyCode::Left if ctrl => self.word_left(),
+            KeyCode::Right if ctrl => self.word_right(),
+            KeyCode::Left => self.left(),
+            KeyCode::Right => self.right(),
+            KeyCode::Home => self.home(),
+            KeyCode::End => self.end(),
+            KeyCode::Up if self.is_empty() && self.editing.is_none() => return KeyOutcome::UpWhenEmpty,
+            KeyCode::Up => {
+                self.up();
+            }
+            KeyCode::Down => {
+                self.down();
+            }
+            _ => {}
+        }
+        KeyOutcome::Done
+    }
+
     pub fn text(&self) -> String {
         self.chars.iter().collect()
     }
@@ -413,6 +473,21 @@ mod tests {
         assert_eq!(c.text(), "hello\n");
         c.backspace();
         assert_eq!(c.text(), "hello");
+    }
+
+    #[test]
+    fn key_outcomes() {
+        let key = |code, mods| KeyEvent::new(code, mods);
+        let mut c = Composer::default();
+        assert_eq!(c.handle_key(key(KeyCode::Up, KeyModifiers::NONE)), KeyOutcome::UpWhenEmpty);
+        assert_eq!(c.handle_key(key(KeyCode::Char('h'), KeyModifiers::NONE)), KeyOutcome::Typed);
+        assert_eq!(c.handle_key(key(KeyCode::Enter, KeyModifiers::ALT)), KeyOutcome::Done);
+        assert_eq!(c.text(), "h\n");
+        assert_eq!(c.handle_key(key(KeyCode::Enter, KeyModifiers::NONE)), KeyOutcome::Submit);
+        assert_eq!(c.handle_key(key(KeyCode::Esc, KeyModifiers::NONE)), KeyOutcome::Leave);
+        c.editing = Some("1.0".into());
+        assert_eq!(c.handle_key(key(KeyCode::Esc, KeyModifiers::NONE)), KeyOutcome::Done);
+        assert!(c.editing.is_none() && c.text().is_empty());
     }
 
     #[test]

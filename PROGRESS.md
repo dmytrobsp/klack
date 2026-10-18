@@ -22,33 +22,35 @@ background is in `../REPORT.md` and `../notes/`.
 | Live updates (RTM): messages, reactions, read markers, presence, typing indicator | done | LIVE (B's message and reaction appeared instantly; badge cleared) | 104b768 |
 | Live updates: edits, deletes, thread replies, typing display | done | UNIT only — NOT seen live | 104b768 |
 | Message selection (↑/↓, j/k, g/G, click), Tab focus cycle | done | LIVE | 9936455 |
-| Reaction picker (`r`): search, favourites, custom emoji, optimistic toggle | done | LIVE (🚀 added, no double count from the RTM echo). Server-side state NOT read back independently. | 5ab8258 |
+| Reaction picker (`r`): search, favourites, custom emoji, optimistic toggle | done | LIVE (🚀 added, no double count from the RTM echo; 🚀 and 👍 later read back by B via `ctl history`) | 5ab8258 |
 | Edit own messages: `e` on a selected message or ↑ in an empty composer; mentions/channels/@here back to composer mentions; Enter = `chat.update`, Esc cancels; optimistic with rollback | done | LIVE (edited a message with a mention, `&` and `<…>`; B's `ctl history` read back the right `<@U…>`/`&amp;`/`&lt;` text; `e` path and Esc cancel checked by screenshot) + UNIT (round trip) | d2cdb2f |
 | Delete own messages: `d` → y/n popup → `chat.delete`; optimistic with rollback; refuses others' messages | done | LIVE (`n` keeps it, `y` removes it, B's history no longer has it; `d` on B's message shows a refusal) | e415bdf |
 | Copy: `y` = message as plain text, `Y` = permalink (`chat.getPermalink`). arboard (with Wayland data-control), OSC 52 fallback; on quit the copy is handed to the terminal via OSC 52 so it survives | done | LIVE (`wl-paste` read back the text with `@Dmytro`/`&`/`<…>` resolved, and the `…/archives/D…/p…` link; after quit the clipboard still held the text, with the terminal left open) + UNIT (base64) | 64dffaa |
-| Threads pane (view): Enter on a message opens its thread on the right (`conversations.replies`, loaded once, then kept live over RTM); parent, "N replies" rule, replies; ↑↓/jk/g/G selection, `r` react, `y`/`Y` copy, mouse click/scroll; Esc closes; closes on channel switch; Tab cycle includes it | done | LIVE (B's existing reply loaded; two replies from B appeared live; 👍 added from the thread showed on both copies of the parent; `y` copied a reply) + UNIT (thread layout, copies across timeline/thread) | see git log |
+| Threads pane (view): Enter on a message opens its thread on the right (`conversations.replies`, loaded once, then kept live over RTM); parent, "N replies" rule, replies; ↑↓/jk/g/G selection, `r` react, `y`/`Y` copy, mouse click/scroll; Esc closes; closes on channel switch; Tab cycle includes it | done | LIVE (B's existing reply loaded; two replies from B appeared live; 👍 added from the thread showed on both copies of the parent; `y` copied a reply) + UNIT (thread layout, copies across timeline/thread) | fd103c4 |
+| Threads pane (reply): own composer in the thread pane (`i` from the thread, Tab order sidebar → messages → composer → thread → reply); Enter posts with `thread_ts`; Alt+A toggles "also send to channel" (`reply_broadcast`); ↑ in the empty reply box / `e` / `d` work on own replies; composer keys shared via `Composer::handle_key` | done | LIVE (reply read back by B with `ctl replies`; reply edited from the thread; broadcast reply shown in both panes and in B's channel history; broadcast deleted from the thread pane, gone for B; reply count stayed exact throughout) + UNIT (key outcomes) | see git log |
+| `ctl replies <chan> <ts>`; `ctl history`/`replies` print reactions | done | LIVE | see git log |
 
-Tests: `cargo test` → slack-core 8, slacktui 30, all passing. `cargo build` has no errors.
+Tests: `cargo test` → slack-core 8, slacktui 32, all passing. `cargo build` has no errors.
 There are dead-code warnings for the planned autocomplete API (`Composer::trigger/complete`).
 
 ## Next (in order, each as a small, separately verified step)
 
-1. Threads pane, part 2: a composer inside the thread pane that replies with `thread_ts` (optionally
-   "also send to channel"), and `e`/`d` on own messages inside the thread.
-2. Autocomplete popup for `@user`, `#channel` and `:emoji:` (composer `trigger()`/`complete()` already exist and are tested).
-3. Desktop notifications (notify-rust) for DMs, mentions and @here, honouring DND and muted channels and the terminal focus events.
-4. Images inline (ratatui-image, kitty protocol; `File::preview_url`), an image viewer, upload from a path.
-5. Video playback with sound (ffmpeg-next → frames via ratatui-image; cpal audio).
-6. Huddles: reverse engineer the signalling first (observe the web client inside RSlack), then audio.
-7. Search, channel info/members, pins, quick switcher (Ctrl+K), help overlay.
+1. Autocomplete popup for `@user`, `#channel` and `:emoji:` (composer `trigger()`/`complete()` already exist and are tested).
+2. Desktop notifications (notify-rust) for DMs, mentions and @here, honouring DND and muted channels and the terminal focus events.
+3. Images inline (ratatui-image, kitty protocol; `File::preview_url`), an image viewer, upload from a path.
+4. Video playback with sound (ffmpeg-next → frames via ratatui-image; cpal audio).
+5. Huddles: reverse engineer the signalling first (observe the web client inside RSlack), then audio.
+6. Search, channel info/members, pins, quick switcher (Ctrl+K), help overlay.
 
 ## Known gaps / not verified
 
 - Older-history paging, and the edit/delete/thread-reply RTM paths, have never been exercised live.
 - The test workspace has very little history, so scrolling performance with large channels is unknown.
-- The reaction picker's server-side effect is inferred from the absence of an API error plus the RTM echo.
 - Edit/delete rollback (`Net::Restore`) has not been exercised against a real API failure.
 - The RTM `message_changed`/`message_deleted` paths for *other people's* edits are still UNIT only (there is no `ctl edit`/`ctl delete` yet to drive them from B).
+- Thread drafts are not kept: closing the pane or switching channel clears the reply box.
+- The reply box title clips "(Alt+A)" when the pane is narrow.
+- Typing notifications are not sent from the reply box with `thread_ts` (they go to the channel).
 - Status-bar messages (errors, refusals) stay until the next one replaces them; they are never cleared on a timer.
 - The message being edited is not highlighted while the composer has focus.
 - The OSC 52 copy path (no system clipboard, e.g. over SSH) has only been exercised as the quit hand-off, not as the primary path.
@@ -58,6 +60,8 @@ There are dead-code warnings for the planned autocomplete API (`Composer::trigge
 - Reaction chips with VS16 emoji (❤️) sometimes render with an extra blank cell (`[❤  1]`); seen in screenshots, not investigated.
 
 ## Bug log
+
+- `message_replied` carries the parent *without* reactions/files, and replacing the parent wiped its reactions (👍 vanished after any reply). Confirmed by capturing A's RTM events with `ctl listen`; now only the thread fields are merged. `message_changed` likewise keeps reactions, reply counts and files when the event omits them (a missing `reply_count` reset it to 0, caught by the new test). Test `message_replied_keeps_reactions`.
 
 - Live thread replies were counted twice (`💬 3 replies` for 2): the reply event bumped `reply_count` and `message_replied` also carried the server count. Found by screenshot; a reply is now counted only if newer than the parent's `latest_reply`. Test `reply_counted_once_with_message_replied`.
 - " (edited)" was appended after wrapping and got cut off in narrow panes. Found by screenshot in the thread pane; now wraps to its own line. Test `edited_mark_wraps_instead_of_overflowing`.

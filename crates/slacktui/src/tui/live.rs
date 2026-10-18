@@ -33,7 +33,22 @@ pub fn apply(ws: &mut Workspace, ev: &Value, current: Option<&str>) -> Effects {
     match ev["type"].as_str().unwrap_or("") {
         "message" => match ev["subtype"].as_str() {
             Some("message_changed") => {
-                if let Some(m) = parse_message(&ev["message"], &channel) {
+                if let Some(mut m) = parse_message(&ev["message"], &channel) {
+                    // Keep what the event leaves out rather than wiping it.
+                    if let Some(old) = ws.find_message(&channel, &m.ts) {
+                        let missing = |key: &str| ev["message"].get(key).is_none();
+                        if missing("reactions") {
+                            m.reactions = old.reactions.clone();
+                        }
+                        if missing("reply_count") {
+                            m.reply_count = old.reply_count;
+                            m.reply_users = old.reply_users.clone();
+                            m.latest_reply = old.latest_reply.clone();
+                        }
+                        if missing("files") {
+                            m.files = old.files.clone();
+                        }
+                    }
                     update_everywhere(ws, &channel, m);
                 }
             }
@@ -50,36 +65,24 @@ pub fn apply(ws: &mut Workspace, ev: &Value, current: Option<&str>) -> Effects {
                 }
             }
             Some("message_replied") => {
-                if let Some(m) = parse_message(&ev["message"], &channel) {
-                    update_everywhere(ws, &channel, m);
+                // The parent arrives without reactions or files: take only the thread fields.
+                let m = &ev["message"];
+                let ts = m["ts"].as_str().unwrap_or_default();
+                for p in ws.copies_mut(&channel, ts) {
+                    p.reply_count = m["reply_count"].as_u64().unwrap_or(p.reply_count);
+                    if let Some(latest) = m["latest_reply"].as_str() {
+                        p.latest_reply = Some(latest.to_string());
+                    }
+                    if let Some(users) = m["reply_users"].as_array() {
+                        p.reply_users = users.iter().filter_map(|u| u.as_str().map(String::from)).collect();
+                    }
+                    p.thread_ts = Some(ts.to_string());
                 }
             }
             _ => {
                 let Some(m) = parse_message(ev, &channel) else { return fx };
                 let from_me = m.user.as_deref() == Some(ws.self_id.as_str());
-                if let Some(parent) = m.thread_ts.clone().filter(|_| m.is_reply()) {
-                    if let Some(t) = ws.threads.get_mut(&thread_key(&channel, &parent)) {
-                        t.upsert(m.clone());
-                    }
-                    // `message_replied` may already have brought the server's count for this reply.
-                    let counted = |p: &Message| p.latest_reply.as_deref().and_then(|l| l.parse::<f64>().ok()).is_some_and(|l| l >= m.time());
-                    if let Some(p) = ws.timelines.get_mut(&channel).and_then(|t| t.messages.iter_mut().find(|x| x.ts == parent)).filter(|p| !counted(p)) {
-                        p.reply_count += 1;
-                        p.latest_reply = Some(m.ts.clone());
-                        if let Some(u) = &m.user {
-                            if !p.reply_users.contains(u) {
-                                p.reply_users.push(u.clone());
-                            }
-                        }
-                    }
-                    if m.subtype.as_deref() == Some("thread_broadcast") {
-                        if let Some(t) = ws.timelines.get_mut(&channel).filter(|t| t.loaded) {
-                            t.upsert(m.clone());
-                        }
-                    }
-                } else if let Some(t) = ws.timelines.get_mut(&channel).filter(|t| t.loaded) {
-                    t.upsert(m.clone());
-                }
+                add_message(ws, &channel, &m);
                 if !from_me {
                     // Someone stopped typing once their message lands.
                     if let (Some(list), Some(u)) = (ws.typing.get_mut(&channel), m.user.as_deref()) {
@@ -177,6 +180,34 @@ pub fn apply(ws: &mut Workspace, ev: &Value, current: Option<&str>) -> Effects {
     fx
 }
 
+/// Put a new message where it belongs: a reply into its loaded thread (bumping the parent's
+/// count once), a top-level message or thread broadcast into the loaded timeline.
+pub fn add_message(ws: &mut Workspace, channel: &str, m: &Message) {
+    if let Some(parent) = m.thread_ts.clone().filter(|_| m.is_reply()) {
+        if let Some(t) = ws.threads.get_mut(&thread_key(channel, &parent)) {
+            t.upsert(m.clone());
+        }
+        // `message_replied` may already have brought the server's count for this reply.
+        let counted = |p: &Message| p.latest_reply.as_deref().and_then(|l| l.parse::<f64>().ok()).is_some_and(|l| l >= m.time());
+        if let Some(p) = ws.timelines.get_mut(channel).and_then(|t| t.messages.iter_mut().find(|x| x.ts == parent)).filter(|p| !counted(p)) {
+            p.reply_count += 1;
+            p.latest_reply = Some(m.ts.clone());
+            if let Some(u) = &m.user {
+                if !p.reply_users.contains(u) {
+                    p.reply_users.push(u.clone());
+                }
+            }
+        }
+        if m.subtype.as_deref() == Some("thread_broadcast") {
+            if let Some(t) = ws.timelines.get_mut(channel).filter(|t| t.loaded) {
+                t.upsert(m.clone());
+            }
+        }
+    } else if let Some(t) = ws.timelines.get_mut(channel).filter(|t| t.loaded) {
+        t.upsert(m.clone());
+    }
+}
+
 fn update_everywhere(ws: &mut Workspace, channel: &str, m: Message) {
     if let Some(t) = ws.timelines.get_mut(channel) {
         if t.index_of(&m.ts).is_some() {
@@ -261,6 +292,19 @@ mod tests {
         assert_eq!(t.messages.len(), 1);
         assert_eq!(t.messages[0].reply_count, 1);
         assert_eq!(t.messages[0].latest_reply.as_deref(), Some("11.0"));
+    }
+
+    #[test]
+    fn message_replied_keeps_reactions() {
+        let mut w = ws();
+        apply(&mut w, &json!({"type":"message","channel":"C1","user":"U2","text":"parent","ts":"10.0"}), Some("C1"));
+        apply(&mut w, &json!({"type":"reaction_added","user":"U3","reaction":"+1","item":{"type":"message","channel":"C1","ts":"10.0"}}), Some("C1"));
+        apply(&mut w, &json!({"type":"message","subtype":"message_replied","channel":"C1","message":{"type":"message","user":"U2","text":"parent","ts":"10.0","thread_ts":"10.0","reply_count":2,"latest_reply":"12.0","reply_users":["U3"]}}), Some("C1"));
+        apply(&mut w, &json!({"type":"message","subtype":"message_changed","channel":"C1","message":{"type":"message","user":"U2","text":"parent v2","ts":"10.0","edited":{"user":"U2","ts":"13.0"}}}), Some("C1"));
+        let p = &w.timelines["C1"].messages[0];
+        assert_eq!(p.reactions.len(), 1);
+        assert_eq!(p.text, "parent v2");
+        assert_eq!(p.reply_count, 2);
     }
 
     #[test]

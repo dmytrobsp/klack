@@ -235,7 +235,7 @@ pub fn message_body(ws: &Workspace, m: &Message, width: usize, summary: bool) ->
             _ => body.push(Line::from(Span::styled("(edited)", Style::default().fg(DIM)))),
         }
     }
-    if m.subtype.as_deref() == Some("thread_broadcast") {
+    if summary && m.subtype.as_deref() == Some("thread_broadcast") {
         out.push(Line::styled("↳ replied to a thread", Style::default().fg(DIM)));
     }
     out.extend(body);

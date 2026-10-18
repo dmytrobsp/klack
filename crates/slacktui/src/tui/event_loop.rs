@@ -12,7 +12,7 @@ use slack_core::Client;
 use slack_core::types::{HistoryPage, User};
 use tokio::sync::mpsc;
 
-use super::composer::Composer;
+use super::composer::{Composer, KeyOutcome};
 use super::messages::MessagePane;
 use super::picker::EmojiPicker;
 use super::sidebar::Sidebar;
@@ -40,6 +40,7 @@ enum Focus {
     Sidebar,
     Messages,
     Thread,
+    ThreadComposer,
     Composer,
 }
 
@@ -47,6 +48,9 @@ struct App {
     /// Open thread pane: (channel, parent ts).
     thread: Option<(String, String)>,
     thread_pane: MessagePane,
+    thread_composer: Composer,
+    /// Thread replies are also sent to the channel.
+    broadcast: bool,
     clipboard: super::clipboard::Clipboard,
     /// Message (channel, ts) awaiting y/n delete confirmation.
     confirm_delete: Option<(String, String)>,
@@ -162,19 +166,35 @@ impl App {
         let _ = self.rtm_commands.send(slack_core::rtm::RtmCommand::Typing { channel });
     }
 
-    /// Send the composer contents to the current conversation.
-    fn send(&mut self) {
+    /// The channel composer, or the thread pane's (`thread`).
+    fn composer_for(&mut self, thread: bool) -> &mut Composer {
+        if thread { &mut self.thread_composer } else { &mut self.composer }
+    }
+
+    /// Send a composer's contents: the channel composer posts to the current conversation,
+    /// the thread composer replies in the open thread (optionally also to the channel).
+    fn send(&mut self, thread: bool) {
         let Some(channel) = self.current.clone() else { return };
-        if self.composer.is_empty() {
+        let thread_ts = if thread { self.thread.as_ref().map(|(_, ts)| ts.clone()) } else { None };
+        if thread && thread_ts.is_none() {
             return;
         }
-        let text = self.composer.to_mrkdwn();
-        self.composer.push_history(self.composer.text());
-        self.composer.clear();
-        self.messages.scroll = 0;
+        let broadcast = thread && self.broadcast;
+        let c = self.composer_for(thread);
+        if c.is_empty() {
+            return;
+        }
+        let text = c.to_mrkdwn();
+        c.push_history(c.text());
+        c.clear();
+        if thread {
+            self.thread_pane.scroll = 0;
+        } else {
+            self.messages.scroll = 0;
+        }
         let (client, tx) = (self.client.clone(), self.net.clone());
         tokio::spawn(async move {
-            let msg = match client.post_message(&channel, &text, None, false).await {
+            let msg = match client.post_message(&channel, &text, thread_ts.as_deref(), broadcast).await {
                 Ok(message) => Net::Posted { channel, message },
                 Err(e) => Net::Error(format!("send failed: {e}")),
             };
@@ -182,10 +202,10 @@ impl App {
         });
     }
 
-    /// Load our own message `ts` in the current conversation into the composer for editing.
-    fn start_edit(&mut self, ts: &str) {
+    /// Load our own message `ts` in the current conversation into a composer for editing.
+    fn start_edit(&mut self, ts: &str, thread: bool) {
         let Some(channel) = self.current.clone() else { return };
-        let Some(m) = self.ws.timelines.get(&channel).and_then(|t| t.messages.iter().find(|m| m.ts == ts)) else { return };
+        let Some(m) = self.ws.find_message(&channel, ts) else { return };
         if m.user.as_deref() != Some(self.ws.self_id.as_str()) {
             self.status = "you can only edit your own messages".into();
             return;
@@ -193,35 +213,48 @@ impl App {
         let ws = &self.ws;
         let user_name = |id: &str| ws.user_name(id);
         let channel_name = |id: &str| ws.channel_label(id);
-        self.composer.load_for_edit(ts, &m.text, user_name, channel_name);
-        self.messages.selected = Some(ts.to_string());
-        self.focus = Focus::Composer;
+        let c = if thread { &mut self.thread_composer } else { &mut self.composer };
+        c.load_for_edit(ts, &m.text, user_name, channel_name);
+        if thread {
+            self.thread_pane.selected = Some(ts.to_string());
+            self.focus = Focus::ThreadComposer;
+        } else {
+            self.messages.selected = Some(ts.to_string());
+            self.focus = Focus::Composer;
+        }
         self.status.clear();
     }
 
-    /// Our newest top-level message in the current conversation.
-    fn last_own_message(&self) -> Option<String> {
-        let t = self.ws.timelines.get(self.current.as_deref()?)?;
-        let own: Vec<&slack_core::types::Message> = super::messages::shown_messages(t, false).filter(|m| m.user.as_deref() == Some(self.ws.self_id.as_str()) && m.subtype.is_none()).collect();
-        own.last().map(|m| m.ts.clone())
+    /// Our newest message in the current conversation (top level) or the open thread.
+    fn last_own_message(&self, thread: bool) -> Option<String> {
+        let t = match (thread, &self.thread) {
+            (true, Some((c, ts))) => self.ws.threads.get(&super::state::thread_key(c, ts))?,
+            (true, None) => return None,
+            (false, _) => self.ws.timelines.get(self.current.as_deref()?)?,
+        };
+        let me = Some(self.ws.self_id.as_str());
+        super::messages::shown_messages(t, thread).filter(|m| m.user.as_deref() == me && (m.subtype.is_none() || m.subtype.as_deref() == Some("thread_broadcast"))).last().map(|m| m.ts.clone())
     }
 
-    /// Save the message being edited (optimistic, then chat.update).
-    fn save_edit(&mut self) {
-        let (Some(channel), Some(ts)) = (self.current.clone(), self.composer.editing.clone()) else { return };
-        if self.composer.is_empty() {
+    /// Save the message being edited in a composer (optimistic, then chat.update).
+    fn save_edit(&mut self, thread: bool) {
+        let Some(channel) = self.current.clone() else { return };
+        let c = self.composer_for(thread);
+        let Some(ts) = c.editing.clone() else { return };
+        if c.is_empty() {
             self.status = "empty edit: use d on the message to delete it".into();
             return;
         }
-        let text = self.composer.to_mrkdwn();
-        self.composer.clear();
+        let text = c.to_mrkdwn();
+        c.clear();
+        let Some(original) = self.ws.find_message(&channel, &ts).cloned() else { return };
         let me = self.ws.self_id.clone();
-        let Some(msg) = self.ws.timelines.get_mut(&channel).and_then(|t| t.messages.iter_mut().find(|m| m.ts == ts)) else { return };
-        let original = msg.clone();
-        msg.text = text.clone();
-        msg.blocks.clear();
         let now = format!("{:.6}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64());
-        msg.edited = Some(slack_core::types::Edited { user: me, ts: now });
+        for msg in self.ws.copies_mut(&channel, &ts) {
+            msg.text = text.clone();
+            msg.blocks.clear();
+            msg.edited = Some(slack_core::types::Edited { user: me.clone(), ts: now.clone() });
+        }
         let (client, tx) = (self.client.clone(), self.net.clone());
         tokio::spawn(async move {
             if let Err(e) = client.update_message(&channel, &ts, &text).await {
@@ -233,7 +266,7 @@ impl App {
     /// Ask to delete our own message `ts` in the current conversation.
     fn ask_delete(&mut self, ts: &str) {
         let Some(channel) = self.current.clone() else { return };
-        let own = self.ws.timelines.get(&channel).and_then(|t| t.messages.iter().find(|m| m.ts == ts)).is_some_and(|m| m.user.as_deref() == Some(self.ws.self_id.as_str()));
+        let own = self.ws.find_message(&channel, ts).is_some_and(|m| m.user.as_deref() == Some(self.ws.self_id.as_str()));
         if own {
             self.confirm_delete = Some((channel, ts.to_string()));
         } else {
@@ -243,14 +276,25 @@ impl App {
 
     /// Delete a message (optimistic, then chat.delete).
     fn delete(&mut self, channel: String, ts: String) {
-        let Some(t) = self.ws.timelines.get_mut(&channel) else { return };
-        let Some(original) = t.messages.iter().find(|m| m.ts == ts).cloned() else { return };
-        t.remove(&ts);
-        if self.messages.selected.as_deref() == Some(ts.as_str()) {
-            self.messages.selected = None;
+        let Some(original) = self.ws.find_message(&channel, &ts).cloned() else { return };
+        self.ws.remove_message(&channel, &ts);
+        if let Some(parent) = original.thread_ts.as_ref().filter(|_| original.is_reply()) {
+            for p in self.ws.copies_mut(&channel, parent) {
+                p.reply_count = p.reply_count.saturating_sub(1);
+            }
         }
-        if self.composer.editing.as_deref() == Some(ts.as_str()) {
-            self.composer.clear();
+        for pane in [&mut self.messages, &mut self.thread_pane] {
+            if pane.selected.as_deref() == Some(ts.as_str()) {
+                pane.selected = None;
+            }
+        }
+        for c in [&mut self.composer, &mut self.thread_composer] {
+            if c.editing.as_deref() == Some(ts.as_str()) {
+                c.clear();
+            }
+        }
+        if self.thread.as_ref().is_some_and(|(c, t)| *c == channel && *t == ts) {
+            self.close_thread();
         }
         let (client, tx) = (self.client.clone(), self.net.clone());
         tokio::spawn(async move {
@@ -309,9 +353,20 @@ impl App {
 
     fn close_thread(&mut self) {
         self.thread = None;
-        if self.focus == Focus::Thread {
+        self.thread_composer.clear();
+        self.broadcast = false;
+        if matches!(self.focus, Focus::Thread | Focus::ThreadComposer) {
             self.focus = Focus::Messages;
         }
+    }
+
+    /// Focus order for Tab: left to right, top to bottom.
+    fn focus_order(&self) -> Vec<Focus> {
+        let mut order = vec![Focus::Sidebar, Focus::Messages, Focus::Composer];
+        if self.thread.is_some() {
+            order.extend([Focus::Thread, Focus::ThreadComposer]);
+        }
+        order
     }
 
     /// The selected message of the focused pane.
@@ -350,6 +405,8 @@ pub async fn run(client: Client) -> Result<()> {
     let mut app = App {
         thread: None,
         thread_pane: MessagePane::thread(),
+        thread_composer: Composer::default(),
+        broadcast: false,
         clipboard: Default::default(),
         confirm_delete: None,
         picker: None,
@@ -440,7 +497,6 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
         Event::Key(k) if k.kind != KeyEventKind::Release => {
             let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
             let alt = k.modifiers.contains(KeyModifiers::ALT);
-            let shift = k.modifiers.contains(KeyModifiers::SHIFT);
             // Global keys.
             match k.code {
                 KeyCode::Char('q') if ctrl => return false,
@@ -461,23 +517,11 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
                     app.messages.scroll_down(app.messages.area.height.saturating_sub(3) as usize);
                     return true;
                 }
-                KeyCode::Tab => {
-                    app.focus = match app.focus {
-                        Focus::Sidebar => Focus::Messages,
-                        Focus::Messages if app.thread.is_some() => Focus::Thread,
-                        Focus::Messages | Focus::Thread => Focus::Composer,
-                        Focus::Composer => Focus::Sidebar,
-                    };
-                    return true;
-                }
-                KeyCode::BackTab => {
-                    app.focus = match app.focus {
-                        Focus::Sidebar => Focus::Composer,
-                        Focus::Messages => Focus::Sidebar,
-                        Focus::Thread => Focus::Messages,
-                        Focus::Composer if app.thread.is_some() => Focus::Thread,
-                        Focus::Composer => Focus::Messages,
-                    };
+                KeyCode::Tab | KeyCode::BackTab => {
+                    let order = app.focus_order();
+                    let pos = order.iter().position(|f| *f == app.focus).unwrap_or(0);
+                    let step = if k.code == KeyCode::Tab { 1 } else { order.len() - 1 };
+                    app.focus = order[(pos + step) % order.len()];
                     return true;
                 }
                 _ => {}
@@ -510,6 +554,7 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
                         KeyCode::Home | KeyCode::Char('g') => pane.move_selection(&order, isize::MIN / 2),
                         KeyCode::End | KeyCode::Char('G') => pane.move_selection(&order, isize::MAX / 2),
                         KeyCode::Esc if in_thread => app.close_thread(),
+                        KeyCode::Char('i') if in_thread => app.focus = Focus::ThreadComposer,
                         KeyCode::Esc | KeyCode::Char('i') => app.focus = Focus::Composer,
                         KeyCode::Enter if !in_thread => {
                             if let Some(ts) = app.messages.selected.clone() {
@@ -521,9 +566,9 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
                                 app.picker = Some((EmojiPicker::default(), channel, ts));
                             }
                         }
-                        KeyCode::Char('e') if !in_thread => {
-                            if let Some(ts) = app.messages.selected.clone() {
-                                app.start_edit(&ts);
+                        KeyCode::Char('e') => {
+                            if let Some(ts) = app.selected_ts() {
+                                app.start_edit(&ts, in_thread);
                             }
                         }
                         KeyCode::Char('y') => {
@@ -536,62 +581,37 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
                                 app.copy_permalink(&ts);
                             }
                         }
-                        KeyCode::Char('d') if !in_thread => {
-                            if let Some(ts) = app.messages.selected.clone() {
+                        KeyCode::Char('d') => {
+                            if let Some(ts) = app.selected_ts() {
                                 app.ask_delete(&ts);
                             }
                         }
                         _ => {}
                     }
                 }
-                Focus::Composer => {
-                    if k.code == KeyCode::Up && app.composer.is_empty() && app.composer.editing.is_none() {
-                        if let Some(ts) = app.last_own_message() {
-                            app.start_edit(&ts);
-                            return true;
-                        }
+                Focus::Composer | Focus::ThreadComposer => {
+                    let thread = app.focus == Focus::ThreadComposer;
+                    if thread && alt && k.code == KeyCode::Char('a') {
+                        app.broadcast = !app.broadcast;
+                        return true;
                     }
-                    let c = &mut app.composer;
-                    match k.code {
-                        KeyCode::Esc if c.editing.is_some() => c.clear(),
-                        KeyCode::Esc => app.focus = Focus::Sidebar,
-                        KeyCode::Enter if alt || shift => c.insert('\n'),
-                        KeyCode::Char('j') if ctrl => c.insert('\n'),
-                        KeyCode::Enter if c.editing.is_some() => app.save_edit(),
-                        KeyCode::Enter => app.send(),
-                        KeyCode::Char('b') if alt => c.toggle_marker('*'),
-                        KeyCode::Char('i') if alt => c.toggle_marker('_'),
-                        KeyCode::Char('s') if alt => c.toggle_marker('~'),
-                        KeyCode::Char('c') if alt => c.toggle_marker('`'),
-                        KeyCode::Char('w') if ctrl => c.delete_word_left(),
-                        KeyCode::Char('u') if ctrl => c.kill_line(),
-                        KeyCode::Char('a') if ctrl => c.home(),
-                        KeyCode::Char('e') if ctrl => c.end(),
-                        KeyCode::Char(ch) if !ctrl && !alt => {
-                            c.insert(ch);
-                            app.notify_typing();
+                    match app.composer_for(thread).handle_key(k) {
+                        KeyOutcome::Done => {}
+                        KeyOutcome::Typed => app.notify_typing(),
+                        KeyOutcome::Submit if app.composer_for(thread).editing.is_some() => app.save_edit(thread),
+                        KeyOutcome::Submit => app.send(thread),
+                        KeyOutcome::Leave => app.focus = if thread { Focus::Thread } else { Focus::Sidebar },
+                        KeyOutcome::UpWhenEmpty => {
+                            if let Some(ts) = app.last_own_message(thread) {
+                                app.start_edit(&ts, thread);
+                            }
                         }
-                        KeyCode::Backspace if ctrl || alt => c.delete_word_left(),
-                        KeyCode::Backspace => c.backspace(),
-                        KeyCode::Delete => c.delete(),
-                        KeyCode::Left if ctrl => c.word_left(),
-                        KeyCode::Right if ctrl => c.word_right(),
-                        KeyCode::Left => c.left(),
-                        KeyCode::Right => c.right(),
-                        KeyCode::Home => c.home(),
-                        KeyCode::End => c.end(),
-                        KeyCode::Up => {
-                            c.up();
-                        }
-                        KeyCode::Down => {
-                            c.down();
-                        }
-                        _ => {}
                     }
                 }
             }
         }
         Event::Paste(text) if app.focus == Focus::Composer => app.composer.insert_str(&text.replace("\r\n", "\n")),
+        Event::Paste(text) if app.focus == Focus::ThreadComposer => app.thread_composer.insert_str(&text.replace("\r\n", "\n")),
         Event::Mouse(m) => match m.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 if app.sidebar.click(m.column, m.row) {
@@ -662,9 +682,7 @@ fn handle_net(app: &mut App, msg: Net) {
                 }
             }
         }
-        Net::Posted { channel, message } => {
-            app.ws.timelines.entry(channel).or_default().upsert(message);
-        }
+        Net::Posted { channel, message } => super::live::add_message(&mut app.ws, &channel, &message),
         Net::Replies { channel, ts, page } => {
             let tl = app.ws.threads.entry(super::state::thread_key(&channel, &ts)).or_default();
             for m in page.messages {
@@ -678,7 +696,15 @@ fn handle_net(app: &mut App, msg: Net) {
             app.status = format!("copied link to the {how}");
         }
         Net::Restore { channel, message, error } => {
-            app.ws.timelines.entry(channel).or_default().upsert(message);
+            let mut copies = app.ws.copies_mut(&channel, &message.ts);
+            if copies.is_empty() {
+                drop(copies);
+                super::live::add_message(&mut app.ws, &channel, &message);
+            } else {
+                for c in copies.iter_mut() {
+                    **c = message.clone();
+                }
+            }
             app.status = error;
         }
         Net::Error(e) => {
@@ -700,9 +726,12 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         (main, None)
     };
     if let (Some(area), Some((channel, ts))) = (thread_area, app.thread.clone()) {
+        let h = app.thread_composer.rows(area.width.saturating_sub(2) as usize).clamp(1, 8) + 2;
+        let [pane, comp] = Layout::vertical([Constraint::Min(3), Constraint::Length(h)]).areas(area);
         let title = format!("Thread · {} · Esc close", app.ws.channel_label(&channel));
         let timeline = app.ws.threads.get(&super::state::thread_key(&channel, &ts));
-        app.thread_pane.draw(f, area, &app.ws, &title, timeline, app.focus == Focus::Thread);
+        app.thread_pane.draw(f, pane, &app.ws, &title, timeline, app.focus == Focus::Thread);
+        draw_composer(f, comp, app, true);
     }
 
     let inner_w = main.width.saturating_sub(2) as usize;
@@ -712,7 +741,7 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     let timeline = current.as_deref().and_then(|c| app.ws.timelines.get(c));
     let title = current.as_deref().map(|c| app.ws.channel_label(c)).unwrap_or_default();
     app.messages.draw(f, msgs, &app.ws, &title, timeline, app.focus == Focus::Messages);
-    draw_composer(f, comp, app);
+    draw_composer(f, comp, app, false);
     if let Some((picker, _, _)) = &app.picker {
         let custom: Vec<String> = app.ws.custom_emoji.keys().cloned().collect();
         picker.draw(f, main, &custom);
@@ -737,14 +766,22 @@ fn draw_confirm(f: &mut ratatui::Frame, area: ratatui::layout::Rect, question: &
     f.render_widget(Paragraph::new(format!(" {question}")).block(block), popup);
 }
 
-fn draw_composer(f: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &App) {
+/// The channel composer, or the thread pane's (`thread`).
+fn draw_composer(f: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &App, thread: bool) {
     use ratatui::style::{Color, Style};
     use ratatui::widgets::{Block, Borders};
-    let focused = app.focus == Focus::Composer;
+    let composer = if thread { &app.thread_composer } else { &app.composer };
+    let focused = app.focus == if thread { Focus::ThreadComposer } else { Focus::Composer };
     let border = if focused { Style::default().fg(Color::Rgb(0x61, 0xaf, 0xef)) } else { Style::default().fg(super::text::DIM) };
     let target = app.current.as_deref().map(|c| app.ws.channel_label(c)).unwrap_or_default();
-    let typing = app.current.as_deref().map(|c| app.ws.typing_in(c)).unwrap_or_default();
-    let title = if app.composer.editing.is_some() { " Editing message · Enter save · Esc cancel ".to_string() } else { format!(" Message {target} ") };
+    let typing = if thread { vec![] } else { app.current.as_deref().map(|c| app.ws.typing_in(c)).unwrap_or_default() };
+    let title = if composer.editing.is_some() {
+        " Editing message · Enter save · Esc cancel ".to_string()
+    } else if thread {
+        format!(" Reply · [{}] also to channel (Alt+A) ", if app.broadcast { "x" } else { " " })
+    } else {
+        format!(" Message {target} ")
+    };
     let mut block = Block::default().borders(Borders::ALL).border_style(border).title(title);
     if !typing.is_empty() {
         let who = if typing.len() == 1 { format!("{} is typing…", typing[0]) } else { format!("{} people are typing…", typing.len()) };
@@ -752,13 +789,14 @@ fn draw_composer(f: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &App)
     }
     let inner = block.inner(area);
     let width = inner.width as usize;
-    let (row, col) = app.composer.cursor_position(width);
+    let (row, col) = composer.cursor_position(width);
     // Scroll so the cursor line stays visible.
     let skip = row.saturating_sub(inner.height.saturating_sub(1));
-    let text = if app.composer.text().is_empty() && !focused {
-        ratatui::text::Text::styled("Press Tab or click a conversation to type", Style::default().fg(super::text::DIM))
+    let text = if composer.text().is_empty() && !focused {
+        let hint = if thread { "i to reply" } else { "Press Tab or click a conversation to type" };
+        ratatui::text::Text::styled(hint, Style::default().fg(super::text::DIM))
     } else {
-        ratatui::text::Text::raw(app.composer.text())
+        ratatui::text::Text::raw(composer.text())
     };
     f.render_widget(Paragraph::new(text).wrap(ratatui::widgets::Wrap { trim: false }).scroll((skip, 0)).block(block), area);
     if focused {
