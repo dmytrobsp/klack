@@ -2,7 +2,7 @@
 
 use crossterm::event::{KeyCode, KeyEvent};
 
-use super::keymap::{Action, Context, Key, Keymap, Lookup};
+use super::keymap::{Action, Context, Key, Keymap, Mode, Resolved};
 use unicode_width::UnicodeWidthChar;
 
 /// What a key press in the composer asks the app to do.
@@ -103,9 +103,9 @@ impl Composer {
     /// characters are typed.
     pub fn handle_key(&mut self, k: KeyEvent, keys: &Keymap) -> KeyOutcome {
         let key = Key::from_event(&k);
-        let action = match keys.lookup(Context::Composer, &[], key) {
-            Lookup::Action(a) => Some(a),
-            Lookup::Pending | Lookup::None => None,
+        let action = match keys.resolve(&[Context::Composer], Mode::Insert, &[], key) {
+            Resolved::Action(_, a) => Some(a),
+            Resolved::Pending | Resolved::None => None,
         };
         match action {
             Some(Action::Leave) if self.editing.is_some() => self.clear(),

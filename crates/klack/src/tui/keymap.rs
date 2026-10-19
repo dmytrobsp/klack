@@ -15,6 +15,10 @@ pub struct Key {
     pub mods: KeyModifiers,
 }
 
+/// `<leader>` in a sequence: the leader or the insert leader, whichever was pressed (shown
+/// as the leader's key, see [`Keymap::show`]).
+pub const LEADER: Key = Key { code: KeyCode::Null, mods: KeyModifiers::NONE };
+
 impl Key {
     pub fn new(code: KeyCode, mods: KeyModifiers) -> Key {
         let mut mods = mods & (KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT);
@@ -119,6 +123,7 @@ impl Key {
             KeyCode::Char('+') => "plus".into(),
             KeyCode::Char(c) => c.to_string(),
             KeyCode::F(n) => format!("f{n}"),
+            KeyCode::Null => "<leader>".into(),
             other => format!("{other:?}").to_lowercase(),
         };
         out
@@ -156,14 +161,15 @@ impl Key {
             KeyCode::Char(c) if self.mods.is_empty() => c.to_string(),
             KeyCode::Char(c) => c.to_uppercase().to_string(),
             KeyCode::F(n) => format!("F{n}"),
+            KeyCode::Null => "<leader>".into(),
             other => format!("{other:?}"),
         };
         out
     }
 }
 
-/// Where a binding applies. Main-screen contexts (`sidebar`, `messages`, `composer`) are
-/// looked up after `global`; overlays take keys first and alone.
+/// Where a binding applies. The focused pane (`sidebar`, `messages`, `composer`, …) or the
+/// open dialog is looked up before `global`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Context {
     Global,
@@ -276,10 +282,10 @@ impl Context {
         }
     }
 
-    /// Typing goes into a text field here, so plain characters cannot be bound (in the
-    /// global context they would be eaten in the composer).
+    /// Typing goes into a text field here, so plain characters cannot be bound (a plain
+    /// character in `global` acts only in NORMAL panes).
     pub fn types_text(self) -> bool {
-        matches!(self, Context::Global | Context::Composer | Context::Switcher | Context::Search | Context::Picker | Context::TextField)
+        matches!(self, Context::Composer | Context::Switcher | Context::Search | Context::Picker | Context::TextField)
     }
 
     fn from_name(name: &str) -> Option<Context> {
@@ -641,27 +647,94 @@ pub enum Mode {
     Dialog,
 }
 
-/// What a key press means in a context, given keys pressed before it.
+/// What a key press means in the active contexts, given keys pressed before it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Lookup {
-    Action(Action),
+pub enum Resolved {
+    /// The action and the context it was found in.
+    Action(Context, Action),
     /// The start of a longer sequence (e.g. the leader): wait for the next key.
     Pending,
     None,
 }
 
+/// The keys of a sequence typed so far, and the mode it was started in.
+#[derive(Debug, Clone, Default)]
+pub struct Pending {
+    /// As looked up ([`LEADER`] for a leader).
+    keys: Vec<Key>,
+    /// As pressed (Space or Ctrl+Space), for the status line.
+    typed: Vec<Key>,
+    mode: Option<Mode>,
+}
+
+impl Pending {
+    /// `key`, pressed as itself.
+    #[allow(dead_code)]
+    pub fn push(&mut self, key: Key, mode: Mode) {
+        self.push_typed(key, key, mode);
+    }
+
+    /// `key` as looked up, pressed as `typed`.
+    pub fn push_typed(&mut self, key: Key, typed: Key, mode: Mode) {
+        if self.keys.is_empty() {
+            self.mode = Some(mode);
+        }
+        self.keys.push(key);
+        self.typed.push(typed);
+    }
+
+    /// One key back (which-key's Backspace).
+    #[allow(dead_code)]
+    pub fn pop(&mut self) {
+        self.keys.pop();
+        self.typed.pop();
+        if self.keys.is_empty() {
+            self.mode = None;
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.keys.clear();
+        self.typed.clear();
+        self.mode = None;
+    }
+
+    pub fn keys(&self) -> &[Key] {
+        &self.keys
+    }
+
+    pub fn typed(&self) -> &[Key] {
+        &self.typed
+    }
+
+    /// Drop the sequence once the mode is not the one it was started in (a dialog opened).
+    pub fn sync(&mut self, mode: Mode) {
+        if self.mode.is_some_and(|m| m != mode) {
+            self.clear();
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Keymap {
+    /// The leader of NORMAL panes (Space unless keys.toml says otherwise).
     pub leader: Option<Key>,
+    /// The leader where the leader would type or belongs to a dialog (Ctrl+Space; none if empty).
+    pub insert_leader: Option<Key>,
     /// (context, key sequence) → action.
     bindings: HashMap<(Context, Vec<Key>), Action>,
     /// (context, action name) → its sequences, in the order given (for help).
     keys: HashMap<(Context, &'static str), Vec<Vec<Key>>>,
 }
 
+/// The leaders when keys.toml does not set them: Space and Ctrl+Space.
+fn default_leaders() -> (Key, Key) {
+    (Key::new(KeyCode::Char(' '), KeyModifiers::NONE), Key::new(KeyCode::Char(' '), KeyModifiers::CONTROL))
+}
+
 impl Keymap {
     /// Defaults overridden by `keys.toml` text; problems are reported, and the entries
-    /// with problems keep their defaults.
+    /// with problems keep their defaults. The user's bindings win over the defaults.
     pub fn load(toml_text: &str) -> (Keymap, Vec<String>) {
         let mut warnings = Vec::new();
         let table: toml::Table = match toml::from_str(toml_text) {
@@ -671,18 +744,23 @@ impl Keymap {
                 toml::Table::new()
             }
         };
-        let mut map = Keymap::default();
-        if let Some(leader) = table.get("leader") {
-            match leader.as_str().map(Key::parse) {
-                Some(Ok(k)) => map.leader = Some(k),
-                Some(Err(e)) => warnings.push(format!("keys.toml: leader: {e}")),
-                None => warnings.push("keys.toml: leader must be a string such as \"ctrl+b\"".into()),
+        let (leader, insert_leader) = default_leaders();
+        let mut map = Keymap { leader: Some(leader), insert_leader: Some(insert_leader), ..Default::default() };
+        for (name, slot) in [("leader", &mut map.leader), ("insert_leader", &mut map.insert_leader)] {
+            match table.get(name).map(|v| v.as_str()) {
+                Some(Some(s)) if s.trim().is_empty() => *slot = None,
+                Some(Some(s)) => match Key::parse(s) {
+                    Ok(k) => *slot = Some(k),
+                    Err(e) => warnings.push(format!("keys.toml: {name}: {e}")),
+                },
+                Some(None) => warnings.push(format!("keys.toml: {name} must be a string such as \"ctrl+b\"")),
+                None => {}
             }
         }
         // Overrides: (context, action name) → key strings.
         let mut overrides: HashMap<(Context, String), Vec<String>> = HashMap::new();
         for (name, value) in &table {
-            if name == "leader" {
+            if name == "leader" || name == "insert_leader" {
                 continue;
             }
             let Some(context) = Context::from_name(name) else {
@@ -711,11 +789,16 @@ impl Keymap {
                 }
             }
         }
+        // The actions whose keys the user chose (a bad entry keeps the default ones).
+        let mut by_user = std::collections::HashSet::new();
         for info in ACTIONS {
             let defaults = || info.defaults.iter().map(|s| s.to_string()).collect::<Vec<_>>();
             let wanted = overrides.get(&(info.context, info.name.to_string())).cloned();
             let parsed = match wanted.as_ref().map(|w| map.parse_sequences(info.context, w)) {
-                Some(Ok(seqs)) => seqs,
+                Some(Ok(seqs)) => {
+                    by_user.insert((info.context, info.name));
+                    seqs
+                }
                 Some(Err(e)) => {
                     warnings.push(format!("keys.toml: [{}] {}: {e} (keeping the default)", info.context.name(), info.name));
                     map.parse_sequences(info.context, &defaults()).unwrap_or_default()
@@ -724,28 +807,46 @@ impl Keymap {
             };
             map.keys.insert((info.context, info.name), parsed);
         }
-        // Bind, reporting keys claimed twice in one context; the first claim wins.
-        for info in ACTIONS {
-            for seq in map.keys[&(info.context, info.name)].clone() {
-                match map.bindings.get(&(info.context, seq.clone())) {
-                    Some(other) if *other != info.action => {
-                        let owner = ACTIONS.iter().find(|a| a.context == info.context && a.action == *other).map_or("?", |a| a.name);
-                        warnings.push(format!("keys.toml: [{}] {} is bound to both {owner} and {}; {owner} keeps it", info.context.name(), sequence_label(&seq), info.name));
-                        map.keys.get_mut(&(info.context, info.name)).map(|v| v.retain(|s| *s != seq));
-                    }
-                    _ => {
+        // Bind the user's sequences first, then the defaults. A sequence that equals, starts or
+        // extends one bound before it in its context could never be told apart, so it is dropped:
+        // a default gives way to the user's; otherwise the first in the table keeps it.
+        let mut bound: Vec<(Context, Vec<Key>, &'static str, bool)> = Vec::new();
+        for user in [true, false] {
+            for info in ACTIONS.iter().filter(|a| by_user.contains(&(a.context, a.name)) == user) {
+                for seq in map.keys[&(info.context, info.name)].clone() {
+                    let clash = bound.iter().find(|(c, s, ..)| *c == info.context && (s.starts_with(&seq) || seq.starts_with(s)));
+                    let Some((_, other, owner, owner_by_user)) = clash else {
+                        bound.push((info.context, seq.clone(), info.name, user));
                         map.bindings.insert((info.context, seq), info.action);
+                        continue;
+                    };
+                    if *owner == info.name && *other == seq {
+                        continue;
                     }
+                    let context = info.context.name();
+                    warnings.push(if !user && *owner_by_user {
+                        format!("keys.toml: [{context}] default {} of {} gives way to {owner}", map.label(&seq), info.name)
+                    } else if *other == seq {
+                        format!("keys.toml: [{context}] {} is bound to both {owner} and {}; {owner} keeps it", map.label(&seq), info.name)
+                    } else {
+                        format!("keys.toml: [{context}] {} of {} collides with {} of {owner}; {owner} keeps it", map.label(&seq), info.name, map.label(other))
+                    });
+                    map.keys.get_mut(&(info.context, info.name)).map(|v| v.retain(|s| *s != seq));
                 }
             }
         }
-        // Main-screen keys that a global binding would take first.
-        for ((context, seq), action) in &map.bindings {
-            if matches!(context, Context::Sidebar | Context::Messages | Context::Composer) {
-                if let Some(global) = map.bindings.get(&(Context::Global, seq.clone())) {
-                    if global != action {
-                        warnings.push(format!("keys.toml: {} in [{}] is shadowed by a [global] binding", sequence_label(seq), context.name()));
-                    }
+        // The user's [global] sequences that a pane or dialog binding hides where it applies (a
+        // default written out again is still a default).
+        let default_of = |name: &str| ACTIONS.iter().find(|a| a.context == Context::Global && a.name == name).map(|a| map.parse_sequences(Context::Global, &a.defaults.iter().map(|s| s.to_string()).collect::<Vec<_>>()).unwrap_or_default()).unwrap_or_default();
+        for (_, seq, name, _) in bound.iter().filter(|(c, s, name, user)| *c == Context::Global && *user && !default_of(name).contains(s)) {
+            for (context, other, owner, _) in bound.iter().filter(|(c, ..)| *c != Context::Global) {
+                let applies = match context {
+                    Context::Sidebar | Context::Messages | Context::Huddle => true,
+                    Context::Composer | Context::Completion => !seq[0].is_text(),
+                    _ => !seq[0].is_text() && (seq[0] == LEADER || *name == "quit"),
+                };
+                if applies && (other.starts_with(seq) || seq.starts_with(other)) {
+                    warnings.push(format!("keys.toml: [global] {} is hidden by [{}] {owner}", map.label(seq), context.name()));
                 }
             }
         }
@@ -759,7 +860,8 @@ impl Keymap {
                 let seq = k
                     .split_whitespace()
                     .map(|part| match part {
-                        "<leader>" => self.leader.ok_or_else(|| "uses <leader> but no leader key is set".to_string()),
+                        "<leader>" if self.leader.is_none() && self.insert_leader.is_none() => Err("uses <leader> but no leader key is set".to_string()),
+                        "<leader>" => Ok(LEADER),
                         p => Key::parse(p),
                     })
                     .collect::<Result<Vec<Key>, String>>()?;
@@ -774,28 +876,77 @@ impl Keymap {
             .collect()
     }
 
-    /// What `key` does in `context` after the keys in `pending`.
-    pub fn lookup(&self, context: Context, pending: &[Key], key: Key) -> Lookup {
+    /// What `key` does after the keys in `pending`, in `contexts` (most specific first: the
+    /// dialog, or the pane, then `Global`).
+    pub fn resolve(&self, contexts: &[Context], mode: Mode, pending: &[Key], key: Key) -> Resolved {
+        self.press(contexts, mode, pending, key).0
+    }
+
+    /// [`Keymap::resolve`], with what the key stands for in the sequence: [`LEADER`] when it is
+    /// a leader that acts here and starts something, else the key itself.
+    pub fn press(&self, contexts: &[Context], mode: Mode, pending: &[Key], key: Key) -> (Resolved, Key) {
+        let leader = Some(key) == self.insert_leader || Some(key) == self.leader && (mode == Mode::Normal || !key.is_text());
         let mut seq = pending.to_vec();
+        if leader {
+            seq.push(LEADER);
+            let found = self.lookup(contexts, mode, &seq);
+            if found != Resolved::None {
+                return (found, LEADER);
+            }
+            seq.pop();
+        }
         seq.push(key);
-        if let Some(a) = self.bindings.get(&(context, seq.clone())) {
-            return Lookup::Action(*a);
+        (self.lookup(contexts, mode, &seq), key)
+    }
+
+    /// A whole sequence: the first context that knows it decides (its action, or Pending for a
+    /// longer one). In INSERT and dialogs a `[global]` sequence that starts with text is left
+    /// out; in a dialog only `[global]` leader sequences and quit count.
+    fn lookup(&self, contexts: &[Context], mode: Mode, seq: &[Key]) -> Resolved {
+        for &context in contexts {
+            let counts = |s: &[Key], action: Action| context != Context::Global || mode == Mode::Normal || !s[0].is_text() && (mode == Mode::Insert || s[0] == LEADER || action == Action::Quit);
+            if let Some(a) = self.bindings.get(&(context, seq.to_vec())).filter(|a| counts(seq, **a)) {
+                return Resolved::Action(context, *a);
+            }
+            if self.bindings.iter().any(|((c, s), a)| *c == context && s.len() > seq.len() && s.starts_with(seq) && counts(s, *a)) {
+                return Resolved::Pending;
+            }
         }
-        if self.bindings.keys().any(|(c, s)| *c == context && s.len() > seq.len() && s.starts_with(&seq)) {
-            return Lookup::Pending;
-        }
-        Lookup::None
+        Resolved::None
+    }
+
+    /// The key `<leader>` is shown as: the leader, else the insert leader.
+    fn leader_key(&self) -> Option<Key> {
+        self.leader.or(self.insert_leader)
+    }
+
+    /// A sequence as help shows it, the leader as its key ("Space h m", "Ctrl+B k").
+    pub fn label(&self, seq: &[Key]) -> String {
+        seq.iter().map(|k| if *k == LEADER { self.leader_key().unwrap_or(LEADER) } else { *k }.label()).collect::<Vec<_>>().join(" ")
+    }
+
+    /// A sequence in short form, for the status bar, which-key and menus: Space `␣`, Ctrl+X
+    /// `^X`, Ctrl+Space `^␣`, Alt+x `M-x`, others as in help; no separators (`␣h`, `^␣hm`).
+    pub fn show(&self, seq: &[Key]) -> String {
+        let short = |k: Key| {
+            let KeyCode::Char(c) = k.code else { return k.label() };
+            let c = if c == ' ' { '␣' } else { c };
+            let ctrl = k.mods.contains(KeyModifiers::CONTROL);
+            let alt = if k.mods.contains(KeyModifiers::ALT) { "M-" } else { "" };
+            if ctrl { format!("^{alt}{}", c.to_uppercase()) } else { format!("{alt}{c}") }
+        };
+        seq.iter().map(|k| if *k == LEADER { self.leader_key().map_or_else(|| LEADER.label(), short) } else { short(*k) }).collect()
     }
 
     /// The keys of an action in a context, as shown in help ("↑ / k").
     pub fn keys_label(&self, context: Context, name: &str) -> String {
-        self.keys.iter().find(|((c, n), _)| *c == context && *n == name).map(|(_, seqs)| seqs.iter().map(|s| sequence_label(s)).collect::<Vec<_>>().join(" / ")).unwrap_or_default()
+        self.keys.iter().find(|((c, n), _)| *c == context && *n == name).map(|(_, seqs)| seqs.iter().map(|s| self.label(s)).collect::<Vec<_>>().join(" / ")).unwrap_or_default()
     }
 
     /// The first key of an action, for short hints ("F1 help").
     pub fn first_key(&self, context: Context, action: Action) -> Option<String> {
         let info = ACTIONS.iter().find(|a| a.context == context && a.action == action)?;
-        self.keys.get(&(context, info.name))?.first().map(|s| sequence_label(s))
+        self.keys.get(&(context, info.name))?.first().map(|s| self.label(s))
     }
 }
 
@@ -853,10 +1004,13 @@ impl Keymap {
     pub fn to_toml(&self, change: Option<(Context, &str, Vec<Vec<Key>>)>, leader: Option<Option<Key>>) -> String {
         let leader = leader.unwrap_or(self.leader);
         let defaults = Keymap::load("").0;
-        let spec = |seq: &[Key]| seq.iter().map(|k| if Some(*k) == leader && seq.len() > 1 { "<leader>".to_string() } else { k.spec() }).collect::<Vec<_>>().join(" ");
+        let spec = |seq: &[Key]| seq.iter().map(Key::spec).collect::<Vec<_>>().join(" ");
         let mut out = String::new();
-        if let Some(l) = leader {
-            out += &format!("leader = \"{}\"\n", l.spec());
+        // A leader set to none is written empty (left out, it would be the default again).
+        for (name, key, default) in [("leader", leader, defaults.leader), ("insert_leader", self.insert_leader, defaults.insert_leader)] {
+            if key != default {
+                out += &format!("{name} = \"{}\"\n", key.map(|k| k.spec()).unwrap_or_default());
+            }
         }
         for context in Context::ALL {
             let mut entries = Vec::new();
@@ -876,10 +1030,6 @@ impl Keymap {
         }
         out
     }
-}
-
-pub fn sequence_label(seq: &[Key]) -> String {
-    seq.iter().map(Key::label).collect::<Vec<_>>().join(" ")
 }
 
 /// Where the user's bindings live: `keys.toml` next to the profiles.
@@ -907,6 +1057,16 @@ mod tests {
         Key::new(code, mods)
     }
 
+    /// `key` after `pending` in one context alone, in the mode that context is used in.
+    fn one(map: &Keymap, context: Context, pending: &[Key], key: Key) -> Resolved {
+        let mode = match context {
+            Context::Global | Context::Sidebar | Context::Messages | Context::Huddle => Mode::Normal,
+            Context::Composer | Context::Completion => Mode::Insert,
+            _ => Mode::Dialog,
+        };
+        map.resolve(&[context], mode, pending, key)
+    }
+
     #[test]
     fn parsing_and_labels() {
         assert_eq!(Key::parse("ctrl+k"), Ok(key(KeyCode::Char('k'), KeyModifiers::CONTROL)));
@@ -931,21 +1091,20 @@ mod tests {
     fn defaults_are_today_s_keys_and_conflict_free() {
         let (map, warnings) = Keymap::load("");
         assert!(warnings.is_empty(), "{warnings:?}");
-        let k = |s: &str| Key::parse(s).unwrap();
-        assert_eq!(map.lookup(Context::Global, &[], k("ctrl+k")), Lookup::Action(Action::Switcher));
-        assert_eq!(map.lookup(Context::Messages, &[], k("Y")), Lookup::Action(Action::CopyLink));
-        assert_eq!(map.lookup(Context::Messages, &[], k("y")), Lookup::Action(Action::Copy));
-        assert_eq!(map.lookup(Context::Composer, &[], k("ctrl+j")), Lookup::Action(Action::Newline));
-        assert_eq!(map.lookup(Context::Details, &[], k("tab")), Lookup::Action(Action::NextTab));
-        assert_eq!(map.lookup(Context::Sidebar, &[], k("x")), Lookup::None);
+        assert_eq!(one(&map, Context::Global, &[], k("ctrl+k")), Resolved::Action(Context::Global, Action::Switcher));
+        assert_eq!(one(&map, Context::Messages, &[], k("Y")), Resolved::Action(Context::Messages, Action::CopyLink));
+        assert_eq!(one(&map, Context::Messages, &[], k("y")), Resolved::Action(Context::Messages, Action::Copy));
+        assert_eq!(one(&map, Context::Composer, &[], k("ctrl+j")), Resolved::Action(Context::Composer, Action::Newline));
+        assert_eq!(one(&map, Context::Details, &[], k("tab")), Resolved::Action(Context::Details, Action::NextTab));
+        assert_eq!(one(&map, Context::Sidebar, &[], k("x")), Resolved::None);
         assert_eq!(map.keys_label(Context::Sidebar, "up"), "↑ / k");
         assert_eq!(map.first_key(Context::Global, Action::Help).as_deref(), Some("F1"));
         // The message menu from the keyboard: m, the Menu key (as kitty's protocol reports it)
         // and Shift+F10 (F10 alone shares the screen).
         for key in [k("m"), Key::new(KeyCode::Menu, KeyModifiers::NONE), Key::new(KeyCode::F(10), KeyModifiers::SHIFT)] {
-            assert_eq!(map.lookup(Context::Messages, &[], key), Lookup::Action(Action::ContextMenu), "{key:?}");
+            assert_eq!(one(&map, Context::Messages, &[], key), Resolved::Action(Context::Messages, Action::ContextMenu), "{key:?}");
         }
-        assert_eq!(map.lookup(Context::Global, &[], k("f10")), Lookup::Action(Action::ShareScreen));
+        assert_eq!(one(&map, Context::Global, &[], k("f10")), Resolved::Action(Context::Global, Action::ShareScreen));
         assert_eq!(map.keys_label(Context::Messages, "menu"), "m / Menu / Shift+F10");
         assert_eq!(k("menu").spec(), "menu", "written back as read");
         // Every action is reachable by default.
@@ -967,14 +1126,13 @@ mod tests {
             "#,
         );
         assert!(warnings.is_empty(), "{warnings:?}");
-        let k = |s: &str| Key::parse(s).unwrap();
-        assert_eq!(map.lookup(Context::Global, &[], k("ctrl+k")), Lookup::None, "replaced, not added");
-        assert_eq!(map.lookup(Context::Global, &[], k("ctrl+p")), Lookup::Action(Action::Switcher));
-        assert_eq!(map.lookup(Context::Global, &[], k("ctrl+b")), Lookup::Pending);
-        assert_eq!(map.lookup(Context::Global, &[k("ctrl+b")], k("k")), Lookup::Action(Action::Switcher));
-        assert_eq!(map.lookup(Context::Messages, &[], k("R")), Lookup::Action(Action::React));
-        assert_eq!(map.lookup(Context::Messages, &[], k("r")), Lookup::None);
-        assert_eq!(map.lookup(Context::Messages, &[], k("P")), Lookup::None, "unbound with []");
+        assert_eq!(one(&map, Context::Global, &[], k("ctrl+k")), Resolved::None, "replaced, not added");
+        assert_eq!(one(&map, Context::Global, &[], k("ctrl+p")), Resolved::Action(Context::Global, Action::Switcher));
+        assert_eq!(map.press(&[Context::Global], Mode::Normal, &[], k("ctrl+b")), (Resolved::Pending, LEADER));
+        assert_eq!(one(&map, Context::Global, &[LEADER], k("k")), Resolved::Action(Context::Global, Action::Switcher));
+        assert_eq!(one(&map, Context::Messages, &[], k("R")), Resolved::Action(Context::Messages, Action::React));
+        assert_eq!(one(&map, Context::Messages, &[], k("r")), Resolved::None);
+        assert_eq!(one(&map, Context::Messages, &[], k("P")), Resolved::None, "unbound with []");
         assert_eq!(map.keys_label(Context::Global, "jump_to"), "Ctrl+P / Ctrl+B k");
     }
 
@@ -982,19 +1140,22 @@ mod tests {
     fn bad_entries_keep_their_defaults() {
         let (map, warnings) = Keymap::load(
             r#"
+            leader = ""
+            insert_leader = ""
             [global]
-            search = "q"
             nonsense = "x"
             jump_to = "<leader> k"
+            [composer]
+            send = "q"
             [messages]
-            copy = "r"
+            copy = "x"
+            react = "x"
             [nowhere]
             "#,
         );
-        let k = |s: &str| Key::parse(s).unwrap();
-        assert_eq!(map.lookup(Context::Global, &[], k("ctrl+f")), Lookup::Action(Action::Search), "plain q would be typed in the composer");
-        assert_eq!(map.lookup(Context::Global, &[], k("ctrl+k")), Lookup::Action(Action::Switcher), "no leader set");
-        assert_eq!(map.lookup(Context::Messages, &[], k("r")), Lookup::Action(Action::React), "react was there first");
+        assert_eq!(one(&map, Context::Composer, &[], k("enter")), Resolved::Action(Context::Composer, Action::Send), "plain q would be typed in the composer");
+        assert_eq!(one(&map, Context::Global, &[], k("ctrl+k")), Resolved::Action(Context::Global, Action::Switcher), "no leader set");
+        assert_eq!(one(&map, Context::Messages, &[], k("x")), Resolved::Action(Context::Messages, Action::React), "react is first in the table");
         assert_eq!(warnings.len(), 5, "{warnings:#?}");
         assert!(warnings.iter().any(|w| w.contains("nowhere")) && warnings.iter().any(|w| w.contains("bound to both react and copy")));
     }
@@ -1017,20 +1178,130 @@ mod tests {
         }
         let (map, _) = Keymap::load("");
         assert_eq!(map.to_toml(None, None), "", "defaults write nothing");
-        let k = |s: &str| Key::parse(s).unwrap();
+        let none = map.to_toml(None, Some(None));
+        assert!(none.starts_with("leader = \"\"\n"), "no leader is written empty: {none}");
+        assert_eq!(Keymap::load(&none).0.leader, None);
         let text = map.to_toml(Some((Context::Messages, "react", vec![vec![k("R")]])), Some(Some(k("ctrl+b"))));
         assert!(text.starts_with("leader = \"ctrl+b\""), "{text}");
         let (again, warnings) = Keymap::load(&text);
         assert!(warnings.is_empty(), "{warnings:?}");
-        assert_eq!(again.lookup(Context::Messages, &[], k("R")), Lookup::Action(Action::React));
-        let chord = again.to_toml(Some((Context::Global, "jump_to", vec![vec![k("ctrl+b"), k("k")]])), None);
+        assert_eq!(one(&again, Context::Messages, &[], k("R")), Resolved::Action(Context::Messages, Action::React));
+        let chord = again.to_toml(Some((Context::Global, "jump_to", vec![vec![LEADER, k("k")]])), None);
         assert!(chord.contains("jump_to = [\"<leader> k\"]"), "{chord}");
         assert!(chord.contains("react = [\"R\"]"), "keeps earlier changes: {chord}");
     }
 
     #[test]
-    fn shadowing_by_global_is_reported() {
+    fn global_keys_hidden_by_a_pane_are_reported() {
         let (_, warnings) = Keymap::load("[global]\nhelp = \"ctrl+e\"\n");
-        assert!(warnings.iter().any(|w| w.contains("Ctrl+E in [composer] is shadowed")), "{warnings:?}");
+        assert_eq!(warnings, vec!["keys.toml: [global] Ctrl+E is hidden by [composer] line_end".to_string()]);
+        assert!(Keymap::load("[global]\nfocus_next = \"tab\"\n").1.is_empty(), "the default written out: Tab in the suggestions is on purpose");
+        // Defaults may do it on purpose; a printable global key does not act where it types.
+        assert!(Keymap::load("").1.is_empty());
+        let (_, warnings) = Keymap::load("[global]\nmute = \"j\"\n");
+        assert_eq!(warnings.len(), 3, "sidebar, messages, huddle view: {warnings:?}");
+        assert!(warnings.iter().all(|w| w.starts_with("keys.toml: [global] j is hidden by")));
+    }
+
+    fn k(s: &str) -> Key {
+        Key::parse(s).unwrap()
+    }
+
+    #[test]
+    fn leaders_default_and_stand_for_leader() {
+        use Context::*;
+        let (map, warnings) = Keymap::load("[global]\nmute = \"<leader> h m\"\n");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!((map.leader, map.insert_leader), (Some(k("space")), Some(k("ctrl+space"))));
+        assert_eq!(map.resolve(&[Messages, Global], Mode::Normal, &[], k("space")), Resolved::Pending);
+        assert_eq!(map.resolve(&[Composer, Global], Mode::Insert, &[], k("space")), Resolved::None, "types");
+        assert_eq!(map.resolve(&[Completion, Composer, Global], Mode::Insert, &[], k("space")), Resolved::None);
+        assert_eq!(map.resolve(&[Composer, Global], Mode::Insert, &[], k("ctrl+space")), Resolved::Pending);
+        assert_eq!(map.resolve(&[Search, Global], Mode::Dialog, &[], k("space")), Resolved::None, "Space belongs to the dialog");
+        assert_eq!(map.resolve(&[Search, Global], Mode::Dialog, &[LEADER, k("h")], k("m")), Resolved::Action(Global, Action::Mute));
+        // The leader that starts no sequence here is its plain key (Space folds in the sidebar).
+        assert_eq!(map.resolve(&[Sidebar, Global], Mode::Normal, &[], k("space")), Resolved::Pending);
+        let (plain, _) = Keymap::load("");
+        assert_eq!(plain.resolve(&[Sidebar, Global], Mode::Normal, &[], k("space")), Resolved::Action(Sidebar, Action::FoldSection));
+        // insert_leader = "" is none; a leader that never types works everywhere.
+        let (none, warnings) = Keymap::load("leader = \"ctrl+b\"\ninsert_leader = \"\"\n[global]\nmute = \"<leader> h m\"\n");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(none.insert_leader, None);
+        assert_eq!(none.resolve(&[Composer, Global], Mode::Insert, &[], k("ctrl+space")), Resolved::None);
+        assert_eq!(none.resolve(&[Composer, Global], Mode::Insert, &[], k("ctrl+b")), Resolved::Pending);
+        assert_eq!(none.resolve(&[Search, Global], Mode::Dialog, &[], k("ctrl+b")), Resolved::Pending);
+    }
+
+    #[test]
+    fn pending_drops_on_mode_change() {
+        let mut p = Pending::default();
+        p.push(LEADER, Mode::Normal);
+        p.sync(Mode::Normal);
+        assert_eq!(p.keys(), &[LEADER], "same mode keeps the keys");
+        p.push_typed(LEADER, k("ctrl+space"), Mode::Normal);
+        assert_eq!((p.keys(), p.typed()), (&[LEADER, LEADER][..], &[LEADER, k("ctrl+space")][..]));
+        p.pop();
+        p.push(k("h"), Mode::Normal);
+        p.pop();
+        assert_eq!(p.keys(), &[LEADER]);
+        p.sync(Mode::Dialog);
+        assert!(p.keys().is_empty());
+        p.push(k("x"), Mode::Insert);
+        p.clear();
+        assert!(p.keys().is_empty());
+    }
+
+    #[test]
+    fn pane_beats_global() {
+        let (map, _) = Keymap::load("[global]\nactivity = \"ctrl+a\"\n");
+        assert_eq!(map.resolve(&[Context::Composer, Context::Global], Mode::Insert, &[], k("ctrl+a")), Resolved::Action(Context::Composer, Action::LineStart));
+        assert_eq!(map.resolve(&[Context::Messages, Context::Global], Mode::Normal, &[], k("ctrl+a")), Resolved::Action(Context::Global, Action::Activity));
+    }
+
+    #[test]
+    fn printable_global_keys_act_only_in_normal() {
+        let (map, warnings) = Keymap::load("[global]\nmute = \"x\"\n");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(map.resolve(&[Context::Messages, Context::Global], Mode::Normal, &[], k("x")), Resolved::Action(Context::Global, Action::Mute));
+        assert_eq!(map.resolve(&[Context::Composer, Context::Global], Mode::Insert, &[], k("x")), Resolved::None);
+        assert_eq!(map.resolve(&[Context::Search, Context::Global], Mode::Dialog, &[], k("x")), Resolved::None);
+        let (_, warnings) = Keymap::load("[composer]\nsend = \"x\"\n");
+        assert!(warnings.iter().any(|w| w.contains("would be typed")), "{warnings:?}");
+    }
+
+    #[test]
+    fn user_binding_beats_default_prefix() {
+        let (map, warnings) = Keymap::load("[global]\nmute = \"<leader> h m\"\nhuddle = \"<leader> h\"\n");
+        assert_eq!(map.resolve(&[Context::Messages, Context::Global], Mode::Normal, &[LEADER], k("h")), Resolved::Action(Context::Global, Action::Huddle));
+        assert!(map.sequences(Context::Global, "mute").is_empty(), "mute is dropped");
+        assert!(warnings.iter().any(|w| w.contains("mute")), "{warnings:?}");
+        // A v0.5.0 file still means what it meant.
+        let (old, warnings) = Keymap::load("leader = \"ctrl+b\"\n[messages]\nreact = \"r\"\n[global]\nhuddle = \"f3\"\n");
+        assert!(!warnings.iter().any(|w| w.contains("keeping the default")), "{warnings:?}");
+        assert_eq!(old.resolve(&[Context::Messages, Context::Global], Mode::Normal, &[], k("r")), Resolved::Action(Context::Messages, Action::React));
+        assert_eq!(old.resolve(&[Context::Messages, Context::Global], Mode::Normal, &[], k("f3")), Resolved::Action(Context::Global, Action::Huddle));
+    }
+
+    #[test]
+    fn user_binding_beats_a_default_of_another_action() {
+        let (map, warnings) = Keymap::load("[messages]\nreact = \"e\"\n");
+        assert_eq!(map.resolve(&[Context::Messages, Context::Global], Mode::Normal, &[], k("e")), Resolved::Action(Context::Messages, Action::React));
+        assert!(map.sequences(Context::Messages, "edit").is_empty());
+        assert_eq!(warnings, vec!["keys.toml: [messages] default e of edit gives way to react".to_string()]);
+        // A user sequence that a default starts.
+        let (map, warnings) = Keymap::load("[messages]\nreact = \"e x\"\n");
+        assert_eq!(map.resolve(&[Context::Messages, Context::Global], Mode::Normal, &[], k("e")), Resolved::Pending);
+        assert_eq!(map.resolve(&[Context::Messages, Context::Global], Mode::Normal, &[k("e")], k("x")), Resolved::Action(Context::Messages, Action::React));
+        assert!(warnings.iter().any(|w| w.contains("default e of edit gives way to react")), "{warnings:?}");
+    }
+
+    #[test]
+    fn show_is_short() {
+        let (map, _) = Keymap::load("");
+        assert_eq!(map.show(&[LEADER, k("h")]), "␣h");
+        assert_eq!(map.show(&[k("ctrl+space"), k("h"), k("m")]), "^␣hm");
+        assert_eq!(map.show(&[k("ctrl+x"), k("alt+x"), k("f5")]), "^XM-xF5");
+        let (map, _) = Keymap::load("leader = \"ctrl+b\"\n");
+        assert_eq!(map.show(&[LEADER, k("h")]), "^Bh");
     }
 }

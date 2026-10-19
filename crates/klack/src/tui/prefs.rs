@@ -623,7 +623,7 @@ impl Prefs {
             let value = match (&self.editing, &self.capturing, n == self.selected) {
                 (Some(text), _, true) => format!("{text}▏"),
                 (_, Some(seq), true) if seq.is_empty() => "press the new key…".into(),
-                (_, Some(seq), true) => format!("{} …", super::keymap::sequence_label(seq)),
+                (_, Some(seq), true) => format!("{} …", keys.label(seq)),
                 _ => field.value(ws, current, keys),
             };
             let value = fit(&value, value_w, typing);

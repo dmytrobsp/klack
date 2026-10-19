@@ -13,7 +13,7 @@ use slack_core::types::{HistoryPage, User};
 use tokio::sync::mpsc;
 
 use super::composer::{Composer, KeyOutcome};
-use super::keymap::{Action, Context, Key, Keymap, Lookup, Mode};
+use super::keymap::{Action, Context, Key, Keymap, LEADER, Mode, Pending, Resolved};
 use super::messages::MessagePane;
 use super::picker::EmojiPicker;
 use super::sidebar::Sidebar;
@@ -115,7 +115,7 @@ struct App {
     /// Key bindings (defaults plus keys.toml).
     keys: Keymap,
     /// Keys of a sequence typed so far (e.g. the leader).
-    pending: Vec<Key>,
+    pending: Pending,
     /// Problems found in keys.toml, shown once the workspace has loaded.
     key_warnings: Vec<String>,
     /// The profile's workspaces (labels) and which one this is.
@@ -1547,12 +1547,12 @@ impl App {
     /// A key pressed while the preferences wait for a new binding: the leader waits for one
     /// more key; then the sequence replaces the action's keys (or becomes the leader).
     fn capture_key(&mut self, key: Key) {
-        let leader = self.keys.leader;
+        let leaders = [self.keys.leader, self.keys.insert_leader];
         let Some(p) = self.prefs.as_mut() else { return };
         let field = p.selected_field();
         let Some(seq) = p.capturing.as_mut() else { return };
-        if matches!(field, Some(super::prefs::Field::Binding(_))) && seq.is_empty() && Some(key) == leader {
-            seq.push(key);
+        if matches!(field, Some(super::prefs::Field::Binding(_))) && seq.is_empty() && leaders.contains(&Some(key)) {
+            seq.push(LEADER);
             return;
         }
         seq.push(key);
@@ -1834,11 +1834,6 @@ impl App {
         }
     }
 
-    /// The global action of a key press, if any.
-    fn global(&self, k: &crossterm::event::KeyEvent) -> Option<Action> {
-        self.action_in(Context::Global, k)
-    }
-
     /// The preferences wait for a key to bind: every key goes to them.
     fn capturing_key(&self) -> bool {
         self.prefs.as_ref().is_some_and(|p| p.capturing.is_some())
@@ -1981,23 +1976,30 @@ impl App {
         }
     }
 
-    /// The contexts a key press is looked up in now: the open dialog's alone, or global
-    /// and the focused pane's.
+    /// The contexts a key press is looked up in now, most specific first: the open dialog's,
+    /// or the suggestion list and the focused pane's; then global.
     fn active_contexts(&self) -> Vec<Context> {
+        let mut out = Vec::new();
         if let Some(c) = self.overlay() {
-            return vec![c];
+            out.push(c);
+        } else {
+            if self.completion.is_some() {
+                out.push(Context::Completion);
+            }
+            out.push(match self.focus {
+                Focus::Sidebar => Context::Sidebar,
+                Focus::Huddle => Context::Huddle,
+                Focus::Messages | Focus::Thread => Context::Messages,
+                Focus::Composer | Focus::ThreadComposer => Context::Composer,
+            });
         }
-        let mut out = vec![Context::Global];
-        if self.completion.is_some() {
-            out.push(Context::Completion);
-        }
-        out.push(match self.focus {
-            Focus::Sidebar => Context::Sidebar,
-            Focus::Huddle => Context::Huddle,
-            Focus::Messages | Focus::Thread => Context::Messages,
-            Focus::Composer | Focus::ThreadComposer => Context::Composer,
-        });
+        out.push(Context::Global);
         out
+    }
+
+    /// What a key press means now (after any pending keys).
+    fn resolve(&self, k: &crossterm::event::KeyEvent) -> Resolved {
+        self.keys.resolve(&self.active_contexts(), self.mode(), self.pending.keys(), Key::from_event(k))
     }
 
     /// Before a key is handled: hold it if it only starts a sequence (the leader), drop it
@@ -2006,41 +2008,32 @@ impl App {
         if self.capturing_key() {
             return false;
         }
-        let key = Key::from_event(k);
-        let mut results: Vec<Lookup> = self.active_contexts().into_iter().map(|c| self.keys.lookup(c, &self.pending, key)).collect();
-        // A dialog leaves out the global keys, but quit works there too (also as a sequence).
-        if self.mode() == Mode::Dialog {
-            let mut seq = self.pending.clone();
-            seq.push(key);
-            let quits = self.keys.sequences(Context::Global, "quit");
-            if quits.contains(&seq) {
-                return false;
+        let mode = self.mode();
+        self.pending.sync(mode);
+        let typed = Key::from_event(k);
+        let (resolved, key) = self.keys.press(&self.active_contexts(), mode, self.pending.keys(), typed);
+        match resolved {
+            Resolved::Action(..) => false,
+            Resolved::Pending => {
+                self.pending.push_typed(key, typed, mode);
+                true
             }
-            if quits.iter().any(|s| s.len() > seq.len() && s.starts_with(&seq)) {
-                results.push(Lookup::Pending);
+            Resolved::None if !self.pending.keys().is_empty() => {
+                let mut seq = self.pending.typed().to_vec();
+                seq.push(typed);
+                self.pending.clear();
+                self.status = format!("{} is not bound here", self.keys.show(&seq));
+                true
             }
+            Resolved::None => false,
         }
-        if results.iter().any(|r| matches!(r, Lookup::Action(_))) {
-            return false;
-        }
-        if results.contains(&Lookup::Pending) {
-            self.pending.push(key);
-            return true;
-        }
-        if !self.pending.is_empty() {
-            let mut seq = std::mem::take(&mut self.pending);
-            seq.push(key);
-            self.status = format!("{} is not bound here", super::keymap::sequence_label(&seq));
-            return true;
-        }
-        false
     }
 
-    /// The action of a key press in `context` (after any pending keys), if any.
+    /// The action of a key press in `context` alone (after any pending keys), if any.
     fn action_in(&self, context: Context, k: &crossterm::event::KeyEvent) -> Option<Action> {
-        match self.keys.lookup(context, &self.pending, super::keymap::Key::from_event(k)) {
-            Lookup::Action(a) => Some(a),
-            Lookup::Pending | Lookup::None => None,
+        match self.keys.resolve(&[context], self.mode(), self.pending.keys(), Key::from_event(k)) {
+            Resolved::Action(_, a) => Some(a),
+            Resolved::Pending | Resolved::None => None,
         }
     }
 
@@ -2627,7 +2620,7 @@ async fn run_workspace(
     let mut app = App {
         keys: keymap.0.clone(),
         key_warnings: keymap.1.clone(),
-        pending: Vec::new(),
+        pending: Pending::default(),
         workspaces: workspaces.0,
         workspace: workspaces.1,
         others: workspaces.2,
@@ -2832,7 +2825,7 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
         return true;
     }
     if let Event::Key(k) = &ev {
-        if k.kind != KeyEventKind::Release && app.global(k) == Some(Action::Quit) && !app.capturing_key() {
+        if k.kind != KeyEventKind::Release && !app.capturing_key() && app.resolve(k) == Resolved::Action(Context::Global, Action::Quit) {
             return false;
         }
     }
@@ -2845,6 +2838,14 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
 /// Input while a dialog is open: the topmost dialog takes every key and click; nothing under
 /// it reacts.
 fn handle_dialog(app: &mut App, ev: &Event) -> bool {
+    // The global leader sequences (Ctrl+Space h m mutes with a dialog open).
+    if let Event::Key(k) = ev {
+        if k.kind != KeyEventKind::Release && !app.capturing_key() {
+            if let Resolved::Action(Context::Global, action) = app.resolve(k) {
+                return run_global(app, action);
+            }
+        }
+    }
     match ev {
         Event::Key(k) if k.kind != KeyEventKind::Release && app.menu.is_some() => {
             let action = app.action_in(Context::Menu, &k);
@@ -3258,55 +3259,54 @@ fn handle_dialog(app: &mut App, ev: &Event) -> bool {
 fn handle_main(app: &mut App, ev: Event) -> bool {
     match ev {
         Event::Key(k) if k.kind != KeyEventKind::Release => {
-            let global = app.global(&k);
-            // Moving around (Tab, Alt+↑/↓, PageUp/PageDown, workspaces) comes after a pane's help key
-            // and the suggestion list (Tab accepts a suggestion); the views and huddle keys first.
-            let late = global.is_some_and(|a| matches!(a, Action::Workspace1 | Action::Workspace2 | Action::Workspace3 | Action::Workspace4 | Action::Workspace5 | Action::Workspace6 | Action::Workspace7 | Action::Workspace8 | Action::Workspace9 | Action::PrevConversation | Action::NextConversation | Action::ScrollUp | Action::ScrollDown | Action::FocusNext | Action::FocusPrev));
-            if let Some(action) = global.filter(|_| !late) {
-                return run_global(app, action);
-            }
-            if app.focus == Focus::Sidebar && app.action_in(Context::Sidebar, &k) == Some(Action::Help) || matches!(app.focus, Focus::Messages | Focus::Thread) && app.action_in(Context::Messages, &k) == Some(Action::Help) {
-                app.help = Some(super::help::Help::default());
-                return true;
-            }
-            if app.completion.is_some() && app.action_in(Context::Completion, &k).is_some() {
-                let action = app.action_in(Context::Completion, &k);
-                // A command or choice typed out in full sends on the send key, as if the list were not
-                // there (mentions are accepted, to be sent as such).
-                let typed_command = app.completion.as_ref().and_then(|c| {
-                    let s = c.items.get(c.selected)?;
-                    let composer = if c.thread { &app.thread_composer } else { &app.composer };
-                    (s.id.is_none() && s.replacement == composer.token(c.start)).then_some(c.thread)
-                });
-                let send_key = app.action_in(Context::Composer, &k) == Some(Action::Send);
-                let Some(c) = app.completion.as_mut() else { return true };
-                match action {
-                    Some(Action::Up) => c.move_by(-1),
-                    Some(Action::Down) => c.move_by(1),
-                    Some(Action::Accept) if send_key && typed_command.is_some() => {
-                        app.completion = None;
-                        app.send(typed_command.unwrap_or_default());
-                    }
-                    Some(Action::Accept) => app.accept_completion(),
-                    _ => {
-                        app.completion_dismissed = Some((c.thread, c.start));
-                        app.completion = None;
-                    }
+            // The most specific context decides: the suggestion list, the focused pane, then
+            // global (so Tab accepts a suggestion, and Ctrl+A in a message box is line start).
+            let resolved = app.resolve(&k);
+            match resolved {
+                Resolved::Action(Context::Global, action) => return run_global(app, action),
+                Resolved::Action(Context::Sidebar | Context::Messages, Action::Help) => {
+                    app.help = Some(super::help::Help::default());
+                    return true;
                 }
-                return true;
+                Resolved::Action(Context::Completion, action) => {
+                    // A command or choice typed out in full sends on the send key, as if the list were not
+                    // there (mentions are accepted, to be sent as such).
+                    let typed_command = app.completion.as_ref().and_then(|c| {
+                        let s = c.items.get(c.selected)?;
+                        let composer = if c.thread { &app.thread_composer } else { &app.composer };
+                        (s.id.is_none() && s.replacement == composer.token(c.start)).then_some(c.thread)
+                    });
+                    let send_key = app.action_in(Context::Composer, &k) == Some(Action::Send);
+                    let Some(c) = app.completion.as_mut() else { return true };
+                    match action {
+                        Action::Up => c.move_by(-1),
+                        Action::Down => c.move_by(1),
+                        Action::Accept if send_key && typed_command.is_some() => {
+                            app.completion = None;
+                            app.send(typed_command.unwrap_or_default());
+                        }
+                        Action::Accept => app.accept_completion(),
+                        _ => {
+                            app.completion_dismissed = Some((c.thread, c.start));
+                            app.completion = None;
+                        }
+                    }
+                    return true;
+                }
+                _ => {}
             }
-            if let Some(action) = global {
-                return run_global(app, action);
-            }
+            let action = match resolved {
+                Resolved::Action(_, a) => Some(a),
+                Resolved::Pending | Resolved::None => None,
+            };
             match app.focus {
                 Focus::Sidebar => {
-                    if let Some(action) = app.action_in(Context::Sidebar, &k) {
+                    if let Some(action) = action {
                         app.sidebar_action(action);
                     }
                 }
                 Focus::Huddle => {
                     use super::huddle_view::Dir;
-                    let action = app.action_in(Context::Huddle, &k);
                     if let Some(v) = app.huddle_view.as_mut() {
                         match action {
                             Some(Action::Up) => v.move_selection(Dir::Up),
@@ -3320,13 +3320,13 @@ fn handle_main(app: &mut App, ev: Event) -> bool {
                     }
                 }
                 Focus::Messages | Focus::Thread => {
-                    if let Some(action) = app.action_in(Context::Messages, &k) {
+                    if let Some(action) = action {
                         app.message_action(action, app.focus == Focus::Thread);
                     }
                 }
                 Focus::Composer | Focus::ThreadComposer => {
                     let thread = app.focus == Focus::ThreadComposer;
-                    if thread && app.action_in(Context::Composer, &k) == Some(Action::AlsoToChannel) {
+                    if thread && action == Some(Action::AlsoToChannel) {
                         app.broadcast = !app.broadcast;
                         return true;
                     }
@@ -3888,6 +3888,9 @@ fn split_main(main: Rect, thread: bool) -> (Option<Rect>, Option<Rect>) {
 
 fn draw(f: &mut ratatui::Frame, app: &mut App) {
     app.screen = f.area();
+    // A sequence started before a dialog opened (or closed) is over.
+    let mode = app.mode();
+    app.pending.sync(mode);
     let messages = &app.ws.settings.messages;
     app.ws.emoji_pictures = app.media.graphics() && messages.custom_emoji_pictures && !messages.emoji_as_names;
     // The huddle view goes with the call, and gives way once the messages or the composer
@@ -4003,8 +4006,8 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     }
     // Before the connection, at the right: a key chord under way, your availability.
     let mut extras = String::new();
-    if !app.pending.is_empty() {
-        extras.push_str(&format!("{} … · ", super::keymap::sequence_label(&app.pending)));
+    if !app.pending.keys().is_empty() {
+        extras.push_str(&format!("{} … · ", app.keys.show(app.pending.typed())));
     }
     let me = super::profile::availability(&app.ws, chrono::Utc::now().timestamp());
     if !me.is_empty() {
@@ -4052,8 +4055,8 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     }
     // The status bar (from slk): where keys go, the breadcrumb, what is going on, the way to
     // the keys and the connection.
-    let contexts = app.active_contexts();
-    let top = contexts.last().copied().unwrap_or(Context::Global);
+    // The dialog's or the focused pane's context (not the suggestion list's).
+    let top = app.active_contexts().into_iter().find(|c| *c != Context::Completion).unwrap_or(Context::Global);
     // The theme picker borrows the switcher's keys but is not the switcher.
     let picking = app.prefs.as_ref().is_some_and(|p| p.picker.is_some());
     let (pill, typing) = if picking { ("THEME", true) } else { mode_label(top, app.focus, app.composer.editing.is_some()) };
