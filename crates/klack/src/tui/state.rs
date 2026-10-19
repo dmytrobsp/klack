@@ -80,6 +80,13 @@ impl Timeline {
 
 #[derive(Debug, Default)]
 pub struct Workspace {
+    /// Custom emoji pictures are drawn in the message pane (set while drawing: the terminal
+    /// draws pictures and the settings allow it).
+    pub emoji_pictures: bool,
+    /// Custom emoji names numbered for the placeholders that stand for their pictures in
+    /// built message lines (`text::emoji_cell`); only grows, so numbers stay valid.
+    pub emoji_ids: Vec<String>,
+    pub emoji_index: HashMap<String, u32>,
     pub team_name: String,
     /// The workspace's id (`T…`).
     pub team_id: String,
@@ -506,6 +513,16 @@ impl Workspace {
         self.dnd = Dnd::from_json(&boot["dnd"]);
         self.starred = boot["starred"].as_array().into_iter().flatten().filter_map(|s| s.as_str()).map(String::from).collect();
         self.apply_prefs(&boot["prefs"]);
+    }
+
+    /// Number custom emoji not numbered yet (after the list changed).
+    pub fn number_emoji(&mut self) {
+        for name in self.custom_emoji.keys() {
+            if !self.emoji_index.contains_key(name) {
+                self.emoji_index.insert(name.clone(), self.emoji_ids.len() as u32);
+                self.emoji_ids.push(name.clone());
+            }
+        }
     }
 
     /// Apply user prefs (boot, or a `pref_change`): notification levels, keywords, mutes, VIPs.

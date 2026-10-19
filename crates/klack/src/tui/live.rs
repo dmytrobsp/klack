@@ -206,6 +206,7 @@ pub fn apply(ws: &mut Workspace, ev: &Value, current: Option<&str>) -> Effects {
                 }
                 _ => {}
             }
+            ws.number_emoji();
         }
         "huddle_invite" => {
             let s = |k: &str| ev[k].as_str().unwrap_or_default().to_string();

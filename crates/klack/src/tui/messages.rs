@@ -386,7 +386,7 @@ impl MessagePane {
                     f.render_widget(SlicedImage::new(proto, position), beside);
                 }
                 // Say why instead of leaving the rows blank (not for profile pictures).
-                Some(Thumb::Failed(reason)) if !slot.file.id.starts_with(super::media::AVATAR_PREFIX) => {
+                Some(Thumb::Failed(reason)) if !slot.file.id.starts_with(super::media::AVATAR_PREFIX) && !slot.file.id.starts_with(super::media::EMOJI_PREFIX) => {
                     let x = inner.x + GUTTER + slot.col;
                     let row = Rect { x, y: inner.y + top.max(0) as u16, width: inner.right().saturating_sub(x), height: 1 };
                     f.render_widget(Paragraph::new(failed_thumb(reason)).style(Style::default().fg(super::theme::p().dim)), row);
@@ -747,7 +747,7 @@ pub fn message_body(ws: &Workspace, m: &Message, width: usize, summary: bool, th
         let mut spans = Vec::new();
         for r in &m.reactions {
             let mine = r.users.iter().any(|u| *u == ws.self_id);
-            spans.push(reaction_pill(&text::emoji(ws, &r.name, None), r.count, mine));
+            spans.push(reaction_pill(&text::emoji_cell(ws, &r.name, None), r.count, mine));
             spans.push(Span::raw(" "));
         }
         out.extend(text::wrap(spans, width, vec![], vec![]));
@@ -756,6 +756,12 @@ pub fn message_body(ws: &Workspace, m: &Message, width: usize, summary: bool, th
         let last = m.latest_reply.as_deref().and_then(|t| t.parse::<f64>().ok()).map(|t| format!(" · last {}", time_label(ws, t))).unwrap_or_default();
         let s = if m.reply_count == 1 { "reply" } else { "replies" };
         out.push(Line::styled(format!("💬 {} {s}{last}", m.reply_count), Style::default().fg(super::theme::p().mention)));
+    }
+    // Custom emoji pictures over the cells kept for them (text, attachments, reactions).
+    for (line, col, name) in text::emoji_cells(ws, &mut out) {
+        if let Some(file) = super::media::emoji_file(ws, &name) {
+            slots.push(ImageSlot { line, col, file, size: super::media::AVATAR_SIZE });
+        }
     }
     (out, slots)
 }
@@ -847,6 +853,37 @@ mod tests {
         assert_eq!(c(serde_json::json!({"color": "#fff"})), None, "short forms are not Slack's");
         assert_eq!(c(serde_json::json!({"color": "nope"})), None);
         assert_eq!(c(serde_json::json!({"title": "x"})), None);
+    }
+
+    #[test]
+    fn custom_emoji_pictures_in_text_and_reactions() {
+        let mut ws = Workspace::default();
+        ws.custom_emoji.insert("piggy".into(), "https://emoji.slack-edge.com/T1/piggy/b77.png".into());
+        ws.custom_emoji.insert("pig2x".into(), "alias:piggy".into());
+        ws.custom_emoji.insert("yes".into(), "alias:white_check_mark".into());
+        ws.number_emoji();
+        let mut m = msg("1.0", "U2", "so :piggy: much :yes:");
+        m.reactions = vec![Reaction { name: "pig2x".into(), users: vec![], count: 2 }];
+        // Without pictures (half blocks, or turned off): names, as before.
+        let (lines, slots) = message_body(&ws, &m, 40, false, &|_, _| None);
+        assert_eq!(plain(&lines)[0], "so :piggy: much ✅");
+        assert!(slots.is_empty());
+        ws.emoji_pictures = true;
+        let (lines, slots) = message_body(&ws, &m, 40, false, &|_, _| None);
+        let rows = plain(&lines);
+        assert_eq!(rows[0], "so    much ✅", "two blank cells for the picture; an alias of a standard emoji stays a character");
+        let at: Vec<(usize, u16, (u16, u16), &str)> = slots.iter().map(|s| (s.line, s.col, s.size, s.file.id.as_str())).collect();
+        assert_eq!(at, [(0, 3, (2, 1), "emoji:piggy:b77.png"), (1, 1, (2, 1), "emoji:pig2x:b77.png")], "in the text, and in the reaction pill (an alias of a picture)");
+        assert_eq!(rows[1], "\u{a0}  \u{a0}2\u{a0} ");
+        // Wrapped onto a new line, the picture goes with its cells.
+        let mut long = msg("2.0", "U2", "aaaa bbbb :piggy:");
+        long.reactions.clear();
+        let (lines, slots) = message_body(&ws, &long, 10, false, &|_, _| None);
+        assert_eq!(plain(&lines), ["aaaa bbbb ", "  "]);
+        assert_eq!((slots[0].line, slots[0].col), (1, 0));
+        // Plain text (notifications, search) never gets a placeholder.
+        let plain_text = format::plain_text(&format::message_blocks(&m.text, &m.blocks), &|i| text::inline_plain(&ws, i));
+        assert_eq!(plain_text, "so :piggy: much ✅");
     }
 
     #[test]

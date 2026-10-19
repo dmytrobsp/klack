@@ -90,6 +90,9 @@ pub struct Messages {
     pub preview_refresh_secs: u32,
     /// Show emoji as `:name:` instead of the character.
     pub emoji_as_names: bool,
+    /// Draw the workspace's own (picture) emoji as pictures in messages and reactions, where
+    /// the terminal draws pictures; else they show as `:name:`.
+    pub custom_emoji_pictures: bool,
     /// How pictures are drawn: "auto" (asked from the terminal) or one of
     /// [`super::media::GRAPHICS`]; `KLACK_GRAPHICS` wins over it.
     pub graphics: String,
@@ -97,7 +100,7 @@ pub struct Messages {
 
 impl Default for Messages {
     fn default() -> Self {
-        Messages { inline_images: true, avatars: true, large_avatars: false, preview_refresh_secs: 15, emoji_as_names: false, graphics: "auto".into() }
+        Messages { inline_images: true, avatars: true, large_avatars: false, preview_refresh_secs: 15, emoji_as_names: false, custom_emoji_pictures: true, graphics: "auto".into() }
     }
 }
 

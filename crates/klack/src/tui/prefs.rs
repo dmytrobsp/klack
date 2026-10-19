@@ -30,6 +30,7 @@ pub enum Field {
     PreviewRefresh,
     Graphics,
     EmojiAsNames,
+    CustomEmojiPictures,
     Clock24,
     DateFormat,
     TimeZone,
@@ -89,7 +90,7 @@ pub const PAUSES: &[u64] = &[0, 30, 60, 120, 480];
 pub const CATEGORIES: &[(&str, &[Field])] = &[
     ("Availability", &[Field::Status, Field::Away, Field::Pause]),
     ("Appearance", &[Field::Theme, Field::WorkspaceTheme, Field::Compact, Field::HideInactive]),
-    ("Messages & media", &[Field::InlineImages, Field::Avatars, Field::LargeAvatars, Field::PreviewRefresh, Field::Graphics, Field::EmojiAsNames]),
+    ("Messages & media", &[Field::InlineImages, Field::Avatars, Field::LargeAvatars, Field::PreviewRefresh, Field::Graphics, Field::EmojiAsNames, Field::CustomEmojiPictures]),
     ("Language & region", &[Field::Clock24, Field::DateFormat, Field::TimeZone, Field::Language]),
     ("Notifications", &[Field::Desktop, Field::Sound, Field::ConversationLevel, Field::ChannelDefault, Field::Keywords, Field::Vips]),
     ("Audio & video", &[Field::Input, Field::Output, Field::HuddleVolume, Field::SoundVolume, Field::MicGain, Field::SpeakingThreshold, Field::NoiseSuppression, Field::EchoCancellation, Field::Camera]),
@@ -136,6 +137,7 @@ impl Field {
             Field::PreviewRefresh => "Refresh previewed channels",
             Field::Graphics => "Draw pictures with",
             Field::EmojiAsNames => "Show emoji as :names:",
+            Field::CustomEmojiPictures => "Custom emoji as pictures",
             Field::Clock24 => "24-hour clock",
             Field::DateFormat => "Date format",
             Field::TimeZone => "Time zone",
@@ -200,6 +202,7 @@ impl Field {
             },
             Field::Graphics => s.messages.graphics.clone(),
             Field::EmojiAsNames => yes(s.messages.emoji_as_names),
+            Field::CustomEmojiPictures => yes(s.messages.custom_emoji_pictures),
             Field::Clock24 => yes(s.region.clock_24h),
             Field::DateFormat => super::clock::now().format(&s.region.date_format).to_string(),
             Field::Language if s.region.language.is_empty() || s.region.language == "en" => "en (built in)".into(),
@@ -306,6 +309,7 @@ impl Field {
                 s.messages.graphics = super::media::GRAPHICS[i].into();
             }
             Field::EmojiAsNames => s.messages.emoji_as_names ^= true,
+            Field::CustomEmojiPictures => s.messages.custom_emoji_pictures ^= true,
             Field::Clock24 => s.region.clock_24h ^= true,
             Field::DateFormat => {
                 let i = DATE_FORMATS.iter().position(|f| *f == s.region.date_format).map_or(0, |i| (i + 1) % DATE_FORMATS.len());
@@ -397,7 +401,7 @@ const LEADER_LABEL: &str = "Leader key (for chords such as Leader k)";
 /// Category names and fixed labels, for translation templates.
 pub fn translatable() -> Vec<String> {
     let all = [
-        Field::Theme, Field::WorkspaceTheme, Field::Compact, Field::HideInactive, Field::InlineImages, Field::Avatars, Field::LargeAvatars, Field::PreviewRefresh, Field::Graphics, Field::EmojiAsNames, Field::Clock24, Field::DateFormat, Field::TimeZone, Field::Language, Field::Desktop, Field::Sound,
+        Field::Theme, Field::WorkspaceTheme, Field::Compact, Field::HideInactive, Field::InlineImages, Field::Avatars, Field::LargeAvatars, Field::PreviewRefresh, Field::Graphics, Field::EmojiAsNames, Field::CustomEmojiPictures, Field::Clock24, Field::DateFormat, Field::TimeZone, Field::Language, Field::Desktop, Field::Sound,
         Field::ConversationLevel, Field::ChannelDefault, Field::Keywords, Field::Vips, Field::Status, Field::Away, Field::Pause, Field::Input, Field::Output,
         Field::HuddleVolume, Field::SoundVolume, Field::MicGain, Field::SpeakingThreshold, Field::NoiseSuppression, Field::EchoCancellation, Field::Camera, Field::JoinSound, Field::SomeoneJoined, Field::SomeoneLeft, Field::RingSound, Field::RingTimeout, Field::AutoDecline, Field::AloneSound, Field::AloneSecs,
     ];

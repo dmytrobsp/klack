@@ -39,6 +39,13 @@ pub const AVATAR_SIZE: (u16, u16) = (2, 1);
 /// A two-row avatar ("Two-row profile pictures"), beside the name and the first line.
 pub const AVATAR_SIZE_LARGE: (u16, u16) = (4, 2);
 pub const AVATAR_PREFIX: &str = "avatar:";
+/// Cache ids of custom emoji pictures, drawn in [`AVATAR_SIZE`] cells.
+pub const EMOJI_PREFIX: &str = "emoji:";
+
+/// The picture of the workspace's own emoji `name`.
+pub fn emoji_file(ws: &super::state::Workspace, name: &str) -> Option<File> {
+    picture_file(format!("{EMOJI_PREFIX}{name}"), super::text::custom_picture(ws, name)?)
+}
 
 /// A Slack-hosted picture for `user`, as a pseudo file for the thumbnail cache. Gravatar
 /// URLs are replaced by their `d=` fallback (Slack's default picture), so no third party is

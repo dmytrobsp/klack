@@ -3324,7 +3324,10 @@ fn handle_net(app: &mut App, msg: Net) {
         }
         Net::Channels(list) => app.ws.add_channels(list),
         Net::Commands(list) => app.ws.slack_commands = list,
-        Net::Emoji(map) => app.ws.custom_emoji = map,
+        Net::Emoji(map) => {
+            app.ws.custom_emoji = map;
+            app.ws.number_emoji();
+        }
         Net::UserInfo(u) => {
             app.ws.users.insert(u.id.clone(), u);
             app.sidebar.rebuild(&app.ws);
@@ -3605,6 +3608,8 @@ fn split_main(main: Rect, thread: bool) -> (Option<Rect>, Option<Rect>) {
 
 fn draw(f: &mut ratatui::Frame, app: &mut App) {
     app.screen = f.area();
+    let messages = &app.ws.settings.messages;
+    app.ws.emoji_pictures = app.media.graphics() && messages.custom_emoji_pictures && !messages.emoji_as_names;
     // The huddle view goes with the call, and gives way once the messages or the composer
     // get the focus (opening a conversation, replying, …).
     if app.call.is_none() || matches!(app.focus, Focus::Messages | Focus::Composer) {

@@ -47,6 +47,67 @@ pub fn custom_glyph(custom: &std::collections::HashMap<String, String>, name: &s
     standard_emoji(alias).map(|e| e.as_str().to_string())
 }
 
+/// The first of the private-use characters standing for custom emoji pictures in built
+/// message lines (one per numbered emoji, `Workspace::emoji_ids`), two cells each.
+const EMOJI_CELL: u32 = 0xF0000;
+
+/// The picture of the workspace's own emoji `name` (also through an alias of another): its URL.
+pub fn custom_picture<'a>(ws: &'a Workspace, name: &str) -> Option<&'a str> {
+    let value = ws.custom_emoji.get(name)?;
+    let value = match value.strip_prefix("alias:") {
+        Some(other) => ws.custom_emoji.get(other)?,
+        None => value,
+    };
+    (!value.starts_with("alias:")).then_some(value.as_str())
+}
+
+/// Emoji `name` as the message pane shows it: a custom emoji's picture, when drawn, is two
+/// placeholder cells (taken out by [`emoji_cells`]); anything else as [`emoji`].
+pub fn emoji_cell(ws: &Workspace, name: &str, unicode: Option<&str>) -> String {
+    let cell = ws.emoji_index.get(name).filter(|_| ws.emoji_pictures && unicode.is_none() && custom_picture(ws, name).is_some()).and_then(|n| char::from_u32(EMOJI_CELL + n));
+    match cell {
+        Some(c) => [c, c].iter().collect(),
+        None => emoji(ws, name, unicode),
+    }
+}
+
+/// Take the custom emoji placeholders out of `lines` (blanks in their place): where each
+/// picture goes, as (line, column, emoji name).
+pub fn emoji_cells(ws: &Workspace, lines: &mut [Line<'static>]) -> Vec<(usize, u16, String)> {
+    let number = |c: char| (c as u32).checked_sub(EMOJI_CELL).filter(|n| (*n as usize) < ws.emoji_ids.len());
+    let mut out = Vec::new();
+    for (n, line) in lines.iter_mut().enumerate() {
+        let mut col = 0u16;
+        for span in line.spans.iter_mut() {
+            if !span.content.chars().any(|c| number(c).is_some()) {
+                col += span.content.width() as u16;
+                continue;
+            }
+            // A picture's two cells carry the same number; the first places it.
+            let (mut text, mut open) = (String::new(), None);
+            for ch in span.content.chars() {
+                match number(ch) {
+                    Some(id) if open == Some(id) => open = None,
+                    Some(id) => {
+                        out.push((n, col, ws.emoji_ids[id as usize].clone()));
+                        open = Some(id);
+                    }
+                    None => {
+                        open = None;
+                        col += unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0) as u16;
+                        text.push(ch);
+                        continue;
+                    }
+                }
+                col += 1;
+                text.push(' ');
+            }
+            span.content = text.into();
+        }
+    }
+    out
+}
+
 /// Emoji shortcode (optionally with unicode hint) → display text.
 pub fn emoji(ws: &Workspace, name: &str, unicode: Option<&str>) -> String {
     if ws.settings.messages.emoji_as_names {
@@ -110,13 +171,17 @@ pub fn inline_spans(ws: &Workspace, i: &Inline) -> Vec<Span<'static>> {
             let shown = label.clone().filter(|l| !l.is_empty()).unwrap_or_else(|| url.trim_start_matches("mailto:").to_string());
             vec![Span::styled(shown, text_style(*style).fg(super::theme::p().link).add_modifier(Modifier::UNDERLINED))]
         }
-        Inline::Emoji { name, unicode } => vec![Span::raw(emoji(ws, name, unicode.as_deref()))],
+        Inline::Emoji { name, unicode } => vec![Span::raw(emoji_cell(ws, name, unicode.as_deref()))],
     }
 }
 
 /// Plain text of an inline element (notifications, previews).
 pub fn inline_plain(ws: &Workspace, i: &Inline) -> String {
-    inline_spans(ws, i).into_iter().map(|s| s.content.to_string()).collect()
+    match i {
+        // Never a picture's placeholder.
+        Inline::Emoji { name, unicode } => emoji(ws, name, unicode.as_deref()),
+        _ => inline_spans(ws, i).into_iter().map(|s| s.content.to_string()).collect(),
+    }
 }
 
 /// Greedy word wrap of styled spans to `width` columns. `prefix` is repeated on every
