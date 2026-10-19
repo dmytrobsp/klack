@@ -138,6 +138,7 @@ workspace account in `drafts/<team>-<user>.json` under the local data folder
 | r · e · d · y · Y · o · s · P | react · edit · delete · copy text · copy link · open image/video/snippet (in a video: Space pauses, ← / → jump 10 s) · save files · pin |
 | u | profile card of the author (←/→: people the message mentions); Enter messages them, h starts a huddle |
 | Enter · Alt+Enter | send · new line |
+| Ctrl+V | paste from the clipboard: text is typed in; a picture (a screenshot) or files copied in a file manager are attached above the box (✕, or Backspace in an empty box, removes one) and Enter sends them with your text — or on their own — as one message. Your terminal's own paste (Ctrl+Shift+V) only carries text, and over SSH there is no clipboard to read |
 | @ # : | mention, channel, emoji autocomplete |
 | `/upload <path> [text]` | upload a file |
 | `/join [#channel]` · `/leave` | join (default: the channel you are previewing — Ctrl+K finds channels you are not in; a previewed one is fetched again every 15 s, F6 → Messages & media) · leave the current channel |
