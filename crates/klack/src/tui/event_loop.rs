@@ -2316,7 +2316,7 @@ impl App {
         self.pending.sync(mode);
         let typed = Key::from_event(k);
         // Backspace goes back a key, unless the sequence binds it (`^␣ Backspace` clears the box).
-        let bound = k.code == crossterm::event::KeyCode::Backspace && k.modifiers.is_empty() && !matches!(self.resolve(k), Resolved::None);
+        let bound = k.code == crossterm::event::KeyCode::Backspace && k.modifiers.is_empty() && !super::which_key::backspace_goes_back(&self.keys, &self.active_contexts(), mode, self.pending.keys());
         if !bound && super::which_key::handle_key(&mut self.pending, self.which_key.as_mut(), typed) {
             self.pending_since = Some(std::time::Instant::now());
             return true;
@@ -4702,10 +4702,11 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         }
         let settings = &app.ws.settings.which_key;
         let pages = super::which_key::layout(&children, above_status, settings.max_height_percent, settings.icons).pages;
+        let back = super::which_key::backspace_goes_back(&app.keys, &contexts, mode, app.pending.keys());
         let title = super::which_key::title(&app.keys, &contexts, &app.pending);
         if let Some(panel) = app.which_key.as_mut() {
             panel.page = panel.page.min(pages.saturating_sub(1));
-            app.which_key_area = super::which_key::draw(f, above_status, &title, &children, panel, settings);
+            app.which_key_area = super::which_key::draw(f, above_status, &title, &children, panel, settings, back);
         }
     }
     // The status line: the mode, what is going on, the keys under way and the hints.

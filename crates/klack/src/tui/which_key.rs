@@ -11,7 +11,7 @@ use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
 use super::i18n::tr;
-use super::keymap::{short, Child, Context, Key, Keymap, Pending};
+use super::keymap::{short, Child, Context, Key, Keymap, Mode, Pending, Resolved};
 use super::settings::WhichKey;
 
 /// Words the panel shows besides labels and group names (for translation templates).
@@ -31,6 +31,12 @@ pub fn title(keys: &Keymap, contexts: &[Context], pending: &Pending) -> String {
         (None, _) => String::new(),
     };
     format!("{}  {name}", keys.show(pending.typed())).trim_end().to_string()
+}
+
+/// Whether Backspace goes back a key here: not when the pending sequence binds it itself
+/// (`^␣ Backspace` clears the box).
+pub fn backspace_goes_back(keys: &Keymap, contexts: &[Context], mode: Mode, pending: &[Key]) -> bool {
+    matches!(keys.resolve(contexts, mode, pending, Key::new(KeyCode::Backspace, KeyModifiers::NONE)), Resolved::None)
 }
 
 /// A key while a sequence is under way: Esc cancels it, Backspace goes back a key, Ctrl+D /
@@ -101,8 +107,8 @@ fn label(c: &Child) -> String {
 }
 
 /// The bottom row: how to close or go back, and the page when there are several.
-fn footer(page: usize, pages: usize) -> String {
-    let keys = format!("Esc {} · Backspace {}", tr("close"), tr("back"));
+fn footer(page: usize, pages: usize, back: bool) -> String {
+    let keys = if back { format!("Esc {} · Backspace {}", tr("close"), tr("back")) } else { format!("Esc {}", tr("close")) };
     match pages {
         0 | 1 => keys,
         _ if page + 1 < pages => format!("{}/{pages} · Ctrl+D {} · {keys}", page + 1, tr("more")),
@@ -122,7 +128,7 @@ pub fn layout(children: &[Child], screen: Rect, max_height_percent: u16, icons: 
     let rows = n.div_ceil(columns).min(max_rows);
     let pages = n.div_ceil(columns * rows);
     let entries = columns * entry + (columns - 1) * GAP;
-    let width = (entries.max(footer(0, pages).width()) + 4).min(screen.width as usize) as u16;
+    let width = (entries.max(footer(0, pages, true).width()) + 4).min(screen.width as usize) as u16;
     Layout { columns, rows, pages, width }
 }
 
@@ -136,7 +142,7 @@ fn put(buf: &mut Buffer, x: u16, y: u16, s: &str, room: usize, style: Style) {
 
 /// The panel in `settings.corner` of `screen`, `title` in its top border. Returns where it was
 /// drawn, for clicks (empty when it did not fit).
-pub fn draw(f: &mut Frame, screen: Rect, title: &str, children: &[Child], panel: &Panel, settings: &WhichKey) -> Rect {
+pub fn draw(f: &mut Frame, screen: Rect, title: &str, children: &[Child], panel: &Panel, settings: &WhichKey, back: bool) -> Rect {
     let l = layout(children, screen, settings.max_height_percent, settings.icons);
     let title = format!(" {title} ");
     let width = (l.width as usize).max(title.width() + 2).min(screen.width as usize) as u16;
@@ -178,7 +184,7 @@ pub fn draw(f: &mut Frame, screen: Rect, title: &str, children: &[Child], panel:
         let style = if c.group { Style::default().fg(p.accent) } else { Style::default() };
         put(buf, x + at as u16, y, &super::status::cut(&label(c), w.label), w.label.min(room(at)), style);
     }
-    let footer = footer(page, l.pages);
+    let footer = footer(page, l.pages, back);
     let room = right.saturating_sub(left) as usize;
     put(buf, left, inner.bottom() - 1, &super::status::cut(&footer, room), room, Style::default().fg(p.dim));
     area
@@ -203,7 +209,7 @@ mod tests {
     fn cells(w: u16, h: u16, children: &[Child], panel: &Panel, settings: &WhichKey) -> Vec<Vec<String>> {
         let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
         term.draw(|f| {
-            draw(f, f.area(), "␣  message", children, panel, settings);
+            draw(f, f.area(), "␣  message", children, panel, settings, true);
         })
         .unwrap();
         let buf = term.backend().buffer().clone();
@@ -218,6 +224,16 @@ mod tests {
     /// The cell column of `needle` in a row.
     fn cell_of(row: &[String], needle: &str) -> Option<usize> {
         row.iter().position(|s| s == needle)
+    }
+
+    #[test]
+    fn backspace_goes_back_unless_bound() {
+        use super::super::keymap::Context::*;
+        let keys = Keymap::load("").0;
+        let ctx = [Composer, Global];
+        assert!(!backspace_goes_back(&keys, &ctx, Mode::Insert, &[LEADER]), "^␣ Backspace clears the box");
+        assert!(backspace_goes_back(&keys, &ctx, Mode::Insert, &[LEADER, Key::parse("f").unwrap()]));
+        assert!(backspace_goes_back(&keys, &[Messages, Global], Mode::Normal, &[LEADER]));
     }
 
     #[test]
@@ -320,14 +336,14 @@ mod tests {
         // Bottom-right by default, above nothing else: the border's corners are where it says.
         let mut term = Terminal::new(TestBackend::new(60, 20)).unwrap();
         let mut area = Rect::default();
-        term.draw(|f| area = draw(f, f.area(), "␣  message", &many(3), &Panel::default(), &WhichKey::default())).unwrap();
+        term.draw(|f| area = draw(f, f.area(), "␣  message", &many(3), &Panel::default(), &WhichKey::default(), true)).unwrap();
         let buf = term.backend().buffer().clone();
         assert!(area.width > 2 && area.height > 2 && area.right() == 60 && area.bottom() == 20, "{area:?}");
         assert_eq!((buf[(area.x, area.y)].symbol(), buf[(area.right() - 1, area.bottom() - 1)].symbol()), ("┌", "┘"));
         assert_eq!(buf[(area.x - 1, area.y)].symbol(), " ", "nothing left of it");
         // Too small to draw: nothing to click.
         term = Terminal::new(TestBackend::new(2, 1)).unwrap();
-        term.draw(|f| area = draw(f, f.area(), "␣", &many(3), &Panel::default(), &WhichKey::default())).unwrap();
+        term.draw(|f| area = draw(f, f.area(), "␣", &many(3), &Panel::default(), &WhichKey::default(), true)).unwrap();
         assert_eq!(area, Rect::default());
     }
 }
