@@ -4225,7 +4225,7 @@ fn handle_net(app: &mut App, msg: Net) {
         }
         Net::Prefs(v) => app.ws.apply_prefs(&v),
         Net::Dnd(v) => {
-            app.ws.dnd = super::state::Dnd::from_json(&v);
+            app.ws.dnd.set_info(&v);
             // An answer that is already out of date is not asked again.
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64();
             app.dnd_refreshing = app.ws.dnd.stale(now);

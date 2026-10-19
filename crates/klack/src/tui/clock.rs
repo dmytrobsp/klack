@@ -14,12 +14,18 @@ pub fn set(name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The zone chosen in the preferences (None: the system's).
+pub fn zone() -> Option<chrono_tz::Tz> {
+    *ZONE.read().unwrap_or_else(|e| e.into_inner())
+}
+
 /// Epoch seconds `t` in the chosen zone.
 pub fn at(t: i64) -> Option<DateTime<FixedOffset>> {
     in_zone(*ZONE.read().unwrap_or_else(|e| e.into_inner()), t)
 }
 
-fn in_zone(zone: Option<chrono_tz::Tz>, t: i64) -> Option<DateTime<FixedOffset>> {
+/// Epoch seconds `t` in `zone` (None: the system's).
+pub fn in_zone(zone: Option<chrono_tz::Tz>, t: i64) -> Option<DateTime<FixedOffset>> {
     let utc = Utc.timestamp_opt(t, 0).single()?;
     Some(match zone {
         Some(zone) => utc.with_timezone(&zone).fixed_offset(),
@@ -29,22 +35,26 @@ fn in_zone(zone: Option<chrono_tz::Tz>, t: i64) -> Option<DateTime<FixedOffset>>
 
 /// Where a daily window that ends at `end` begins, given Slack's "next start" `start` of the same
 /// schedule (perhaps a day or more earlier): `start`'s time of day on `end`'s date, or the day
-/// before — in local time, so a DST change in between does not shift it by an hour.
-pub fn window_start(start: i64, end: i64) -> Option<i64> {
-    window_start_in(*ZONE.read().unwrap_or_else(|e| e.into_inner()), start, end)
-}
-
-fn window_start_in(zone: Option<chrono_tz::Tz>, start: i64, end: i64) -> Option<i64> {
+/// before — in local time of `zone` (None: the system's), so a DST change in between does not
+/// shift it by an hour.
+pub fn window_start_in(zone: Option<chrono_tz::Tz>, start: i64, end: i64) -> Option<i64> {
     let (from, to) = (in_zone(zone, start)?, in_zone(zone, end)?);
-    let local = |date: chrono::NaiveDate| -> Option<i64> {
-        let naive = date.and_time(from.time());
-        Some(match zone {
-            Some(zone) => zone.from_local_datetime(&naive).earliest()?.timestamp(),
-            None => Local.from_local_datetime(&naive).earliest()?.timestamp(),
-        })
-    };
+    let local = |date: chrono::NaiveDate| local_time(zone, date.and_time(from.time()));
     let same_day = local(to.date_naive())?;
     if same_day < end { Some(same_day) } else { local(to.date_naive().pred_opt()?) }
+}
+
+/// `date` at `minute` past midnight in `zone` (None: the system's), as epoch seconds; the earlier
+/// one when a DST change repeats it, None when it skips it.
+pub fn local_minute(zone: Option<chrono_tz::Tz>, date: chrono::NaiveDate, minute: u32) -> Option<i64> {
+    local_time(zone, date.and_hms_opt(minute / 60, minute % 60, 0)?)
+}
+
+fn local_time(zone: Option<chrono_tz::Tz>, naive: chrono::NaiveDateTime) -> Option<i64> {
+    Some(match zone {
+        Some(zone) => zone.from_local_datetime(&naive).earliest()?.timestamp(),
+        None => Local.from_local_datetime(&naive).earliest()?.timestamp(),
+    })
 }
 
 pub fn now() -> DateTime<FixedOffset> {

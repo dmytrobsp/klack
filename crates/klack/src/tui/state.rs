@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use serde_json::Value;
+use slack_core::dnd::Schedule;
 use slack_core::types::{Conversation, Message, User};
 
 #[derive(Debug, Clone, Default)]
@@ -127,6 +128,8 @@ pub struct Workspace {
     pub slack_commands: Vec<slack_core::types::SlashCommand>,
     pub muted: std::collections::HashSet<String>,
     pub dnd: Dnd,
+    /// The `dnd_*` prefs seen so far (boot, then one per `pref_change`), for `dnd.schedule`.
+    pub dnd_prefs: serde_json::Map<String, Value>,
     /// Active huddles by channel.
     pub huddles: HashMap<String, Huddle>,
     /// A channel we are not in, shown in the sidebar while it is being looked at.
@@ -260,6 +263,11 @@ pub struct Dnd {
     pub window: Option<(f64, f64)>,
     /// Manual snooze until this time.
     pub snooze_until: Option<f64>,
+    /// The notification schedule (from the prefs), to tell a quiet period longer than a day
+    /// from Slack's "next start" of a daily one.
+    pub schedule: Option<Schedule>,
+    /// The account's time zone, which the schedule is in (None: klack's).
+    pub zone: Option<chrono_tz::Tz>,
 }
 
 impl Dnd {
@@ -270,7 +278,12 @@ impl Dnd {
             _ => None,
         };
         let snooze_until = num("snooze_endtime").filter(|_| v["snooze_enabled"].as_bool().unwrap_or(false));
-        Dnd { window, snooze_until }
+        Dnd { window, snooze_until, ..Dnd::default() }
+    }
+
+    /// A new `dnd.info` / `dnd_status`, keeping the schedule and the zone.
+    pub fn set_info(&mut self, v: &Value) {
+        *self = Dnd { schedule: self.schedule.take(), zone: self.zone, ..Dnd::from_json(v) };
     }
 
     /// The known scheduled window has ended, so Slack should be asked for the next one.
@@ -282,10 +295,14 @@ impl Dnd {
     /// scheduled quiet period, whichever runs longer when one runs into the other.
     pub fn until(&self, now: f64) -> Option<f64> {
         const DAY: f64 = 86_400.0;
-        // The window ending at `end` starts at `start`'s time of day (local time, so not an hour
+        let zone = self.zone.or_else(super::clock::zone);
+        // A window longer than a day is one quiet period when the schedule is quiet all through it
+        // (a custom day paused all day); otherwise it is Slack's report of a daily schedule, and
+        // the window ending at `end` starts at `start`'s time of day (local time, so not an hour
         // off across a DST change).
         let window = self.window.map(|(start, end)| {
-            let begins = if end - start <= DAY { start } else { super::clock::window_start(start as i64, end as i64).map_or(end - (end - start).rem_euclid(DAY), |t| t as f64) };
+            let whole = end - start <= DAY || self.schedule.as_ref().is_some_and(|s| quiet_throughout(s, zone, start as i64, end as i64));
+            let begins = if whole { start } else { super::clock::window_start_in(zone, start as i64, end as i64).map_or(end - (end - start).rem_euclid(DAY), |t| t as f64) };
             (begins, end)
         });
         match (self.snooze_until.filter(|t| now < *t), window) {
@@ -299,6 +316,16 @@ impl Dnd {
     pub fn active(&self, now: f64) -> bool {
         self.until(now).is_some()
     }
+}
+
+/// Whether `schedule` pauses notifications all the way from `start` to `end`: at `start` and at
+/// each time of day in between where that can change, in `zone` (None: the system's).
+fn quiet_throughout(schedule: &Schedule, zone: Option<chrono_tz::Tz>, start: i64, end: i64) -> bool {
+    use chrono::{Datelike, Timelike};
+    let quiet = |t: i64| super::clock::in_zone(zone, t).is_some_and(|d| schedule.quiet_at(d.weekday().num_days_from_monday() as usize, d.hour() * 60 + d.minute()));
+    let (Some(first), Some(last)) = (super::clock::in_zone(zone, start), super::clock::in_zone(zone, end)) else { return false };
+    let marks = schedule.boundaries();
+    quiet(start) && first.date_naive().iter_days().take_while(|d| *d <= last.date_naive()).all(|date| marks.iter().filter_map(|m| super::clock::local_minute(zone, date, *m)).filter(|t| start < *t && *t < end).all(quiet))
 }
 
 /// Sections in linked-list order (the head is the one no other points to); anything off the
@@ -544,7 +571,8 @@ impl Workspace {
                 }
             }
         }
-        self.dnd = Dnd::from_json(&boot["dnd"]);
+        self.dnd.set_info(&boot["dnd"]);
+        self.dnd.zone = boot["self"]["tz"].as_str().and_then(|z| z.parse().ok()).or(self.dnd.zone);
         self.starred = boot["starred"].as_array().into_iter().flatten().filter_map(|s| s.as_str()).map(String::from).collect();
         self.apply_prefs(&boot["prefs"]);
     }
@@ -572,7 +600,8 @@ impl Workspace {
         }
     }
 
-    /// Apply user prefs (boot, or a `pref_change`): notification levels, keywords, mutes, VIPs.
+    /// Apply user prefs (boot, or a `pref_change`): notification levels, keywords, mutes, VIPs,
+    /// the notification schedule.
     pub fn apply_prefs(&mut self, prefs: &Value) {
         let all = match &prefs["all_notifications_prefs"] {
             Value::String(s) => serde_json::from_str(s).unwrap_or(Value::Null),
@@ -589,6 +618,11 @@ impl Workspace {
         }
         if let Some(list) = prefs["vip_users"].as_str() {
             self.vip = list.split(',').filter(|s| !s.is_empty()).map(String::from).collect();
+        }
+        let dnd: Vec<(&String, &Value)> = prefs.as_object().into_iter().flatten().filter(|(k, _)| k.starts_with("dnd_")).collect();
+        if !dnd.is_empty() {
+            self.dnd_prefs.extend(dnd.into_iter().map(|(k, v)| (k.clone(), v.clone())));
+            self.dnd.schedule = Some(Schedule::from_prefs(&Value::Object(self.dnd_prefs.clone())));
         }
     }
 
@@ -793,14 +827,69 @@ mod tests {
         let both = Dnd::from_json(&serde_json::json!({"dnd_enabled":true,"next_dnd_end_ts":1792472400,"next_dnd_start_ts":1792443600,"ok":true,"snooze_enabled":true,"snooze_endtime":1792448903,"snooze_remaining":1800}));
         assert_eq!(both.until(now), Some(1792472400.0));
         // A snooze running into the next period lasts to its end; one ending before it doesn't.
-        let ahead = |snooze: f64| Dnd { window: Some((now + 3600.0, now + 7200.0)), snooze_until: Some(snooze) };
+        let ahead = |snooze: f64| Dnd { window: Some((now + 3600.0, now + 7200.0)), snooze_until: Some(snooze), ..Dnd::default() };
         assert_eq!(ahead(now + 3600.0).until(now), Some(now + 7200.0));
         assert_eq!(ahead(now + 3000.0).until(now), Some(now + 3000.0));
         // A snooze outlasting the period.
-        assert_eq!(Dnd { window: Some((now - 60.0, now + 60.0)), snooze_until: Some(now + 600.0) }.until(now), Some(now + 600.0));
+        assert_eq!(Dnd { window: Some((now - 60.0, now + 60.0)), snooze_until: Some(now + 600.0), ..Dnd::default() }.until(now), Some(now + 600.0));
         for (d, t) in [(&neither, now), (&snooze, 1792447220.0), (&scheduled, now), (&both, now), (&scheduled, 1792476001.0)] {
             assert_eq!(d.active(t), d.until(t).is_some());
         }
+    }
+
+    #[test]
+    fn dnd_periods_longer_than_a_day() {
+        use slack_core::dnd::{DayHours, Schedule, ScheduleDays};
+        let between = || DayHours::Between("8:00".into(), "22:00".into());
+        let custom = |days: &[(usize, DayHours)]| {
+            let mut per_day: [DayHours; 7] = std::array::from_fn(|_| between());
+            for (i, d) in days {
+                per_day[*i] = d.clone();
+            }
+            Schedule { days: ScheduleDays::Custom, range: ("9:00".into(), "17:00".into()), per_day }
+        };
+        let jerusalem: chrono_tz::Tz = "Asia/Jerusalem".parse().unwrap();
+        let dnd = |info: serde_json::Value, schedule: Schedule| Dnd { schedule: Some(schedule), zone: Some(jerusalem), ..Dnd::from_json(&info) };
+        // Real dnd.info for a custom schedule with Tuesday paused all day: Tue 00:00 → Wed 08:00.
+        let all_day = dnd(serde_json::json!({"dnd_enabled":true,"next_dnd_start_ts":1792443600,"next_dnd_end_ts":1792558800,"snooze_enabled":false}), custom(&[(1, DayHours::Never)]));
+        assert_eq!(all_day.until(1792447200.0), Some(1792558800.0), "Tue 01:00 is inside");
+        assert_eq!(all_day.until(1792486800.0 + 11.0 * 3600.0), Some(1792558800.0), "Tue 23:00 too");
+        assert_eq!(all_day.until(1792558800.0), None);
+        // Real: Tuesday's notifications 0:30–1:30 → quiet Tue 01:30 → Wed 08:00, seen at 00:57.
+        let evening = dnd(serde_json::json!({"dnd_enabled":true,"next_dnd_start_ts":1792449000,"next_dnd_end_ts":1792558800,"snooze_enabled":false}), custom(&[(1, DayHours::Between("0:30".into(), "1:30".into()))]));
+        assert_eq!(evening.until(1792447200.0), None, "01:00 is before it");
+        assert_eq!(evening.until(1792486800.0), Some(1792558800.0), "Tue 12:00 is inside");
+        // A weekend paused all day: Fri 22:00 → Mon 08:00 (across the end of summer time).
+        let weekend = dnd(serde_json::json!({"dnd_enabled":true,"next_dnd_start_ts":1792782000,"next_dnd_end_ts":1792994400,"snooze_enabled":false}), custom(&[(5, DayHours::Never), (6, DayHours::Never)]));
+        assert_eq!(weekend.until(1792832400.0), Some(1792994400.0), "Saturday noon");
+        assert_eq!(weekend.until(1792990800.0), Some(1792994400.0), "Monday 07:00");
+        // Slack's daily report (00:00–09:00 seen at 15:20: start today, end tomorrow) stays daily
+        // with the schedule known: the afternoon in between is not quiet.
+        let daily = Schedule { days: ScheduleDays::EveryDay, range: ("9:00".into(), "0:00".into()), per_day: std::array::from_fn(|_| between()) };
+        let kyiv = Dnd { zone: Some("Europe/Kyiv".parse().unwrap()), ..dnd(serde_json::json!({"dnd_enabled":true,"next_dnd_start_ts":1792270800,"next_dnd_end_ts":1792389600}), daily) };
+        assert_eq!(kyiv.until(1792326040.0), None, "15:20");
+        assert_eq!(kyiv.until(1792270800.0 + 86_400.0 + 3.0 * 3600.0), Some(1792389600.0), "03:00 the next night");
+        // A custom period that isn't quiet all through (a day with notifications in it) is daily too.
+        let gap = dnd(serde_json::json!({"dnd_enabled":true,"next_dnd_start_ts":1792443600,"next_dnd_end_ts":1792558800}), custom(&[]));
+        assert_eq!(gap.until(1792486800.0), None, "Tue 12:00 gets notifications");
+        // dnd.info keeps the schedule and the zone.
+        let mut kept = all_day.clone();
+        kept.set_info(&serde_json::json!({"dnd_enabled":false}));
+        assert_eq!((kept.window, kept.schedule.is_some(), kept.zone), (None, true, Some(jerusalem)));
+    }
+
+    #[test]
+    fn the_schedule_follows_the_prefs() {
+        let mut ws = Workspace::default();
+        let info = serde_json::json!({"dnd_enabled":true,"next_dnd_start_ts":1792443600,"next_dnd_end_ts":1792558800,"snooze_enabled":false});
+        ws.apply_boot(&serde_json::json!({"self": {"tz": "Asia/Jerusalem"}, "dnd": info, "prefs": {"dnd_enabled": true, "dnd_days": "custom", "dnd_enabled_tuesday": "partial", "dnd_before_tuesday": "8:00", "dnd_after_tuesday": "22:00"}}));
+        assert_eq!(ws.dnd.zone, "Asia/Jerusalem".parse().ok());
+        assert_eq!(ws.dnd.until(1792486800.0), None, "Tue 12:00 gets notifications");
+        // A `pref_change` brings one pref: Tuesday paused all day.
+        ws.apply_prefs(&serde_json::json!({"dnd_enabled_tuesday": "all_day"}));
+        assert_eq!(ws.dnd.schedule.as_ref().map(|s| s.days), Some(slack_core::dnd::ScheduleDays::Custom));
+        ws.dnd.set_info(&info);
+        assert_eq!(ws.dnd.until(1792486800.0), Some(1792558800.0));
     }
 
     #[test]

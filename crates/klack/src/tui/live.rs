@@ -187,7 +187,7 @@ pub fn apply(ws: &mut Workspace, ev: &Value, current: Option<&str>) -> Effects {
                 }
             }
         }
-        "dnd_updated" => ws.dnd = super::state::Dnd::from_json(&ev["dnd_status"]),
+        "dnd_updated" => ws.dnd.set_info(&ev["dnd_status"]),
         // Threads you follow got replies, or were read (here or elsewhere).
         "update_global_thread_state" => ws.thread_unread = super::state::ThreadUnread::from_json(ev),
         // Someone added, removed or renamed a custom emoji.

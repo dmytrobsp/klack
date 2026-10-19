@@ -157,7 +157,7 @@ async fn watch(index: usize, session: WorkspaceSession, label: String, shown: Ar
 /// Boot workspace `index` into its own state and notify from its RTM events until it becomes
 /// the shown one (then the connection and the state are dropped).
 async fn watch_hidden(index: usize, client: &Client, label: &str, shown: &AtomicUsize, clicks: &tokio::sync::mpsc::UnboundedSender<Click>) -> anyhow::Result<()> {
-    use super::state::{Dnd, Workspace};
+    use super::state::Workspace;
     let (boot, users) = tokio::join!(client.user_boot(), client.users_list());
     let mut ws = Workspace::default();
     for u in users? {
@@ -184,7 +184,7 @@ async fn watch_hidden(index: usize, client: &Client, label: &str, shown: &Atomic
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64();
         if ws.dnd.stale(now) {
             match client.call_raw("dnd.info", &[]).await {
-                Ok(d) => ws.dnd = Dnd::from_json(&d),
+                Ok(d) => ws.dnd.set_info(&d),
                 Err(e) => tracing::debug!("dnd.info of workspace {}: {e}", index + 1),
             }
         }

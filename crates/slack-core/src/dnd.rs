@@ -53,6 +53,13 @@ pub fn slack_time(s: &str) -> Option<String> {
     (h < 24 && m < 60).then(|| format!("{h}:{m:02}"))
 }
 
+/// Minutes past midnight of a time of day.
+fn minutes(s: &str) -> Option<u32> {
+    let t = slack_time(s)?;
+    let (h, m) = t.split_once(':')?;
+    Some(h.parse::<u32>().ok()? * 60 + m.parse::<u32>().ok()?)
+}
+
 impl Schedule {
     /// From the `prefs` object of `users.prefs.get`.
     pub fn from_prefs(prefs: &Value) -> Schedule {
@@ -102,6 +109,54 @@ impl Schedule {
             out.insert(format!("dnd_enabled_{day}"), state.into());
         }
         Some(out.into())
+    }
+
+    /// Whether notifications are paused on `weekday` (0 = Monday) at `minute` past midnight. A
+    /// quiet period of every day / weekdays belongs to the day it starts on (weekdays: Friday's
+    /// runs into Saturday morning, Sunday's evening is free); a custom day is its own.
+    pub fn quiet_at(&self, weekday: usize, minute: u32) -> bool {
+        // Quiet from `start` to `end` (across midnight when `end` is earlier); `from_start` for the
+        // part on the day it starts, `into_next` for the part after midnight.
+        let span = |start: u32, end: u32, from_start: bool, into_next: bool| match start.cmp(&end) {
+            std::cmp::Ordering::Less => from_start && start <= minute && minute < end,
+            std::cmp::Ordering::Greater => (from_start && minute >= start) || (into_next && minute < end),
+            std::cmp::Ordering::Equal => false,
+        };
+        let (Some(start), Some(end)) = (minutes(&self.range.1), minutes(&self.range.0)) else { return false };
+        match self.days {
+            ScheduleDays::Off => false,
+            ScheduleDays::EveryDay => span(start, end, true, true),
+            ScheduleDays::Weekdays => span(start, end, weekday < 5, (weekday + 6) % 7 < 5),
+            ScheduleDays::Custom => match &self.per_day[weekday % 7] {
+                DayHours::Never => true,
+                DayHours::AllDay => false,
+                // Notifications from `from` to `to`; an inverted range read as quiet from `to` to `from`.
+                DayHours::Between(from, to) => match (minutes(from), minutes(to)) {
+                    (Some(from), Some(to)) if from <= to => minute < from || minute >= to,
+                    (Some(from), Some(to)) => to <= minute && minute < from,
+                    _ => false,
+                },
+            },
+        }
+    }
+
+    /// The minutes past midnight at which `quiet_at` can change.
+    pub fn boundaries(&self) -> Vec<u32> {
+        let mut out = vec![0];
+        let times: Vec<&String> = match self.days {
+            ScheduleDays::Off => Vec::new(),
+            ScheduleDays::EveryDay | ScheduleDays::Weekdays => vec![&self.range.0, &self.range.1],
+            ScheduleDays::Custom => self.per_day.iter().flat_map(|d| match d {
+                DayHours::Between(from, to) => vec![from, to],
+                _ => Vec::new(),
+            }).collect(),
+        };
+        for m in times.into_iter().filter_map(|t| minutes(t)) {
+            if !out.contains(&m) {
+                out.push(m);
+            }
+        }
+        out
     }
 }
 
@@ -186,6 +241,31 @@ mod tests {
             p.as_object_mut().unwrap().extend(s.to_prefs().unwrap().as_object().unwrap().clone());
             assert_eq!(Schedule::from_prefs(&p), s);
         }
+    }
+
+    #[test]
+    fn quiet_hours_by_day() {
+        let (h, mon, tue, fri, sat, sun) = (|h: u32| h * 60, 0, 1, 4, 5, 6);
+        // Weekdays, notifications 9:00–17:00 (as recorded): Monday's period runs into Tuesday.
+        let mut s = Schedule::from_prefs(&recorded());
+        assert!(s.quiet_at(mon, h(20)) && s.quiet_at(tue, h(3)) && !s.quiet_at(tue, h(12)));
+        assert!(s.quiet_at(sat, h(3)), "Friday's period runs into Saturday");
+        assert!(!s.quiet_at(sat, h(12)) && !s.quiet_at(sun, h(20)) && !s.quiet_at(mon, h(3)), "the weekend is free");
+        s.days = ScheduleDays::EveryDay;
+        assert!(s.quiet_at(sun, h(20)) && s.quiet_at(mon, h(3)) && s.quiet_at(fri, 17 * 60) && !s.quiet_at(fri, 9 * 60));
+        s.range = ("1:45".into(), "0:30".into());
+        assert!(s.quiet_at(tue, 60) && !s.quiet_at(tue, 105) && !s.quiet_at(tue, 29));
+        s.days = ScheduleDays::Off;
+        assert!(!s.quiet_at(tue, h(3)));
+        s.days = ScheduleDays::Custom;
+        s.per_day[tue] = DayHours::Never;
+        s.per_day[sat] = DayHours::AllDay;
+        s.per_day[sun] = between("0:30", "1:30");
+        assert!(s.quiet_at(tue, h(12)) && !s.quiet_at(sat, h(3)) && s.quiet_at(mon, h(23)) && s.quiet_at(mon, h(7)) && !s.quiet_at(mon, h(8)));
+        assert!(s.quiet_at(sun, 0) && !s.quiet_at(sun, 30) && !s.quiet_at(sun, 89) && s.quiet_at(sun, 90));
+        let mut b = s.boundaries();
+        b.sort();
+        assert_eq!(b, vec![0, 30, 90, 8 * 60, 22 * 60]);
     }
 
     #[test]
