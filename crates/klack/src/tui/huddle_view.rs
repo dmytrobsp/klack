@@ -216,6 +216,20 @@ pub fn picture_size(inner: Rect) -> Option<(u16, u16)> {
     STEPS.iter().rev().find(|s| **s <= fit).map(|h| (h * 2, *h))
 }
 
+/// A video picture's size in cells for an `area` of cells `font` pixels big: as large as fits
+/// (also larger than the frame itself), keeping the frame's aspect; None when either is empty.
+pub fn video_cells(frame: (usize, usize), area: (u16, u16), font: (u16, u16)) -> Option<(u16, u16)> {
+    if frame.0 == 0 || frame.1 == 0 || area.0 == 0 || area.1 == 0 {
+        return None;
+    }
+    let (fw, fh) = (font.0.max(1) as f64, font.1.max(1) as f64);
+    let (w, h) = (frame.0 as f64, frame.1 as f64);
+    let scale = (area.0 as f64 * fw / w).min(area.1 as f64 * fh / h);
+    let cols = (w * scale / fw).round().clamp(1.0, area.0 as f64) as u16;
+    let rows = (h * scale / fh).round().clamp(1.0, area.1 as f64) as u16;
+    Some((cols, rows))
+}
+
 /// A tile's border: lit (green, thick) while the person speaks, else accent when selected.
 fn tile_block(title: Span<'static>, speaking: bool, selected: bool) -> Block<'static> {
     let (style, kind) = if speaking {
@@ -424,17 +438,17 @@ impl HuddleView {
         }
     }
 
-    /// A video picture fitted into `area` (keeping its aspect), centred.
+    /// A video picture filling `area` as far as its aspect allows (scaled up too), centred.
     fn draw_video(&mut self, f: &mut Frame, area: Rect, attendee: &str, frame: &huddle::session::VideoFrame, media: &Media) {
         use ratatui::layout::{Constraint, Flex, Layout, Size};
-        if area.width == 0 || area.height == 0 {
-            return;
-        }
-        let size = Size::new(area.width, area.height);
+        let font = media.picker.font_size();
+        let Some((cols, rows)) = video_cells((frame.width, frame.height), (area.width, area.height), (font.width, font.height)) else { return };
+        let size = Size::new(cols, rows);
         let fresh = self.encoded.get(attendee).is_some_and(|(rgb, s, _)| std::sync::Arc::ptr_eq(rgb, &frame.rgb) && *s == size);
         if !fresh {
             let Some(img) = image::RgbImage::from_raw(frame.width as u32, frame.height as u32, frame.rgb.to_vec()) else { return };
-            match media.picker.new_protocol(image::DynamicImage::ImageRgb8(img), size, ratatui_image::Resize::Fit(None)) {
+            // Scale, not Fit: Fit never draws a frame larger than its own pixels.
+            match media.picker.new_protocol(image::DynamicImage::ImageRgb8(img), size, ratatui_image::Resize::Scale(None)) {
                 Ok(proto) => {
                     self.encoded.insert(attendee.to_string(), (frame.rgb.clone(), size, proto));
                 }
@@ -582,5 +596,37 @@ mod tests {
         assert_eq!(picture_size(Rect::new(0, 0, 13, 16)), Some((12, 6)), "width-bound");
         assert_eq!(picture_size(Rect::new(0, 0, 40, 7)), Some((12, 6)), "between steps: the smaller");
         assert_eq!(picture_size(Rect::new(0, 0, 40, 1)), None, "tiny: the initial instead");
+    }
+
+    #[test]
+    fn video_fills_its_tile() {
+        let font = (10, 20);
+        // A small 16:9 frame grows past its own pixels: width-bound in a 4:3-ish tile.
+        assert_eq!(video_cells((640, 360), (80, 30), font), Some((80, 23)));
+        // Maximized: bigger again, height-bound now.
+        assert_eq!(video_cells((640, 360), (200, 50), font), Some((178, 50)));
+        // A big frame shrinks into a small tile.
+        assert_eq!(video_cells((1920, 1080), (30, 8), font), Some((28, 8)));
+        // A tall frame: height-bound, centred columns.
+        assert_eq!(video_cells((360, 640), (80, 30), font), Some((34, 30)));
+        // Never past the tile, at least a cell, nothing for an empty tile or frame.
+        assert_eq!(video_cells((4000, 10), (40, 10), font), Some((40, 1)));
+        assert_eq!(video_cells((640, 360), (1, 1), font), Some((1, 1)));
+        assert_eq!(video_cells((640, 360), (0, 10), font), None);
+        assert_eq!(video_cells((0, 360), (80, 30), font), None);
+        assert_eq!(video_cells((640, 360), (80, 30), (0, 0)), Some((53, 30)), "an unknown font size: square cells");
+    }
+
+    #[test]
+    fn a_small_frame_is_drawn_tile_sized() {
+        let media = Media::with(ratatui_image::picker::Picker::halfblocks());
+        let frame = huddle::session::VideoFrame { attendee_id: "a".into(), stream_id: 1, width: 64, height: 36, rgb: std::sync::Arc::new(vec![200; 64 * 36 * 3]) };
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(220, 60)).unwrap();
+        let mut v = HuddleView::default();
+        for area in [Rect::new(0, 0, 80, 30), Rect::new(0, 0, 200, 50)] {
+            terminal.draw(|f| v.draw_video(f, area, "a", &frame, &media)).unwrap();
+            let drawn = v.encoded["a"].2.size();
+            assert_eq!(Some((drawn.width, drawn.height)), video_cells((64, 36), (area.width, area.height), (10, 20)), "{area:?}");
+        }
     }
 }
