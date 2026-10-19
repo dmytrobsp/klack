@@ -15,6 +15,7 @@ pub mod help;
 pub mod highlight;
 pub mod huddle_view;
 pub mod i18n;
+pub mod keys_file;
 pub mod keymap;
 pub mod live;
 pub mod media;

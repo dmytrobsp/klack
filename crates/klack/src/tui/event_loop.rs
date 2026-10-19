@@ -14,6 +14,7 @@ use tokio::sync::mpsc;
 
 use super::composer::{Composer, KeyOutcome};
 use super::keymap::{Action, Context, Key, Keymap, LEADER, Mode, Pending, Resolved};
+use super::keys_file::Change;
 use super::messages::MessagePane;
 use super::picker::EmojiPicker;
 use super::sidebar::Sidebar;
@@ -1647,26 +1648,39 @@ impl App {
         }
         seq.push(key);
         let seq = p.capturing.take().unwrap_or_default();
-        let text = match field {
+        let change = match field {
             Some(super::prefs::Field::Binding(i)) => {
                 let info = &super::keymap::ACTIONS[i];
-                self.keys.to_toml(Some((info.context, info.name, vec![seq])), None)
+                Change::Binding { context: info.context, name: info.name, seqs: Some(vec![seq.iter().map(Key::spec).collect::<Vec<_>>().join(" ")]) }
             }
-            Some(super::prefs::Field::Leader) => self.keys.to_toml(None, Some(Some(key))),
+            Some(super::prefs::Field::Leader) => Change::Leader(Some(key.spec())),
             _ => return,
         };
-        self.save_keys(&text);
+        self.save_keys(&change);
     }
 
-    /// Write keys.toml and use it; problems are shown under the preferences.
-    fn save_keys(&mut self, text: &str) {
-        let (map, warnings) = Keymap::load(text);
-        let written = super::keymap::config_path().ok_or_else(|| "no config directory".to_string()).and_then(|path| {
-            if let Some(dir) = path.parent() {
-                std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    /// Change one entry of keys.toml (the rest of the file stays as the user wrote it) and use
+    /// it; problems are shown under the preferences.
+    fn save_keys(&mut self, change: &Change) {
+        let current = match super::keymap::config_path().map(std::fs::read_to_string) {
+            Some(Err(e)) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
+            Some(Ok(text)) => Ok(text),
+            _ => Ok(String::new()),
+        };
+        let edited = current.and_then(|text| super::keys_file::apply(&text, change).map_err(|e| format!("keys.toml has an error; fix it by hand: {e}")));
+        let (map, warnings, written) = match edited {
+            Ok(text) => {
+                let (map, warnings) = Keymap::load(&text);
+                let written = super::keymap::config_path().ok_or_else(|| "no config directory".to_string()).and_then(|path| {
+                    if let Some(dir) = path.parent() {
+                        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+                    }
+                    std::fs::write(&path, text).map_err(|e| e.to_string()).map(|_| path.display().to_string())
+                });
+                (map, warnings, written)
             }
-            std::fs::write(&path, text).map_err(|e| e.to_string()).map(|_| path.display().to_string())
-        });
+            Err(e) => (Keymap::load("").0, Vec::new(), Err(e)),
+        };
         if written.is_ok() {
             super::messages::set_open_key(map.first_shown(Context::Messages, Action::Open).unwrap_or_default());
             self.keys = map;
@@ -3116,21 +3130,17 @@ fn handle_dialog(app: &mut App, ev: &Event) -> bool {
                 Some(Action::Unbind) => match p.selected_field() {
                     Some(super::prefs::Field::Binding(i)) => {
                         let info = &super::keymap::ACTIONS[i];
-                        let text = app.keys.to_toml(Some((info.context, info.name, vec![])), None);
-                        app.save_keys(&text);
+                        app.save_keys(&Change::Binding { context: info.context, name: info.name, seqs: Some(vec![]) });
                     }
                     Some(super::prefs::Field::Leader) => {
-                        let text = app.keys.to_toml(None, Some(None));
-                        app.save_keys(&text);
+                        app.save_keys(&Change::Leader(Some(String::new())));
                     }
                     _ => {}
                 },
                 Some(Action::Reset) => {
                     if let Some(super::prefs::Field::Binding(i)) = p.selected_field() {
                         let info = &super::keymap::ACTIONS[i];
-                        let defaults = Keymap::load("").0.sequences(info.context, info.name);
-                        let text = app.keys.to_toml(Some((info.context, info.name, defaults)), None);
-                        app.save_keys(&text);
+                        app.save_keys(&Change::Binding { context: info.context, name: info.name, seqs: None });
                     }
                 }
                 _ => {}

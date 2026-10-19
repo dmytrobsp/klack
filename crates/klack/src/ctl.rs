@@ -19,6 +19,9 @@ pub enum Ctl {
         #[arg(default_value = "dark")]
         base: String,
     },
+    /// Print a complete keys.toml with every default binding, commented (save it as
+    /// keys.toml next to settings.toml and change what you want).
+    KeysTemplate,
     /// Check a theme file and install it (as themes/<file name>), for F6 → Appearance.
     ThemeImport { path: std::path::PathBuf },
     /// List conversations (`-` marks public channels you are not in).
@@ -183,6 +186,7 @@ pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
     let client = client(profile, team)?;
     match cmd {
         Ctl::LocaleTemplate => print!("{}", crate::tui::i18n::template()),
+        Ctl::KeysTemplate => print!("{}", crate::tui::keys_file::template(&crate::tui::keymap::Keymap::load("").0)),
         Ctl::ThemeTemplate { base } => print!("{}", crate::tui::theme::template(&base).map_err(anyhow::Error::msg)?),
         Ctl::ThemeImport { path } => {
             let name = path.file_stem().and_then(|n| n.to_str()).ok_or_else(|| anyhow!("bad file name"))?.to_string();

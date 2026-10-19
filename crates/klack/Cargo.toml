@@ -36,6 +36,7 @@ rustls = { version = "0.23.46", default-features = false, features = ["ring", "s
 # patterns took ~19 MB of memory with fancy-regex, ~2 MB with it (measured 2026-10-19).
 syntect = { version = "5.3.0", default-features = false, features = ["parsing", "default-syntaxes", "default-themes", "regex-onig"] }
 toml = "1.1.8"
+toml_edit = "0.25"
 chrono-tz = "0.10.4"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 aes = "0.8"

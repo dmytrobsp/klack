@@ -790,8 +790,6 @@ pub struct Keymap {
     groups: HashMap<Vec<Key>, (String, Option<String>)>,
     /// The user's which-key labels and icons, from `[labels.<context>]`.
     labels: HashMap<(Context, &'static str), (Option<String>, Option<String>)>,
-    /// `[groups]` and `[labels]` as read, written back by [`Keymap::to_toml`].
-    extra: toml::Table,
 }
 
 /// One key in [`Keymap::show`]'s short form (`␣`, `^X`, `M-x`, `F5`).
@@ -968,7 +966,6 @@ impl Keymap {
             toml::Value::Table(t) if t.keys().all(|k| k == field || k == "icon") && t.values().all(|v| v.is_str()) => Some((t.get(field).and_then(|v| v.as_str()).map(String::from), t.get("icon").and_then(|v| v.as_str()).map(String::from))),
             _ => None,
         };
-        let mut kept = toml::Table::new();
         if section == "groups" {
             for (seq, v) in table {
                 let parsed = self.parse_sequences(Context::Global, &[seq.clone()]).map(|mut s| s.remove(0));
@@ -978,7 +975,6 @@ impl Keymap {
                     (Ok(keys), Some((name, icon))) => {
                         let name = name.unwrap_or_else(|| self.group(&keys).map(|(n, _)| n).unwrap_or_default());
                         self.groups.insert(keys, (name, icon));
-                        kept.insert(seq.clone(), v.clone());
                     }
                 }
             }
@@ -992,7 +988,6 @@ impl Keymap {
                     warnings.push(format!("keys.toml: [labels.{context_name}] must be a table"));
                     continue;
                 };
-                let mut kept_here = toml::Table::new();
                 for (action, v) in entries {
                     let Some(info) = ACTIONS.iter().find(|a| a.context == context && a.name == action) else {
                         warnings.push(format!("keys.toml: [labels.{context_name}] has no action '{action}'"));
@@ -1001,15 +996,12 @@ impl Keymap {
                     match names(v, "label") {
                         Some(names) => {
                             self.labels.insert((context, info.name), names);
-                            kept_here.insert(action.clone(), v.clone());
                         }
                         None => warnings.push(format!("keys.toml: [labels.{context_name}] {action} must be a label or {{ label, icon }}")),
                     }
                 }
-                kept.insert(context_name.clone(), toml::Value::Table(kept_here));
             }
         }
-        self.extra.insert(section.to_string(), toml::Value::Table(kept));
     }
 
     /// A prefix's name and icon: the user's (`[groups]`), else [`GROUPS`]'.
@@ -1380,46 +1372,6 @@ impl Keymap {
     pub fn sequences(&self, context: Context, name: &str) -> Vec<Vec<Key>> {
         self.keys.iter().find(|((c, n), _)| *c == context && *n == name).map(|(_, s)| s.clone()).unwrap_or_default()
     }
-
-    /// keys.toml text for these bindings, with `change` applied (an action's new sequences,
-    /// or a new leader); only entries that differ from the defaults are written.
-    pub fn to_toml(&self, change: Option<(Context, &str, Vec<Vec<Key>>)>, leader: Option<Option<Key>>) -> String {
-        let leader = leader.unwrap_or(self.leader);
-        let defaults = Keymap::load("").0;
-        // Without any leader the defaults have no leader sequences, and that is no change.
-        let same = Keymap { leader: None, insert_leader: None, ..Default::default() };
-        let default_seqs = |info: &ActionInfo| if self.leader.is_none() && self.insert_leader.is_none() { same.defaults(info) } else { defaults.sequences(info.context, info.name) };
-        let spec = |seq: &[Key]| seq.iter().map(Key::spec).collect::<Vec<_>>().join(" ");
-        let mut out = String::new();
-        // A leader set to none is written empty (left out, it would be the default again).
-        for (name, key, default) in [("leader", leader, defaults.leader), ("insert_leader", self.insert_leader, defaults.insert_leader)] {
-            if key != default {
-                out += &format!("{name} = \"{}\"\n", key.map(|k| k.spec()).unwrap_or_default());
-            }
-        }
-        for context in Context::ALL {
-            let mut entries = Vec::new();
-            for info in ACTIONS.iter().filter(|a| a.context == context) {
-                let seqs = match &change {
-                    Some((c, n, s)) if *c == context && *n == info.name => s.clone(),
-                    _ => self.sequences(context, info.name),
-                };
-                if seqs != default_seqs(info) {
-                    let list: Vec<String> = seqs.iter().map(|s| format!("\"{}\"", spec(s).replace('\\', "\\\\").replace('"', "\\\""))).collect();
-                    entries.push(format!("{} = [{}]\n", info.name, list.join(", ")));
-                }
-            }
-            if !entries.is_empty() {
-                out += &format!("\n[{}]\n{}", context.name(), entries.concat());
-            }
-        }
-        // The group names and labels, as they were read.
-        let extra: toml::Table = self.extra.iter().filter(|(_, v)| v.as_table().is_some_and(|t| !t.is_empty())).map(|(k, v)| (k.clone(), v.clone())).collect();
-        if !extra.is_empty() {
-            out += &format!("\n{}", toml::to_string(&extra).unwrap_or_default());
-        }
-        out
-    }
 }
 
 /// Where the user's bindings live: `keys.toml` next to the profiles.
@@ -1568,19 +1520,6 @@ mod tests {
             let k = Key::parse(s).unwrap();
             assert_eq!(Key::parse(&k.spec()), Ok(k), "{s} → {}", k.spec());
         }
-        let (map, _) = Keymap::load("");
-        assert_eq!(map.to_toml(None, None), "", "defaults write nothing");
-        let none = map.to_toml(None, Some(None));
-        assert!(none.starts_with("leader = \"\"\n"), "no leader is written empty: {none}");
-        assert_eq!(Keymap::load(&none).0.leader, None);
-        let text = map.to_toml(Some((Context::Messages, "react", vec![vec![k("R")]])), Some(Some(k("ctrl+b"))));
-        assert!(text.starts_with("leader = \"ctrl+b\""), "{text}");
-        let (again, warnings) = Keymap::load(&text);
-        assert!(warnings.is_empty(), "{warnings:?}");
-        assert_eq!(one(&again, Context::Messages, &[], k("R")), Resolved::Action(Context::Messages, Action::React));
-        let chord = again.to_toml(Some((Context::Global, "jump_to", vec![vec![LEADER, k("k")]])), None);
-        assert!(chord.contains("jump_to = [\"<leader> k\"]"), "{chord}");
-        assert!(chord.contains("react = [\"R\"]"), "keeps earlier changes: {chord}");
     }
 
     #[test]
@@ -1764,10 +1703,6 @@ mod tests {
         assert_eq!(map.children(&[Messages, Global], Mode::Normal, &[LEADER, k("h")]).iter().find(|c| c.key == k("m")).map(|c| c.label.as_str()), Some("hush"));
         let (_, warnings) = Keymap::load("[labels.nowhere]\nx = \"y\"\n[labels.global]\nnothing = \"z\"\nmute = 3\n[groups]\n\"<leader> hyper+x\" = \"bad\"\n");
         assert_eq!(warnings.len(), 4, "{warnings:#?}");
-        // Written back with the bindings.
-        let (again, warnings) = Keymap::load(&map.to_toml(None, None));
-        assert!(warnings.is_empty(), "{warnings:?}");
-        assert_eq!(again.children(&[Messages, Global], Mode::Normal, &[LEADER]), top);
     }
 
     #[test]
@@ -1809,7 +1744,6 @@ mod tests {
         // No leader at all: the other keys of those actions stay.
         let (none, _) = Keymap::load("leader = \"\"\ninsert_leader = \"\"\n");
         assert_eq!(none.resolve(&[Messages, Global], Mode::Normal, &[], k("ctrl+k")), Resolved::Action(Global, Action::Switcher));
-        assert_eq!(none.to_toml(None, None), "leader = \"\"\ninsert_leader = \"\"\n", "the leader sequences are not written out as removed");
     }
 
     #[test]
