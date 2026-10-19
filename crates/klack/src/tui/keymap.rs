@@ -481,6 +481,8 @@ actions! {
     Switcher {
         Up "up" "previous entry" ["up"]
         Down "down" "next entry" ["down", "tab"]
+        PageUp "page_up" "a page up" ["pageup"]
+        PageDown "page_down" "a page down" ["pagedown"]
         Open "open" "go there" ["enter"]
         Close "close" "close" ["esc"]
         Erase "erase" "delete a character" ["backspace"]

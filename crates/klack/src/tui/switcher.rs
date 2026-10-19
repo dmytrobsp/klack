@@ -9,7 +9,8 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use super::autocomplete::rank;
 use super::state::Workspace;
 
-const MAX: usize = 50;
+/// At most this many entries (the list scrolls; ranking a few thousand is cheap).
+const MAX: usize = 2000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target {
@@ -30,6 +31,8 @@ pub struct Entry {
 pub struct Switcher {
     pub query: String,
     pub selected: usize,
+    /// Rows of the list at the last draw (a page for PageUp / PageDown).
+    pub height: usize,
 }
 
 impl Switcher {
@@ -41,17 +44,21 @@ impl Switcher {
         self.selected = if len == 0 { 0 } else { (self.selected as isize + delta).clamp(0, len as isize - 1) as usize };
     }
 
-    pub fn draw(&self, f: &mut Frame, area: Rect, ws: &Workspace) {
+    pub fn draw(&mut self, f: &mut Frame, area: Rect, ws: &Workspace) {
         let [popup] = Layout::horizontal([Constraint::Length(60.min(area.width))]).flex(Flex::Center).areas(area);
         let [popup] = Layout::vertical([Constraint::Length(18.min(area.height))]).flex(Flex::Center).areas(popup);
         super::media::clear_modal(f, popup);
-        let block = Block::default().borders(Borders::ALL).border_style(Style::default().fg(super::theme::p().accent)).title(format!(" {} ", super::i18n::tr("Jump to…")));
+        let items = self.entries(ws);
+        let mut block = Block::default().borders(Borders::ALL).border_style(Style::default().fg(super::theme::p().accent)).title(format!(" {} ", super::i18n::tr("Jump to…")));
         let inner = block.inner(popup);
-        f.render_widget(block, popup);
         let [input, list] = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(inner);
+        self.height = list.height as usize;
+        if items.len() > self.height {
+            block = block.title_bottom(Line::styled(format!(" {} matches ", items.len()), Style::default().fg(super::theme::p().dim)).right_aligned());
+        }
+        f.render_widget(block, popup);
         f.render_widget(Paragraph::new(Line::from(vec![Span::styled("› ", Style::default().fg(super::theme::p().dim)), Span::raw(self.query.clone())])), input);
         f.set_cursor_position((input.x + 2 + self.query.chars().count() as u16, input.y));
-        let items = self.entries(ws);
         let height = list.height as usize;
         let start = self.selected.saturating_sub(height.saturating_sub(1));
         let lines: Vec<Line> = items
@@ -155,5 +162,19 @@ mod tests {
         let browse: Vec<_> = entries(&w, "#").into_iter().map(|e| e.label).collect();
         assert_eq!(browse, vec!["#random", "#general", "#design"], "channels only: unread, members, then the rest");
         assert!(entries(&w, "#bob").is_empty(), "no people or DMs after #");
+    }
+
+    #[test]
+    fn long_lists_are_not_cut_at_fifty() {
+        let mut w = ws();
+        for i in 0..300 {
+            let id = format!("C{i:03}x");
+            w.conversations.insert(id.clone(), Conversation { id, name: format!("chan-{i:03}"), is_channel: true, is_member: true, ..Default::default() });
+        }
+        assert_eq!(entries(&w, "chan").len(), 300, "every match, the list scrolls");
+        let mut sw = Switcher { query: "chan".into(), height: 10, ..Default::default() };
+        sw.move_by(10, 300);
+        sw.move_by(10_000, 300);
+        assert_eq!(sw.selected, 299);
     }
 }

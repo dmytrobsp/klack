@@ -2478,6 +2478,8 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
                 Some(Action::Close) => app.switcher = None,
                 Some(Action::Up) => sw.move_by(-1, len),
                 Some(Action::Down) => sw.move_by(1, len),
+                Some(Action::PageUp) => sw.move_by(-(sw.height.max(1) as isize), len),
+                Some(Action::PageDown) => sw.move_by(sw.height.max(1) as isize, len),
                 Some(Action::Open) => app.switch(),
                 Some(Action::Erase) => {
                     sw.query.pop();
@@ -3353,7 +3355,7 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     } else {
         app.status.clone()
     };
-    if let Some(sw) = &app.switcher {
+    if let Some(sw) = app.switcher.as_mut() {
         sw.draw(f, body, &app.ws);
     }
     if let Some(search) = &app.search {
