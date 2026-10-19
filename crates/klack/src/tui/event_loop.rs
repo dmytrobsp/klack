@@ -286,6 +286,16 @@ fn prefilled(text: &str, editing: bool, command: &str, wrap: Wrap) -> Result<(St
     }
 }
 
+/// Whether a key press clears the status note: a command or the start/end of a sequence does,
+/// plain typing (a key bound to nothing outside a sequence) does not. It clears before the
+/// action runs, so a note the action sets survives.
+fn clears_note(resolved: &Resolved, in_sequence: bool) -> bool {
+    match resolved {
+        Resolved::Action(..) | Resolved::Pending => true,
+        Resolved::None => in_sequence,
+    }
+}
+
 /// Whether a status shown for `age` should go.
 fn status_expired(status: &str, age: Duration) -> bool {
     !status.is_empty() && !status.ends_with('…') && age >= STATUS_TTL
@@ -2306,6 +2316,12 @@ impl App {
         self.keys.resolve(&self.active_contexts(), self.mode(), self.pending.keys(), Key::from_event(k))
     }
 
+    /// Drop the status bar's message (a command key was pressed). The ringing invitation is not a note.
+    fn clear_note(&mut self) {
+        self.status.clear();
+        self.status_shown.0.clear();
+    }
+
     /// Before a key is handled: hold it if it only starts a sequence (the leader), drop it
     /// if it ends a sequence that means nothing. True when the key was used up here.
     fn hold_sequence(&mut self, k: &crossterm::event::KeyEvent) -> bool {
@@ -2318,10 +2334,14 @@ impl App {
         // Backspace goes back a key, unless the sequence binds it (`^␣ Backspace` clears the box).
         let bound = k.code == crossterm::event::KeyCode::Backspace && k.modifiers.is_empty() && !super::which_key::backspace_goes_back(&self.keys, &self.active_contexts(), mode, self.pending.keys());
         if !bound && super::which_key::handle_key(&mut self.pending, self.which_key.as_mut(), typed) {
+            self.clear_note();
             self.pending_since = Some(std::time::Instant::now());
             return true;
         }
         let (resolved, key) = self.keys.press(&self.active_contexts(), mode, self.pending.keys(), typed);
+        if clears_note(&resolved, !self.pending.keys().is_empty()) {
+            self.clear_note();
+        }
         match resolved {
             Resolved::Action(..) => false,
             Resolved::Pending => {
@@ -5048,6 +5068,16 @@ mod tests {
         assert!(!seek_older("1792344759.290079", "1792344759.290079"), "the oldest loaded one is there");
         assert!(!seek_older("1792349999.000000", "1792344759.290079"), "newer: not paged for");
         assert!(!seek_older("x", "1.0"));
+    }
+
+    #[test]
+    fn command_keys_clear_the_note() {
+        use super::clears_note;
+        use super::super::keymap::{Action, Context, Resolved};
+        assert!(clears_note(&Resolved::Action(Context::Global, Action::Quit), false), "a command");
+        assert!(clears_note(&Resolved::Pending, false), "the leader");
+        assert!(clears_note(&Resolved::None, true), "ends a sequence with its own note");
+        assert!(!clears_note(&Resolved::None, false), "typing");
     }
 
     #[test]
