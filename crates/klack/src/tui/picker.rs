@@ -24,6 +24,10 @@ pub struct Candidate {
 pub struct EmojiPicker {
     pub query: String,
     pub selected: usize,
+    /// The whole popup and its list as last drawn, and the first candidate shown (for the mouse).
+    pub area: Rect,
+    list: Rect,
+    first: usize,
 }
 
 impl EmojiPicker {
@@ -80,9 +84,20 @@ impl EmojiPicker {
         self.selected = (self.selected as isize + delta).clamp(0, len as isize - 1) as usize;
     }
 
-    pub fn draw(&self, f: &mut Frame, area: Rect, custom: &HashMap<String, String>) {
+    /// A picker already searching for `query`.
+    pub fn searching(query: &str) -> EmojiPicker {
+        EmojiPicker { query: query.to_string(), ..Default::default() }
+    }
+
+    /// The candidate drawn at a terminal position.
+    pub fn row_at(&self, column: u16, row: u16) -> Option<usize> {
+        self.list.contains((column, row).into()).then(|| self.first + (row - self.list.y) as usize)
+    }
+
+    pub fn draw(&mut self, f: &mut Frame, area: Rect, custom: &HashMap<String, String>) {
         let [popup] = Layout::horizontal([Constraint::Length(44)]).flex(Flex::Center).areas(area);
         let [popup] = Layout::vertical([Constraint::Length(16)]).flex(Flex::Center).areas(popup);
+        self.area = popup;
         super::media::clear_modal(f, popup);
         let block = Block::default().borders(Borders::ALL).border_style(Style::default().fg(super::theme::p().accent)).title(format!(" {} ", super::i18n::tr("Add reaction")));
         let inner = block.inner(popup);
@@ -93,6 +108,7 @@ impl EmojiPicker {
         let cands = self.candidates(custom);
         let height = list.height as usize;
         let start = self.selected.saturating_sub(height.saturating_sub(1));
+        (self.list, self.first) = (Rect { height: list.height.min(cands.len().saturating_sub(start) as u16), ..list }, start);
         let lines: Vec<Line> = cands
             .iter()
             .enumerate()
@@ -114,6 +130,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn clicks_find_the_emoji() {
+        let mut p = EmojiPicker::default();
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 30)).unwrap();
+        terminal.draw(|f| p.draw(f, f.area(), &HashMap::new())).unwrap();
+        // 44×16 centred: rows 7–22, the border, the search row, then the list from row 9.
+        assert_eq!(p.area, Rect::new(8, 7, 44, 16));
+        assert_eq!((p.row_at(20, 9), p.row_at(20, 10), p.row_at(20, 8), p.row_at(2, 9)), (Some(0), Some(1), None, None));
+        let n = p.candidates(&HashMap::new()).len() as u16;
+        assert_eq!((p.row_at(20, 9 + n - 1), p.row_at(20, 9 + n)), (Some(n as usize - 1), None), "the last favourite, then nothing below it");
+        // Thirteen rows of list: with the 21st selected, the list starts at the 9th.
+        p.query = "e".into();
+        p.selected = 20;
+        terminal.draw(|f| p.draw(f, f.area(), &HashMap::new())).unwrap();
+        assert_eq!(p.row_at(20, 9), Some(8), "a scrolled list counts from the first row shown");
+    }
+
+    #[test]
     fn favourites_when_empty() {
         let p = EmojiPicker::default();
         let c = p.candidates(&HashMap::new());
@@ -123,20 +156,20 @@ mod tests {
 
     #[test]
     fn ranking_prefers_exact_then_prefix() {
-        let p = EmojiPicker { query: "tada".into(), selected: 0 };
+        let p = EmojiPicker { query: "tada".into(), ..Default::default() };
         assert_eq!(p.candidates(&HashMap::new())[0].name, "tada");
-        let p = EmojiPicker { query: "hea".into(), selected: 0 };
+        let p = EmojiPicker { query: "hea".into(), ..Default::default() };
         let names: Vec<String> = p.candidates(&HashMap::new()).into_iter().map(|c| c.name).collect();
         assert!(names.iter().take(5).any(|n| n == "heart"), "{names:?}");
     }
 
     #[test]
     fn includes_custom_emoji() {
-        let p = EmojiPicker { query: "parrot".into(), selected: 0 };
+        let p = EmojiPicker { query: "parrot".into(), ..Default::default() };
         let custom = HashMap::from([("partyparrot".to_string(), "https://emoji.slack-edge.com/T1/partyparrot/1.gif".to_string()), ("shipit".into(), "alias:squirrel".into())]);
         let c = p.candidates(&custom);
         assert!(c.iter().any(|c| c.name == "partyparrot" && c.custom && c.glyph.trim().is_empty()), "a picture: no glyph");
-        let p = EmojiPicker { query: "shipit".into(), selected: 0 };
+        let p = EmojiPicker { query: "shipit".into(), ..Default::default() };
         let c = &p.candidates(&custom)[0];
         assert_eq!((c.name.as_str(), c.glyph.as_str()), ("shipit", "🐿️"), "an alias shows its emoji (Slack's name for it)");
     }

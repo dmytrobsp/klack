@@ -1771,7 +1771,10 @@ impl App {
     /// goes three rows, as in the message panes. False when none is open.
     fn wheel_in_popup(&mut self, down: bool) -> bool {
         let step = if down { 1 } else { -1 };
-        if let Some(help) = self.help.as_mut() {
+        if let Some((picker, _, _)) = self.picker.as_mut() {
+            let len = picker.candidates(&self.ws.custom_emoji).len();
+            picker.move_by(step, len);
+        } else if let Some(help) = self.help.as_mut() {
             help.scroll_by(3 * step);
         } else if let Some(p) = self.prefs.as_mut() {
             if let Some(picker) = p.picker.as_mut() {
@@ -2697,6 +2700,22 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
                 Some(Action::Down) => m.move_by(1),
                 Some(Action::Open) => app.run_menu(),
                 Some(Action::Close) => app.menu = None,
+                _ => {}
+            }
+        }
+        // The reaction picker: a click on an emoji reacts with it, a click outside closes it.
+        Event::Mouse(m) if app.picker.is_some() && matches!(m.kind, MouseEventKind::Down(_)) => {
+            let Some((picker, _, _)) = app.picker.as_mut() else { return true };
+            let len = picker.candidates(&app.ws.custom_emoji).len();
+            match app.picker.as_ref().map(|(p, _, _)| (p.row_at(m.column, m.row).filter(|n| *n < len), p.area.contains((m.column, m.row).into()))) {
+                Some((Some(n), _)) if m.kind == MouseEventKind::Down(MouseButton::Left) => {
+                    if let Some((picker, channel, ts)) = app.picker.take() {
+                        if let Some(choice) = picker.candidates(&app.ws.custom_emoji).get(n) {
+                            app.toggle_reaction(channel, ts, choice.name.clone());
+                        }
+                    }
+                }
+                Some((_, false)) => app.picker = None,
                 _ => {}
             }
         }
@@ -3746,7 +3765,7 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     if let Some(c) = &app.completion {
         super::autocomplete::draw(f, if c.thread { app.thread_composer_area } else { app.composer_area }, c);
     }
-    if let Some((picker, _, _)) = &app.picker {
+    if let Some((picker, _, _)) = app.picker.as_mut() {
         picker.draw(f, main, &app.ws.custom_emoji);
     }
     match &app.confirm {

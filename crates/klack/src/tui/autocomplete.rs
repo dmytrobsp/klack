@@ -117,7 +117,7 @@ pub fn suggestions(ws: &Workspace, conversation: Option<&str>, trigger: &Trigger
             out.into_iter().map(|(_, s)| s).take(MAX_ITEMS).collect()
         }
         Trigger::Emoji(q) => {
-            let picker = EmojiPicker { query: q.clone(), selected: 0 };
+            let picker = EmojiPicker::searching(q);
             picker
                 .candidates(&ws.custom_emoji)
                 .into_iter()
