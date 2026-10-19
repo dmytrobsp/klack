@@ -195,7 +195,7 @@ Tests: `cargo test` → slack-core 10, huddle 33, klack 190 (+1 ignored: the `bu
 
 ## Next (in order, each as a small, separately verified step)
 
-**v0.2.0 released** 2026-10-19 (https://github.com/dmytrobsp/klack/releases/tag/v0.2.0; CI green on the bump, four builds, the Linux download verified against SHA256SUMS and run). **NEXT UP: J3** (queue J below; J1, J2 done) — the email-code sign-in; ask the user which test account's inbox they can read before the live test.
+**v0.2.0 released** 2026-10-19 (https://github.com/dmytrobsp/klack/releases/tag/v0.2.0; CI green on the bump, four builds, the Linux download verified against SHA256SUMS and run). **NEXT UP: nothing queued** — queue J is done (J1 browser window, J2 import from Firefox / Chrome; J3 dropped: Slack's code email needs a reCAPTCHA). Next: whatever the user asks.
 
 J. Easier sign-in, asked by the user on 2026-10-19 ("streamline the login so it does not need copying the cookie
    via devtools"); they chose A as the main path with B and C as fallbacks; one verified commit per step:
@@ -207,7 +207,8 @@ J. Easier sign-in, asked by the user on 2026-10-19 ("streamline the login so it 
       2026-10-19: Firefox everywhere + Chrome/Chromium on Linux and macOS (Windows Chrome's app-bound encryption
       cannot be read by other programs); tested only on throwaway profiles seeded with B's cookie, never the
       user's real browser profiles; the user installs Firefox for the live test.
-  J3 (NEXT). C — sign in by email code inside klack (Slack's internal email sign-in flow; not for SSO workspaces).
+  ~~J3~~ — dropped by the user 2026-10-19 (Slack needs a reCAPTCHA for the code email; J1's window covers
+      it). C — sign in by email code inside klack (Slack's internal email sign-in flow; not for SSO workspaces).
       The user reads the emailed code for the live test (ask which test account's inbox they can read).
       Investigated 2026-10-19 (the user signed B in by code in a recorded throwaway browser; flow in
       docs/protocol/auth.md): Slack sends the code only with a solved reCAPTCHA Enterprise

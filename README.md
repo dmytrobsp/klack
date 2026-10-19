@@ -88,7 +88,8 @@ unread); a click on a tile switches, like Alt+1…9.
 - **By hand:** with `--no-browser`, or when no such browser is found, klack asks for the value of
   the `d` cookie for `slack.com` (sign in in any browser, then devtools → Application → Cookies);
   `KLACK_COOKIE_D` or `--cookie` give it directly. Either way klack fetches the token itself and
-  checks it with `auth.test`.
+  checks it with `auth.test`. (There is no sign-in by emailed code inside the terminal: Slack sends
+  the code only after a captcha, which needs a browser — the window above does it.)
 
 Sessions are saved per profile in `~/.config/klack/<profile>/session.json` (owner-only
 permissions). Use `--profile NAME` to keep several accounts apart. Signing in to more workspaces
