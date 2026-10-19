@@ -405,6 +405,7 @@ pub enum Action {
     ClearStatus,
     AwayActive,
     PauseNotifications,
+    PauseFor,
     BrowseChannels,
 }
 
@@ -451,7 +452,8 @@ actions! {
         SetStatus "set_status" "set your status (/status)" "set status" "💭" ["<leader> a s"]
         ClearStatus "clear_status" "clear your status" "clear status" "🧹" ["<leader> a c"]
         AwayActive "away" "appear away, or active again" "away / active" "🌙" ["<leader> a a"]
-        PauseNotifications "pause_notifications" "pause notifications (/dnd)" "pause notifications" "🔕" ["<leader> a p"]
+        PauseNotifications "pause_notifications" "pause notifications for 30 minutes, or resume them when paused (/dnd)" "pause 30 min" "🔕" ["<leader> a n"]
+        PauseFor "pause_for" "pause notifications for a time you type (/dnd …)" "pause for…" "⏳" ["<leader> a N"]
         Huddle "huddle" "join or leave the huddle" "join / leave" "🎧" ["<leader> h h"]
         Mute "mute" "mute or unmute in the huddle" "mute" "🔇" ["<leader> h m"]
         HuddleThread "huddle_thread" "open the huddle's thread (yours, or this conversation's)" "huddle thread" "🧵" ["<leader> h t"]
@@ -707,6 +709,9 @@ pub enum Resolved {
     Pending,
     None,
 }
+
+/// `␣an`'s which-key label while notifications are paused.
+pub const RESUME: &str = "resume notifications";
 
 /// The named prefixes: (sequence, name, icon). `[groups]` in keys.toml renames them.
 pub const GROUPS: &[(&str, &str, &str)] = &[("<leader> c", "conversation", "💬"), ("<leader> h", "huddle", "🎧"), ("<leader> n", "new", "✨"), ("<leader> a", "availability", "🟢"), ("<leader> f", "find", "🔎"), ("<leader> w", "workspace", "🏢")];
@@ -1169,6 +1174,18 @@ impl Keymap {
             out.push(Child { key, label, icon, group: true, action: None });
         }
         out
+    }
+
+    /// Labels that follow the app's state: `␣an` says whether it pauses or resumes.
+    pub fn follow_state(&self, children: &mut [Child], paused: bool) {
+        if !paused {
+            return;
+        }
+        for c in children.iter_mut().filter(|c| c.action == Some((Context::Global, Action::PauseNotifications))) {
+            let (label, icon) = self.labels.get(&(Context::Global, "pause_notifications")).cloned().unwrap_or_default();
+            c.label = label.unwrap_or_else(|| super::i18n::tr(RESUME).into_owned());
+            c.icon = icon.unwrap_or_else(|| "🔔".into());
+        }
     }
 
     /// An action's which-key label and icon: the user's, else the table's.
@@ -1775,6 +1792,21 @@ mod tests {
     }
 
     #[test]
+    fn pause_label_follows_the_state() {
+        use Context::*;
+        let label = |map: &Keymap, paused: bool| {
+            let mut children = map.children(&[Messages, Global], Mode::Normal, &[LEADER, k("a")]);
+            map.follow_state(&mut children, paused);
+            children.into_iter().find(|c| c.key == k("n")).map(|c| (c.label, c.icon))
+        };
+        let (map, _) = Keymap::load("");
+        assert_eq!(label(&map, false), Some(("pause 30 min".into(), "🔕".into())), "what it does now");
+        assert_eq!(label(&map, true), Some(("resume notifications".into(), "🔔".into())));
+        let (map, _) = Keymap::load("[labels.global]\npause_notifications = \"hush\"\n");
+        assert_eq!(label(&map, true), Some(("hush".into(), "🔔".into())), "keys.toml's label stays");
+    }
+
+    #[test]
     fn default_icons_are_wide_emoji() {
         use unicode_width::UnicodeWidthStr;
         let icons = ACTIONS.iter().map(|a| (a.name, a.icon)).chain(GROUPS.iter().map(|(_, name, icon)| (*name, *icon)));
@@ -1793,6 +1825,9 @@ mod tests {
         assert_eq!(at(&[LEADER, k("c")], "b"), Resolved::Action(Global, Action::NotificationLevel));
         assert_eq!(at(&[LEADER, k("n")], "f"), Resolved::Action(Global, Action::Upload));
         assert_eq!(at(&[LEADER, k("a")], "a"), Resolved::Action(Global, Action::AwayActive));
+        assert_eq!(at(&[LEADER, k("a")], "n"), Resolved::Action(Global, Action::PauseNotifications), "␣an pauses or resumes at once");
+        assert_eq!(at(&[LEADER, k("a")], "N"), Resolved::Action(Global, Action::PauseFor), "␣aN: /dnd in the box");
+        assert_eq!(at(&[LEADER, k("a")], "p"), Resolved::None, "␣ap is gone");
         assert_eq!(at(&[LEADER, k("f")], "#"), Resolved::Action(Global, Action::BrowseChannels));
         assert_eq!(at(&[LEADER, k("w")], "3"), Resolved::Action(Global, Action::Workspace3));
         assert_eq!(at(&[LEADER], "space"), Resolved::Action(Global, Action::Switcher), "␣␣ jumps");

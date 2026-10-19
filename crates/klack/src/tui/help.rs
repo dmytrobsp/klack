@@ -19,7 +19,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/dm @a [@b…]", "open a DM, or a group DM with several people"),
     ("/star · /section rename|delete", "star this conversation · rename / delete its section"),
     ("/status [:e:] [text] [for 30m|today]", "set your status · /status clear"),
-    ("/away · /active · /dnd 30m|off", "appear away / active · pause notifications"),
+    ("/away · /active · /dnd [30m|off]", "appear away / active · pause notifications (alone: 30 min, or resume)"),
     ("/workspace [name]", "list the profile's workspaces or switch"),
     ("/prefs", "preferences (also F6)"),
     ("/remind, /giphy, … any other", "run by Slack (its answer only you see); a leading space sends it as text"),

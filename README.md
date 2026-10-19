@@ -161,7 +161,7 @@ members, pins) · `␣b` what it notifies about · `␣l` leave. The same, and m
 |---|---|
 | `␣h` huddle | `h` join or leave · `m` mute · `t` its thread · `v` huddle view · `c` camera · `s` share screen · `d` decline an invitation |
 | `␣n` new | `c` channel · `p` private channel · `d` DM · `s` snippet · `f` upload a file |
-| `␣a` availability | `s` set status · `c` clear it · `a` away / active · `p` pause notifications |
+| `␣a` availability | `s` set status · `c` clear it · `a` away / active · `n` pause notifications for 30 minutes, or resume them when paused · `N` pause for a time you type (`/dnd `) |
 | `␣f` find | `f` jump to · `s` search · `a` activity · `t` threads · `#` every channel |
 | `␣w` workspace | `1` … `9` |
 
@@ -188,7 +188,7 @@ Typing (INSERT):
 | `Ctrl+Space` | the leader while you type: Ctrl+Space then `h` and so on, as `␣h` elsewhere |
 | `/` (first in the box) · @ # : | command (klack's own and Slack's, with what they take; a command typed out in full runs on Enter) and its fixed choices (`/dnd 30m`…`off`, `/status clear` and `… for today`, `/section rename\|delete`, `/workspace` names, `/snippet` languages), mention, channel, emoji autocomplete |
 | `/status [:emoji:] [text] [for 30m\|2h\|today]` · `/status clear` | set or clear your status |
-| `/away` · `/active` · `/dnd 30m` · `/dnd off` | appear away / active · pause or resume notifications |
+| `/away` · `/active` · `/dnd` · `/dnd 30m` · `/dnd off` | appear away / active · plain `/dnd` pauses notifications for 30 minutes, or resumes them when paused · pause for a time · resume (ends a pause and the current quiet hours of your notification schedule; the schedule stays) |
 | any other `/command` | run by Slack, as its own clients do (`/remind`, `/giphy`, `/shrug`, apps' commands); an answer only you see is marked "only visible to you"; an unknown one says so; a leading space sends the line as text |
 | `/upload <path> [text]` | upload a file (the path completes as you type: Tab goes into a folder; `~` is your home; names with spaces are quoted for you) |
 | `/join [#channel]` · `/leave` | join (default: the channel you are previewing — Ctrl+K finds channels you are not in; a previewed one is fetched again every 15 s, F6 → Messages & media) · leave the current channel |

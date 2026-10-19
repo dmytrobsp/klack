@@ -22,8 +22,8 @@ pub enum Command {
     Status { emoji: String, text: String, expiry: Expiry },
     /// Appear away (true) or active.
     Away(bool),
-    /// Pause notifications for this many minutes; None resumes them.
-    Dnd(Option<u64>),
+    /// Pause or resume notifications.
+    Dnd(DndAction),
     /// Rename the section holding the current conversation.
     SectionRename(String),
     /// Delete the section holding the current conversation.
@@ -40,6 +40,33 @@ pub enum Recipient {
     Id(String),
     /// A typed handle or display name without spaces.
     Name(String),
+}
+
+/// What `/dnd` does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DndAction {
+    /// Plain `/dnd`: resume when paused, else pause for 30 minutes.
+    Toggle,
+    /// Pause for this many minutes.
+    Pause(u64),
+    /// End whatever pauses them: a snooze and the current scheduled quiet period.
+    Resume,
+}
+
+impl DndAction {
+    /// What it does now: a toggle resumes when `paused`, else pauses for 30 minutes.
+    pub fn decided(self, paused: bool) -> DndAction {
+        match self {
+            DndAction::Toggle if paused => DndAction::Resume,
+            DndAction::Toggle => DndAction::Pause(30),
+            other => other,
+        }
+    }
+}
+
+/// What plain `/dnd` does now (its suggestion says so).
+pub fn dnd_doing(paused: bool) -> &'static str {
+    if paused { "resume notifications" } else { "pause notifications for 30 minutes" }
 }
 
 /// When a status clears.
@@ -165,7 +192,7 @@ pub const OWN: &[(&str, &str, &str)] = &[
     ("/status", "[:emoji:] [text] [for 30m|today] | clear", "set or clear your status"),
     ("/away", "", "appear away"),
     ("/active", "", "appear active"),
-    ("/dnd", "30m|2h|1d | off", "pause notifications, or resume them"),
+    ("/dnd", "[30m|2h|1d | off]", "pause notifications, or resume them"),
     ("/workspace", "[name]", "list this profile's workspaces, or switch"),
     ("/prefs", "", "preferences (also F6)"),
 ];
@@ -208,10 +235,11 @@ pub fn parse(text: &str, mrkdwn: &str) -> Option<Result<Command, String>> {
         "/status" => parse_status(rest),
         "/away" if rest.is_empty() => Ok(Command::Away(true)),
         "/active" | "/back" if rest.is_empty() => Ok(Command::Away(false)),
-        "/dnd" if rest == "off" => Ok(Command::Dnd(None)),
+        "/dnd" if rest.is_empty() => Ok(Command::Dnd(DndAction::Toggle)),
+        "/dnd" if rest == "off" => Ok(Command::Dnd(DndAction::Resume)),
         "/dnd" => match minutes(rest) {
-            Some(m) => Ok(Command::Dnd(Some(m))),
-            None => Err("usage: /dnd 30m|2h|1d · /dnd off".into()),
+            Some(m) => Ok(Command::Dnd(DndAction::Pause(m))),
+            None => Err("usage: /dnd (pause 30 min, or resume) · /dnd 30m|2h|1d · /dnd off".into()),
         },
         "/section" => match rest.split_once(char::is_whitespace).unwrap_or((rest, "")) {
             ("rename", name) if !name.trim().is_empty() => Ok(Command::SectionRename(name.trim().to_string())),
@@ -310,9 +338,14 @@ mod tests {
         assert!(matches!(parse("/status"), Some(Err(_))));
         assert_eq!(parse("/away"), Some(Ok(Command::Away(true))));
         assert_eq!(parse("/back"), Some(Ok(Command::Away(false))));
-        assert_eq!(parse("/dnd 1h"), Some(Ok(Command::Dnd(Some(60)))));
-        assert_eq!(parse("/dnd off"), Some(Ok(Command::Dnd(None))));
-        assert!(matches!(parse("/dnd"), Some(Err(_))));
+        assert_eq!(parse("/dnd 1h"), Some(Ok(Command::Dnd(DndAction::Pause(60)))));
+        assert_eq!(parse("/dnd 2h"), Some(Ok(Command::Dnd(DndAction::Pause(120)))));
+        assert_eq!(parse("/dnd off"), Some(Ok(Command::Dnd(DndAction::Resume))));
+        assert_eq!(parse("/dnd"), Some(Ok(Command::Dnd(DndAction::Toggle))), "plain /dnd toggles, as in Slack");
+        assert!(matches!(parse("/dnd soon"), Some(Err(_))));
+        assert_eq!((DndAction::Toggle.decided(false), DndAction::Toggle.decided(true)), (DndAction::Pause(30), DndAction::Resume));
+        assert_eq!((DndAction::Pause(60).decided(true), DndAction::Resume.decided(false)), (DndAction::Pause(60), DndAction::Resume), "only a toggle decides");
+        assert_eq!((dnd_doing(false), dnd_doing(true)), ("pause notifications for 30 minutes", "resume notifications"), "what plain /dnd does now");
     }
 
     #[test]

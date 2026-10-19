@@ -70,6 +70,8 @@ enum Net {
     Pasted { thread: bool, result: Result<super::composer::Attachment, String> },
     /// `dnd.info` asked again after the known quiet-hours window ended.
     Dnd(Value),
+    /// `/dnd` paused or resumed notifications (or failed); `dnd.info` asked right after.
+    DndSet { resumed: bool, result: Result<Option<Value>, String> },
     /// User prefs fetched again.
     Prefs(Value),
     /// The activity feed.
@@ -631,9 +633,32 @@ impl App {
                 let done = if away { "you appear away" } else { "you appear active" };
                 self.spawn_simple(done.into(), async move |client: Client| client.set_presence(away).await);
             }
-            Command::Dnd(minutes) => {
-                let done = if minutes.is_some() { "notifications paused" } else { "notifications resumed" };
-                self.spawn_simple(done.into(), async move |client: Client| client.snooze(minutes).await);
+            Command::Dnd(action) => {
+                use super::commands::DndAction;
+                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64();
+                let action = action.decided(self.ws.dnd.active(now));
+                let resume = self.ws.dnd.resume(now);
+                let (client, tx) = (self.client.clone(), self.net.clone());
+                tokio::spawn(async move {
+                    let result = async {
+                        match action {
+                            DndAction::Pause(m) => client.snooze(Some(m)).await?,
+                            _ => {
+                                if resume.snooze {
+                                    client.snooze(None).await?;
+                                }
+                                if resume.period {
+                                    client.end_dnd().await?;
+                                }
+                            }
+                        }
+                        // What is in effect now, for the status line and the note.
+                        anyhow::Ok(client.call_raw("dnd.info", &[]).await.inspect_err(|e| tracing::warn!("dnd.info failed: {e}")).ok())
+                    }
+                    .await
+                    .map_err(|e| e.to_string());
+                    let _ = tx.send(Net::DndSet { resumed: action == DndAction::Resume, result });
+                });
             }
             Command::SectionRename(name) => match self.ws.section_of(&channel).map(|s| s.id.clone()) {
                 Some(id) => self.rename_section(id, name),
@@ -829,7 +854,7 @@ impl App {
         });
     }
 
-    /// `␣n…`, `␣as`, `␣ap`: `command` in the conversation's message box (also from the thread
+    /// `␣n…`, `␣as`, `␣aN`: `command` in the conversation's message box (also from the thread
     /// pane), the cursor after it, typing there; a draft wraps as `wrap` says, or it refuses.
     fn prefill(&mut self, command: &str, wrap: Wrap) {
         if self.current.is_none() {
@@ -2637,6 +2662,8 @@ impl App {
             Some((context, action)) => self.applies(context, action),
             None => !self.offered(contexts, mode, &[prefix, &[c.key]].concat()).is_empty(),
         });
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64();
+        self.keys.follow_state(&mut children, self.ws.dnd.active(now));
         children
     }
 
@@ -3774,11 +3801,22 @@ fn handle_main(app: &mut App, ev: Event) -> bool {
     true
 }
 
+/// The note after `/dnd`: what is in effect now, from `dnd.info` (`until`: when paused, till when).
+fn dnd_note(resumed: bool, until: Option<String>) -> String {
+    match (resumed, until) {
+        (true, None) => "notifications resumed".into(),
+        // Never a silent "resumed" while Slack still holds them.
+        (true, Some(t)) => format!("notifications are still paused until {t}"),
+        (false, Some(t)) => format!("notifications paused until {t}"),
+        (false, None) => "notifications paused".into(),
+    }
+}
+
 /// Global actions that open a view, a dialog or the message box: none of them opens over a
 /// dialog (the insert leader reaches them there).
 fn opens_something(action: Action) -> bool {
     use Action::*;
-    matches!(action, Switcher | BrowseChannels | Search | Threads | Activity | Details | MoveToSection | Help | Preferences | LeaveConversation | DeleteSection | RenameSection | NewChannel | NewPrivateChannel | NewDm | NewSnippet | Upload | SetStatus | PauseNotifications | HuddleThread | HuddleView)
+    matches!(action, Switcher | BrowseChannels | Search | Threads | Activity | Details | MoveToSection | Help | Preferences | LeaveConversation | DeleteSection | RenameSection | NewChannel | NewPrivateChannel | NewDm | NewSnippet | Upload | SetStatus | PauseFor | HuddleThread | HuddleView)
 }
 
 /// The note for an action that would open something under the dialog `overlay`, naming
@@ -3876,7 +3914,8 @@ fn run_global(app: &mut App, action: Action) -> bool {
         Action::NewSnippet => app.prefill("/snippet ", Wrap::Body),
         Action::Upload => app.prefill("/upload ", Wrap::Caption),
         Action::SetStatus => app.prefill("/status ", Wrap::No),
-        Action::PauseNotifications => app.prefill("/dnd ", Wrap::No),
+        Action::PauseNotifications => app.run_command(app.current.clone().unwrap_or_default(), super::commands::Command::Dnd(super::commands::DndAction::Toggle), None),
+        Action::PauseFor => app.prefill("/dnd ", Wrap::No),
         Action::ClearStatus => app.run_text("/status clear"),
         Action::AwayActive => {
             let away = app.ws.presence.get(&app.ws.self_id) != Some(&false);
@@ -4230,6 +4269,18 @@ fn handle_net(app: &mut App, msg: Net) {
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64();
             app.dnd_refreshing = app.ws.dnd.stale(now);
         }
+        Net::DndSet { resumed, result } => match result {
+            Ok(info) => {
+                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64();
+                if let Some(v) = &info {
+                    app.ws.dnd.set_info(v);
+                    app.dnd_refreshing = app.ws.dnd.stale(now);
+                }
+                let until = info.and_then(|_| app.ws.dnd.until(now)).and_then(|t| super::clock::at(t as i64)).map(|d| d.format(app.ws.settings.time_format()).to_string());
+                app.status = dnd_note(resumed, until);
+            }
+            Err(e) => app.status = format!("{} failed: {e}", if resumed { "resuming notifications" } else { "pausing notifications" }),
+        },
         Net::ActivityFeed(result) => match result {
             Ok(v) => {
                 if let Some(a) = app.activity.as_mut() {
@@ -4902,11 +4953,21 @@ mod tests {
     }
 
     #[test]
+    fn dnd_notes() {
+        // The note after /dnd says what dnd.info says now.
+        assert_eq!(super::dnd_note(true, None), "notifications resumed");
+        assert_eq!(super::dnd_note(true, Some("09:00".into())), "notifications are still paused until 09:00", "never a silent resume");
+        assert_eq!(super::dnd_note(false, Some("14:30".into())), "notifications paused until 14:30");
+        assert_eq!(super::dnd_note(false, None), "notifications paused");
+    }
+
+    #[test]
     fn views_do_not_open_over_a_dialog() {
         use crate::tui::keymap::Action;
         assert!(super::opens_something(Action::Switcher) && super::opens_something(Action::Upload) && super::opens_something(Action::Details));
         assert!(super::opens_something(Action::HuddleThread) && super::opens_something(Action::HuddleView), "^␣ht / ^␣hv would open them under the dialog");
         assert!(!super::opens_something(Action::NotificationLevel) && !super::opens_something(Action::Mute) && !super::opens_something(Action::AwayActive));
+        assert!(super::opens_something(Action::PauseFor) && !super::opens_something(Action::PauseNotifications), "␣aN opens the box, ␣an acts at once");
         // The note names the dialog's own close key.
         use crate::tui::keymap::{Context, Keymap};
         let keys = Keymap::load("").0;

@@ -15,7 +15,7 @@ use super::keymap::{short, Child, Context, Key, Keymap, Pending};
 use super::settings::WhichKey;
 
 /// Words the panel shows besides labels and group names (for translation templates).
-pub const WORDS: &[&str] = &["more", "previous", "message", "conversation", "actions"];
+pub const WORDS: &[&str] = &["more", "previous", "message", "conversation", "actions", super::keymap::RESUME];
 
 /// The panel's title: the keys so far and what they lead to (`␣h  huddle`); at the leader alone,
 /// what the pane's own keys act on (`␣  message`).

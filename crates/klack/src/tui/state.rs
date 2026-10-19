@@ -316,6 +316,22 @@ impl Dnd {
     pub fn active(&self, now: f64) -> bool {
         self.until(now).is_some()
     }
+
+    /// What resuming notifications has to end now. With nothing known to be on (klack may be
+    /// behind Slack), both: ending what isn't on does nothing.
+    pub fn resume(&self, now: f64) -> Resume {
+        let snooze = self.snooze_until.is_some_and(|t| now < t);
+        let period = Dnd { snooze_until: None, ..self.clone() }.active(now);
+        if snooze || period { Resume { snooze, period } } else { Resume { snooze: true, period: true } }
+    }
+}
+
+/// The Slack calls that resume notifications: `dnd.endSnooze` for a snooze, `dnd.endDnd` for
+/// the current scheduled quiet period (it leaves the schedule alone).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Resume {
+    pub snooze: bool,
+    pub period: bool,
 }
 
 /// Whether `schedule` pauses notifications all the way from `start` to `end`: at `start` and at
@@ -835,6 +851,26 @@ mod tests {
         for (d, t) in [(&neither, now), (&snooze, 1792447220.0), (&scheduled, now), (&both, now), (&scheduled, 1792476001.0)] {
             assert_eq!(d.active(t), d.until(t).is_some());
         }
+    }
+
+    #[test]
+    fn resume_ends_what_pauses() {
+        // The real dnd.info answers of `dnd_until`.
+        let now = 1792447100.0;
+        let ends = |snooze, period| Resume { snooze, period };
+        let snooze = Dnd::from_json(&serde_json::json!({"dnd_enabled":true,"next_dnd_end_ts":1792449014,"next_dnd_start_ts":1792447214,"ok":true,"snooze_enabled":true,"snooze_endtime":1792449014,"snooze_remaining":1799}));
+        assert!(snooze.resume(1792447220.0).snooze, "a snooze is ended");
+        let scheduled = Dnd::from_json(&serde_json::json!({"dnd_enabled":true,"next_dnd_end_ts":1792476000,"next_dnd_start_ts":1792443600,"ok":true,"snooze_enabled":false}));
+        assert_eq!(scheduled.resume(now), ends(false, true), "in a scheduled period: endDnd only");
+        let both = Dnd::from_json(&serde_json::json!({"dnd_enabled":true,"next_dnd_end_ts":1792472400,"next_dnd_start_ts":1792443600,"ok":true,"snooze_enabled":true,"snooze_endtime":1792448903,"snooze_remaining":1800}));
+        assert_eq!(both.resume(now), ends(true, true), "a snooze inside a period: both");
+        // A snooze before the next period: the snooze only.
+        let ahead = Dnd { window: Some((now + 3600.0, now + 7200.0)), snooze_until: Some(now + 600.0), ..Dnd::default() };
+        assert_eq!(ahead.resume(now), ends(true, false));
+        // Nothing known to be on (klack may be behind Slack): both, ending nothing costs nothing.
+        let neither = Dnd::from_json(&serde_json::json!({"dnd_enabled":false,"next_dnd_end_ts":1,"next_dnd_start_ts":1,"ok":true,"snooze_enabled":false}));
+        assert_eq!(neither.resume(now), ends(true, true));
+        assert_eq!(scheduled.resume(1792476000.0), ends(true, true), "the period is over");
     }
 
     #[test]

@@ -65,7 +65,9 @@ pub fn suggestions(ws: &Workspace, conversation: Option<&str>, trigger: &Trigger
         // All matching commands: the list scrolls.
         Trigger::Command(q) => {
             let q = q.to_lowercase();
-            let own = super::commands::OWN.iter().map(|&(name, usage, desc)| (name.to_string(), usage.to_string(), desc.to_string()));
+            // Plain `/dnd` says what it does now.
+            let paused = ws.dnd.active(super::clock::now().timestamp() as f64);
+            let own = super::commands::OWN.iter().map(|&(name, usage, desc)| (name.to_string(), usage.to_string(), if name == "/dnd" { super::commands::dnd_doing(paused) } else { desc }.to_string()));
             let slack = ws.slack_commands.iter().filter(|c| !super::commands::OWN.iter().any(|(name, ..)| *name == c.name)).map(|c| (c.name.clone(), c.usage.clone(), c.desc.clone()));
             let mut out: Vec<(u8, Suggestion)> = own
                 .chain(slack)
@@ -294,6 +296,15 @@ mod tests {
         assert_eq!(names("CR"), ["/create", "/create-private"], "any case");
         let up = &suggestions(&w, Some("C1"), &Trigger::Command("up".into()))[0];
         assert_eq!((up.label.as_str(), up.detail.as_str(), up.replacement.as_str()), ("/upload <path> [text]", "upload a file", "/upload"));
+    }
+
+    #[test]
+    fn dnd_says_what_it_will_do() {
+        let mut w = ws();
+        let detail = |w: &Workspace| suggestions(w, Some("C1"), &Trigger::Command("dn".into())).into_iter().find(|s| s.replacement == "/dnd").map(|s| s.detail);
+        assert_eq!(detail(&w).as_deref(), Some("pause notifications for 30 minutes"), "notifications on");
+        w.dnd.snooze_until = Some(crate::tui::clock::now().timestamp() as f64 + 600.0);
+        assert_eq!(detail(&w).as_deref(), Some("resume notifications"), "paused");
     }
 
     #[test]
