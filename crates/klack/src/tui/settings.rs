@@ -90,6 +90,9 @@ pub struct Messages {
     pub preview_refresh_secs: u32,
     /// Show emoji as `:name:` instead of the character.
     pub emoji_as_names: bool,
+    /// Where `s` saves files first (`~` is home); empty: the downloads folder.
+    /// `KLACK_DOWNLOAD_DIR` wins over it.
+    pub save_dir: String,
     /// Draw the workspace's own (picture) emoji as pictures in messages and reactions, where
     /// the terminal draws pictures; else they show as `:name:`.
     pub custom_emoji_pictures: bool,
@@ -100,7 +103,7 @@ pub struct Messages {
 
 impl Default for Messages {
     fn default() -> Self {
-        Messages { inline_images: true, avatars: true, large_avatars: false, preview_refresh_secs: 15, emoji_as_names: false, custom_emoji_pictures: true, graphics: "auto".into() }
+        Messages { inline_images: true, avatars: true, large_avatars: false, preview_refresh_secs: 15, emoji_as_names: false, custom_emoji_pictures: true, save_dir: String::new(), graphics: "auto".into() }
     }
 }
 

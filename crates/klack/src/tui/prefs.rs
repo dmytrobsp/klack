@@ -31,6 +31,7 @@ pub enum Field {
     Graphics,
     EmojiAsNames,
     CustomEmojiPictures,
+    SaveDir,
     Clock24,
     DateFormat,
     TimeZone,
@@ -90,7 +91,7 @@ pub const PAUSES: &[u64] = &[0, 30, 60, 120, 480];
 pub const CATEGORIES: &[(&str, &[Field])] = &[
     ("Availability", &[Field::Status, Field::Away, Field::Pause]),
     ("Appearance", &[Field::Theme, Field::WorkspaceTheme, Field::Compact, Field::HideInactive]),
-    ("Messages & media", &[Field::InlineImages, Field::Avatars, Field::LargeAvatars, Field::PreviewRefresh, Field::Graphics, Field::EmojiAsNames, Field::CustomEmojiPictures]),
+    ("Messages & media", &[Field::InlineImages, Field::Avatars, Field::LargeAvatars, Field::PreviewRefresh, Field::Graphics, Field::EmojiAsNames, Field::CustomEmojiPictures, Field::SaveDir]),
     ("Language & region", &[Field::Clock24, Field::DateFormat, Field::TimeZone, Field::Language]),
     ("Notifications", &[Field::Desktop, Field::Sound, Field::ConversationLevel, Field::ChannelDefault, Field::Keywords, Field::Vips]),
     ("Audio & video", &[Field::Input, Field::Output, Field::HuddleVolume, Field::SoundVolume, Field::MicGain, Field::SpeakingThreshold, Field::NoiseSuppression, Field::EchoCancellation, Field::Camera]),
@@ -138,6 +139,7 @@ impl Field {
             Field::Graphics => "Draw pictures with",
             Field::EmojiAsNames => "Show emoji as :names:",
             Field::CustomEmojiPictures => "Custom emoji as pictures",
+            Field::SaveDir => "Save files to",
             Field::Clock24 => "24-hour clock",
             Field::DateFormat => "Date format",
             Field::TimeZone => "Time zone",
@@ -203,6 +205,8 @@ impl Field {
             Field::Graphics => s.messages.graphics.clone(),
             Field::EmojiAsNames => yes(s.messages.emoji_as_names),
             Field::CustomEmojiPictures => yes(s.messages.custom_emoji_pictures),
+            Field::SaveDir if s.messages.save_dir.trim().is_empty() => format!("{} (your downloads folder)", super::save::shown_folder(&super::files::download_dir(""))),
+            Field::SaveDir => s.messages.save_dir.clone(),
             Field::Clock24 => yes(s.region.clock_24h),
             Field::DateFormat => super::clock::now().format(&s.region.date_format).to_string(),
             Field::Language if s.region.language.is_empty() || s.region.language == "en" => "en (built in)".into(),
@@ -294,7 +298,7 @@ impl Field {
         };
         match self {
             // Needs the workspace: in `Prefs::change`.
-            Field::TimeZone | Field::Language | Field::WorkspaceTheme => {}
+            Field::TimeZone | Field::Language | Field::WorkspaceTheme | Field::SaveDir => {}
             // Chosen in a picker (`Prefs::change`).
             Field::Theme => {}
             Field::Compact => s.appearance.compact ^= true,
@@ -401,7 +405,7 @@ const LEADER_LABEL: &str = "Leader key (for chords such as Leader k)";
 /// Category names and fixed labels, for translation templates.
 pub fn translatable() -> Vec<String> {
     let all = [
-        Field::Theme, Field::WorkspaceTheme, Field::Compact, Field::HideInactive, Field::InlineImages, Field::Avatars, Field::LargeAvatars, Field::PreviewRefresh, Field::Graphics, Field::EmojiAsNames, Field::CustomEmojiPictures, Field::Clock24, Field::DateFormat, Field::TimeZone, Field::Language, Field::Desktop, Field::Sound,
+        Field::Theme, Field::WorkspaceTheme, Field::Compact, Field::HideInactive, Field::InlineImages, Field::Avatars, Field::LargeAvatars, Field::PreviewRefresh, Field::Graphics, Field::EmojiAsNames, Field::CustomEmojiPictures, Field::SaveDir, Field::Clock24, Field::DateFormat, Field::TimeZone, Field::Language, Field::Desktop, Field::Sound,
         Field::ConversationLevel, Field::ChannelDefault, Field::Keywords, Field::Vips, Field::Status, Field::Away, Field::Pause, Field::Input, Field::Output,
         Field::HuddleVolume, Field::SoundVolume, Field::MicGain, Field::SpeakingThreshold, Field::NoiseSuppression, Field::EchoCancellation, Field::Camera, Field::JoinSound, Field::SomeoneJoined, Field::SomeoneLeft, Field::RingSound, Field::RingTimeout, Field::AutoDecline, Field::AloneSound, Field::AloneSecs,
     ];
@@ -503,6 +507,14 @@ impl Prefs {
                 };
                 if self.cameras.is_empty() {
                     self.saved = Some(Err("no camera found".into()));
+                }
+                None
+            }
+            // Empty: back to the downloads folder.
+            Field::SaveDir => {
+                match self.editing.take() {
+                    Some(text) => ws.settings.messages.save_dir = text.trim().to_string(),
+                    None => self.editing = Some(ws.settings.messages.save_dir.clone()),
                 }
                 None
             }
@@ -680,6 +692,27 @@ fn fit(text: &str, room: usize, tail: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_save_folder() {
+        let mut ws = Workspace::default();
+        let mut p = Prefs::default();
+        p.category = CATEGORIES.iter().position(|(name, _)| *name == "Messages & media").unwrap();
+        p.selected = CATEGORIES[p.category].1.iter().position(|f| *f == Field::SaveDir).unwrap();
+        let keys = Keymap::load("").0;
+        assert!(Field::SaveDir.value(&ws, None, &keys).ends_with("(your downloads folder)"));
+        assert_eq!(p.change(&mut ws, None), None, "Enter starts editing");
+        assert_eq!(p.editing.as_deref(), Some(""));
+        p.editing = Some("  ~/Work/slack  ".into());
+        p.change(&mut ws, None);
+        assert_eq!((ws.settings.messages.save_dir.as_str(), p.on_slack()), ("~/Work/slack", false), "kept locally, trimmed");
+        assert_eq!(Field::SaveDir.value(&ws, None, &keys), "~/Work/slack");
+        if std::env::var_os("KLACK_DOWNLOAD_DIR").is_none() {
+            let home = directories::UserDirs::new().unwrap().home_dir().to_path_buf();
+            assert_eq!(super::super::files::download_dir(&ws.settings.messages.save_dir), home.join("Work/slack"));
+            assert_ne!(super::super::files::download_dir(""), home.join("Work/slack"), "empty: the downloads folder");
+        }
+    }
 
     #[test]
     fn long_values_fit_one_row() {

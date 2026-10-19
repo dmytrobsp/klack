@@ -4,10 +4,14 @@ use std::path::{Path, PathBuf};
 
 use slack_core::types::File;
 
-/// Where saved files go: `$KLACK_DOWNLOAD_DIR`, else the user's downloads folder, else home.
-pub fn download_dir() -> PathBuf {
+/// Where saved files go first: `$KLACK_DOWNLOAD_DIR`, else `setting` (F6, `~` is home) when
+/// set, else the user's downloads folder, else home.
+pub fn download_dir(setting: &str) -> PathBuf {
     if let Some(dir) = std::env::var_os("KLACK_DOWNLOAD_DIR") {
         return PathBuf::from(dir);
+    }
+    if !setting.trim().is_empty() {
+        return super::save::expand_home(setting.trim());
     }
     let dirs = directories::UserDirs::new();
     dirs.as_ref().and_then(|d| d.download_dir().map(Path::to_path_buf)).or_else(|| dirs.as_ref().map(|d| d.home_dir().to_path_buf())).unwrap_or_else(|| PathBuf::from("."))

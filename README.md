@@ -241,7 +241,7 @@ on Windows only from an SSH session, where `gdigrab` cannot capture (no desktop)
 |---|---|
 | (F6 or `/prefs`) | preferences: theme, compact list, thumbnails, profile pictures, emoji as names, custom emoji as pictures, 12/24 h clock, date format, time zone, language, desktop notifications and sound, microphone and speaker, volumes, microphone gain, speaking threshold, noise suppression, echo cancellation — saved in `settings.toml` next to `keys.toml` |
 | `KLACK_LOG` | log filter, e.g. `klack=debug` (log file: `~/.cache/klack/<profile>/klack.log`) |
-| `KLACK_DOWNLOAD_DIR` | where `s` saves attachments (default: your downloads folder) |
+| `KLACK_DOWNLOAD_DIR` | where `s` saves attachments first, over F6 → Messages & media → Save files to (default: your downloads folder) |
 | `KLACK_OPEN_WITH` | the program `o` opens links with, given the address (default: the system's opener — `xdg-open`, `open`, Windows' URL handler); only web and mail links are opened |
 | `KLACK_AVATARS=0` | initials instead of profile pictures next to names (as on terminals without real graphics; F6 → Messages & media → Show profile pictures turns both off, Two-row profile pictures makes them bigger) |
 | `KLACK_GRAPHICS` | how pictures are drawn: `kitty`, `sixel`, `iterm2` or `halfblocks` (default: asked from the terminal; also F6 → Messages & media → Draw pictures with) |

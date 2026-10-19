@@ -2122,7 +2122,7 @@ impl App {
             self.status = "no files in this message".into();
             return;
         }
-        self.save = Some(super::save::SaveDialog::new(files, &super::files::download_dir()));
+        self.save = Some(super::save::SaveDialog::new(files, &super::files::download_dir(&self.ws.settings.messages.save_dir)));
     }
 
     /// Enter in the save dialog: the ticked files into its folder (never over a file there).
