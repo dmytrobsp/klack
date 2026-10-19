@@ -15,8 +15,10 @@ serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-ratatui-image = { version = "12.0.0-rc.3", default-features = false, features = ["image-defaults", "crossterm"] }
-image = "0.25"
+ratatui-image = { version = "12.0.0-rc.3", default-features = false, features = ["crossterm"] }
+# Only the formats Slack's pictures come in (and PNG for pasted ones): every other codec (AVIF
+# encoding above all) made the binary megabytes bigger.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 futures-util = "0.3.34"
 tokio-tungstenite = { version = "0.30.0", features = ["rustls-tls-webpki-roots"] }
 notify-rust = "4.18.2"
@@ -28,7 +30,8 @@ emojis = "0.9.1"
 chrono = "0.4.45"
 directories = "6.0.0"
 cpal = "0.18.2"
-rustls = { version = "0.23.46", features = ["ring"] }
+# ring is installed as the provider in `main`; rustls' default (aws-lc) would be a second one.
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "logging", "tls12"] }
 syntect = { version = "5.3.0", default-features = false, features = ["default-fancy"] }
 toml = "1.1.8"
 chrono-tz = "0.10.4"

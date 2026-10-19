@@ -17,7 +17,10 @@ tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 
 [profile.release]
-lto = "thin"
+# Whole-program optimisation in one unit: about a fifth smaller than thin LTO (28.6 MB against
+# 36.4 MB stripped on Linux, 2026-10-19), at the cost of a slower release build.
+lto = "fat"
+codegen-units = 1
 strip = true
 
 # OpenH264 is C code built by the crate; unoptimised it cannot encode a camera in real time,
