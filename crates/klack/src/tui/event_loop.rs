@@ -298,6 +298,23 @@ impl App {
         });
     }
 
+    /// Mark the open thread read up to its newest reply (once per new reply).
+    fn mark_thread_read(&mut self) {
+        let Some((channel, parent)) = self.thread.clone().filter(|(c, _)| !self.ws.is_outside(c)) else { return };
+        let key = super::state::thread_key(&channel, &parent);
+        let Some(latest) = self.ws.threads.get(&key).and_then(|t| thread_mark_target(t, &parent)) else { return };
+        if self.marked.get(&key) == Some(&latest) {
+            return;
+        }
+        self.marked.insert(key, latest.clone());
+        let client = self.client.clone();
+        tokio::spawn(async move {
+            if let Err(e) = client.mark_thread(&channel, &parent, &latest).await {
+                tracing::warn!("marking the thread read failed: {e}");
+            }
+        });
+    }
+
     /// Toggle our reaction `name` on message `ts` in `channel` (optimistic, then API).
     fn toggle_reaction(&mut self, channel: String, ts: String, name: String) {
         let me = self.ws.self_id.clone();
@@ -1990,6 +2007,12 @@ struct Ring {
 /// How often the ring sound repeats.
 const RING_EVERY: Duration = Duration::from_millis(2500);
 
+/// The reply a thread is read up to once it is shown: its newest, when its replies are loaded and
+/// it has any.
+fn thread_mark_target(t: &super::state::Timeline, parent: &str) -> Option<String> {
+    t.messages.last().map(|m| m.ts.clone()).filter(|ts| t.loaded && ts != parent)
+}
+
 /// Whether a message at `ts` lies before the oldest loaded one (`first`): Slack timestamps
 /// compare as numbers.
 fn seek_older(ts: &str, first: &str) -> bool {
@@ -2298,6 +2321,7 @@ async fn run_workspace(
         if app.current.as_ref().and_then(|c| app.ws.timelines.get(c)).is_some_and(|t| t.loaded) {
             app.mark_current_read();
         }
+        app.mark_thread_read();
     }
     app.save_drafts();
     let App { switch_to, media, clipboard, .. } = app;
@@ -3491,6 +3515,22 @@ fn draw_composer(f: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &App,
 #[cfg(test)]
 mod tests {
     use slack_core::session::WorkspaceSession;
+
+    #[test]
+    fn threads_are_read_up_to_their_newest_reply() {
+        use super::super::state::Timeline;
+        use super::thread_mark_target;
+        let msg = |ts: &str| slack_core::types::Message { ts: ts.into(), ..Default::default() };
+        let mut t = Timeline::default();
+        t.upsert(msg("1.0"));
+        t.upsert(msg("2.0"));
+        assert_eq!(thread_mark_target(&t, "1.0"), None, "replies not loaded yet");
+        t.loaded = true;
+        assert_eq!(thread_mark_target(&t, "1.0").as_deref(), Some("2.0"));
+        let mut lone = Timeline { loaded: true, ..Default::default() };
+        lone.upsert(msg("1.0"));
+        assert_eq!(thread_mark_target(&lone, "1.0"), None, "no replies: nothing to mark");
+    }
 
     #[test]
     fn status_bar_fits() {

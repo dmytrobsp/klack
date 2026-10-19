@@ -168,6 +168,13 @@ impl Client {
         self.call_raw("conversations.mark", &[("channel", channel.into()), ("ts", ts.into())]).await.map(|_| ())
     }
 
+    /// Mark thread `thread_ts` in `channel` read up to its reply `ts` (Slack's Threads view and
+    /// unread counts follow).
+    pub async fn mark_thread(&self, channel: &str, thread_ts: &str, ts: &str) -> Result<()> {
+        let params = [("channel", channel.into()), ("thread_ts", thread_ts.into()), ("ts", ts.into()), ("read", "1".into())];
+        self.call_raw("subscriptions.thread.mark", &params).await.map(|_| ())
+    }
+
     pub async fn open_dm(&self, users: &[&str]) -> Result<Conversation> {
         self.call_field("conversations.open", "channel", &[("users", users.join(",")), ("return_im", "true".into())]).await
     }

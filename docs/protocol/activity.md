@@ -30,4 +30,5 @@ What the Threads view (Ctrl+T, H4m) uses — Slack's own "Threads" list, found b
 - Each thread: `root_msg` (a message plus `channel`, `reply_count`, `latest_reply`, `last_read`,
   `subscribed`) and `unread_replies[]` (when some are unread) and/or `latest_replies[]` (the newest, when
   read) — full message objects.
-- Not used yet: `subscriptions.thread.mark` (marking a thread read).
+- `subscriptions.thread.mark` with `channel`, `thread_ts`, `ts` (the newest reply read) and `read=1` marks a
+  thread read (used since I1); the Threads view drops it from the unread ones at once.
