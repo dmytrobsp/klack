@@ -61,6 +61,7 @@ pub fn rank(q: &str, fields: &[&str]) -> Option<u8> {
 pub fn suggestions(ws: &Workspace, conversation: Option<&str>, trigger: &Trigger) -> Vec<Suggestion> {
     match trigger {
         Trigger::Path { partial, quoted } => path_suggestions(partial, *quoted),
+        Trigger::Argument { command, before, partial } => arguments(command, before, partial, &[]),
         // All matching commands: the list scrolls.
         Trigger::Command(q) => {
             let q = q.to_lowercase();
@@ -126,6 +127,29 @@ pub fn suggestions(ws: &Workspace, conversation: Option<&str>, trigger: &Trigger
                 .collect()
         }
     }
+}
+
+/// Fixed choices for the word being typed after one of klack's commands (`before` holds the
+/// words between the command and it): `/workspace` names (from `workspaces`), `/section`'s
+/// actions, `/dnd` and `/status … for` durations, `/status clear`, `/snippet` languages.
+pub fn arguments(command: &str, before: &[String], partial: &str, workspaces: &[String]) -> Vec<Suggestion> {
+    const DURATIONS: [(&str, &str); 6] = [("30m", "30 minutes"), ("1h", "an hour"), ("2h", "two hours"), ("4h", "four hours"), ("8h", "eight hours"), ("1d", "a day")];
+    let pairs = |list: &[(&str, &str)]| list.iter().map(|&(v, d)| (v.to_string(), d.to_string())).collect::<Vec<_>>();
+    let choices = match (command, before) {
+        ("/workspace", []) => workspaces.iter().map(|w| (w.clone(), "switch to it".to_string())).collect(),
+        ("/section", []) => pairs(&[("rename", "rename this conversation's section (then its new name)"), ("delete", "delete this conversation's section")]),
+        ("/dnd", []) => [pairs(&DURATIONS), pairs(&[("off", "resume notifications")])].concat(),
+        ("/status", []) => pairs(&[("clear", "clear your status")]),
+        ("/status", [.., last]) if last == "for" => [pairs(&DURATIONS[..5]), pairs(&[("today", "until midnight")])].concat(),
+        ("/snippet", []) => super::commands::SNIPPET_LANGS.iter().map(|l| (l.to_string(), "language".to_string())).collect(),
+        _ => Vec::new(),
+    };
+    let q = partial.to_lowercase();
+    choices
+        .into_iter()
+        .filter(|(value, _)| value.to_lowercase().starts_with(&q))
+        .map(|(value, detail)| Suggestion { label: value.clone(), detail, replacement: value, id: None })
+        .collect()
 }
 
 /// At most this many entries of a folder are looked at.
@@ -271,6 +295,31 @@ mod tests {
         assert_eq!(names("CR"), ["/create", "/create-private"], "any case");
         let up = &suggestions(&w, Some("C1"), &Trigger::Command("up".into()))[0];
         assert_eq!((up.label.as_str(), up.detail.as_str(), up.replacement.as_str()), ("/upload <path> [text]", "upload a file", "/upload"));
+    }
+
+    #[test]
+    fn fixed_choices_after_commands() {
+        let got = |command: &str, before: &[&str], partial: &str| {
+            let before: Vec<String> = before.iter().map(|w| w.to_string()).collect();
+            arguments(command, &before, partial, &["Acme".into(), "rslack-testbed".into()]).into_iter().map(|s| s.replacement).collect::<Vec<_>>()
+        };
+        assert_eq!(got("/workspace", &[], ""), ["Acme", "rslack-testbed"]);
+        assert_eq!(got("/workspace", &[], "rs"), ["rslack-testbed"]);
+        assert_eq!(got("/section", &[], ""), ["rename", "delete"]);
+        assert_eq!(got("/section", &["rename"], ""), Vec::<String>::new(), "the new name is free text");
+        assert_eq!(got("/dnd", &[], "o"), ["off"]);
+        assert_eq!(got("/dnd", &[], "").len(), 7);
+        assert_eq!(got("/status", &[], ""), ["clear"]);
+        assert_eq!(got("/status", &[":tada:", "party", "for"], "t"), ["today"]);
+        assert_eq!(got("/status", &["lunch"], ""), Vec::<String>::new());
+        assert_eq!(got("/snippet", &[], "rus"), ["rust"]);
+        assert_eq!(got("/remind", &[], ""), Vec::<String>::new(), "Slack's commands: free text");
+        for (command, before) in [("/dnd", vec![]), ("/status", vec!["for".to_string()])] {
+            for s in arguments(command, &before, "", &[]) {
+                let text = format!("{command} {}{}", if before.is_empty() { "" } else { "x for " }, s.replacement);
+                assert!(matches!(super::super::commands::parse(&text, &text), Some(Ok(_))), "{text} is understood");
+            }
+        }
     }
 
     #[test]

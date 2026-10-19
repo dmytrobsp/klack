@@ -29,6 +29,8 @@ pub enum Trigger {
     Command(String),
     /// The path typed so far after `/upload` (without its opening quote when `quoted`).
     Path { partial: String, quoted: bool },
+    /// A word typed after a command (`partial`), with the command and the words before it.
+    Argument { command: String, before: Vec<String>, partial: String },
     User(String),
     Channel(String),
     Emoji(String),
@@ -338,8 +340,8 @@ impl Composer {
                 return Some((0, Trigger::Command(word.iter().collect())));
             }
         }
-        if let Some(path) = self.upload_path() {
-            return Some(path);
+        if let Some(found) = self.upload_path().or_else(|| self.command_argument()) {
+            return Some(found);
         }
         let mut start = self.cursor;
         while start > 0 {
@@ -381,6 +383,20 @@ impl Composer {
             None if !arg.contains(char::is_whitespace) => Some((start, Trigger::Path { partial: arg.into(), quoted: false })),
             None => None,
         }
+    }
+
+    /// The word at the cursor after a command and what comes before it; words starting with
+    /// `@`, `#` or `:` are mentions, channels and emoji instead.
+    fn command_argument(&self) -> Option<(usize, Trigger)> {
+        let before: String = self.chars[..self.cursor].iter().collect();
+        if !before.starts_with('/') || before.contains('\n') {
+            return None;
+        }
+        let mut words: Vec<&str> = before.split(' ').collect();
+        let partial = words.pop().filter(|p| !p.starts_with(['@', '#', ':']))?;
+        let command = (!words.is_empty()).then(|| words.remove(0).to_string())?;
+        let before = words.into_iter().filter(|w| !w.is_empty()).map(String::from).collect();
+        Some((self.cursor - partial.chars().count(), Trigger::Argument { command, before, partial: partial.into() }))
     }
 
     /// The text from `start` up to the cursor.
@@ -717,11 +733,18 @@ mod tests {
         cmd.set("/upload \"My Fi");
         assert_eq!(cmd.trigger(), path("My Fi", true), "a quoted name may hold spaces");
         cmd.set("/upload \"My File.png\" lo");
-        assert_eq!(cmd.trigger(), None, "past the path: the message");
+        assert!(!matches!(cmd.trigger(), Some((_, Trigger::Path { .. }))), "past the path: the message (free text)");
         cmd.set("/upload a.png @an");
         assert_eq!(cmd.trigger(), Some((14, Trigger::User("an".into()))), "mentions in the message");
+        let arg = |start, command: &str, before: &[&str], partial: &str| Some((start, Trigger::Argument { command: command.into(), before: before.iter().map(|w| w.to_string()).collect(), partial: partial.into() }));
         cmd.set("/uploads x");
-        assert_eq!(cmd.trigger(), None);
+        assert_eq!(cmd.trigger(), arg(9, "/uploads", &[], "x"));
+        cmd.set("/dnd ");
+        assert_eq!(cmd.trigger(), arg(5, "/dnd", &[], ""));
+        cmd.set("/status :tada: party for t");
+        assert_eq!(cmd.trigger(), arg(25, "/status", &[":tada:", "party", "for"], "t"));
+        cmd.set("/status :ta");
+        assert_eq!(cmd.trigger(), Some((8, Trigger::Emoji("ta".into()))), "emoji as before");
     }
 
     #[test]

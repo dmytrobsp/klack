@@ -1188,6 +1188,7 @@ impl App {
         // A folder is read once per path typed, not at every event (pointer moves included).
         let items = match (&trigger, &self.path_suggestions) {
             (super::composer::Trigger::Path { .. }, Some((seen, items))) if *seen == trigger => items.clone(),
+            (super::composer::Trigger::Argument { command, before, partial }, _) => super::autocomplete::arguments(command, before, partial, &self.workspaces),
             _ => super::autocomplete::suggestions(&self.ws, conversation.as_deref(), &trigger),
         };
         self.path_suggestions = matches!(trigger, super::composer::Trigger::Path { .. }).then(|| (trigger, items.clone()));
@@ -2987,11 +2988,12 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
         }
         Event::Key(k) if k.kind != KeyEventKind::Release && app.completion.is_some() && app.action_in(Context::Completion, &k).is_some() => {
             let action = app.action_in(Context::Completion, &k);
-            // A command typed out in full runs on the send key, as if the list were not there.
+            // A command or choice typed out in full sends on the send key, as if the list were not
+            // there (mentions are accepted, to be sent as such).
             let typed_command = app.completion.as_ref().and_then(|c| {
                 let s = c.items.get(c.selected)?;
                 let composer = if c.thread { &app.thread_composer } else { &app.composer };
-                (c.start == 0 && s.replacement.starts_with('/') && s.replacement == composer.token(c.start)).then_some(c.thread)
+                (s.id.is_none() && s.replacement == composer.token(c.start)).then_some(c.thread)
             });
             let send_key = app.action_in(Context::Composer, &k) == Some(Action::Send);
             let Some(c) = app.completion.as_mut() else { return true };

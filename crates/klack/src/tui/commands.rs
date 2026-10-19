@@ -102,7 +102,7 @@ pub const MAX_GROUP: usize = 8;
 /// `<@U…>`, which `/dm` needs because display names may contain spaces.
 /// The snippet languages Slack accepts as `snippet_type` (the web client's snippet editor list,
 /// plus `text`); anything else is refused with `unknown_snippet_type`.
-const SNIPPET_LANGS: &[&str] = &[
+pub const SNIPPET_LANGS: &[&str] = &[
     "text", "apl", "applescript", "asciiarmor", "asn.1", "aspx", "asterisk", "brainfuck", "c", "cfm", "clojure",
     "cmake", "cobol", "coffeescript", "cpp", "crystal", "csharp", "css", "csv", "cypher", "d", "dart", "diff",
     "django", "dockerfile", "dtd", "dylan", "ebnf", "ecl", "eiffel", "ejs", "elixir", "elm", "erb", "erlang",
