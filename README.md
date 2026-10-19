@@ -121,7 +121,7 @@ workspace account in `drafts/<team>-<user>.json` under the local data folder
 | Tab / Shift+Tab | move between sidebar, messages, composer, thread, reply box |
 | Alt+↑ / Alt+↓, Ctrl+K | previous / next conversation, jump to any conversation or person (`#` lists every channel, including ones you are not in) |
 | Ctrl+F | search messages (more results load as you move down the list) |
-| mouse | click to select, wheel to scroll (in lists like Ctrl+K, Ctrl+T, F5 and search it moves the selection), hover shading, right-click for a context menu (messages, sidebar entries); a thumb on a pane's right border shows where you are when it scrolls |
+| mouse | click to select, wheel to scroll (also the help and the preferences; in lists like Ctrl+K, Ctrl+T, F5 and search it moves the selection), hover shading, right-click for a context menu (messages, sidebar entries); a thumb on a pane's right border shows where you are when it scrolls |
 | F5 | activity: mentions, reactions to your messages, thread replies |
 | Ctrl+T | threads: every thread you are in, unread ones first ("2 new"), each with its parent and its first unread (or newest) reply; Enter opens the thread at that reply, `r` loads again, more load at the end of the list |
 | `/status [:emoji:] [text] [for 30m\|2h\|today]` · `/status clear` | set or clear your status |

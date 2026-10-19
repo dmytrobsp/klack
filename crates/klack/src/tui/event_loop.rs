@@ -1656,10 +1656,20 @@ impl App {
     }
 
     /// The mouse wheel over an open list (Ctrl+K, the section mover, F5, Ctrl+T, search) moves
-    /// its selection a step, like the keys; false when none is open.
+    /// its selection a step, like the keys; in the help and the preferences (one-row entries) it
+    /// goes three rows, as in the message panes. False when none is open.
     fn wheel_in_popup(&mut self, down: bool) -> bool {
         let step = if down { 1 } else { -1 };
-        if let Some(sw) = self.switcher.as_mut() {
+        if let Some(help) = self.help.as_mut() {
+            help.scroll_by(3 * step);
+        } else if let Some(p) = self.prefs.as_mut() {
+            if let Some(picker) = p.picker.as_mut() {
+                picker.move_by(step);
+                picker.preview(&self.ws.settings.appearance.theme);
+            } else if p.editing.is_none() && p.capturing.is_none() {
+                p.move_by(3 * step);
+            }
+        } else if let Some(sw) = self.switcher.as_mut() {
             let len = sw.entries(&self.ws).len();
             sw.move_by(step, len);
         } else if let Some(m) = self.mover.as_mut().filter(|m| m.naming.is_none()) {
