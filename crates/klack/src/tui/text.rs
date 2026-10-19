@@ -32,6 +32,21 @@ pub fn user_color(id: &str) -> Color {
     palette[(h % palette.len() as u32) as usize]
 }
 
+/// Slack's names for standard emoji that the emoji tables name otherwise.
+const SLACK_NAMES: &[(&str, &str)] = &[("squirrel", "chipmunk")];
+
+/// A standard emoji by its Slack name.
+pub fn standard_emoji(name: &str) -> Option<&'static emojis::Emoji> {
+    emojis::get_by_shortcode(name).or_else(|| SLACK_NAMES.iter().find(|(slack, _)| *slack == name).and_then(|(_, other)| emojis::get_by_shortcode(other)))
+}
+
+/// What a workspace's own emoji `name` shows as: an alias of a standard emoji shows it; a
+/// picture has none (None).
+pub fn custom_glyph(custom: &std::collections::HashMap<String, String>, name: &str) -> Option<String> {
+    let alias = custom.get(name)?.strip_prefix("alias:")?;
+    standard_emoji(alias).map(|e| e.as_str().to_string())
+}
+
 /// Emoji shortcode (optionally with unicode hint) → display text.
 pub fn emoji(ws: &Workspace, name: &str, unicode: Option<&str>) -> String {
     if ws.settings.messages.emoji_as_names {
@@ -44,7 +59,7 @@ pub fn emoji(ws: &Workspace, name: &str, unicode: Option<&str>) -> String {
         Some((b, t)) => (b, Some(t)),
         None => (name, None),
     };
-    if let Some(e) = emojis::get_by_shortcode(base) {
+    if let Some(e) = standard_emoji(base) {
         let tone = tone.and_then(|t| match t {
             "skin-tone-2" => Some(emojis::SkinTone::Light),
             "skin-tone-3" => Some(emojis::SkinTone::MediumLight),
@@ -56,10 +71,8 @@ pub fn emoji(ws: &Workspace, name: &str, unicode: Option<&str>) -> String {
         return tone.and_then(|t| e.with_skin_tone(t)).unwrap_or(e).as_str().to_string();
     }
     // Workspace aliases (`alias:thumbsup`) resolve to standard emoji.
-    if let Some(alias) = ws.custom_emoji.get(name).and_then(|v| v.strip_prefix("alias:")) {
-        if let Some(e) = emojis::get_by_shortcode(alias) {
-            return e.as_str().to_string();
-        }
+    if let Some(glyph) = custom_glyph(&ws.custom_emoji, name) {
+        return glyph;
     }
     format!(":{name}:")
 }

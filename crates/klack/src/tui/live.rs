@@ -188,6 +188,25 @@ pub fn apply(ws: &mut Workspace, ev: &Value, current: Option<&str>) -> Effects {
             }
         }
         "dnd_updated" => ws.dnd = super::state::Dnd::from_json(&ev["dnd_status"]),
+        // Someone added, removed or renamed a custom emoji.
+        "emoji_changed" => {
+            let s = |k: &str| ev[k].as_str().unwrap_or_default().to_string();
+            match ev["subtype"].as_str() {
+                Some("add") if !s("name").is_empty() => {
+                    ws.custom_emoji.insert(s("name"), s("value"));
+                }
+                Some("remove") => {
+                    for name in ev["names"].as_array().into_iter().flatten().filter_map(|n| n.as_str()) {
+                        ws.custom_emoji.remove(name);
+                    }
+                }
+                Some("rename") => {
+                    ws.custom_emoji.remove(&s("old_name"));
+                    ws.custom_emoji.insert(s("new_name"), s("value"));
+                }
+                _ => {}
+            }
+        }
         "huddle_invite" => {
             let s = |k: &str| ev[k].as_str().unwrap_or_default().to_string();
             if !s("channel_id").is_empty() {
@@ -417,6 +436,18 @@ mod tests {
         assert_eq!(fx.huddle_invite, Some(("D0CA2V8G8CE".into(), "R0CB0UP0BJL".into(), "U0BOB000001".into())));
         let fx = apply(&mut w, &json!({"channel_id":"D0CA2V8G8CE","event_ts":"1792357516.005500","team_id":"T0TEST00001","type":"huddle_invite_cancel"}), None);
         assert_eq!(fx.invite_cancelled.as_deref(), Some("D0CA2V8G8CE"));
+    }
+
+    #[test]
+    fn custom_emoji_events() {
+        let mut w = ws();
+        apply(&mut w, &json!({"type":"emoji_changed","subtype":"add","name":"crab2","value":"https://emoji.slack-edge.com/T1/crab2/1.png","event_ts":"1.0"}), None);
+        apply(&mut w, &json!({"type":"emoji_changed","subtype":"add","name":"yes","value":"alias:white_check_mark","event_ts":"2.0"}), None);
+        assert_eq!(w.custom_emoji.len(), 2);
+        apply(&mut w, &json!({"type":"emoji_changed","subtype":"rename","old_name":"crab2","new_name":"crab3","value":"https://emoji.slack-edge.com/T1/crab3/1.png","event_ts":"3.0"}), None);
+        assert!(w.custom_emoji.contains_key("crab3") && !w.custom_emoji.contains_key("crab2"));
+        apply(&mut w, &json!({"type":"emoji_changed","subtype":"remove","names":["crab3","yes"],"event_ts":"4.0"}), None);
+        assert!(w.custom_emoji.is_empty());
     }
 
     #[test]

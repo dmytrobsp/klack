@@ -117,13 +117,12 @@ pub fn suggestions(ws: &Workspace, conversation: Option<&str>, trigger: &Trigger
             out.into_iter().map(|(_, s)| s).take(MAX_ITEMS).collect()
         }
         Trigger::Emoji(q) => {
-            let custom: Vec<String> = ws.custom_emoji.keys().cloned().collect();
             let picker = EmojiPicker { query: q.clone(), selected: 0 };
             picker
-                .candidates(&custom)
+                .candidates(&ws.custom_emoji)
                 .into_iter()
                 .take(MAX_ITEMS)
-                .map(|c| Suggestion { label: format!("{} :{}:", c.glyph, c.name), detail: String::new(), replacement: format!(":{}:", c.name), id: None })
+                .map(|c| Suggestion { label: format!("{} :{}:", c.glyph, c.name), detail: if c.custom { "custom".into() } else { String::new() }, replacement: format!(":{}:", c.name), id: None })
                 .collect()
         }
     }

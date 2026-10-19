@@ -5,6 +5,7 @@ use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
+use std::collections::HashMap;
 
 
 /// Emoji people reach for most; shown first when the query is empty.
@@ -13,7 +14,10 @@ const FAVOURITES: &[&str] = &["+1", "heart", "joy", "tada", "eyes", "white_check
 #[derive(Debug, Clone)]
 pub struct Candidate {
     pub name: String,
+    /// The emoji itself; blank for a workspace's own picture.
     pub glyph: String,
+    /// One of the workspace's own (a picture or an alias).
+    pub custom: bool,
 }
 
 #[derive(Debug, Default)]
@@ -24,13 +28,14 @@ pub struct EmojiPicker {
 
 impl EmojiPicker {
     /// Candidates for the current query: exact, then prefix, then substring matches.
-    pub fn candidates(&self, custom: &[String]) -> Vec<Candidate> {
+    /// `custom` is the workspace's own emoji: name → picture URL or `alias:name`.
+    pub fn candidates(&self, custom: &HashMap<String, String>) -> Vec<Candidate> {
         let q = self.query.trim_matches(':').to_lowercase();
         let mut out: Vec<(u8, Candidate)> = Vec::new();
         if q.is_empty() {
             for name in FAVOURITES {
                 if let Some(e) = emojis::get_by_shortcode(name) {
-                    out.push((0, Candidate { name: name.to_string(), glyph: e.as_str().to_string() }));
+                    out.push((0, Candidate { name: name.to_string(), glyph: e.as_str().to_string(), custom: false }));
                 }
             }
             return out.into_iter().map(|(_, c)| c).collect();
@@ -46,11 +51,21 @@ impl EmojiPicker {
                 } else {
                     continue;
                 };
-                out.push((rank, Candidate { name: code.to_string(), glyph: e.as_str().to_string() }));
+                out.push((rank, Candidate { name: code.to_string(), glyph: e.as_str().to_string(), custom: false }));
             }
         }
-        for name in custom.iter().filter(|n| n.contains(&q)) {
-            out.push((3, Candidate { name: name.clone(), glyph: format!(":{name}:") }));
+        for name in custom.keys() {
+            let rank = if *name == q {
+                0
+            } else if name.starts_with(&q) {
+                1
+            } else if name.contains(&q) {
+                2
+            } else {
+                continue;
+            };
+            let glyph = super::text::custom_glyph(custom, name).unwrap_or_else(|| "  ".into());
+            out.push((rank, Candidate { name: name.clone(), glyph, custom: true }));
         }
         out.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.name.len().cmp(&b.1.name.len())).then(a.1.name.cmp(&b.1.name)));
         out.dedup_by(|a, b| a.1.name == b.1.name);
@@ -65,7 +80,7 @@ impl EmojiPicker {
         self.selected = (self.selected as isize + delta).clamp(0, len as isize - 1) as usize;
     }
 
-    pub fn draw(&self, f: &mut Frame, area: Rect, custom: &[String]) {
+    pub fn draw(&self, f: &mut Frame, area: Rect, custom: &HashMap<String, String>) {
         let [popup] = Layout::horizontal([Constraint::Length(44)]).flex(Flex::Center).areas(area);
         let [popup] = Layout::vertical([Constraint::Length(16)]).flex(Flex::Center).areas(popup);
         super::media::clear_modal(f, popup);
@@ -101,7 +116,7 @@ mod tests {
     #[test]
     fn favourites_when_empty() {
         let p = EmojiPicker::default();
-        let c = p.candidates(&[]);
+        let c = p.candidates(&HashMap::new());
         assert_eq!(c[0].name, "+1");
         assert_eq!(c[0].glyph, "👍");
     }
@@ -109,16 +124,20 @@ mod tests {
     #[test]
     fn ranking_prefers_exact_then_prefix() {
         let p = EmojiPicker { query: "tada".into(), selected: 0 };
-        assert_eq!(p.candidates(&[])[0].name, "tada");
+        assert_eq!(p.candidates(&HashMap::new())[0].name, "tada");
         let p = EmojiPicker { query: "hea".into(), selected: 0 };
-        let names: Vec<String> = p.candidates(&[]).into_iter().map(|c| c.name).collect();
+        let names: Vec<String> = p.candidates(&HashMap::new()).into_iter().map(|c| c.name).collect();
         assert!(names.iter().take(5).any(|n| n == "heart"), "{names:?}");
     }
 
     #[test]
     fn includes_custom_emoji() {
         let p = EmojiPicker { query: "parrot".into(), selected: 0 };
-        let c = p.candidates(&["partyparrot".into()]);
-        assert!(c.iter().any(|c| c.name == "partyparrot"));
+        let custom = HashMap::from([("partyparrot".to_string(), "https://emoji.slack-edge.com/T1/partyparrot/1.gif".to_string()), ("shipit".into(), "alias:squirrel".into())]);
+        let c = p.candidates(&custom);
+        assert!(c.iter().any(|c| c.name == "partyparrot" && c.custom && c.glyph.trim().is_empty()), "a picture: no glyph");
+        let p = EmojiPicker { query: "shipit".into(), selected: 0 };
+        let c = &p.candidates(&custom)[0];
+        assert_eq!((c.name.as_str(), c.glyph.as_str()), ("shipit", "🐿️"), "an alias shows its emoji (Slack's name for it)");
     }
 }

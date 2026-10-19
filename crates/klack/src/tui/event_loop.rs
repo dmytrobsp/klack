@@ -59,6 +59,8 @@ enum Net {
     VideoReady { title: String, result: Result<std::path::PathBuf, String> },
     /// Result of a file save or upload, shown in the status bar.
     FileDone(String),
+    /// The workspace's custom emoji (`emoji.list`): name → picture URL or `alias:name`.
+    Emoji(std::collections::HashMap<String, String>),
     /// The workspace's slash commands (`commands.list`).
     Commands(Vec<slack_core::types::SlashCommand>),
     /// Sending a composer's attachments failed: its draft (keyed like `App::drafts`) goes back.
@@ -3012,7 +3014,7 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
             }
         }
         Event::Key(k) if k.kind != KeyEventKind::Release && app.picker.is_some() => {
-            let custom: Vec<String> = app.ws.custom_emoji.keys().cloned().collect();
+            let custom = app.ws.custom_emoji.clone();
             let action = app.action_in(Context::Picker, &k);
             let Some((picker, _, _)) = app.picker.as_mut() else { return true };
             let len = picker.candidates(&custom).len();
@@ -3306,6 +3308,12 @@ fn handle_net(app: &mut App, msg: Net) {
                     }
                     Err(e) => tracing::warn!("channel list failed: {e}"),
                 }
+                match client.emoji_list().await {
+                    Ok(map) => {
+                        let _ = tx.send(Net::Emoji(map));
+                    }
+                    Err(e) => tracing::warn!("custom emoji list failed: {e}"),
+                }
                 match client.commands().await {
                     Ok(list) => {
                         let _ = tx.send(Net::Commands(list));
@@ -3316,6 +3324,7 @@ fn handle_net(app: &mut App, msg: Net) {
         }
         Net::Channels(list) => app.ws.add_channels(list),
         Net::Commands(list) => app.ws.slack_commands = list,
+        Net::Emoji(map) => app.ws.custom_emoji = map,
         Net::UserInfo(u) => {
             app.ws.users.insert(u.id.clone(), u);
             app.sidebar.rebuild(&app.ws);
@@ -3684,8 +3693,7 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         super::autocomplete::draw(f, if c.thread { app.thread_composer_area } else { app.composer_area }, c);
     }
     if let Some((picker, _, _)) = &app.picker {
-        let custom: Vec<String> = app.ws.custom_emoji.keys().cloned().collect();
-        picker.draw(f, main, &custom);
+        picker.draw(f, main, &app.ws.custom_emoji);
     }
     match &app.confirm {
         Some(Confirm::Delete { .. }) => draw_confirm(f, main, "Delete this message? y / n"),
