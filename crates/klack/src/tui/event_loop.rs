@@ -5,7 +5,7 @@ use std::time::Duration;
 use anyhow::Result;
 use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, MouseButton, MouseEventKind};
 use futures_util::StreamExt;
-use ratatui::layout::{Constraint, Layout};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::widgets::Paragraph;
 use serde_json::Value;
 use slack_core::Client;
@@ -192,6 +192,9 @@ struct App {
     thread_composer_area: ratatui::layout::Rect,
     /// Open thread pane: (channel, parent ts).
     thread: Option<(String, String)>,
+    /// At the last draw there was no room for a thread beside the messages: an open thread
+    /// takes their place.
+    narrow: bool,
     thread_pane: MessagePane,
     thread_composer: Composer,
     /// Thread replies are also sent to the channel.
@@ -1307,6 +1310,10 @@ impl App {
         if self.huddle_view.take().is_some() {
             self.focus = Focus::Composer;
         } else if self.call.is_some() {
+            // Narrow: the view and a thread take turns in the messages' place.
+            if self.narrow {
+                self.close_thread();
+            }
             self.huddle_view = Some(Default::default());
             self.focus = Focus::Huddle;
         } else {
@@ -2071,6 +2078,10 @@ impl App {
     fn focus_order(&self) -> Vec<Focus> {
         // The huddle view stands in for the messages and the composer.
         let mut order = if self.huddle_view.is_some() { vec![Focus::Sidebar, Focus::Huddle] } else { vec![Focus::Sidebar, Focus::Messages, Focus::Composer] };
+        // A narrow terminal's thread stands in for them.
+        if self.narrow && self.thread.is_some() {
+            order.truncate(1);
+        }
         if self.thread.is_some() {
             order.extend([Focus::Thread, Focus::ThreadComposer]);
         }
@@ -2326,6 +2337,7 @@ async fn run_workspace(
         drafts: super::drafts::load(&client.session.team_id, &client.session.user_id),
         player: None,
         screen: Default::default(),
+        narrow: false,
         terminal_focused: true,
         completion: None,
         completion_dismissed: None,
@@ -3362,6 +3374,22 @@ fn rejoin_after_end(connected: bool, leaving: bool, rejoined: bool) -> Option<bo
     (!connected && !leaving).then_some(!rejoined)
 }
 
+/// The width the messages and a thread need side by side (about 50 columns each).
+const THREAD_BESIDE_MIN: u16 = 100;
+
+/// The messages' and an open thread's parts of the main area: side by side, or the thread
+/// alone when there is no room for both.
+fn split_main(main: Rect, thread: bool) -> (Option<Rect>, Option<Rect>) {
+    if !thread {
+        (Some(main), None)
+    } else if main.width < THREAD_BESIDE_MIN {
+        (None, Some(main))
+    } else {
+        let [left, right] = Layout::horizontal([Constraint::Min(30), Constraint::Percentage(40)]).areas(main);
+        (Some(left), Some(right))
+    }
+}
+
 fn draw(f: &mut ratatui::Frame, app: &mut App) {
     app.screen = f.area();
     // The huddle view goes with the call, and gives way once the messages or the composer
@@ -3399,12 +3427,21 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     // A thread's draft counts for its conversation.
     app.sidebar.drafts = app.drafts.keys().map(|k| k.split('/').next().unwrap_or(k).to_string()).collect();
     app.sidebar.draw(f, side, &app.ws, app.focus == Focus::Sidebar);
-    let (main, thread_area) = if app.thread.is_some() {
-        let [left, right] = Layout::horizontal([Constraint::Min(30), Constraint::Percentage(40)]).areas(main);
-        (left, Some(right))
-    } else {
-        (main, None)
-    };
+    // Too narrow for a thread beside the messages (as Slack does): the thread takes their place
+    // until it is closed, or until the messages or their composer get the focus; the huddle
+    // view and a thread take turns there.
+    app.narrow = main.width < THREAD_BESIDE_MIN;
+    if app.narrow && app.thread.is_some() {
+        if matches!(app.focus, Focus::Messages | Focus::Composer) {
+            app.close_thread();
+        } else if app.huddle_view.take().is_some() && app.focus == Focus::Huddle {
+            app.focus = Focus::Thread;
+        }
+    }
+    let (messages_area, thread_area) = split_main(main, app.thread.is_some());
+    let alone = messages_area.is_none();
+    // (`main` stays the whole area when the thread takes it, for the dialogs drawn over it.)
+    let main = messages_area.unwrap_or(main);
     if let (Some(area), Some((channel, ts))) = (thread_area, app.thread.clone()) {
         let h = app.thread_composer.rows(area.width.saturating_sub(2) as usize).clamp(1, 8) + 2;
         let [pane, comp] = Layout::vertical([Constraint::Min(3), Constraint::Length(h)]).areas(area);
@@ -3416,7 +3453,12 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         draw_composer(f, comp, app, true);
     }
 
-    if let (Some(view), Some(call)) = (app.huddle_view.as_mut(), &app.call) {
+    if alone {
+        // Nothing of the message pane is on screen, so the mouse must not find it.
+        app.messages.area = Default::default();
+        app.messages.hover = None;
+        app.composer_area = Default::default();
+    } else if let (Some(view), Some(call)) = (app.huddle_view.as_mut(), &app.call) {
         // Nothing of the message pane is on screen, so the mouse must not find it.
         app.messages.area = Default::default();
         app.messages.hover = None;
@@ -3669,6 +3711,17 @@ fn draw_composer(f: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &App,
 #[cfg(test)]
 mod tests {
     use slack_core::session::WorkspaceSession;
+
+    #[test]
+    fn a_thread_takes_the_messages_place_when_narrow() {
+        use ratatui::layout::Rect;
+        let main = |w| Rect::new(20, 0, w, 30);
+        assert_eq!(super::split_main(main(80), false), (Some(main(80)), None), "no thread");
+        assert_eq!(super::split_main(main(99), true), (None, Some(main(99))), "too narrow: the thread alone");
+        let (messages, thread) = super::split_main(main(100), true);
+        let (messages, thread) = (messages.unwrap(), thread.unwrap());
+        assert_eq!((messages.x, messages.width, thread.x, thread.width), (20, 60, 80, 40), "side by side");
+    }
 
     #[test]
     fn upload_progress_reads_well() {

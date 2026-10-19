@@ -62,7 +62,8 @@ runtime).
 The sidebar on the left (sections, starred conversations, channels, direct messages — the most recently
 active first; channels and DMs without a message for 30 days are left out unless starred, unread or open,
 F6 → Appearance; Ctrl+K still finds them and shows them while open), the
-messages in the middle with a reply pane for threads on the right, the composer below, and a status
+messages in the middle with a reply pane for threads on the right (in a narrow terminal the thread
+takes the messages' place until you close it), the composer below, and a status
 bar at the bottom: a pill saying where your keys go now (SIDEBAR, MESSAGES, COMPOSE, THREAD, REPLY,
 HUDDLE, or the open dialog: JUMP, SEARCH, PREFS, …), where you are (`#social › Thread`), unread
 counts and messages — or, while a dialog is open, its keys — then F1 for all keys and whether klack
