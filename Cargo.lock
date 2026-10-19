@@ -2238,6 +2238,7 @@ dependencies = [
  "hmac",
  "huddle",
  "image",
+ "libc",
  "notify-rust",
  "ratatui",
  "ratatui-image",

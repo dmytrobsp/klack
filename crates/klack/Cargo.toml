@@ -56,4 +56,6 @@ rustix = { version = "1.1.5", features = ["event", "stdio"] }
 
 # The keyring holding Chrome's cookie key (Secret Service, for `login --from-browser chrome`).
 [target.'cfg(target_os = "linux")'.dependencies]
+# glibc's mallopt: fewer malloc arenas (`main`).
+libc = "0.2"
 zbus = { version = "5.19", default-features = false, features = ["tokio"] }

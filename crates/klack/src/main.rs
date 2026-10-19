@@ -72,8 +72,19 @@ fn init_logging(profile: &str) -> Result<()> {
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    // glibc gives every thread that allocates its own arena and keeps what is freed in it: with
+    // a thread per core that held megabytes klack no longer used. Two are plenty for a terminal
+    // client; this has to happen before the runtime starts its threads.
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    // SAFETY: mallopt only adjusts an allocator setting; no thread is running yet.
+    unsafe {
+        libc::mallopt(libc::M_ARENA_MAX, 2);
+    }
+    tokio::runtime::Builder::new_multi_thread().enable_all().build()?.block_on(run())
+}
+
+async fn run() -> Result<()> {
     #[cfg(feature = "dhat-heap")]
     let _profiler = dhat::Profiler::new_heap();
     // rustls and reqwest are built without a crypto provider of their own (one fewer to carry):
