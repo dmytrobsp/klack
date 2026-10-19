@@ -3478,6 +3478,8 @@ fn handle_dialog(app: &mut App, ev: &Event) -> bool {
         Event::Mouse(m) if matches!(m.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown) => {
             app.wheel_in_popup(m.kind == MouseEventKind::ScrollDown);
         }
+        // A click on a row of jump to, search, threads or activity picks it, as Enter does.
+        Event::Mouse(m) if m.kind == MouseEventKind::Down(MouseButton::Left) && click_row(app, m.column, m.row) => {}
         // A click outside the dialog closes it; one inside does nothing.
         Event::Mouse(m) if matches!(m.kind, MouseEventKind::Down(_)) => {
             if !app.dialog_area().is_some_and(|a| a.contains((m.column, m.row).into())) {
@@ -3485,6 +3487,43 @@ fn handle_dialog(app: &mut App, ev: &Event) -> bool {
             }
         }
         _ => {}
+    }
+    true
+}
+
+/// A left click at a position on a row of the topmost jump to / search / threads / activity
+/// list: selects it and does what Enter does. False when no such list has a row there.
+fn click_row(app: &mut App, column: u16, row: u16) -> bool {
+    if let Some(sw) = app.switcher.as_mut() {
+        let Some(n) = sw.row_at(column, row) else { return false };
+        sw.selected = n;
+        app.switch();
+    } else if let Some(search) = app.search.as_mut() {
+        let Some(n) = search.row_at(column, row) else { return false };
+        search.selected = n;
+        if let Some(hit) = search.hits.get(n).cloned() {
+            app.search = None;
+            app.open_hit(hit);
+        }
+    } else if let Some(t) = app.threads.as_mut() {
+        let Some(n) = t.row_at(column, row) else { return false };
+        t.selected = n;
+        if let Some((channel, ts, thread_ts)) = t.target() {
+            app.threads = None;
+            app.open_hit(super::search::Hit { channel, ts, thread_ts, user: None, text: String::new() });
+        }
+    } else if let Some(a) = app.activity.as_mut() {
+        let Some(n) = a.row_at(column, row) else { return false };
+        a.selected = n;
+        if let Some(key) = a.selected_item().map(|it| it.key.clone()) {
+            app.seen.insert(key, opened_now());
+        }
+        if let Some((channel, ts, thread_ts)) = a.target() {
+            app.activity = None;
+            app.open_hit(super::search::Hit { channel, ts, thread_ts, user: None, text: String::new() });
+        }
+    } else {
+        return false;
     }
     true
 }

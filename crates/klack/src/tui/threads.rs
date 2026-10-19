@@ -75,6 +75,10 @@ pub struct Threads {
     pub height: usize,
     /// Last drawn area, for clicks.
     pub area: Rect,
+    /// The list's rows at the last draw, the first thread shown and how many are.
+    pub list: Rect,
+    pub first: usize,
+    pub shown: usize,
 }
 
 impl Threads {
@@ -99,6 +103,12 @@ impl Threads {
     pub fn move_by(&mut self, delta: isize) {
         let len = self.entries.as_ref().map_or(0, Vec::len);
         self.selected = if len == 0 { 0 } else { (self.selected as isize + delta).clamp(0, len as isize - 1) as usize };
+    }
+
+    /// The thread drawn at a terminal position (three rows and a gap each; the gap is no thread).
+    pub fn row_at(&self, column: u16, row: u16) -> Option<usize> {
+        let r = row.checked_sub(self.list.y)? as usize;
+        (self.list.contains((column, row).into()) && r % 4 < 3).then(|| self.first + r / 4).filter(|n| *n < self.first + self.shown)
     }
 
     /// At the end of the list (time to load more).
@@ -148,8 +158,11 @@ impl Threads {
             }
         };
         f.render_widget(Paragraph::new(lines), inner);
+        self.list = inner;
+        (self.first, self.shown) = (0, 0);
         if let Some(entries) = &self.entries {
             let start = self.selected.saturating_sub(self.height.saturating_sub(1));
+            (self.first, self.shown) = (start, entries.len().saturating_sub(start).min(self.height));
             super::scroll::indicator_beside(f, popup, inner, start, self.height, entries.len(), Style::default().fg(p.accent));
         }
     }
@@ -248,5 +261,17 @@ mod tests {
         t.move_by(5);
         assert!(t.at_end());
         assert_eq!(t.target().unwrap().1, "1792325495.184089");
+    }
+
+    #[test]
+    fn a_click_maps_to_the_thread_drawn_there() {
+        // Four rows per thread (the last is a gap); thread 3 is the first shown, two are.
+        let t = Threads { list: Rect::new(5, 10, 88, 28), first: 3, shown: 2, ..Default::default() };
+        assert_eq!((t.row_at(6, 10), t.row_at(6, 12)), (Some(3), Some(3)));
+        assert_eq!(t.row_at(6, 13), None, "the gap");
+        assert_eq!(t.row_at(6, 14), Some(4));
+        assert_eq!(t.row_at(6, 18), None, "below the last thread");
+        assert_eq!(t.row_at(6, 9), None, "the border / title");
+        assert_eq!(t.row_at(4, 10), None, "the side border");
     }
 }

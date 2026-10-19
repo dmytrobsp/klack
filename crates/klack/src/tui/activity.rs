@@ -97,12 +97,22 @@ pub struct Activity {
     pub height: usize,
     /// Last drawn area, for clicks.
     pub area: Rect,
+    /// The list's rows at the last draw, the first item shown and how many are.
+    pub list: Rect,
+    pub first: usize,
+    pub shown: usize,
 }
 
 impl Activity {
     pub fn move_by(&mut self, delta: isize) {
         let len = self.items.as_ref().map_or(0, Vec::len);
         self.selected = if len == 0 { 0 } else { (self.selected as isize + delta).clamp(0, len as isize - 1) as usize };
+    }
+
+    /// The item drawn at a terminal position (two rows and a gap each; the gap is no item).
+    pub fn row_at(&self, column: u16, row: u16) -> Option<usize> {
+        let r = row.checked_sub(self.list.y)? as usize;
+        (self.list.contains((column, row).into()) && r % 3 < 2).then(|| self.first + r / 3).filter(|n| *n < self.first + self.shown)
     }
 
     pub fn selected_item(&self) -> Option<&Item> {
@@ -169,8 +179,11 @@ impl Activity {
             }
         };
         f.render_widget(Paragraph::new(lines), inner);
+        self.list = inner;
+        (self.first, self.shown) = (0, 0);
         if let Some(items) = &self.items {
             let start = self.selected.saturating_sub(self.height.saturating_sub(1));
+            (self.first, self.shown) = (start, items.len().saturating_sub(start).min(self.height));
             super::scroll::indicator_beside(f, popup, inner, start, self.height, items.len(), Style::default().fg(super::theme::p().accent));
         }
     }
@@ -266,5 +279,16 @@ mod tests {
         assert_eq!(a.wanted().len(), 2);
         a.requested.insert(("C1".into(), "1".into()));
         assert_eq!(a.wanted(), vec![("C1".to_string(), "2".to_string())]);
+    }
+
+    #[test]
+    fn a_click_maps_to_the_item_drawn_there() {
+        // Three rows per item (the last is a gap); item 5 is the first shown, two are.
+        let a = Activity { list: Rect::new(5, 10, 88, 28), first: 5, shown: 2, ..Default::default() };
+        assert_eq!((a.row_at(6, 10), a.row_at(6, 11)), (Some(5), Some(5)));
+        assert_eq!(a.row_at(6, 12), None, "the gap");
+        assert_eq!(a.row_at(6, 13), Some(6));
+        assert_eq!(a.row_at(6, 16), None, "below the last item");
+        assert_eq!(a.row_at(6, 9), None, "the border / title");
     }
 }

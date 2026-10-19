@@ -35,6 +35,10 @@ pub struct Switcher {
     pub height: usize,
     /// Last drawn area, for clicks.
     pub area: Rect,
+    /// The list's rows at the last draw, the first entry shown and how many are.
+    pub list: Rect,
+    pub first: usize,
+    pub shown: usize,
 }
 
 impl Switcher {
@@ -44,6 +48,11 @@ impl Switcher {
 
     pub fn move_by(&mut self, delta: isize, len: usize) {
         self.selected = if len == 0 { 0 } else { (self.selected as isize + delta).clamp(0, len as isize - 1) as usize };
+    }
+
+    /// The entry drawn at a terminal position.
+    pub fn row_at(&self, column: u16, row: u16) -> Option<usize> {
+        self.list.contains((column, row).into()).then(|| self.first + (row - self.list.y) as usize).filter(|n| *n < self.first + self.shown)
     }
 
     pub fn draw(&mut self, f: &mut Frame, area: Rect, ws: &Workspace) {
@@ -64,6 +73,7 @@ impl Switcher {
         f.set_cursor_position((input.x + 2 + self.query.chars().count() as u16, input.y));
         let height = list.height as usize;
         let start = self.selected.saturating_sub(height.saturating_sub(1));
+        (self.list, self.first, self.shown) = (list, start, items.len().saturating_sub(start).min(height));
         let lines: Vec<Line> = items
             .iter()
             .enumerate()
@@ -199,5 +209,20 @@ mod tests {
         sw.move_by(10, 300);
         sw.move_by(10_000, 300);
         assert_eq!(sw.selected, 299);
+    }
+
+    #[test]
+    fn a_click_maps_to_the_entry_drawn_there() {
+        // Border at y 4, query at 5, list rows 6..=10; scrolled so entry 20 is the first shown.
+        let sw = Switcher { list: Rect::new(10, 6, 40, 5), first: 20, shown: 5, ..Default::default() };
+        assert_eq!(sw.row_at(12, 6), Some(20));
+        assert_eq!(sw.row_at(12, 10), Some(24));
+        assert_eq!(sw.row_at(12, 5), None, "the query line");
+        assert_eq!(sw.row_at(12, 4), None, "the border / title");
+        assert_eq!(sw.row_at(12, 11), None, "the bottom border");
+        assert_eq!(sw.row_at(9, 7), None, "the side border");
+        let short = Switcher { list: Rect::new(10, 6, 40, 5), first: 0, shown: 2, ..Default::default() };
+        assert_eq!(short.row_at(12, 7), Some(1));
+        assert_eq!(short.row_at(12, 8), None, "below the last entry");
     }
 }

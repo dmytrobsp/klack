@@ -62,11 +62,20 @@ pub struct Search {
     pub loading_more: bool,
     /// Last drawn area, for clicks.
     pub area: Rect,
+    /// The list's rows at the last draw, the first hit shown and how many are.
+    pub list: Rect,
+    pub first: usize,
+    pub shown: usize,
 }
 
 impl Search {
     pub fn move_by(&mut self, delta: isize) {
         self.selected = if self.hits.is_empty() { 0 } else { (self.selected as isize + delta).clamp(0, self.hits.len() as isize - 1) as usize };
+    }
+
+    /// The hit drawn at a terminal position (each takes two rows).
+    pub fn row_at(&self, column: u16, row: u16) -> Option<usize> {
+        self.list.contains((column, row).into()).then(|| self.first + (row - self.list.y) as usize / 2).filter(|n| *n < self.first + self.shown)
     }
 
     /// The page to load next, when the selection is near the end of the hits and there is
@@ -124,6 +133,7 @@ impl Search {
         // Two rows per hit: where/who/when, then the text.
         let per_page = (list.height as usize / 2).max(1);
         let start = self.selected.saturating_sub(per_page - 1);
+        (self.list, self.first, self.shown) = (list, start, self.hits.len().saturating_sub(start).min(per_page));
         let mut lines = Vec::new();
         for (n, hit) in self.hits.iter().enumerate().skip(start).take(per_page) {
             let when = hit.ts.parse::<f64>().ok().and_then(|t| super::clock::at(t as i64)).map(|d| d.format(&format!("%b %e {}", ws.settings.time_format())).to_string()).unwrap_or_default();
@@ -196,5 +206,16 @@ mod tests {
         // A new search starts over.
         s.add_page("new".into(), 1, &page(1, &[("5.0", "n")]));
         assert_eq!((s.hits.len(), s.selected, s.searched.as_str()), (1, 0, "new"));
+    }
+
+    #[test]
+    fn a_click_maps_to_the_hit_drawn_there() {
+        // Two rows per hit; hit 7 is the first shown, three are.
+        let s = Search { list: Rect::new(5, 10, 80, 20), first: 7, shown: 3, ..Default::default() };
+        assert_eq!((s.row_at(6, 10), s.row_at(6, 11)), (Some(7), Some(7)), "both rows of a hit");
+        assert_eq!(s.row_at(6, 14), Some(9));
+        assert_eq!(s.row_at(6, 16), None, "below the last hit");
+        assert_eq!(s.row_at(6, 9), None, "the query line");
+        assert_eq!(s.row_at(4, 10), None, "the border");
     }
 }
