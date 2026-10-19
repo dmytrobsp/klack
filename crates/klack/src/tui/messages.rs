@@ -85,6 +85,9 @@ pub struct MessagePane {
     top: bool,
     /// Selected message ts (message focus).
     pub selected: Option<String>,
+    /// The selection (or message being edited) last brought into view: it is brought into view
+    /// once, when it changes, so the wheel can scroll away from it afterwards.
+    shown: Option<String>,
     /// Message ts owning each visible row of the last draw (for clicks).
     rows: Vec<Option<String>>,
     /// Thread mode: show the parent and every reply instead of top-level messages.
@@ -300,17 +303,15 @@ impl MessagePane {
             mark_editing(&mut lines, &owners, ts, highlight);
         }
         let total = lines.len();
-        // Keep the selection (or, from the composer, the message being edited) on screen.
+        // Bring a new selection (or, from the composer, the message being edited) into view.
         let keep = if focused { self.selected.as_ref() } else { self.editing.as_ref() };
-        if let Some(sel) = keep {
+        if keep != self.shown.as_ref() {
+            self.shown = None;
+        }
+        if let Some(sel) = keep.filter(|_| self.shown.is_none()) {
             if let (Some(first), Some(last)) = (owners.iter().position(|o| o.as_ref() == Some(sel)), owners.iter().rposition(|o| o.as_ref() == Some(sel))) {
-                let end = total.saturating_sub(self.scroll);
-                let start = end.saturating_sub(height);
-                if last >= end {
-                    self.scroll = total - (last + 1);
-                } else if first < start {
-                    self.scroll = total.saturating_sub(first + height);
-                }
+                self.scroll = keep_in_view(total, height, self.scroll, first, last);
+                self.shown = Some(sel.clone());
             }
         }
         // Just opened with more unread than fits: up to the "— new —" line.
@@ -384,6 +385,24 @@ impl MessagePane {
                 None => self.wanted.push((slot.file, slot.size)),
             }
         }
+    }
+}
+
+/// The scroll (lines hidden below the view) that shows lines `first..=last` of `total`: moved as
+/// little as it takes; a message taller than the view shows from its start, unless the view is
+/// already all inside it.
+fn keep_in_view(total: usize, height: usize, scroll: usize, first: usize, last: usize) -> usize {
+    let end = total.saturating_sub(scroll);
+    let start = end.saturating_sub(height);
+    let from_start = total.saturating_sub(first + height);
+    if last + 1 - first > height {
+        if first <= start && last + 1 >= end { scroll } else { from_start }
+    } else if last >= end {
+        total - (last + 1)
+    } else if first < start {
+        from_start
+    } else {
+        scroll
     }
 }
 
@@ -955,6 +974,57 @@ mod tests {
         pane.selected = Some(far.clone());
         terminal.draw(|f| pane.draw(f, f.area(), &ws, "t", Some(&t3), true, &media)).unwrap();
         assert!(pane.rows.contains(&Some(far)), "the selection is on screen");
+    }
+
+    #[test]
+    fn a_message_taller_than_the_view_stays_put_when_selected() {
+        let mut ws = Workspace::default();
+        ws.users.insert("U1".into(), slack_core::types::User { id: "U1".into(), name: "ann".into(), ..Default::default() });
+        let mut t = Timeline { loaded: true, ..Default::default() };
+        t.upsert(msg("1700000000.000000", "U1", "before"));
+        let long: Vec<String> = (1..=40).map(|n| format!("line {n}")).collect();
+        t.upsert(msg("1700000060.000000", "U1", &long.join("\n")));
+        t.upsert(msg("1700000120.000000", "U1", "after"));
+        let media = Media::with(ratatui_image::picker::Picker::halfblocks());
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 22)).unwrap();
+        let mut pane = MessagePane::default();
+        // The text on screen.
+        let mut draw = |pane: &mut MessagePane| {
+            let buffer = terminal.draw(|f| pane.draw(f, f.area(), &ws, "t", Some(&t), true, &media)).unwrap().buffer.clone();
+            (0..buffer.area.height).map(|y| (0..buffer.area.width).map(|x| buffer[(x, y)].symbol()).collect::<String>()).collect::<Vec<_>>().join("\n")
+        };
+        draw(&mut pane);
+        // Clicked (selected) while part of it shows: it shows from its start, and stays there
+        // through redraws (the pointer moving over it redraws).
+        let tall = "1700000060.000000".to_string();
+        pane.selected = Some(tall.clone());
+        let first = draw(&mut pane);
+        assert!(first.contains("line 1 ") && !first.contains("line 40"), "its first line at the top:\n{first}");
+        for n in 0..4 {
+            pane.hover = if n % 2 == 0 { Some(tall.clone()) } else { None };
+            assert_eq!(draw(&mut pane), first, "redraw {n} does not move the view");
+        }
+        // The wheel scrolls through it (and past it) while it stays selected.
+        pane.scroll_down(5);
+        let down = draw(&mut pane);
+        assert_ne!(down, first, "scrolled");
+        assert_eq!(draw(&mut pane), down, "and stays scrolled");
+        pane.scroll_down(100);
+        assert!(draw(&mut pane).contains("after"), "scrolled past it to the bottom");
+        // Selecting another message brings that one into view.
+        pane.selected = Some("1700000000.000000".into());
+        assert!(draw(&mut pane).contains("before"));
+    }
+
+    #[test]
+    fn keeping_lines_in_view() {
+        // 100 lines, a 10-line view at the bottom shows 90..100.
+        assert_eq!(super::keep_in_view(100, 10, 0, 92, 94), 0, "already shown");
+        assert_eq!(super::keep_in_view(100, 10, 0, 80, 82), 10, "above: to the top of the view");
+        assert_eq!(super::keep_in_view(100, 10, 30, 80, 82), 17, "below: to the bottom of the view");
+        assert_eq!(super::keep_in_view(100, 10, 0, 50, 95), 40, "taller, partly shown: from its start");
+        assert_eq!(super::keep_in_view(100, 10, 20, 50, 95), 20, "taller, filling the view: left alone");
+        assert_eq!(super::keep_in_view(100, 10, 40, 50, 95), 40, "taller, its start at the top: left alone");
     }
 
     #[test]
