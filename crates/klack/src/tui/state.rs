@@ -76,6 +76,9 @@ pub struct Workspace {
     pub users: HashMap<String, User>,
     pub conversations: BTreeMap<String, Conversation>,
     pub unread: HashMap<String, Unread>,
+    /// When each conversation last had a message (epoch seconds), for ordering direct messages
+    /// and hiding quiet conversations.
+    pub latest: HashMap<String, f64>,
     pub timelines: HashMap<String, Timeline>,
     /// thread key `channel/ts` → replies (including parent first)
     pub threads: HashMap<String, Timeline>,
@@ -453,7 +456,8 @@ impl Workspace {
             .filter(|c| c.is_dm() && !c.is_archived)
             .filter(|c| c.user.as_deref().is_none_or(|u| self.users.get(u).is_none_or(|u| !u.deleted)))
             .collect();
-        dms.sort_by_key(|c| (c.user.as_deref() == Some("USLACKBOT"), self.conversation_label(c).to_lowercase()));
+        // The most recently active first, as Slack does; never-active ones by name at the end.
+        dms.sort_by(|a, b| self.activity(&b.id).total_cmp(&self.activity(&a.id)).then_with(|| self.conversation_label(a).to_lowercase().cmp(&self.conversation_label(b).to_lowercase())));
         (channels.into_iter().map(|c| c.id.clone()).collect(), dms.into_iter().map(|c| c.id.clone()).collect())
     }
 
@@ -529,6 +533,10 @@ impl Workspace {
         for key in ["channels", "mpims", "ims"] {
             for c in counts[key].as_array().into_iter().flatten() {
                 let Some(id) = c["id"].as_str() else { continue };
+                // `latest`: the newest real message (zeros when there is none).
+                if let Some(t) = c["latest"].as_str().and_then(|t| t.parse::<f64>().ok()).filter(|t| *t > 0.0) {
+                    self.note_activity(id, t);
+                }
                 if let (Some(conv), Some(ts)) = (self.conversations.get_mut(id), c["last_read"].as_str()) {
                     conv.last_read = Some(ts.to_string());
                 }
@@ -538,6 +546,22 @@ impl Workspace {
                 );
             }
         }
+    }
+
+    /// A message at `t` in conversation `id`; true if that is newer than what was known.
+    pub fn note_activity(&mut self, id: &str, t: f64) -> bool {
+        let known = self.latest.entry(id.to_string()).or_insert(0.0);
+        if t > *known {
+            *known = t;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// When conversation `id` last had a message (0: never, as far as known).
+    pub fn activity(&self, id: &str) -> f64 {
+        self.latest.get(id).copied().unwrap_or(0.0)
     }
 
     pub fn total_unread(&self) -> (usize, u64) {
@@ -736,5 +760,24 @@ mod tests {
         let texts: Vec<&str> = t.messages.iter().map(|m| m.text.as_str()).collect();
         assert_eq!(texts, ["old page", "kept", "edited", "new"], "older than the page: untouched");
         assert!(!t.has_more, "paging state unchanged");
+    }
+
+    #[test]
+    fn direct_messages_by_latest_activity() {
+        let mut ws = Workspace::default();
+        for (id, user, name) in [("D1", "U1", "bob"), ("D2", "U2", "carol"), ("D3", "U3", "alice")] {
+            ws.users.insert(user.into(), User { id: user.into(), name: name.into(), ..Default::default() });
+            ws.conversations.insert(id.into(), Conversation { id: id.into(), is_im: true, user: Some(user.into()), ..Default::default() });
+        }
+        // client.counts: zeros mean no message.
+        ws.apply_counts(&serde_json::json!({"ims": [
+            {"id": "D1", "latest": "1792356849.633269", "has_unreads": false},
+            {"id": "D2", "latest": "1792360000.000100", "has_unreads": false},
+            {"id": "D3", "latest": "0000000000.000000", "has_unreads": false}
+        ]}));
+        assert_eq!(ws.sidebar().1, ["D2", "D1", "D3"], "newest first, never-active last");
+        assert!(ws.note_activity("D1", 1792370000.0), "a new message moves it");
+        assert!(!ws.note_activity("D1", 1792000000.0), "an older one does not");
+        assert_eq!(ws.sidebar().1, ["D1", "D2", "D3"]);
     }
 }

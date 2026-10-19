@@ -89,6 +89,10 @@ pub fn apply(ws: &mut Workspace, ev: &Value, current: Option<&str>) -> Effects {
                 let Some(m) = parse_message(ev, &channel) else { return fx };
                 let from_me = m.user.as_deref() == Some(ws.self_id.as_str());
                 add_message(ws, &channel, &m);
+                // A direct message moving to the top of its list.
+                if ws.note_activity(&channel, m.time()) && ws.conversations.get(&channel).is_some_and(|c| c.is_dm()) {
+                    fx.rebuild_sidebar = true;
+                }
                 if !from_me {
                     // Someone stopped typing once their message lands.
                     if let (Some(list), Some(u)) = (ws.typing.get_mut(&channel), m.user.as_deref()) {

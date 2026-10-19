@@ -3103,7 +3103,12 @@ fn handle_net(app: &mut App, msg: Net) {
             }
             app.continue_seek();
         }
-        Net::Posted { channel, message } => super::live::add_message(&mut app.ws, &channel, &message),
+        Net::Posted { channel, message } => {
+            super::live::add_message(&mut app.ws, &channel, &message);
+            if app.ws.note_activity(&channel, message.time()) && app.ws.conversations.get(&channel).is_some_and(|c| c.is_dm()) {
+                app.sidebar.rebuild(&app.ws);
+            }
+        }
         Net::Replies { channel, ts, page } => {
             let tl = app.ws.threads.entry(super::state::thread_key(&channel, &ts)).or_default();
             for m in page.messages {
