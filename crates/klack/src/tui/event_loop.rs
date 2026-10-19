@@ -65,6 +65,8 @@ enum Net {
     Prefs(Value),
     /// The activity feed.
     ActivityFeed(Result<Value, String>),
+    /// Bytes of an upload sent so far.
+    UploadProgress { name: String, sent: u64, total: u64 },
     /// A page of the Threads view (`more`: added to what is listed).
     ThreadView { result: Result<Value, String>, more: bool },
     /// A message an activity item is about.
@@ -1855,12 +1857,18 @@ impl App {
         self.status = format!("uploading {name}…");
         let (client, tx) = (self.client.clone(), self.net.clone());
         tokio::spawn(async move {
-            let result = async {
-                let bytes = tokio::fs::read(&cmd.path).await.map_err(|e| anyhow::anyhow!("{}: {e}", cmd.path.display()))?;
-                let message = super::composer::escape_text(&cmd.message);
-                client.upload(&channel, &name, bytes, Some(&message), thread_ts.as_deref(), None).await
-            }
-            .await;
+            let message = super::composer::escape_text(&cmd.message);
+            // Progress at most every 250 ms (and at the end).
+            let last = std::sync::Mutex::new(std::time::Instant::now() - std::time::Duration::from_secs(1));
+            let (ptx, pname) = (tx.clone(), name.clone());
+            let progress = move |sent: u64, total: u64| {
+                let mut last = last.lock().unwrap_or_else(|e| e.into_inner());
+                if sent == total || last.elapsed() >= std::time::Duration::from_millis(250) {
+                    *last = std::time::Instant::now();
+                    let _ = ptx.send(Net::UploadProgress { name: pname.clone(), sent, total });
+                }
+            };
+            let result = client.upload_file(&channel, &cmd.path, &name, Some(&message), thread_ts.as_deref(), progress).await;
             let _ = tx.send(Net::FileDone(match result {
                 Ok(_) => format!("uploaded {name}"),
                 Err(e) => format!("upload failed: {e}"),
@@ -2018,6 +2026,15 @@ struct Ring {
 
 /// How often the ring sound repeats.
 const RING_EVERY: Duration = Duration::from_millis(2500);
+
+/// "uploading a.mp4… 42% (3.1 of 7.4 MB)"; once all is sent, Slack still has to file it.
+fn upload_status(name: &str, sent: u64, total: u64) -> String {
+    if sent >= total {
+        return format!("uploading {name}… sent, Slack is filing it");
+    }
+    let percent = sent * 100 / total.max(1);
+    format!("uploading {name}… {percent}% ({} of {})", super::text::human_size(sent), super::text::human_size(total))
+}
 
 /// The reply a thread is read up to once it is shown: its newest, when its replies are loaded and
 /// it has any.
@@ -3148,6 +3165,9 @@ fn handle_net(app: &mut App, msg: Net) {
                 app.status = format!("activity failed: {e}");
             }
         },
+        Net::UploadProgress { name, sent, total } => {
+            app.status = upload_status(&name, sent, total);
+        }
         Net::ThreadView { result, more } => match result {
             Ok(v) => {
                 if let Some(t) = app.threads.as_mut() {
@@ -3527,6 +3547,13 @@ fn draw_composer(f: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &App,
 #[cfg(test)]
 mod tests {
     use slack_core::session::WorkspaceSession;
+
+    #[test]
+    fn upload_progress_reads_well() {
+        assert_eq!(super::upload_status("a.mp4", 3_100_000, 7_400_000), format!("uploading a.mp4… 41% ({} of {})", super::super::text::human_size(3_100_000), super::super::text::human_size(7_400_000)));
+        assert_eq!(super::upload_status("a.mp4", 7_400_000, 7_400_000), "uploading a.mp4… sent, Slack is filing it");
+        assert_eq!(super::upload_status("empty", 0, 0), "uploading empty… sent, Slack is filing it");
+    }
 
     #[test]
     fn threads_are_read_up_to_their_newest_reply() {

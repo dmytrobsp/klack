@@ -392,7 +392,40 @@ impl Client {
     /// Upload a file to a conversation (new external upload flow). With `snippet_type` (a
     /// language such as `rust` or `text`) the file becomes a text snippet.
     pub async fn upload(&self, channel: &str, filename: &str, bytes: Vec<u8>, comment: Option<&str>, thread_ts: Option<&str>, snippet_type: Option<&str>) -> Result<String> {
-        let len = bytes.len();
+        let len = bytes.len() as u64;
+        let part = reqwest::multipart::Part::bytes(bytes).file_name(filename.to_string());
+        self.upload_part(channel, filename, len, part, comment, thread_ts, snippet_type).await
+    }
+
+    /// Upload the file at `path` without reading it into memory, calling `progress(sent, total)`
+    /// as it goes.
+    pub async fn upload_file(&self, channel: &str, path: &std::path::Path, filename: &str, comment: Option<&str>, thread_ts: Option<&str>, progress: impl Fn(u64, u64) + Send + Sync + 'static) -> Result<String> {
+        use tokio::io::AsyncReadExt;
+        let file = tokio::fs::File::open(path).await.map_err(|e| anyhow!("{}: {e}", path.display()))?;
+        let len = file.metadata().await?.len();
+        let progress = std::sync::Arc::new(progress);
+        let chunks = futures_util::stream::unfold((file, 0u64), move |(mut file, sent)| {
+            let progress = progress.clone();
+            async move {
+                let mut buf = vec![0u8; 64 * 1024];
+                match file.read(&mut buf).await {
+                    Ok(0) => None,
+                    Ok(n) => {
+                        buf.truncate(n);
+                        let sent = sent + n as u64;
+                        progress(sent, len);
+                        Some((Ok::<_, std::io::Error>(buf), (file, sent)))
+                    }
+                    Err(e) => Some((Err(e), (file, sent))),
+                }
+            }
+        });
+        let part = reqwest::multipart::Part::stream_with_length(reqwest::Body::wrap_stream(chunks), len).file_name(filename.to_string());
+        self.upload_part(channel, filename, len, part, comment, thread_ts, None).await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn upload_part(&self, channel: &str, filename: &str, len: u64, part: reqwest::multipart::Part, comment: Option<&str>, thread_ts: Option<&str>, snippet_type: Option<&str>) -> Result<String> {
         let mut params: Params = vec![("filename", filename.into()), ("length", len.to_string())];
         if let Some(t) = snippet_type {
             params.push(("snippet_type", t.into()));
@@ -400,7 +433,6 @@ impl Client {
         let v = self.call_raw("files.getUploadURLExternal", &params).await?;
         let upload_url = v["upload_url"].as_str().ok_or_else(|| anyhow!("no upload_url"))?.to_string();
         let file_id = v["file_id"].as_str().ok_or_else(|| anyhow!("no file_id"))?.to_string();
-        let part = reqwest::multipart::Part::bytes(bytes).file_name(filename.to_string());
         self.http
             .post(&upload_url)
             .header(reqwest::header::COOKIE, self.session.cookie_header())
