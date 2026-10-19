@@ -98,6 +98,8 @@ pub struct MessagePane {
     /// Read up to here when the conversation was opened with unreads: a "— new —" line stands
     /// above the first newer message from someone else.
     pub new_since: Option<String>,
+    /// Bring the "— new —" line into view at the next draw (set when a conversation opens).
+    pub jump_to_new: bool,
 }
 
 impl MessagePane {
@@ -175,6 +177,15 @@ impl MessagePane {
             Avatars::Initials
         };
         let order: Vec<&str> = timeline.map(|t| shown_messages(t, self.thread).map(|m| m.ts.as_str()).collect()).unwrap_or_default();
+        // The first newer message from someone else: the "— new —" line goes above it.
+        let first_new: Option<String> = match (timeline, self.new_since.as_deref().filter(|_| !self.thread)) {
+            (Some(t), Some(since)) => shown_messages(t, false).find(|m| ts_after(&m.ts, since) && m.user.as_deref() != Some(ws.self_id.as_str())).map(|m| m.ts.clone()),
+            _ => None,
+        };
+        // Nothing new once the history is in: nothing to jump to.
+        if first_new.is_none() && timeline.is_some_and(|t| t.loaded) {
+            self.jump_to_new = false;
+        }
         let height = inner.height as usize;
         // The part of the timeline that is built: `from..to` among the shown messages.
         let (mut from, mut to) = (0, order.len());
@@ -192,7 +203,8 @@ impl MessagePane {
                 to = anchored.map_or(last, |i| i + 1);
                 // The view's bottom edge: the build reaches up from here.
                 let edge = to;
-                let kept: Vec<usize> = [&self.selected, &self.editing].into_iter().flatten().filter_map(|ts| order.iter().rposition(|s| *s == ts.as_str())).collect();
+                let jump = first_new.as_ref().filter(|_| self.jump_to_new);
+                let kept: Vec<usize> = [&self.selected, &self.editing, &jump.cloned()].into_iter().flatten().filter_map(|ts| order.iter().rposition(|s| *s == ts.as_str())).collect();
                 if let Some(&k) = kept.iter().max() {
                     to = to.max(k + 1);
                 }
@@ -205,7 +217,7 @@ impl MessagePane {
                         from = from.min(k);
                     }
                     let end = if self.thread { last } else { to };
-                    let built = build_lines_range(ws, t, from, end, width, self.thread, &thumb_size, avatars);
+                    let built = build_lines_range(ws, t, from, end, width, self.thread, &thumb_size, avatars, first_new.as_deref());
                     // Lines after the anchor message (to scroll down past it).
                     let below_anchor = anchored.and_then(|i| order.get(i)).and_then(|a| built.1.iter().rposition(|o| o.as_deref() == Some(*a))).map_or(0, |l| built.0.len() - 1 - l);
                     let enough_above = from == 0 || built.0.len() - below_anchor >= self.scroll + 2 * height;
@@ -248,9 +260,10 @@ impl MessagePane {
                 }
             }
         }
-        if let (Some(t), Some(since)) = (timeline, self.new_since.as_deref().filter(|_| !self.thread)) {
-            let first_new = shown_messages(t, false).find(|m| ts_after(&m.ts, since) && m.user.as_deref() != Some(ws.self_id.as_str()));
-            if let Some(at) = first_new.and_then(|m| owners.iter().position(|o| o.as_deref() == Some(m.ts.as_str()))) {
+        let mut new_line = None;
+        if let Some(first) = &first_new {
+            if let Some(at) = owners.iter().position(|o| o.as_ref() == Some(first)) {
+                new_line = Some(at);
                 let label = " new ";
                 let side = width.saturating_sub(label.len()) / 2;
                 lines.insert(at, Line::styled(format!("{}{label}{}", "─".repeat(side), "─".repeat(side)), Style::default().fg(super::theme::p().danger)));
@@ -299,6 +312,14 @@ impl MessagePane {
                     self.scroll = total.saturating_sub(first + height);
                 }
             }
+        }
+        // Just opened with more unread than fits: up to the "— new —" line.
+        if let Some(at) = new_line.filter(|_| self.jump_to_new) {
+            let start = total.saturating_sub(self.scroll).saturating_sub(height);
+            if at < start {
+                self.scroll = total.saturating_sub(at + height);
+            }
+            self.jump_to_new = false;
         }
         self.scroll = self.scroll.min(total.saturating_sub(height));
         let end = total.saturating_sub(self.scroll);
@@ -521,12 +542,14 @@ pub fn build_lines_owned(ws: &Workspace, t: &Timeline, width: usize, thread: boo
 /// whole build (grouping and day separators carry on from the message before it).
 #[cfg(test)]
 pub fn build_lines_from(ws: &Workspace, t: &Timeline, from: usize, width: usize, thread: bool, thumb_size: ThumbSize, avatars: Avatars) -> (Vec<Line<'static>>, Vec<Option<String>>, Vec<ImageSlot>) {
-    build_lines_range(ws, t, from, usize::MAX, width, thread, thumb_size, avatars)
+    build_lines_range(ws, t, from, usize::MAX, width, thread, thumb_size, avatars, None)
 }
 
 /// [`build_lines_from`] up to (not including) the `to`-th shown message.
 #[allow(clippy::too_many_arguments)]
-pub fn build_lines_range(ws: &Workspace, t: &Timeline, from: usize, to: usize, width: usize, thread: bool, thumb_size: ThumbSize, avatars: Avatars) -> (Vec<Line<'static>>, Vec<Option<String>>, Vec<ImageSlot>) {
+/// `break_before`: a message that starts an author group of its own (with its header), as the
+/// first one under the "— new —" line does.
+pub fn build_lines_range(ws: &Workspace, t: &Timeline, from: usize, to: usize, width: usize, thread: bool, thumb_size: ThumbSize, avatars: Avatars, break_before: Option<&str>) -> (Vec<Line<'static>>, Vec<Option<String>>, Vec<ImageSlot>) {
     let mut out: Vec<Line<'static>> = Vec::new();
     let mut owners: Vec<Option<String>> = Vec::new();
     let mut slots: Vec<ImageSlot> = Vec::new();
@@ -562,7 +585,7 @@ pub fn build_lines_range(ws: &Workspace, t: &Timeline, from: usize, to: usize, w
             prev = None;
             continue;
         }
-        let grouped = prev.is_some_and(|p| p.user == m.user && p.bot_id == m.bot_id && ts - p.time() < GROUP_WINDOW && !is_system(p));
+        let grouped = prev.is_some_and(|p| p.user == m.user && p.bot_id == m.bot_id && ts - p.time() < GROUP_WINDOW && !is_system(p)) && break_before != Some(m.ts.as_str());
         // Two-row avatars stand beside the name and the first line; all text is indented past them.
         let large = avatars != Avatars::Off && ws.settings.messages.large_avatars;
         let indent = if large { super::media::AVATAR_SIZE_LARGE.0 as usize + 1 } else { 0 };
@@ -1212,5 +1235,39 @@ mod tests {
         // Pictures off: the setting does nothing.
         let p = plain(&build_lines_owned(&ws, &t, 40, false, &|_, _| None, Avatars::Off).0);
         assert!(p.iter().any(|l| l == "later"), "{p:?}");
+    }
+
+    #[test]
+    fn new_line_repeats_the_header_and_comes_into_view() {
+        let mut ws = Workspace { self_id: "UME".into(), ..Default::default() };
+        ws.users.insert("U1".into(), slack_core::types::User { id: "U1".into(), name: "ann".into(), ..Default::default() });
+        let mut t = Timeline { loaded: true, ..Default::default() };
+        // One author, a minute apart: a single group without the line.
+        let ts = |i: usize| format!("{}.000100", 1_700_000_000 + i * 60);
+        for i in 0..40 {
+            t.upsert(msg(&ts(i), "U1", &format!("message {i}")));
+        }
+        let media = Media::with(ratatui_image::picker::Picker::halfblocks());
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 14)).unwrap();
+        let screen = |terminal: &ratatui::Terminal<ratatui::backend::TestBackend>| -> Vec<String> {
+            let buf = terminal.backend().buffer();
+            (0..buf.area.height).map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect()).collect()
+        };
+        // Read up to 5: 34 unread, far more than a screen. Drawn first while the history loads.
+        let mut pane = MessagePane { new_since: Some(ts(5)), jump_to_new: true, ..Default::default() };
+        let loading = Timeline::default();
+        terminal.draw(|f| pane.draw(f, f.area(), &ws, "t", Some(&loading), false, &media)).unwrap();
+        assert!(pane.jump_to_new, "still to do once the history is in");
+        terminal.draw(|f| pane.draw(f, f.area(), &ws, "t", Some(&t), false, &media)).unwrap();
+        let rows = screen(&terminal);
+        let line = rows.iter().position(|r| r.contains(" new ")).expect("the line is on screen after opening");
+        assert!(line <= 3, "near the top: {rows:#?}");
+        assert!(rows[line + 1].contains("ann"), "the author's name again under the line: {rows:#?}");
+        assert!(rows[line + 2].contains("message 6"));
+        assert!(!pane.jump_to_new, "only once");
+        // Without the jump (or once done) the view stays at the newest.
+        let mut pane = MessagePane { new_since: Some(ts(5)), ..Default::default() };
+        terminal.draw(|f| pane.draw(f, f.area(), &ws, "t", Some(&t), false, &media)).unwrap();
+        assert!(screen(&terminal)[12].contains("message 39"));
     }
 }
