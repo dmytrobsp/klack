@@ -179,11 +179,12 @@ Tests: `cargo test` → slack-core 10, huddle 33, klack 173 (+1 ignored: the `bu
 
 ## Next (in order, each as a small, separately verified step)
 
-**NEXT UP: I1** (queue I below) — the user asked on 2026-10-19 (after v0.1.0) to knock off the Known gaps; H5 is done (public at github.com/dmytrobsp/klack, v0.1.0 released). Routine pushes to master need no asking; release tags do.
+**NEXT UP: I1** (queue I below; I0 done) — the user asked on 2026-10-19 (after v0.1.0) to knock off the Known gaps; H5 is done (public at github.com/dmytrobsp/klack, v0.1.0 released). Routine pushes to master need no asking; release tags do.
 
 I. Known gaps, asked by the user on 2026-10-19 ("knock off known gaps"); run autonomously, one verified
    commit per step, pushed after each:
-  I0 (NEXT). Refresh stale entries (builds rechecked by H5's CI/releases; sections fold since H4i; pictures
+  ~~I0 refresh stale entries~~ — done.
+  I1 (NEXT) is next. (I0 was: refresh stale entries (builds rechecked by H5's CI/releases; sections fold since H4i; pictures
       drawn in more terminals) — docs only.
   I1. Threads marked read on Slack when opened (`subscriptions.thread.mark`).
   I2. The unread line: the author's header again after it; scroll up to it when the unread part is longer
@@ -391,7 +392,7 @@ Hard (huddles video; the user's real camera/screen must not be captured in tests
 - Microphone: the capture pipeline (`MicConverter`: mixdown, resampling, 20 ms framing) is unit-tested with a synthetic 44.1 kHz stereo tone; opening the device is not verified live. A live attempt with `PIPEWIRE_NODE` pointing at a temporary null sink did **not** route the capture there — the default microphone (the user's headset) was used for ~12 s into the private test huddle; the recording was deleted. Do not run microphone tests without explicit device selection.
 - Huddle view: a participant's picture is not refreshed if it changes during the call; layouts with many people are verified by unit tests only — one Slack user gets the same attendee id on every join (a second session of B kicks the first; a third share got signaling error 206), so live tests top out at 2 people + their camera and share.
 - Right after a huddle empties, Slack can still hand out its room (same room and attendee id) though the meeting is over; the session then ends before connecting (seen twice in ~15 tries, F3e). The TUI joins again once after 2 s; `ctl huddle-media` (a dev tool) does not. A second F3 while "joining the huddle…" sends another `rooms.join` (its answer is ignored once the call exists).
-- Built and tested from a clean checkout on Debian 13, Ubuntu 24.04, Fedora and Arch (containers); not on other distributions, BSDs or musl. The Windows and macOS builds were last checked before the rename (H5 rechecks them).
+- Built and tested from a clean checkout on Debian 13, Ubuntu 24.04, Fedora and Arch (containers); not on other distributions, BSDs or musl. Since H5, CI builds and tests on Ubuntu 24.04 and macOS 14 (arm) and cross-builds Windows on every push; the v0.1.0 downloads were run on Linux, macOS 26 (arm) and Windows 11 — the Intel macOS build was not run (no Rosetta on the test Mac), and the Windows tests never run (cross-built).
 - Huddles: roster departures follow the SDK rule (an AUDIO_STREAM_ID_INFO entry with neither attendee id nor muted = left), found when B kept A after A had left; microphone processing (echo cancellation, noise suppression, gain, speaking gate) is unit-tested with synthetic signals only — echo cancellation is verified live only through a virtual loopback (a clean digital echo; no acoustic test — the user has no free-standing mic or speaker); no video or screen share.
 - `/upload` reads the whole file into memory and shows no progress; other `/commands` are not recognised (they are sent as text).
 - Thumbnails: tested in kitty, xterm (sixel as a VT340, half blocks), foot (sixel) and WezTerm (iTerm2; a WezTerm over ssh, without `TERM_PROGRAM`, would still get the kitty protocol it cannot draw — `KLACK_GRAPHICS=iterm2` then); Konsole and other terminals that answer the kitty query without kitty's placeholders are not tried; a failed thumbnail says why in its reserved rows (F3b); GIFs show their first frame only.
@@ -399,7 +400,7 @@ Hard (huddles video; the user's real camera/screen must not be captured in tests
 - A freshly opened kitty window does not report focus-out until it has had one focus-in, so right after launch an unfocused klack may think it is focused (harness quirk; normal use is unaffected once the window has been focused).
 - Workspaces: the others are polled for unread counts every 30 s (status bar) and watched for notifications, but their timelines are not kept; switching reloads everything (no per-workspace state is kept).
 - Profile pictures: bots and apps get none (only users); pictures are cached for the session only and not refreshed when someone changes theirs; drawn with kitty, sixel (foot) and iTerm2 (WezTerm).
-- Sections: built-in sections other than Starred/Channels/Direct messages (Slack Connect, Recent Apps, Agents, …) are not shown; section emoji are ignored; no per-section sort or collapse.
+- Sections: built-in sections other than Starred/Channels/Direct messages (Slack Connect, Recent Apps, Agents, …) are not shown; section emoji are ignored; no per-section sort (folding: H4i).
 - Snippets: Slack may relabel a tiny snippet by its content (`fn main() {}` became C++; klack still highlights by extension); snippets are not editable; long snippet scrolling LIVE since A5 (from the thread pane).
 - Channels: a previewed channel is not updated live (Slack sends no RTM events for channels you are not in); the Ctrl+K list is capped at 50 entries, so in a big workspace browsing needs a query; no archive, rename, invite or topic editing; the public channel list is loaded once after boot (new channels arrive over RTM).
 
