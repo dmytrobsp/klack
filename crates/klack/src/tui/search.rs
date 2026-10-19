@@ -22,17 +22,23 @@ pub struct Hit {
     /// Names of the files the message shares, and the first line of a snippet's preview.
     pub files: Vec<String>,
     pub preview: String,
+    /// The first attachment's fallback/title/text, for posts with neither text nor files.
+    pub attachment: String,
 }
+
+/// Shown when a hit has nothing else to say.
+pub const NO_TEXT: &str = "(no text)";
 
 impl Hit {
     /// What the hit's second row says: `📎 names` first, then the message text, or a snippet's
     /// first line when there is no text (`body` is the text rendered as plain text).
     pub fn summary(&self, body: &str) -> String {
         let body = body.trim();
-        let rest = if body.is_empty() { self.preview.as_str() } else { body };
-        let files = if self.files.is_empty() { String::new() } else { format!("📎 {}", self.files.join(", ")) };
+        let rest = [body, self.preview.as_str(), self.attachment.as_str()].into_iter().find(|t| !t.is_empty()).unwrap_or_default();
+        let files = if self.files.is_empty() { String::new() } else { format!("📎 {}", self.files.join(", ").replace('\n', " ")) };
         match (files.is_empty(), rest.is_empty()) {
-            (true, _) => rest.to_string(),
+            (true, true) => NO_TEXT.to_string(),
+            (true, false) => rest.to_string(),
             (false, true) => files,
             (false, false) => format!("{files} · {rest}"),
         }
@@ -54,6 +60,7 @@ pub fn parse_hits(v: &Value) -> Vec<Hit> {
                 user: m["user"].as_str().map(String::from),
                 text: m["text"].as_str().unwrap_or_default().to_string(),
                 files: m["files"].as_array().into_iter().flatten().filter_map(|f| f["title"].as_str().filter(|t| !t.is_empty()).or(f["name"].as_str())).map(String::from).collect(),
+                attachment: m["attachments"].as_array().into_iter().flatten().find_map(|a| ["fallback", "title", "text"].into_iter().filter_map(|k| a[k].as_str()).map(|t| t.trim().replace('\n', " ")).find(|t| !t.is_empty())).unwrap_or_default(),
                 preview: m["files"].as_array().into_iter().flatten().find_map(|f| f["preview"].as_str()).and_then(|p| p.lines().find(|l| !l.trim().is_empty())).unwrap_or_default().trim().to_string(),
             })
         })
@@ -170,10 +177,12 @@ impl Search {
             let thread = if hit.thread_ts.is_some() { " · in thread" } else { "" };
             let body = format::plain_text(&format::message_blocks(&hit.text, &[]), &|i| text::inline_plain(ws, i)).replace('\n', " ");
             let body = hit.summary(&body);
-            let body: String = body.chars().take(width.saturating_sub(2)).collect();
+            let dim = body == NO_TEXT;
+            let mut used = 0;
+            let body: String = body.chars().take_while(|c| { used += unicode_width::UnicodeWidthChar::width(*c).unwrap_or(0); used <= width.saturating_sub(5) }).collect();
             let style = if n == self.selected { Style::default().bg(super::theme::p().selection) } else if self.hover == Some(n) { super::theme::hover_style() } else { Style::default() };
             lines.push(Line::from(vec![Span::styled(format!(" {who}"), Style::default().fg(text::user_color(hit.user.as_deref().unwrap_or("")))), Span::styled(format!(" · {place} · {when}{thread}"), Style::default().fg(super::theme::p().dim))]).style(style));
-            lines.push(Line::raw(format!("   {body}")).style(style));
+            lines.push(Line::styled(format!("   {body}"), if dim { style.fg(super::theme::p().dim) } else { style }));
         }
         if lines.is_empty() && !self.searched.is_empty() && !self.busy {
             lines.push(Line::styled(" no messages found", Style::default().fg(super::theme::p().dim)));
@@ -216,7 +225,22 @@ mod tests {
         assert_eq!(hits[1].summary(&hits[1].text), "📎 A yak · pic with comment", "the title wins over the name");
         assert_eq!(hits[2].summary(&hits[2].text), "plain");
         let bare = Hit { files: vec!["a.png".into()], ..Default::default() };
-        assert_eq!(bare.summary(" "), "📎 a.png", "never an empty line");
+        assert_eq!(bare.summary(" "), "📎 a.png", "a file with no text");
+    }
+
+    #[test]
+    fn hits_without_text_or_files_are_never_blank() {
+        let v = serde_json::json!({"messages":{"matches":[
+            {"channel":{"id":"D1"},"ts":"2.0","text":"","attachments":[{"fallback":"Build failed\nsee log"}]},
+            {"channel":{"id":"D1"},"ts":"1.0","text":"","attachments":[{"fallback":"","title":"A title"}]},
+            {"channel":{"id":"D1"},"ts":"0.5","text":""}
+        ]}});
+        let hits = parse_hits(&v);
+        assert_eq!(hits[0].summary(""), "Build failed see log");
+        assert_eq!(hits[1].summary(""), "A title");
+        assert_eq!(hits[2].summary(""), NO_TEXT);
+        let named = Hit { files: vec!["a\nb.png".into()], ..Default::default() };
+        assert_eq!(named.summary(""), "📎 a b.png");
     }
 
     /// A page as `search.messages` returns it (fields trimmed; paging values from a real
