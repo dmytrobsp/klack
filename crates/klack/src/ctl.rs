@@ -183,11 +183,11 @@ pub async fn resolve_channel(client: &Client, spec: &str) -> Result<String> {
 }
 
 pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
-    let client = client(profile, team)?;
-    match cmd {
+    // These need no Slack session, so they run before the client is built.
+    match &cmd {
         Ctl::LocaleTemplate => print!("{}", crate::tui::i18n::template()),
         Ctl::KeysTemplate => print!("{}", crate::tui::keys_file::template(&crate::tui::keymap::Keymap::load("").0)),
-        Ctl::ThemeTemplate { base } => print!("{}", crate::tui::theme::template(&base).map_err(anyhow::Error::msg)?),
+        Ctl::ThemeTemplate { base } => print!("{}", crate::tui::theme::template(base).map_err(anyhow::Error::msg)?),
         Ctl::ThemeImport { path } => {
             let name = path.file_stem().and_then(|n| n.to_str()).ok_or_else(|| anyhow!("bad file name"))?.to_string();
             let text = std::fs::read_to_string(&path)?;
@@ -198,6 +198,14 @@ pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
             std::fs::write(&target, text)?;
             println!("installed theme '{name}' at {} — choose it in F6 → Appearance", target.display());
         }
+        _ => {}
+    }
+    if matches!(cmd, Ctl::LocaleTemplate | Ctl::KeysTemplate | Ctl::ThemeTemplate { .. } | Ctl::ThemeImport { .. }) {
+        return Ok(());
+    }
+    let client = client(profile, team)?;
+    match cmd {
+        Ctl::LocaleTemplate | Ctl::KeysTemplate | Ctl::ThemeTemplate { .. } | Ctl::ThemeImport { .. } => unreachable!("handled above"),
         Ctl::Whoami => {
             let a = client.auth_test().await?;
             println!("{} ({}) in {} ({}) — {}", a.user, a.user_id, a.team, a.team_id, a.url);
