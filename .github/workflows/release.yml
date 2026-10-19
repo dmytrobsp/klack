@@ -20,7 +20,8 @@ jobs:
           - { name: x86_64-linux, os: ubuntu-22.04, target: x86_64-unknown-linux-gnu, archive: tar.gz }
           - { name: aarch64-macos, os: macos-14, target: aarch64-apple-darwin, archive: tar.gz }
           - { name: x86_64-macos, os: macos-14, target: x86_64-apple-darwin, archive: tar.gz }
-          - { name: x86_64-windows, os: ubuntu-22.04, target: x86_64-pc-windows-gnu, archive: zip }
+          # 22.04's MinGW (gcc 10) lacks what Opus and the static C runtime need; CI builds on 24.04 too.
+          - { name: x86_64-windows, os: ubuntu-24.04, target: x86_64-pc-windows-gnu, archive: zip }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
