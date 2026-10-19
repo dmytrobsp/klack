@@ -230,6 +230,11 @@ pub fn video_cells(frame: (usize, usize), area: (u16, u16), font: (u16, u16)) ->
     Some((cols, rows))
 }
 
+/// How a video frame is scaled to its cells: up too (Fit only shrinks), smoothly.
+fn video_resize() -> ratatui_image::Resize {
+    ratatui_image::Resize::Scale(Some(ratatui_image::FilterType::Triangle))
+}
+
 /// A tile's border: lit (green, thick) while the person speaks, else accent when selected.
 fn tile_block(title: Span<'static>, speaking: bool, selected: bool) -> Block<'static> {
     let (style, kind) = if speaking {
@@ -447,8 +452,7 @@ impl HuddleView {
         let fresh = self.encoded.get(attendee).is_some_and(|(rgb, s, _)| std::sync::Arc::ptr_eq(rgb, &frame.rgb) && *s == size);
         if !fresh {
             let Some(img) = image::RgbImage::from_raw(frame.width as u32, frame.height as u32, frame.rgb.to_vec()) else { return };
-            // Scale, not Fit: Fit never draws a frame larger than its own pixels.
-            match media.picker.new_protocol(image::DynamicImage::ImageRgb8(img), size, ratatui_image::Resize::Scale(None)) {
+            match media.picker.new_protocol(image::DynamicImage::ImageRgb8(img), size, video_resize()) {
                 Ok(proto) => {
                     self.encoded.insert(attendee.to_string(), (frame.rgb.clone(), size, proto));
                 }
@@ -618,8 +622,17 @@ mod tests {
     }
 
     #[test]
+    fn video_is_scaled_smoothly() {
+        // Nearest makes uneven pixels on a shared screen's text.
+        assert!(matches!(video_resize(), ratatui_image::Resize::Scale(Some(ratatui_image::FilterType::Triangle))));
+    }
+
+    #[test]
     fn a_small_frame_is_drawn_tile_sized() {
         let media = Media::with(ratatui_image::picker::Picker::halfblocks());
+        // The sizes below assume the half-block picker's 10×20 px cells.
+        let font = media.picker.font_size();
+        assert_eq!((font.width, font.height), (10, 20));
         let frame = huddle::session::VideoFrame { attendee_id: "a".into(), stream_id: 1, width: 64, height: 36, rgb: std::sync::Arc::new(vec![200; 64 * 36 * 3]) };
         let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(220, 60)).unwrap();
         let mut v = HuddleView::default();
