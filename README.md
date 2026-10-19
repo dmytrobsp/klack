@@ -10,6 +10,21 @@ klack was called slacktui until October 2026; on first start it moves that name'
 It talks to Slack the way the web client does: a browser session (`xoxc-…` token plus the `d`
 cookie). It is not an official Slack app.
 
+## Install
+
+Ready-made builds are on the [releases page](https://github.com/dmytrobsp/klack/releases): unpack
+the archive and put `klack` (`klack.exe`) somewhere on your PATH. None of them is signed.
+
+| Download | Runs on | Needs |
+|---|---|---|
+| `x86_64-linux.tar.gz` | glibc 2.34 or newer (Ubuntu 22.04, Debian 12, Fedora 35, RHEL 9 and later) | `libasound.so.2` (ALSA), `libstdc++` — on every desktop Linux |
+| `aarch64-macos.tar.gz` | Apple Silicon Macs, macOS 11 or newer | nothing (system frameworks only); unsigned: `xattr -d com.apple.quarantine klack` once, or allow it in System Settings → Privacy & Security |
+| `x86_64-macos.tar.gz` | Intel Macs, macOS 11 or newer | as above |
+| `x86_64-windows.zip` | 64-bit Windows 10 / 11 | nothing (Windows system DLLs only, no MinGW runtime); unsigned, so SmartScreen may ask once |
+
+Optional everywhere: `ffmpeg` / `ffprobe` on PATH for video, cameras and screen sharing; a terminal
+with graphics for real pictures (see below). To build it yourself instead, read on.
+
 ## Requirements
 
 To build: a recent stable Rust toolchain (edition 2024; [rustup](https://rustup.rs)), a C/C++
