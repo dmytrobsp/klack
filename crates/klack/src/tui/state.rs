@@ -321,7 +321,9 @@ impl Dnd {
     /// behind Slack), both: ending what isn't on does nothing.
     pub fn resume(&self, now: f64) -> Resume {
         let snooze = self.snooze_until.is_some_and(|t| now < t);
-        let period = Dnd { snooze_until: None, ..self.clone() }.active(now);
+        // While snoozed, Slack reports the snooze itself as the next window: that is not a period.
+        let own = |w: &(f64, f64)| self.snooze_until == Some(w.1);
+        let period = Dnd { snooze_until: None, window: self.window.filter(|w| !own(w)), ..self.clone() }.active(now);
         if snooze || period { Resume { snooze, period } } else { Resume { snooze: true, period: true } }
     }
 }
@@ -859,7 +861,7 @@ mod tests {
         let now = 1792447100.0;
         let ends = |snooze, period| Resume { snooze, period };
         let snooze = Dnd::from_json(&serde_json::json!({"dnd_enabled":true,"next_dnd_end_ts":1792449014,"next_dnd_start_ts":1792447214,"ok":true,"snooze_enabled":true,"snooze_endtime":1792449014,"snooze_remaining":1799}));
-        assert!(snooze.resume(1792447220.0).snooze, "a snooze is ended");
+        assert_eq!(snooze.resume(1792447220.0), ends(true, false), "a snooze is ended; its own window (Slack reports it as next_dnd) is not a scheduled period");
         let scheduled = Dnd::from_json(&serde_json::json!({"dnd_enabled":true,"next_dnd_end_ts":1792476000,"next_dnd_start_ts":1792443600,"ok":true,"snooze_enabled":false}));
         assert_eq!(scheduled.resume(now), ends(false, true), "in a scheduled period: endDnd only");
         let both = Dnd::from_json(&serde_json::json!({"dnd_enabled":true,"next_dnd_end_ts":1792472400,"next_dnd_start_ts":1792443600,"ok":true,"snooze_enabled":true,"snooze_endtime":1792448903,"snooze_remaining":1800}));

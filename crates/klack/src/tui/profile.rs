@@ -109,10 +109,11 @@ pub fn availability(ws: &Workspace, now: i64) -> String {
     if ws.presence.get(&ws.self_id) == Some(&false) {
         parts.push("away".into());
     }
-    match ws.dnd.snooze_until.filter(|t| *t > now as f64) {
-        Some(t) => parts.push(format!("🔕 until {}", super::clock::at(t as i64).map(|d| d.format(ws.settings.time_format()).to_string()).unwrap_or_default())),
-        None if ws.dnd.active(now as f64) => parts.push("🔕".into()),
-        None => {}
+    if let Some(t) = ws.dnd.until(now as f64) {
+        parts.push(match super::clock::until_label(t as i64, now, ws.settings.time_format()) {
+            Some(label) => format!("🔕 until {label}"),
+            None => "🔕".into(),
+        });
     }
     parts.join(" · ")
 }
@@ -202,6 +203,18 @@ mod tests {
         assert_eq!(availability(&ws, 2000), "away", "an expired status is not shown");
         ws.dnd.snooze_until = Some(3000.0);
         assert!(availability(&ws, 2000).starts_with("away · 🔕 until "), "{}", availability(&ws, 2000));
+        // A scheduled period reads the same, and another day names its weekday; the clock follows the setting.
+        let noon = |days: i64| crate::tui::clock::local_minute(crate::tui::clock::zone(), crate::tui::clock::at(1_800_000_000).unwrap().date_naive() + chrono::Days::new(days as u64), 12 * 60).unwrap();
+        let (today, tomorrow) = (noon(0), noon(1));
+        ws.dnd = crate::tui::state::Dnd { window: Some((today - 3600, today + 3600)).map(|(a, b)| (a as f64, b as f64)), ..Default::default() };
+        ws.settings.region.clock_24h = true;
+        assert_eq!(availability(&ws, today), "away · 🔕 until 13:00");
+        ws.settings.region.clock_24h = false;
+        assert_eq!(availability(&ws, today), "away · 🔕 until 1:00 PM");
+        ws.settings.region.clock_24h = true;
+        ws.dnd = crate::tui::state::Dnd { snooze_until: Some(tomorrow as f64 + 3600.0), ..Default::default() };
+        let tomorrow_label = availability(&ws, today);
+        assert!(tomorrow_label.starts_with("away · 🔕 until ") && tomorrow_label.ends_with(" 13:00") && tomorrow_label.len() > "away · 🔕 until 13:00".len(), "{tomorrow_label}");
     }
 
     #[test]

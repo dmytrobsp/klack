@@ -71,7 +71,7 @@ enum Net {
     /// `dnd.info` asked again after the known quiet-hours window ended.
     Dnd(Value),
     /// `/dnd` paused or resumed notifications (or failed); `dnd.info` asked right after.
-    DndSet { resumed: bool, result: Result<Option<Value>, String> },
+    DndSet { resumed: bool, error: Option<String>, info: Option<Value> },
     /// User prefs fetched again.
     Prefs(Value),
     /// The activity feed.
@@ -640,7 +640,7 @@ impl App {
                 let resume = self.ws.dnd.resume(now);
                 let (client, tx) = (self.client.clone(), self.net.clone());
                 tokio::spawn(async move {
-                    let result = async {
+                    let done = async {
                         match action {
                             DndAction::Pause(m) => client.snooze(Some(m)).await?,
                             _ => {
@@ -652,12 +652,14 @@ impl App {
                                 }
                             }
                         }
-                        // What is in effect now, for the status line and the note.
-                        anyhow::Ok(client.call_raw("dnd.info", &[]).await.inspect_err(|e| tracing::warn!("dnd.info failed: {e}")).ok())
+                        anyhow::Ok(())
                     }
-                    .await
-                    .map_err(|e| e.to_string());
-                    let _ = tx.send(Net::DndSet { resumed: action == DndAction::Resume, result });
+                    .await;
+                    // What is in effect now, for the status line and the note — also after a failure,
+                    // which may have got half-way.
+                    let info = client.call_raw("dnd.info", &[]).await.inspect_err(|e| tracing::warn!("dnd.info failed: {e}")).ok();
+                    let error = done.err().map(|e| e.to_string());
+                    let _ = tx.send(Net::DndSet { resumed: action == DndAction::Resume, error, info });
                 });
             }
             Command::SectionRename(name) => match self.ws.section_of(&channel).map(|s| s.id.clone()) {
@@ -1761,6 +1763,12 @@ impl App {
     fn adjust_preference(&mut self, up: bool) {
         let Some(p) = self.prefs.as_mut() else { return };
         let Some(field) = p.selected_field(&self.keys) else { return };
+        if field == super::prefs::Field::Notifications {
+            if let Some(command) = super::prefs::Prefs::pause_step(&self.ws, up) {
+                self.run_text(&command);
+            }
+            return;
+        }
         if field.adjust(&mut self.ws.settings, up, false) {
             p.saved = Some(super::settings::save(&self.ws.settings).map(|path| path.display().to_string()));
             self.audio_changed(Some(field));
@@ -4269,18 +4277,20 @@ fn handle_net(app: &mut App, msg: Net) {
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64();
             app.dnd_refreshing = app.ws.dnd.stale(now);
         }
-        Net::DndSet { resumed, result } => match result {
-            Ok(info) => {
-                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64();
-                if let Some(v) = &info {
-                    app.ws.dnd.set_info(v);
-                    app.dnd_refreshing = app.ws.dnd.stale(now);
-                }
-                let until = info.and_then(|_| app.ws.dnd.until(now)).and_then(|t| super::clock::at(t as i64)).map(|d| d.format(app.ws.settings.time_format()).to_string());
-                app.status = dnd_note(resumed, until);
+        Net::DndSet { resumed, error, info } => {
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64();
+            if let Some(v) = &info {
+                app.ws.dnd.set_info(v);
+                app.dnd_refreshing = app.ws.dnd.stale(now);
             }
-            Err(e) => app.status = format!("{} failed: {e}", if resumed { "resuming notifications" } else { "pausing notifications" }),
-        },
+            app.status = match error {
+                Some(e) => format!("{} failed: {e}", if resumed { "resuming notifications" } else { "pausing notifications" }),
+                None => {
+                    let until = info.and_then(|_| app.ws.dnd.until(now)).and_then(|t| super::clock::until_label(t as i64, now as i64, app.ws.settings.time_format()));
+                    dnd_note(resumed, until)
+                }
+            };
+        }
         Net::ActivityFeed(result) => match result {
             Ok(v) => {
                 if let Some(a) = app.activity.as_mut() {
@@ -4586,6 +4596,7 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         mentions,
         others: super::others::label(&app.others.lock().unwrap_or_else(|e| e.into_inner()), app.workspace),
         availability: super::profile::availability(&app.ws, chrono::Utc::now().timestamp()),
+        paused: app.ws.dnd.active(chrono::Utc::now().timestamp() as f64),
         live: app.connected,
         note,
     };

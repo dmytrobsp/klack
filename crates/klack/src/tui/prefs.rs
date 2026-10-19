@@ -66,8 +66,8 @@ pub enum Field {
     Status,
     /// Slack: appear away.
     Away,
-    /// Slack: pause notifications.
-    Pause,
+    /// Slack: notifications on, or paused until …
+    Notifications,
     Input,
     Output,
     HuddleVolume,
@@ -101,11 +101,11 @@ const PREVIEW_REFRESH: &[u32] = &[0, 5, 10, 15, 30, 60, 120];
 /// Days without a message before a conversation leaves the sidebar (0: never).
 const HIDE_INACTIVE: &[u32] = &[0, 1, 7, 14, 30, 60, 90];
 
-/// Pause lengths offered, in minutes (0: not paused).
-pub const PAUSES: &[u64] = &[0, 30, 60, 120, 480];
+/// Pause lengths + and - step through, in minutes.
+const PAUSES: &[u64] = &[30, 60, 120, 480];
 
 pub const CATEGORIES: &[(&str, &[Field])] = &[
-    ("Availability", &[Field::Status, Field::Away, Field::Pause]),
+    ("Availability", &[Field::Status, Field::Away, Field::Notifications]),
     ("Appearance", &[Field::Theme, Field::WorkspaceTheme, Field::Compact, Field::HideInactive]),
     ("Messages & media", &[Field::InlineImages, Field::Avatars, Field::LargeAvatars, Field::PreviewRefresh, Field::Graphics, Field::EmojiAsNames, Field::CustomEmojiPictures, Field::SaveDir]),
     ("Language & region", &[Field::Clock24, Field::DateFormat, Field::TimeZone, Field::Language]),
@@ -185,7 +185,7 @@ impl Field {
             Field::Vips => "VIPs (also on a profile card)",
             Field::Status => "Status",
             Field::Away => "Appear away",
-            Field::Pause => "Pause notifications",
+            Field::Notifications => "Notifications",
             Field::Input => "Microphone",
             Field::Output => "Speaker",
             Field::HuddleVolume => "Huddle volume",
@@ -275,11 +275,11 @@ impl Field {
                 }
             }
             Field::Away => yes(ws.presence.get(&ws.self_id) == Some(&false)),
-            Field::Pause => {
-                let now = super::clock::now().timestamp() as f64;
-                match ws.dnd.snooze_until.filter(|t| *t > now) {
-                    Some(t) => super::clock::at(t as i64).map(|d| format!("until {}", d.format(s.time_format()))).unwrap_or_default(),
-                    None => "no".into(),
+            Field::Notifications => {
+                let now = super::clock::now().timestamp();
+                match ws.dnd.until(now as f64).and_then(|t| super::clock::until_label(t as i64, now, s.time_format())) {
+                    Some(label) => format!("paused until {label}"),
+                    None => "on".into(),
                 }
             }
             Field::Vips if ws.vip.is_empty() => "none".into(),
@@ -418,7 +418,7 @@ impl Field {
                 super::sound::play(sounds[i], Settings::device(huddle::devices::OUTPUT_ENV, &s.audio.output), s.audio.sound_volume);
             }
             // Slack-side: see `Prefs::change`.
-            Field::ConversationLevel | Field::ChannelDefault | Field::Keywords | Field::Vips | Field::Status | Field::Away | Field::Pause | Field::Leader | Field::InsertLeader | Field::GroupHeader(_) | Field::Binding(_) => {}
+            Field::ConversationLevel | Field::ChannelDefault | Field::Keywords | Field::Vips | Field::Status | Field::Away | Field::Notifications | Field::Leader | Field::InsertLeader | Field::GroupHeader(_) | Field::Binding(_) => {}
             Field::Input => s.audio.input = next(&s.audio.input, &devices.0),
             Field::Output => s.audio.output = next(&s.audio.output, &devices.1),
             Field::NoiseSuppression => s.audio.noise_suppression ^= true,
@@ -536,7 +536,7 @@ pub fn recorded(keys: &Keymap, seq: &[Key]) -> String {
 pub fn translatable() -> Vec<String> {
     let all = [
         Field::Theme, Field::WorkspaceTheme, Field::Compact, Field::HideInactive, Field::InlineImages, Field::Avatars, Field::LargeAvatars, Field::PreviewRefresh, Field::Graphics, Field::EmojiAsNames, Field::CustomEmojiPictures, Field::SaveDir, Field::Clock24, Field::DateFormat, Field::TimeZone, Field::Language, Field::Desktop, Field::Sound,
-        Field::ConversationLevel, Field::ChannelDefault, Field::Keywords, Field::Vips, Field::Status, Field::Away, Field::Pause, Field::Input, Field::Output,
+        Field::ConversationLevel, Field::ChannelDefault, Field::Keywords, Field::Vips, Field::Status, Field::Away, Field::Notifications, Field::Input, Field::Output,
         Field::HuddleVolume, Field::SoundVolume, Field::MicGain, Field::SpeakingThreshold, Field::NoiseSuppression, Field::EchoCancellation, Field::Camera, Field::JoinSound, Field::SomeoneJoined, Field::SomeoneLeft, Field::RingSound, Field::RingTimeout, Field::AutoDecline, Field::AloneSound, Field::AloneSecs,
     ];
     CATEGORIES.iter().map(|c| c.0).chain(["Keys", LEADER_LABEL, INSERT_LEADER_LABEL, RECORD_START, RECORD_DONE, "filter", "to filter", "to change", "Enter keep · Esc clear"]).chain(all.iter().chain(KEYS_SETTINGS).map(|f| f.fixed_label())).map(String::from).collect()
@@ -812,16 +812,8 @@ impl Prefs {
                 }
             },
             Field::Away => Some(SlackChange::Command(if ws.presence.get(&ws.self_id) == Some(&false) { "/active" } else { "/away" }.into())),
-            Field::Pause => {
-                // Step from the pause in effect (rounded to an offered length) to the next.
-                let now = super::clock::now().timestamp() as f64;
-                let left = ws.dnd.snooze_until.filter(|t| *t > now).map_or(0, |t| ((t - now) / 60.0).round() as u64);
-                let i = PAUSES.iter().position(|m| *m >= left && (*m == 0) == (left == 0)).unwrap_or(0);
-                Some(SlackChange::Command(match PAUSES[(i + 1) % PAUSES.len()] {
-                    0 => "/dnd off".into(),
-                    m => format!("/dnd {m}m"),
-                }))
-            }
+            // Like ␣an: pause 30 minutes, or resume whatever pauses.
+            Field::Notifications => Some(SlackChange::Command(if ws.dnd.active(super::clock::now().timestamp() as f64) { "/dnd off".into() } else { "/dnd 30m".into() })),
             Field::Keywords => match self.editing.take() {
                 Some(text) => Some(SlackChange::Keywords(text.split(',').map(str::trim).filter(|k| !k.is_empty()).collect::<Vec<_>>().join(","))),
                 None => {
@@ -836,9 +828,18 @@ impl Prefs {
         }
     }
 
+    /// + / - on the Notifications row: the command for the next longer or shorter pause (30 min, 1 h,
+    /// 2 h, 8 h) while a snooze runs; None otherwise (a scheduled period has no length to change).
+    pub fn pause_step(ws: &Workspace, up: bool) -> Option<String> {
+        let now = super::clock::now().timestamp() as f64;
+        let left = ((ws.dnd.snooze_until.filter(|t| *t > now)? - now) / 60.0).round() as u64;
+        let next = if up { PAUSES.iter().find(|m| **m > left) } else { PAUSES.iter().rev().find(|m| **m < left) };
+        next.map(|m| format!("/dnd {m}m"))
+    }
+
     /// Whether the selected field is kept on Slack or in keys.toml (nothing to save in settings.toml).
     pub fn on_slack(&self, keys: &Keymap) -> bool {
-        matches!(self.selected_field(keys), Some(Field::Leader | Field::InsertLeader | Field::GroupHeader(_) | Field::Binding(_) | Field::ConversationLevel | Field::ChannelDefault | Field::Keywords | Field::Vips | Field::Status | Field::Away | Field::Pause))
+        matches!(self.selected_field(keys), Some(Field::Leader | Field::InsertLeader | Field::GroupHeader(_) | Field::Binding(_) | Field::ConversationLevel | Field::ChannelDefault | Field::Keywords | Field::Vips | Field::Status | Field::Away | Field::Notifications))
     }
 
     pub fn draw(&mut self, f: &mut Frame, area: Rect, ws: &Workspace, current: Option<&str>, keys: &Keymap) {
@@ -1172,11 +1173,35 @@ mod tests {
         ws.presence.insert("UME".into(), false);
         assert_eq!(p.change(&mut ws, None, &Keymap::default()), Some(SlackChange::Command("/active".into())));
         p.selected = 2;
-        assert_eq!(p.change(&mut ws, None, &Keymap::default()), Some(SlackChange::Command("/dnd 30m".into())), "not paused → 30 minutes");
-        ws.dnd.snooze_until = Some(crate::tui::clock::now().timestamp() as f64 + 29.6 * 60.0);
-        assert_eq!(p.change(&mut ws, None, &Keymap::default()), Some(SlackChange::Command("/dnd 60m".into())), "30 min left → an hour");
-        ws.dnd.snooze_until = Some(crate::tui::clock::now().timestamp() as f64 + 470.0 * 60.0);
-        assert_eq!(p.change(&mut ws, None, &Keymap::default()), Some(SlackChange::Command("/dnd off".into())), "the longest → off");
+        let now = crate::tui::clock::now().timestamp() as f64;
+        assert_eq!(p.change(&mut ws, None, &Keymap::default()), Some(SlackChange::Command("/dnd 30m".into())), "on → pause 30 minutes");
+        ws.dnd.snooze_until = Some(now + 29.6 * 60.0);
+        assert_eq!(p.change(&mut ws, None, &Keymap::default()), Some(SlackChange::Command("/dnd off".into())), "paused → resume");
+        ws.dnd.snooze_until = None;
+        ws.dnd.window = Some((now - 600.0, now + 600.0));
+        assert_eq!(p.change(&mut ws, None, &Keymap::default()), Some(SlackChange::Command("/dnd off".into())), "a scheduled period is resumed the same way");
+        // + / - step the pause length while snoozing.
+        let step = |ws: &mut Workspace, minutes: f64, up| {
+            ws.dnd = crate::tui::state::Dnd { snooze_until: Some(now + minutes * 60.0), ..Default::default() };
+            Prefs::pause_step(ws, up)
+        };
+        assert_eq!(step(&mut ws, 29.6, true), Some("/dnd 60m".into()));
+        assert_eq!(step(&mut ws, 60.0, true), Some("/dnd 120m".into()));
+        assert_eq!(step(&mut ws, 100.0, true), Some("/dnd 120m".into()), "the next length above");
+        assert_eq!(step(&mut ws, 120.0, false), Some("/dnd 60m".into()));
+        assert_eq!(step(&mut ws, 480.0, true), None, "the longest stays");
+        assert_eq!(step(&mut ws, 30.0, false), None, "the shortest stays: - never resumes");
+        ws.dnd = crate::tui::state::Dnd { window: Some((now - 600.0, now + 600.0)), ..Default::default() };
+        assert_eq!(Prefs::pause_step(&ws, true), None, "a scheduled period has no length to step");
+        ws.dnd = Default::default();
+        assert_eq!(Prefs::pause_step(&ws, true), None, "not paused: nothing to step");
+        // The value reads as on / paused until.
+        let mut s = ws.settings.clone();
+        s.region.clock_24h = true;
+        ws.settings = s;
+        assert_eq!(Field::Notifications.value(&ws, None, &Keymap::default()), "on");
+        ws.dnd.snooze_until = Some(now + 600.0);
+        assert!(Field::Notifications.value(&ws, None, &Keymap::default()).starts_with("paused until "));
         p.selected = 0;
         assert_eq!(p.change(&mut ws, None, &Keymap::default()), None, "Enter edits the status");
         p.editing = Some(":coffee: break for 30m".into());

@@ -23,6 +23,8 @@ pub struct Info {
     pub others: String,
     /// Your availability ("away", a status), empty when none.
     pub availability: String,
+    /// Notifications are paused (the short forms keep the bell).
+    pub paused: bool,
     pub live: bool,
     /// A status message or the ringing text; takes the info's place.
     pub note: Option<String>,
@@ -95,7 +97,8 @@ fn info_spans(info: &Info, level: u8, note_room: Option<usize>) -> Vec<Span<'sta
             text.push_str(" · ");
             vec![Span::raw(text), live]
         }
-        1 => vec![Span::raw(format!("{} · @{} ", info.unread, info.mentions)), live],
+        1 => vec![Span::raw(format!("{} · @{} {}", info.unread, info.mentions, if info.paused { "🔕 " } else { "" })), live],
+        _ if info.paused => vec![Span::raw("🔕 "), live],
         _ => vec![live],
     }
 }
@@ -219,6 +222,16 @@ mod tests {
         let s = at(80);
         assert!(s.contains("3 · @1 ●") && !s.contains("unread"), "{s:?}");
         assert!(s.contains("↑/↓ move") && s.ends_with("? help "), "all hints still there: {s:?}");
+    }
+
+    #[test]
+    fn the_bell_survives_the_short_forms() {
+        let paused = Info { paused: true, ..info() };
+        let s = |w| plain(&line(Pill::Normal, &paused, "␣", &hints(), w));
+        assert!(s(80).contains("3 · @1 🔕 ●"), "{:?}", s(80));
+        let tiny = s(30);
+        assert!(tiny.contains("🔕 ●") && !tiny.contains("unread"), "{tiny:?}");
+        assert!(!at(30).contains('🔕'), "not paused: no bell");
     }
 
     #[test]

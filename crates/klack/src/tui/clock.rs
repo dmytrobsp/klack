@@ -57,12 +57,29 @@ fn local_time(zone: Option<chrono_tz::Tz>, naive: chrono::NaiveDateTime) -> Opti
     })
 }
 
+/// When something ends, as `09:00` today or `Mon 09:00` on another day, in the chosen zone.
+pub fn until_label(t: i64, now: i64, time_format: &str) -> Option<String> {
+    let (d, today) = (at(t)?, at(now)?);
+    Some(d.format(&if d.date_naive() == today.date_naive() { time_format.to_string() } else { format!("%a {time_format}") }).to_string())
+}
+
 pub fn now() -> DateTime<FixedOffset> {
     at(Utc::now().timestamp()).unwrap_or_else(|| Utc::now().fixed_offset())
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn until_names_the_day_when_not_today() {
+        let now = super::now().timestamp();
+        let start = super::at(now).unwrap().date_naive().and_hms_opt(12, 0, 0).unwrap();
+        let noon = super::local_time(super::zone(), start).unwrap();
+        assert_eq!(super::until_label(noon, noon - 60, "%H:%M").as_deref(), Some("12:00"));
+        let tomorrow = super::until_label(noon + 86_400, noon, "%H:%M").unwrap();
+        assert!(tomorrow.ends_with(" 12:00") && tomorrow.len() == 9, "{tomorrow}");
+        assert_eq!(super::until_label(noon + 86_400, noon, "%-I:%M %p").unwrap().len(), 3 + 1 + 8, "weekday + 12-hour clock");
+    }
+
     #[test]
     fn windows_across_a_dst_change() {
         // Kyiv leaves summer time on 25 October 2026 at 04:00 (UTC+3 → UTC+2). A daily 00:00–09:00
