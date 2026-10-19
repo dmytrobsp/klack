@@ -21,8 +21,11 @@ can reshape the whole keymap in one file.
 
 ## Goals
 
-1. Two modes, as in nvim: **INSERT** (typing in the message box or the thread reply box) and
-   **NORMAL** (everything else on the main screen) **(user)**.
+1. Modes, as in nvim: **INSERT** (typing in the message box or the thread reply box) and
+   **NORMAL** (everything else on the main screen) **(user)**, plus **DIALOG**, entered
+   automatically while a modal dialog is open, so dialog input is handled apart from the main
+   screen's **(user: "it should simplify the logic and cleanly separate normal input handling
+   from dialog input handling")**.
 2. In NORMAL only navigation, help, preferences and look-only views are single keys; everything
    that acts goes behind `<leader>` **(user)**.
 3. A which-key panel showing the next keys for the focused view and the selected item **(user)**,
@@ -93,7 +96,14 @@ can reshape the whole keymap in one file.
   typing pill is today) **(user)**; the composer border may take the same colour (shown).
 - **NORMAL** = the sidebar, the messages pane, the thread pane, the huddle view. Pill `NORMAL`
   **(user, shown)**.
-- Dialogs keep their own pills (SEARCH, JUMP, PREFS, …) and their own keys (see Dialogs).
+- **DIALOG** = any modal dialog is open (switcher, search, picker, details, profile, activity,
+  threads, mover, save, menu, confirm, viewer, player, snippet, help, preferences and their text
+  fields) **(user)**. Entered automatically when one opens; the topmost dialog owns all input
+  (keys and mouse), see Dialogs. When the last dialog closes with its close key the mode before it
+  comes back (INSERT or NORMAL); a dialog action that goes somewhere (open a conversation, go to a
+  message, open a thread) lands in the mode that place implies, as today's focus does (Claude's
+  call). The pill shows the dialog's name (SEARCH, JUMP, PREFS, …) in a third colour, so both the
+  mode and the dialog are visible (Claude's call).
 - `Esc` in INSERT → NORMAL **(user)**: from the message box to the messages pane with the newest
   message selected; from the reply box to the thread pane with the newest reply selected
   **(shown)**. While editing a message, the first `Esc` still cancels the edit (as today) and
@@ -190,13 +200,18 @@ notification level (bell) · `l` leave (y/n). (`z` fold is direct.)
 
 ### Precedence and dispatch (fixes the leaks)
 
-- Lookup order: **the open dialog → the focused pane → global**, for single keys and for
+- **Input goes by mode first** **(user's DIALOG idea)**: DIALOG input is handled by the topmost
+  dialog alone and never reaches the main screen's handling; NORMAL and INSERT are handled by the
+  main screen. This replaces today's ordered chain of dialog arms in the event loop.
+- In NORMAL / INSERT the lookup order is **the focused pane → global**, for single keys and for
   sequences alike (Claude's call; today global wins). A sequence is Pending if it is a prefix in
-  any active context; which-key shows the union, the more specific context winning a clash.
-- **While a dialog is open** only its own keys act, plus `Ctrl+Q`, plus `insert_leader` sequences
-  of the global groups (so `Ctrl+Space h m` mutes with search open) (Claude's call). F6, F1, the
-  views (`Ctrl+K/F/T/A`) do not open over a dialog any more.
-- **Mouse in dialogs:** a dialog consumes every click and the wheel; a click outside it closes it,
+  either; which-key shows the union, the pane winning a clash.
+- **In DIALOG** only the dialog's own keys act, plus `Ctrl+Q`, plus `insert_leader` sequences of
+  the global groups (so `Ctrl+Space h m` mutes with search open) (Claude's call). F6, F1, the
+  views (`Ctrl+K/F/T/A`) do not open over a dialog any more. Dialogs that open dialogs (a profile
+  card from Details, the theme picker in F6, a text field in the mover) stack; the top one owns
+  input.
+- **Mouse in DIALOG:** the dialog consumes every click and the wheel; a click outside it closes it,
   as the menu, picker and save dialog already do (Claude's call). Nothing under a dialog reacts.
 - The y/n prompts are written from `Confirm.yes`'s keys (any other key = no, as today).
 - The key-shadowing warning turns around: report a `[global]` sequence that a pane or dialog
@@ -255,7 +270,7 @@ The mockups `which-key-v3` and `status-widths` were agreed **(user)**:
   · i type · ␣ actions · ? help`.
 - **Shrinking order** **(user: "that order works")**: (1) info goes short: `3 unread · 1 mention
   · ● live` → `3 · @1 ●`; (2) hints drop one at a time, least useful first, `? help` last;
-  (3) MODE becomes one letter (`N`, `I`, dialogs their first letter); (4) hints end at `?`, info
+  (3) MODE becomes one letter (`N`, `I`, a dialog its name's first letter); (4) hints end at `?`, info
   at `●`. The pending sequence is never cut. A note or a ringing huddle wins over the hints; still
   too long → cut with `…`.
 - `F1 keys ·` leaves the right side (the hints end in `? help`).
