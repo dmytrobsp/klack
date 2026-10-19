@@ -409,8 +409,8 @@ impl Call {
     }
 
     /// The call bar's pieces: what is going on (the place, who is talking or talked last,
-    /// how many are here, our microphone, camera and share); no key hints, which-key shows those. The avatar, if
-    /// any, goes in the first two cells of its piece.
+    /// how many are here, our microphone, camera and share); no key hints, which-key shows
+    /// those. The avatar, if any, goes in the first two cells of its piece.
     fn bar(&self, ws: &Workspace, media: &Media) -> [Vec<Piece>; 1] {
         let p = super::theme::p();
         let (green, dim) = (Style::default().fg(p.own), Style::default().fg(p.dim));

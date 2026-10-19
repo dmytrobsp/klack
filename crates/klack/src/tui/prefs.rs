@@ -558,6 +558,9 @@ pub struct Prefs {
     scroll: usize,
     pub category: usize,
     pub selected: usize,
+    /// The row a click selected (a second click on it acts); keys, another category or filter
+    /// and acting forget it.
+    pub clicked: Option<usize>,
     /// Audio devices as ids (listed when the menu opens; only names, nothing is opened).
     pub devices: (Vec<String>, Vec<String>),
     /// Camera names (listed when the menu opens; nothing is opened).
@@ -627,7 +630,18 @@ impl Prefs {
         self.fields(keys).get(self.selected).copied()
     }
 
+    /// A click on row `n`: selects it; true when it should act as Enter (it was selected by
+    /// the click before, so a first click never changes a setting).
+    pub fn click(&mut self, n: usize) -> bool {
+        self.filter_focused = false;
+        let act = self.clicked == Some(n) && self.selected == n;
+        self.selected = n;
+        self.clicked = if act { None } else { Some(n) };
+        act
+    }
+
     pub fn move_by(&mut self, delta: isize, keys: &Keymap) {
+        self.clicked = None;
         self.selected = (self.selected as isize + delta).clamp(0, (self.fields(keys).len() as isize - 1).max(0)) as usize;
     }
 
@@ -640,6 +654,7 @@ impl Prefs {
     pub fn set_filter(&mut self, filter: String) {
         self.filter = filter;
         self.selected = 0;
+        self.clicked = None;
         self.scroll = 0;
     }
 
@@ -682,6 +697,7 @@ impl Prefs {
         });
         if let Some(n) = found {
             self.selected = n;
+            self.clicked = None;
         }
     }
 
@@ -1192,6 +1208,33 @@ mod tests {
         assert_eq!(p.row_at(40, 6), Some(0));
         let n = p.row_at(40, 6 + header as u16).unwrap();
         assert!(matches!(p.fields(&keys)[n], Field::GroupHeader(_)), "a header maps to its field");
+    }
+
+    #[test]
+    fn a_first_click_only_selects() {
+        let keys = Keymap::default();
+        let mut p = Prefs { cats: Rect::new(10, 5, 22, 20), list: Rect::new(32, 5, 60, 15), shown: 10, ..Default::default() };
+        // A category, then its first row: selected, not changed; the second click changes it.
+        let n = p.category_at(11, 6).unwrap();
+        p.switch_category(n as isize - p.category as isize);
+        assert!(!p.click(p.row_at(33, 5).unwrap()), "the first click on row 0");
+        assert!(p.click(0), "the second");
+        assert!(!p.click(0), "acting forgets the click");
+        assert!(p.click(0));
+        // Right after F6 opens, row 0 is selected but not by a click.
+        assert!(!Prefs::default().click(0));
+        // Another row, then keys, a filter or another category in between.
+        assert!(!p.click(2) && p.selected == 2);
+        p.move_by(1, &keys);
+        p.move_by(-1, &keys);
+        assert!(!p.click(2), "keys moved the selection");
+        p.click(0);
+        p.switch_category(0);
+        assert!(!p.click(0), "the category was switched");
+        p.category = CATEGORIES.len();
+        p.click(0);
+        p.filter_key(Key::parse("m").unwrap(), None);
+        assert!(!p.click(0), "the filter changed");
     }
 
     #[test]

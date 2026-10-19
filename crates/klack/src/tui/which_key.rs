@@ -134,14 +134,15 @@ fn put(buf: &mut Buffer, x: u16, y: u16, s: &str, room: usize, style: Style) {
     }
 }
 
-/// The panel in `settings.corner` of `screen`, `title` in its top border.
-pub fn draw(f: &mut Frame, screen: Rect, title: &str, children: &[Child], panel: &Panel, settings: &WhichKey) {
+/// The panel in `settings.corner` of `screen`, `title` in its top border. Returns where it was
+/// drawn, for clicks (empty when it did not fit).
+pub fn draw(f: &mut Frame, screen: Rect, title: &str, children: &[Child], panel: &Panel, settings: &WhichKey) -> Rect {
     let l = layout(children, screen, settings.max_height_percent, settings.icons);
     let title = format!(" {title} ");
     let width = (l.width as usize).max(title.width() + 2).min(screen.width as usize) as u16;
     let height = (l.rows as u16 + 3).min(screen.height);
     if width < 3 || height < 2 {
-        return;
+        return Rect::default();
     }
     let x = if settings.corner.ends_with("left") { screen.x } else { screen.right() - width };
     let y = if settings.corner.starts_with("top") { screen.y } else { screen.bottom() - height };
@@ -152,7 +153,7 @@ pub fn draw(f: &mut Frame, screen: Rect, title: &str, children: &[Child], panel:
     let inner = block.inner(area);
     f.render_widget(block, area);
     if inner.height == 0 {
-        return;
+        return area;
     }
     let w = Widths::of(children, (screen.width as usize).saturating_sub(4), settings.icons);
     let page = panel.page.min(l.pages.saturating_sub(1));
@@ -180,6 +181,7 @@ pub fn draw(f: &mut Frame, screen: Rect, title: &str, children: &[Child], panel:
     let footer = footer(page, l.pages);
     let room = right.saturating_sub(left) as usize;
     put(buf, left, inner.bottom() - 1, &super::status::cut(&footer, room), room, Style::default().fg(p.dim));
+    area
 }
 
 #[cfg(test)]
@@ -200,7 +202,10 @@ mod tests {
     /// The panel drawn on a `w`×`h` screen: each row's cells.
     fn cells(w: u16, h: u16, children: &[Child], panel: &Panel, settings: &WhichKey) -> Vec<Vec<String>> {
         let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
-        term.draw(|f| draw(f, f.area(), "␣  message", children, panel, settings)).unwrap();
+        term.draw(|f| {
+            draw(f, f.area(), "␣  message", children, panel, settings);
+        })
+        .unwrap();
         let buf = term.backend().buffer().clone();
         (0..h).map(|y| (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect()).collect()
     }
@@ -308,5 +313,21 @@ mod tests {
         let narrow = cells(24, 20, &children, &Panel::default(), &WhichKey::default());
         let row = narrow.iter().find(|r| r.concat().contains("a la")).unwrap().concat();
         assert!(row.contains('…'), "{row}");
+    }
+
+    #[test]
+    fn the_drawn_area_is_given_back() {
+        // Bottom-right by default, above nothing else: the border's corners are where it says.
+        let mut term = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        let mut area = Rect::default();
+        term.draw(|f| area = draw(f, f.area(), "␣  message", &many(3), &Panel::default(), &WhichKey::default())).unwrap();
+        let buf = term.backend().buffer().clone();
+        assert!(area.width > 2 && area.height > 2 && area.right() == 60 && area.bottom() == 20, "{area:?}");
+        assert_eq!((buf[(area.x, area.y)].symbol(), buf[(area.right() - 1, area.bottom() - 1)].symbol()), ("┌", "┘"));
+        assert_eq!(buf[(area.x - 1, area.y)].symbol(), " ", "nothing left of it");
+        // Too small to draw: nothing to click.
+        term = Terminal::new(TestBackend::new(2, 1)).unwrap();
+        term.draw(|f| area = draw(f, f.area(), "␣", &many(3), &Panel::default(), &WhichKey::default())).unwrap();
+        assert_eq!(area, Rect::default());
     }
 }

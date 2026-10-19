@@ -121,6 +121,10 @@ struct App {
     pending_since: Option<std::time::Instant>,
     /// The which-key panel, once it is shown for the pending sequence.
     which_key: Option<super::which_key::Panel>,
+    /// Where the which-key panel was at the last draw (empty: not drawn), for clicks.
+    which_key_area: Rect,
+    /// When and where the last click that closed a dialog was (see [`swallowed`]).
+    closing_click: Option<(std::time::Instant, u16, u16)>,
     /// Problems found in keys.toml, shown once the workspace has loaded.
     key_warnings: Vec<String>,
     /// The profile's workspaces (labels) and which one this is.
@@ -1517,7 +1521,7 @@ impl App {
     /// Show the huddle view in place of the messages, or the messages again.
     fn toggle_huddle_view(&mut self) {
         if self.huddle_view.take().is_some() {
-            self.focus = Focus::Composer;
+            self.focus = Focus::Messages;
         } else if self.call.is_some() {
             // Narrow: the view and a thread take turns in the messages' place.
             if self.narrow {
@@ -1797,15 +1801,16 @@ impl App {
     }
 
     /// A left click in the open preferences (false: not on anything here). A category switches to
-    /// it; a row is selected, and the selected one acts as Enter; the theme picker's rows are
-    /// selected (shown at once) and the highlighted one is kept. A click while recording does
-    /// nothing; one off the field being typed in ends the typing, like Esc.
+    /// it; a row is selected, and a second click on it acts as Enter ([`Prefs::click`]); the
+    /// theme picker's rows are selected (shown at once) and the highlighted one is kept. A click
+    /// while recording does nothing; one off the field being typed in ends the typing, like Esc.
     fn click_prefs(&mut self, column: u16, row: u16) -> bool {
         let Some(p) = self.prefs.as_mut() else { return false };
         if let Some(picker) = p.picker.as_mut() {
             let Some(n) = picker.row_at(column, row) else { return false };
             if n == picker.selected {
                 self.keep_theme();
+                self.closing_click = Some((std::time::Instant::now(), column, row));
             } else {
                 picker.selected = n;
                 picker.preview(&self.ws.settings.appearance.theme);
@@ -1830,11 +1835,8 @@ impl App {
                 p.switch_category(n as isize - p.category as isize);
             }
         } else if let Some(n) = row_hit {
-            p.filter_focused = false;
-            if n == p.selected {
+            if p.click(n) {
                 self.change_preference();
-            } else {
-                p.selected = n;
             }
         }
         true
@@ -1846,7 +1848,7 @@ impl App {
         use super::prefs::SlackChange;
         let current = self.current.clone();
         let Some(p) = self.prefs.as_mut() else { return };
-        p.saved = None;
+        (p.saved, p.clicked) = (None, None);
         let field = p.selected_field(&self.keys);
         // A group's name: written to keys.toml.
         if let Some(super::prefs::Field::GroupHeader(_)) = field {
@@ -2887,6 +2889,8 @@ async fn run_workspace(
         pending: Pending::default(),
         pending_since: None,
         which_key: None,
+        which_key_area: Rect::default(),
+        closing_click: None,
         workspaces: workspaces.0,
         workspace: workspaces.1,
         others: workspaces.2,
@@ -3088,6 +3092,22 @@ fn ends_sequence(ev: &Event) -> bool {
     }
 }
 
+/// A second left click at the same cell within this is the second half of a double-click.
+const DOUBLE_CLICK: Duration = Duration::from_millis(400);
+
+/// Whether a mouse event is taken before anything acts on it: a click on the which-key panel
+/// (`which_key`, while shown), or the second half of a double-click whose first click closed a
+/// dialog (`closing_click`: when and where), so it does not act on what was under the dialog.
+fn swallowed(ev: &Event, which_key: Option<Rect>, closing_click: Option<(std::time::Instant, u16, u16)>, now: std::time::Instant) -> bool {
+    let Event::Mouse(m) = ev else { return false };
+    let (column, row) = (m.column, m.row);
+    match m.kind {
+        MouseEventKind::Down(_) | MouseEventKind::Up(_) if which_key.is_some_and(|a| a.contains((column, row).into())) => true,
+        MouseEventKind::Down(MouseButton::Left) | MouseEventKind::Up(MouseButton::Left) => closing_click.is_some_and(|(at, c, r)| (c, r) == (column, row) && now.duration_since(at) < DOUBLE_CLICK),
+        _ => false,
+    }
+}
+
 /// Returns false to quit.
 fn handle_terminal(app: &mut App, ev: Event) -> bool {
     if let Event::Key(k) = &ev {
@@ -3096,7 +3116,8 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
         }
     }
     let ends = ends_sequence(&ev);
-    let keep_going = handle_event(app, ev);
+    let which_key = app.which_key.is_some().then_some(app.which_key_area);
+    let keep_going = swallowed(&ev, which_key, app.closing_click, std::time::Instant::now()) || handle_event(app, ev);
     if ends {
         app.pending.clear();
     }
@@ -3165,13 +3186,17 @@ fn handle_dialog(app: &mut App, ev: &Event) -> bool {
             let len = picker.candidates(&app.ws.custom_emoji).len();
             match app.picker.as_ref().map(|(p, _, _)| (p.row_at(m.column, m.row).filter(|n| *n < len), p.area.contains((m.column, m.row).into()))) {
                 Some((Some(n), _)) if m.kind == MouseEventKind::Down(MouseButton::Left) => {
+                    app.closing_click = Some((std::time::Instant::now(), m.column, m.row));
                     if let Some((picker, channel, ts)) = app.picker.take() {
                         if let Some(choice) = picker.candidates(&app.ws.custom_emoji).get(n) {
                             app.toggle_reaction(channel, ts, choice.name.clone());
                         }
                     }
                 }
-                Some((_, false)) => app.picker = None,
+                Some((_, false)) => {
+                    app.picker = None;
+                    app.closing_click = Some((std::time::Instant::now(), m.column, m.row));
+                }
                 _ => {}
             }
         }
@@ -3188,8 +3213,12 @@ fn handle_dialog(app: &mut App, ev: &Event) -> bool {
                         menu.selected = n;
                     }
                     app.run_menu();
+                    app.closing_click = Some((std::time::Instant::now(), m.column, m.row));
                 }
-                (MouseEventKind::Down(_), None) => app.menu = None,
+                (MouseEventKind::Down(_), None) => {
+                    app.menu = None;
+                    app.closing_click = Some((std::time::Instant::now(), m.column, m.row));
+                }
                 _ => {}
             }
         }
@@ -3548,6 +3577,7 @@ fn handle_dialog(app: &mut App, ev: &Event) -> bool {
         Event::Mouse(m) if matches!(m.kind, MouseEventKind::Down(_)) => {
             if !app.dialog_area().is_some_and(|a| a.contains((m.column, m.row).into())) {
                 app.close_dialog();
+                app.closing_click = Some((std::time::Instant::now(), m.column, m.row));
             }
         }
         _ => {}
@@ -3556,7 +3586,8 @@ fn handle_dialog(app: &mut App, ev: &Event) -> bool {
 }
 
 /// A left click at a position on a row of the topmost jump to / activity / threads / search
-/// list: selects it and does what Enter does. False when no such list has a row there.
+/// list: selects it and does what Enter does (which closes the list). False when no such list
+/// has a row there.
 fn click_row(app: &mut App, column: u16, row: u16) -> bool {
     if let Some(sw) = app.switcher.as_mut() {
         let Some(n) = sw.row_at(column, row) else { return false };
@@ -3577,6 +3608,7 @@ fn click_row(app: &mut App, column: u16, row: u16) -> bool {
     } else {
         return false;
     }
+    app.closing_click = Some((std::time::Instant::now(), column, row));
     true
 }
 
@@ -4321,8 +4353,9 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     if app.call.is_none() || matches!(app.focus, Focus::Messages | Focus::Composer) {
         app.huddle_view = None;
     }
+    // Back to the messages, not into the message box (only you start typing).
     if app.huddle_view.is_none() && app.focus == Focus::Huddle {
-        app.focus = Focus::Composer;
+        app.focus = Focus::Messages;
     }
     let mode = app.mode();
     let key = |a| app.keys.first_shown_in(mode, Context::Global, a).unwrap_or_default();
@@ -4460,6 +4493,7 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         h.draw(f, body, &app.keys, app.ws.settings.which_key.icons);
     }
     // which-key: the keys that can come next.
+    app.which_key_area = Rect::default();
     if app.which_key.is_some() {
         let contexts = app.active_contexts();
         let mut children = app.offered(&contexts, mode, app.pending.keys());
@@ -4472,7 +4506,7 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         let title = super::which_key::title(&app.keys, &contexts, &app.pending);
         if let Some(panel) = app.which_key.as_mut() {
             panel.page = panel.page.min(pages.saturating_sub(1));
-            super::which_key::draw(f, above_status, &title, &children, panel, settings);
+            app.which_key_area = super::which_key::draw(f, above_status, &title, &children, panel, settings);
         }
     }
     // The status line: the mode, what is going on, the keys under way and the hints.
@@ -4931,6 +4965,32 @@ mod tests {
         for ev in [mouse(MouseEventKind::Down(MouseButton::Left)), mouse(MouseEventKind::Up(MouseButton::Left)), mouse(MouseEventKind::ScrollDown), mouse(MouseEventKind::ScrollUp), Event::Paste("x".into())] {
             assert!(super::ends_sequence(&ev), "{ev:?}");
         }
+    }
+
+    #[test]
+    fn clicks_that_are_taken_first() {
+        use crossterm::event::{Event, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+        use ratatui::layout::Rect;
+        use std::time::{Duration, Instant};
+        let at = |kind, column, row| Event::Mouse(MouseEvent { kind, column, row, modifiers: KeyModifiers::NONE });
+        let (down, up, right) = (MouseEventKind::Down(MouseButton::Left), MouseEventKind::Up(MouseButton::Left), MouseEventKind::Down(MouseButton::Right));
+        let t = Instant::now();
+        let (closed, soon) = (Some((t, 10, 5)), t + Duration::from_millis(150));
+        // The second half of a double-click whose first click closed a dialog: press and release.
+        assert!(super::swallowed(&at(down, 10, 5), None, closed, soon) && super::swallowed(&at(up, 10, 5), None, closed, soon));
+        assert!(!super::swallowed(&at(down, 10, 5), None, closed, t + super::DOUBLE_CLICK), "too late");
+        assert!(!super::swallowed(&at(down, 11, 5), None, closed, soon) && !super::swallowed(&at(down, 10, 6), None, closed, soon), "another cell");
+        assert!(!super::swallowed(&at(right, 10, 5), None, closed, soon), "another button");
+        assert!(!super::swallowed(&at(down, 10, 5), None, None, soon), "no dialog closed by a click");
+        // The which-key panel takes any click on it, not those beside it, nor hovering or the wheel.
+        let panel = Some(Rect::new(50, 10, 20, 6));
+        for (kind, c, r) in [(down, 50, 10), (up, 69, 15), (right, 60, 12)] {
+            assert!(super::swallowed(&at(kind, c, r), panel, None, soon), "{kind:?} {c} {r}");
+        }
+        for (kind, c, r) in [(down, 49, 10), (down, 70, 15), (down, 60, 16), (MouseEventKind::Moved, 60, 12), (MouseEventKind::ScrollDown, 60, 12)] {
+            assert!(!super::swallowed(&at(kind, c, r), panel, None, soon), "{kind:?} {c} {r}");
+        }
+        assert!(!super::swallowed(&Event::Paste("x".into()), panel, closed, soon));
     }
 
     fn session(team_id: &str, team: &str, user: &str) -> WorkspaceSession {
