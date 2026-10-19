@@ -72,9 +72,9 @@ enum Net {
     Dnd(Value),
     /// `/dnd` paused or resumed notifications (or failed); `dnd.info` asked right after.
     DndSet { resumed: bool, error: Option<String>, info: Option<Value> },
-    /// The notification schedule was changed (the prefs read back) or not; `dnd.info` asked right
-    /// after, and the schedule shown before the change (put back on failure).
-    DndSchedule { result: Result<Value, String>, info: Option<Value>, before: Option<slack_core::dnd::Schedule> },
+    /// klack's schedule write ended (`error` if not); `prefs` read back after it (or fetched again
+    /// after a failure) and `dnd.info` asked right after.
+    DndSchedule { error: Option<String>, prefs: Option<Value>, info: Option<Value> },
     /// User prefs fetched again.
     Prefs(Value),
     /// The activity feed.
@@ -156,6 +156,8 @@ struct App {
     profile: Option<super::profile::ProfileCard>,
     /// A `dnd.info` refresh is on its way.
     dnd_refreshing: bool,
+    /// klack's own schedule writes, one at a time.
+    schedule_writes: ScheduleQueue,
     /// Open context menu (right-click).
     menu: Option<super::menu::Menu>,
     /// Open preferences (F6).
@@ -1940,20 +1942,30 @@ impl App {
         }
     }
 
-    /// Change the notification schedule: shown at once, then Slack's copy is edited (read just
-    /// before, so another client's change stays), read back and `dnd.info` asked again — any
-    /// schedule write brings back a quiet period that was ended early.
+    /// Change the notification schedule: shown at once, then written after any earlier change
+    /// still on its way (`ScheduleQueue`).
     fn edit_schedule(&mut self, edits: Vec<slack_core::dnd::ScheduleEdit>) {
-        let before = self.ws.dnd.schedule.clone();
-        if let Some(s) = before.as_ref().and_then(|s| s.edited(&edits).ok()) {
+        if let Some(s) = self.ws.dnd.schedule.as_ref().and_then(|s| s.edited(&edits).ok()) {
             self.ws.dnd.schedule = Some(s);
         }
         self.status = "changing the notification schedule…".into();
+        if let Some(edits) = self.schedule_writes.push(edits) {
+            self.write_schedule(edits);
+        }
+    }
+
+    /// Edit Slack's copy of the schedule (read just before, so another client's change stays),
+    /// read it back and ask `dnd.info` again — any schedule write brings back a quiet period that
+    /// was ended early. After a failure the prefs are fetched again.
+    fn write_schedule(&mut self, edits: Vec<slack_core::dnd::ScheduleEdit>) {
         let (client, tx) = (self.client.clone(), self.net.clone());
         tokio::spawn(async move {
-            let result = client.edit_dnd_schedule(&edits).await.map_err(|e| e.to_string());
+            let (error, prefs) = match client.edit_dnd_schedule(&edits).await {
+                Ok(prefs) => (None, Some(prefs)),
+                Err(e) => (Some(e.to_string()), client.user_prefs().await.inspect_err(|e| tracing::warn!("users.prefs.get failed: {e}")).ok()),
+            };
             let info = client.call_raw("dnd.info", &[]).await.inspect_err(|e| tracing::warn!("dnd.info failed: {e}")).ok();
-            let _ = tx.send(Net::DndSchedule { result, info, before });
+            let _ = tx.send(Net::DndSchedule { error, prefs, info });
         });
     }
 
@@ -2987,6 +2999,7 @@ async fn run_workspace(
         call_bar_wanted: None,
         menu: None,
         dnd_refreshing: false,
+        schedule_writes: ScheduleQueue::default(),
         mover: None,
         huddle_after_open: None,
         rejoined: false,
@@ -3844,6 +3857,42 @@ fn handle_main(app: &mut App, ev: Event) -> bool {
     true
 }
 
+/// klack's own schedule writes, one at a time in the order made: each reads Slack's copy just
+/// before it writes, so a later one waits for the earlier one.
+#[derive(Debug, Default)]
+struct ScheduleQueue {
+    busy: bool,
+    waiting: std::collections::VecDeque<Vec<slack_core::dnd::ScheduleEdit>>,
+}
+
+impl ScheduleQueue {
+    /// Edits made: returned to be written now, or kept (None) while a write is in flight.
+    fn push(&mut self, edits: Vec<slack_core::dnd::ScheduleEdit>) -> Option<Vec<slack_core::dnd::ScheduleEdit>> {
+        if self.busy {
+            self.waiting.push_back(edits);
+            return None;
+        }
+        self.busy = true;
+        Some(edits)
+    }
+
+    /// The write in flight ended: the next edits to write, if any. After a failure what waits is
+    /// dropped (it was made on top of the failed change).
+    fn done(&mut self, ok: bool) -> Option<Vec<slack_core::dnd::ScheduleEdit>> {
+        if !ok {
+            self.waiting.clear();
+        }
+        let next = self.waiting.pop_front();
+        self.busy = next.is_some();
+        next
+    }
+
+    /// The edits waiting their turn, in order.
+    fn waiting(&self) -> impl Iterator<Item = &Vec<slack_core::dnd::ScheduleEdit>> {
+        self.waiting.iter()
+    }
+}
+
 /// The note after the schedule changed (or `/dnd schedule`): the schedule `described`, and
 /// `until` when notifications are paused now.
 fn schedule_note(described: String, until: Option<String>) -> String {
@@ -4321,27 +4370,47 @@ fn handle_net(app: &mut App, msg: Net) {
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64();
             app.dnd_refreshing = app.ws.dnd.stale(now);
         }
-        Net::DndSchedule { result, info, before } => {
+        Net::DndSchedule { error, prefs, info } => {
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64();
             if let Some(v) = &info {
                 app.ws.dnd.set_info(v);
                 app.dnd_refreshing = app.ws.dnd.stale(now);
             }
-            match result {
-                Ok(prefs) => {
-                    let dnd: serde_json::Map<String, Value> = prefs.as_object().into_iter().flatten().filter(|(k, _)| k.starts_with("dnd_")).map(|(k, v)| (k.clone(), v.clone())).collect();
-                    app.ws.apply_prefs(&Value::Object(dnd));
-                    let format = app.ws.settings.time_format();
-                    let until = info.and_then(|_| app.ws.dnd.until(now)).and_then(|t| super::clock::until_label(t as i64, now as i64, format));
-                    app.status = schedule_note(super::prefs::describe_schedule(app.ws.dnd.schedule.as_ref(), format, &super::prefs::schedule_zone(&app.ws)), until);
+            // Slack's copy, then the changes still waiting shown on top of it.
+            if let Some(prefs) = &prefs {
+                let dnd: serde_json::Map<String, Value> = prefs.as_object().into_iter().flatten().filter(|(k, _)| k.starts_with("dnd_")).map(|(k, v)| (k.clone(), v.clone())).collect();
+                app.ws.apply_prefs(&Value::Object(dnd));
+            }
+            let dropped = if error.is_some() { app.schedule_writes.waiting().count() } else { 0 };
+            let next = app.schedule_writes.done(error.is_none());
+            let pending: Vec<Vec<slack_core::dnd::ScheduleEdit>> = next.iter().chain(app.schedule_writes.waiting()).cloned().collect();
+            for edits in &pending {
+                if let Some(s) = app.ws.dnd.schedule.as_ref().and_then(|s| s.edited(edits).ok()) {
+                    app.ws.dnd.schedule = Some(s);
                 }
-                Err(e) => {
-                    app.ws.dnd.schedule = before;
-                    app.status = format!("changing the notification schedule failed: {e}");
+            }
+            match error {
+                Some(e) => {
+                    let also = if dropped > 0 { format!(" ({dropped} later change{} not sent)", if dropped == 1 { "" } else { "s" }) } else { String::new() };
+                    app.status = format!("changing the notification schedule failed: {e}{also}");
                     if let Some(p) = app.prefs.as_mut() {
                         p.saved = Some(Err(e));
                     }
                 }
+                None => {
+                    if let Some(p) = app.prefs.as_mut() {
+                        p.saved = None;
+                    }
+                    // The note once the last change is written.
+                    if next.is_none() {
+                        let format = app.ws.settings.time_format();
+                        let until = info.and_then(|_| app.ws.dnd.until(now)).and_then(|t| super::clock::until_label(t as i64, now as i64, format));
+                        app.status = schedule_note(super::prefs::describe_schedule(app.ws.dnd.schedule.as_ref(), format, &super::prefs::schedule_zone(&app.ws)), until);
+                    }
+                }
+            }
+            if let Some(edits) = next {
+                app.write_schedule(edits);
             }
         }
         Net::DndSet { resumed, error, info } => {
@@ -5037,6 +5106,24 @@ mod tests {
         assert_eq!(super::dnd_note(true, Some("09:00".into())), "notifications are still paused until 09:00", "never a silent resume");
         assert_eq!(super::dnd_note(false, Some("14:30".into())), "notifications paused until 14:30");
         assert_eq!(super::dnd_note(false, None), "notifications paused");
+    }
+
+    #[test]
+    fn schedule_writes_go_in_order() {
+        use slack_core::dnd::{ScheduleDays::*, ScheduleEdit::*};
+        let mut q = super::ScheduleQueue::default();
+        assert_eq!(q.push(vec![Days(EveryDay)]), Some(vec![Days(EveryDay)]), "nothing in flight: written at once");
+        assert_eq!(q.push(vec![Days(Weekdays)]), None, "one in flight: it waits");
+        assert_eq!(q.push(vec![Days(Custom)]), None);
+        assert_eq!(q.waiting().cloned().collect::<Vec<_>>(), [vec![Days(Weekdays)], vec![Days(Custom)]]);
+        assert_eq!(q.done(true), Some(vec![Days(Weekdays)]), "then each in the order made");
+        assert_eq!(q.done(true), Some(vec![Days(Custom)]));
+        assert_eq!(q.done(true), None);
+        assert_eq!(q.push(vec![Days(Off)]), Some(vec![Days(Off)]), "idle again");
+        assert_eq!(q.push(vec![Days(EveryDay)]), None);
+        assert_eq!(q.done(false), None, "after a failure what waits (made on top of it) is dropped");
+        assert_eq!(q.waiting().count(), 0);
+        assert_eq!(q.push(vec![Days(Off)]), Some(vec![Days(Off)]));
     }
 
     #[test]

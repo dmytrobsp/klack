@@ -665,9 +665,17 @@ impl Prefs {
 
     /// Follow the workspace: the schedule's rows shown, the selection kept on one of them.
     pub fn sync(&mut self, ws: &Workspace) {
+        let row = |p: &Prefs| p.availability_shown().then(|| CATEGORIES[p.category].1.iter().copied().chain(p.schedule_rows()).nth(p.selected)).flatten();
+        let before = row(self);
         self.schedule = ws.dnd.schedule.as_ref().map(|s| s.days);
         if self.availability_shown() {
             self.selected = self.selected.min(CATEGORIES[self.category].1.len() + self.schedule_rows().len() - 1);
+        }
+        // The schedule changed in Slack under a row being typed in: what was typed is dropped,
+        // never sent for the row now in its place.
+        if self.editing.is_some() && row(self) != before {
+            self.editing = None;
+            self.saved = Some(Err("the notification schedule changed in Slack: what you typed was dropped".into()));
         }
     }
 
@@ -1437,6 +1445,43 @@ mod tests {
         assert_eq!(zone_note(Some(jerusalem), Some(kyiv), 1_800_000_000), " (Asia/Jerusalem)");
         assert_eq!(zone_note(Some(jerusalem), Some(jerusalem), 1_800_000_000), "");
         assert_eq!(zone_note(None, Some(kyiv), 1_800_000_000), "", "the account's zone not known: klack's");
+    }
+
+    #[test]
+    fn typing_stops_when_its_row_goes() {
+        use slack_core::dnd::{Schedule, ScheduleDays};
+        let keys = Keymap::default();
+        let mut ws = Workspace::default();
+        ws.dnd.schedule = Some(Schedule::from_prefs(&serde_json::json!({"dnd_enabled": true, "dnd_days": "weekdays", "dnd_end_hour": "9:00", "dnd_start_hour": "17:00"})));
+        let mut p = Prefs::default();
+        p.sync(&ws);
+        p.selected = 4;
+        assert_eq!((p.change(&mut ws, None, &keys), p.selected_field(&keys)), (None, Some(Field::ScheduleHours)));
+        p.editing = Some("10:00-18:00".into());
+        // Weekdays → every day elsewhere: the same row, the typing goes on.
+        ws.dnd.schedule.as_mut().unwrap().days = ScheduleDays::EveryDay;
+        p.sync(&ws);
+        assert_eq!(p.editing.as_deref(), Some("10:00-18:00"));
+        // → custom: row 4 is now Monday; the hours typed must not become Monday's.
+        ws.dnd.schedule.as_mut().unwrap().days = ScheduleDays::Custom;
+        p.sync(&ws);
+        assert_eq!((p.editing.as_deref(), p.selected_field(&keys)), (None, Some(Field::ScheduleDay(0))));
+        assert!(matches!(&p.saved, Some(Err(e)) if e.contains("changed")), "{:?}", p.saved);
+        // The row gone altogether (off): the same.
+        ws.dnd.schedule.as_mut().unwrap().days = ScheduleDays::Weekdays;
+        p.sync(&ws);
+        p.change(&mut ws, None, &keys);
+        assert!(p.editing.is_some());
+        ws.dnd.schedule.as_mut().unwrap().days = ScheduleDays::Off;
+        p.sync(&ws);
+        assert_eq!((p.editing.as_deref(), p.selected), (None, 3));
+        // Typing elsewhere (the status) is not touched.
+        p.selected = 0;
+        p.change(&mut ws, None, &keys);
+        assert!(p.editing.is_some());
+        ws.dnd.schedule.as_mut().unwrap().days = ScheduleDays::Custom;
+        p.sync(&ws);
+        assert!(p.editing.is_some());
     }
 
     #[test]

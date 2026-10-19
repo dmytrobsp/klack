@@ -101,7 +101,8 @@ impl Schedule {
     }
 
     /// This schedule with `edits` made, the rest as it is (times as Slack writes them); an error
-    /// for an edit klack can't write: on an unknown schedule or day, or with a bad time.
+    /// for an edit klack can't write: on an unknown schedule or day, with a bad time, or hours
+    /// for a form the schedule doesn't use (a day's while it isn't custom).
     pub fn edited(&self, edits: &[ScheduleEdit]) -> Result<Schedule, String> {
         const UNKNOWN: &str = "Slack has a schedule klack doesn't know: change it in Slack";
         let time = |t: &str| slack_time(t).ok_or_else(|| format!("{t:?} is not a time of day (H:MM)"));
@@ -126,6 +127,23 @@ impl Schedule {
                     };
                 }
             }
+        }
+        // Hours for a form the schedule doesn't use would not be written: say so rather than
+        // write the rest (the kind changed in another client since it was drawn).
+        let unused = |e: &ScheduleEdit| match e {
+            ScheduleEdit::Range(..) => !matches!(out.days, ScheduleDays::EveryDay | ScheduleDays::Weekdays),
+            ScheduleEdit::Day(..) => out.days != ScheduleDays::Custom,
+            ScheduleEdit::Days(_) => false,
+        };
+        if edits.iter().any(unused) {
+            let kind = match out.days {
+                ScheduleDays::Off => "off",
+                ScheduleDays::EveryDay => "every day",
+                ScheduleDays::Weekdays => "weekdays",
+                ScheduleDays::Custom => "custom",
+                ScheduleDays::Unknown => "unknown",
+            };
+            return Err(format!("the schedule changed in Slack meanwhile (now {kind}); nothing written"));
         }
         Ok(out)
     }
@@ -363,10 +381,11 @@ mod tests {
         // Slack's copy as read just before the write: another client changed Tuesday.
         let mut p = recorded();
         p["dnd_before_tuesday"] = "7:30".into();
+        p["dnd_days"] = "custom".into();
         let fresh = Schedule::from_prefs(&p);
         let s = fresh.edited(&[ScheduleEdit::Day(0, DayHours::Never)]).unwrap();
         assert_eq!((&s.per_day[0], &s.per_day[1]), (&DayHours::Never, &between("7:30", "22:00")), "Tuesday as the other client left it");
-        assert_eq!((s.days, &s.range), (ScheduleDays::Weekdays, &fresh.range));
+        assert_eq!((s.days, &s.range), (ScheduleDays::Custom, &fresh.range));
         let s = fresh.edited(&[ScheduleEdit::Days(ScheduleDays::EveryDay), ScheduleEdit::Range("09:00".into(), "17:30".into())]).unwrap();
         assert_eq!((s.days, s.range.0.as_str(), s.range.1.as_str()), (ScheduleDays::EveryDay, "9:00", "17:30"), "times as Slack writes them");
         assert_eq!(s.per_day, fresh.per_day);
@@ -377,6 +396,22 @@ mod tests {
         assert!(fresh.edited(&[ScheduleEdit::Range("8:00".into(), "25:00".into())]).is_err());
         assert!(fresh.edited(&[ScheduleEdit::Days(ScheduleDays::Unknown)]).is_err(), "never set to unknown");
         assert!(fresh.edited(&[ScheduleEdit::Day(7, DayHours::AllDay)]).is_err());
+    }
+
+    #[test]
+    fn an_edit_slack_would_not_use_is_refused() {
+        // Drawn as weekdays, but another client made it custom meanwhile: the hours would not be
+        // written (custom writes the days), so nothing is.
+        let custom = Schedule { days: ScheduleDays::Custom, ..recorded_schedule() };
+        let e = custom.edited(&[ScheduleEdit::Range("10:00".into(), "18:00".into())]).unwrap_err();
+        assert!(e.contains("changed in Slack meanwhile (now custom)"), "{e}");
+        let e = recorded_schedule().edited(&[ScheduleEdit::Day(0, DayHours::Never)]).unwrap_err();
+        assert!(e.contains("(now weekdays)"), "{e}");
+        let off = Schedule { days: ScheduleDays::Off, ..recorded_schedule() };
+        assert!(off.edited(&[ScheduleEdit::Range("10:00".into(), "18:00".into())]).is_err());
+        // With the kind in the same write, the edit is used.
+        assert!(custom.edited(&[ScheduleEdit::Days(ScheduleDays::EveryDay), ScheduleEdit::Range("10:00".into(), "18:00".into())]).is_ok());
+        assert!(custom.edited(&[ScheduleEdit::Day(0, DayHours::Never)]).is_ok());
     }
 
     #[test]
