@@ -198,7 +198,23 @@ Tests: `cargo test` → slack-core 10, huddle 33, klack 193 (+1 ignored: the `bu
 
 ## Next (in order, each as a small, separately verified step)
 
-**v0.2.0 released** 2026-10-19 (https://github.com/dmytrobsp/klack/releases/tag/v0.2.0; CI green on the bump, four builds, the Linux download verified against SHA256SUMS and run). **NEXT UP: nothing queued** — queue K is done (DMs by activity, quiet conversations hidden, browser profile choice). Unreleased since v0.2.0: queues J and K. Queue J is done (J1 browser window, J2 import from Firefox / Chrome; J3 dropped: Slack's code email needs a reCAPTCHA).
+**v0.2.0 released** 2026-10-19 (https://github.com/dmytrobsp/klack/releases/tag/v0.2.0; CI green on the bump, four builds, the Linux download verified against SHA256SUMS and run). **NEXT UP: L1** (queue L below). Queue K is done (DMs by activity, quiet conversations hidden, browser profile choice). Unreleased since v0.2.0: queues J and K.
+
+L. Adjustments asked by the user on 2026-10-19 (after K, from using klack on their work workspace); one verified
+   commit per step, in this order (the bug first):
+  L1 (NEXT). BUG: a very long message (taller than the message pane) flickers: clicking it selects it, then the
+      pane jumps back and forth between the message's start and end, and every mouse move forces another jump.
+      Suspect the "keep the selection on screen" code in `MessagePane::draw` (it scrolls to the first line if the
+      start is above the view, to the last if the end is below — a message taller than the view satisfies
+      neither) fighting the hover redraw. Reproduce with a long message from B (more lines than the pane).
+  L2. Threads opened from Ctrl+T (and probably any thread) do not scroll with the mouse wheel.
+  L3. The Keys page of the preferences cannot be scrolled with the mouse wheel.
+  L4. The preferences window stays small even when the terminal has room: let it grow with the terminal.
+  L5. A context menu for the selected message from the keyboard (today only a right-click opens it): a key in
+      the message list (and thread pane) opening the same menu at the message.
+  L6. Narrow terminals: when there is no room for both the messages and a thread pane, opening a thread shows
+      the thread in place of the messages (as Slack does); closing it brings the messages back. klack is hard
+      to use at half a screen today; Slack stays usable. Queue J is done (J1 browser window, J2 import from Firefox / Chrome; J3 dropped: Slack's code email needs a reCAPTCHA).
 
 K. Sidebar like Slack's, plus picking the browser profile — asked by the user on 2026-10-19 (after J):
   ~~K1~~ — done. Direct messages sorted by latest activity, newest first (channels stay alphabetical, as in Slack);
