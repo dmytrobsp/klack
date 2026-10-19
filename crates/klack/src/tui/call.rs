@@ -616,9 +616,9 @@ mod tests {
     #[test]
     fn roster_changes_count_others() {
         // Shaped like the real rosters (attendee ids, `<team>-<room>-<user>`).
-        let p = |id: &str, user: &str| huddle::session::Participant { attendee_id: id.into(), external_user_id: format!("T0CA6QW46KB-R0CA47XA37G-{user}"), muted: false };
-        let me = p("ecfb4d87-adf6", "U0C9YM9J3RR");
-        let b = p("95952636-2b52", "U0CA4NBE06N");
+        let p = |id: &str, user: &str| huddle::session::Participant { attendee_id: id.into(), external_user_id: format!("T0TEST00001-R0CA47XA37G-{user}"), muted: false };
+        let me = p("ecfb4d87-adf6", "U0ANN000001");
+        let b = p("95952636-2b52", "U0BOB000001");
         let c = p("11111111-2222", "U0C0000000C");
         assert_eq!(super::roster_changes(&[me.clone()], &[me.clone(), b.clone()], &me.attendee_id), (1, 0));
         assert_eq!(super::roster_changes(&[me.clone(), b.clone()], &[me.clone()], &me.attendee_id), (0, 1));
@@ -661,7 +661,7 @@ mod tests {
 
     #[test]
     fn last_speaker_is_the_loudest_other() {
-        let p = |id: &str, muted: bool| huddle::session::Participant { attendee_id: id.into(), external_user_id: format!("T0CA6QW46KB-R0CA47XA37G-U{id}"), muted };
+        let p = |id: &str, muted: bool| huddle::session::Participant { attendee_id: id.into(), external_user_id: format!("T0TEST00001-R0CA47XA37G-U{id}"), muted };
         let roster = [p("me", false), p("b", false), p("c", false), p("m", true)];
         let levels = |l: &[(&str, f32)]| l.iter().map(|(k, v)| (k.to_string(), *v)).collect::<std::collections::HashMap<_, _>>();
         assert_eq!(super::loudest_other(&levels(&[("me", 0.9), ("b", 0.3), ("c", 0.5)]), &roster, "me").as_deref(), Some("c"));

@@ -405,9 +405,9 @@ mod tests {
     fn huddle_invitations() {
         let mut w = ws();
         // Captured with `ctl listen` (the Chime credentials in `free_willy` left out).
-        let fx = apply(&mut w, &json!({"call_id":"R0CB0UP0BJL","channel_id":"D0CA2V8G8CE","event_ts":"1792357509.005400","is_guest":false,"sender_user_id":"U0CA4NBE06N","team_id":"T0CA6QW46KB","type":"huddle_invite"}), None);
-        assert_eq!(fx.huddle_invite, Some(("D0CA2V8G8CE".into(), "R0CB0UP0BJL".into(), "U0CA4NBE06N".into())));
-        let fx = apply(&mut w, &json!({"channel_id":"D0CA2V8G8CE","event_ts":"1792357516.005500","team_id":"T0CA6QW46KB","type":"huddle_invite_cancel"}), None);
+        let fx = apply(&mut w, &json!({"call_id":"R0CB0UP0BJL","channel_id":"D0CA2V8G8CE","event_ts":"1792357509.005400","is_guest":false,"sender_user_id":"U0BOB000001","team_id":"T0TEST00001","type":"huddle_invite"}), None);
+        assert_eq!(fx.huddle_invite, Some(("D0CA2V8G8CE".into(), "R0CB0UP0BJL".into(), "U0BOB000001".into())));
+        let fx = apply(&mut w, &json!({"channel_id":"D0CA2V8G8CE","event_ts":"1792357516.005500","team_id":"T0TEST00001","type":"huddle_invite_cancel"}), None);
         assert_eq!(fx.invite_cancelled.as_deref(), Some("D0CA2V8G8CE"));
     }
 

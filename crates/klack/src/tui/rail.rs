@@ -69,7 +69,7 @@ mod tests {
 
     #[test]
     fn tiles_marks_and_badges() {
-        let labels: Vec<String> = ["rslack-testbed · ann", "Acme Corp", "rslack-testbed · bob"].map(String::from).into();
+        let labels: Vec<String> = ["Test Bed · ann", "Acme Corp", "Test Bed · bob"].map(String::from).into();
         let badges = HashMap::from([(1, Badge { attention: 7, unread: true }), (2, Badge { attention: 0, unread: true }), (0, Badge { attention: 3, unread: true })]);
         let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(WIDTH, 12)).unwrap();
         let mut tiles = vec![];
@@ -81,9 +81,9 @@ mod tests {
         assert!(wanted.is_empty(), "no pictures: the initials");
         let buf = terminal.backend().buffer();
         let row = |y: u16| (0..WIDTH).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>();
-        assert_eq!([row(1), row(2), row(3)], ["▌ RS  ", "▌ 1   ", "      "], "the shown one marked, no badge for it");
+        assert_eq!([row(1), row(2), row(3)], ["▌ TB  ", "▌ 1   ", "      "], "the shown one marked, no badge for it");
         assert_eq!([row(4), row(5), row(6)], ["  AC  ", "  2   ", " @7   "]);
-        assert_eq!([row(7), row(9)], ["  RS  ", "  •   "], "two accounts in one workspace: the same initials");
+        assert_eq!([row(7), row(9)], ["  TB  ", "  •   "], "two accounts in one workspace: the same initials");
         assert_ne!(buf[(1, 7)].bg, buf[(1, 1)].bg, "but their own colours");
         assert_eq!(tiles, [Rect::new(1, 1, 4, 2), Rect::new(1, 4, 4, 2), Rect::new(1, 7, 4, 2)]);
         // No room for the third.

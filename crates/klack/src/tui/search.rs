@@ -164,7 +164,7 @@ mod tests {
     /// A page as `search.messages` returns it (fields trimmed; paging values from a real
     /// query with 130 matches in #history-paging).
     fn page(page: u32, texts: &[(&str, &str)]) -> Value {
-        let matches: Vec<Value> = texts.iter().map(|(ts, text)| serde_json::json!({"channel":{"id":"C0CA5R2EX1Q","name":"history-paging"},"ts":ts,"user":"U0CA4NBE06N","text":text,"permalink":format!("https://rslack-testbed.slack.com/archives/C0CA5R2EX1Q/p{}", ts.replace('.', ""))})).collect();
+        let matches: Vec<Value> = texts.iter().map(|(ts, text)| serde_json::json!({"channel":{"id":"C0CA5R2EX1Q","name":"history-paging"},"ts":ts,"user":"U0BOB000001","text":text,"permalink":format!("https://testbed.slack.com/archives/C0CA5R2EX1Q/p{}", ts.replace('.', ""))})).collect();
         serde_json::json!({"ok":true,"messages":{"total":130,"matches":matches,"paging":{"count":50,"page":page,"pages":3,"total":130},"pagination":{"first":1,"last":50,"page":page,"page_count":3,"per_page":50,"total_count":130}}})
     }
 
