@@ -1005,7 +1005,7 @@ mod tests {
         let header = plain(&lines).into_iter().position(|l| l.contains("bob")).unwrap();
         assert!(plain(&lines)[header].starts_with("BO bob"), "the initials, under the picture: {:?}", plain(&lines)[header]);
         assert_eq!(slots.len(), 1, "grouped messages share one header and one picture");
-        assert_eq!((slots[0].line, slots[0].col, slots[0].size, slots[0].file.id.as_str()), (header, 0, (2, 1), "avatar:U2"));
+        assert_eq!((slots[0].line, slots[0].col, slots[0].size, slots[0].file.id.as_str()), (header, 0, (2, 1), "avatar:U2:x_48.png"));
         let (off, _, none) = build_lines_owned(&ws, &t, 40, false, &|_, _| None, Avatars::Off);
         assert!(none.is_empty());
         assert!(plain(&off).iter().any(|l| l.starts_with("bob")), "turned off: nothing before the name");
@@ -1222,7 +1222,7 @@ mod tests {
         assert_eq!(lines[header + 1].spans[0].style.bg, Some(text::user_color("U2")), "the initials' second row");
         assert_eq!(p[header + 2], "     more");
         assert!(p[header + 3].starts_with("     two"), "grouped messages indented the same: {p:?}");
-        assert_eq!((slots[0].line, slots[0].col, slots[0].size, slots[0].file.id.as_str()), (header, 0, (4, 2), "avatar:U2@192"));
+        assert_eq!((slots[0].line, slots[0].col, slots[0].size, slots[0].file.id.as_str()), (header, 0, (4, 2), "avatar:U2@192:x_192.png"));
         assert_eq!((slots[1].file.id.as_str(), slots[1].col), ("F1", 5), "thumbnails move with the text");
         // No text at all: a row is kept for the picture's second half.
         let mut t = Timeline { loaded: true, ..Default::default() };

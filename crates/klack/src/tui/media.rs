@@ -69,7 +69,8 @@ pub fn message_avatar(ws: &super::state::Workspace, m: &slack_core::types::Messa
 }
 
 /// A picture as a pseudo file for the thumbnail cache: only from Slack's CDN (a Gravatar URL's
-/// `d=` fallback is Slack's default picture), never an SVG (it cannot be decoded).
+/// `d=` fallback is Slack's default picture), never an SVG (it cannot be decoded). The id ends
+/// with the picture's file name, so a changed picture (a new URL) is loaded afresh.
 fn picture_file(id: String, source: &str) -> Option<File> {
     let url = slack_core::reqwest::Url::parse(source).ok()?;
     let slack_hosted = |u: &slack_core::reqwest::Url| u.scheme() == "https" && u.host_str().is_some_and(|h| h == "slack-edge.com" || h.ends_with(".slack-edge.com"));
@@ -82,6 +83,8 @@ fn picture_file(id: String, source: &str) -> Option<File> {
     if url.path().ends_with(".svg") {
         return None;
     }
+    let name = url.path_segments().and_then(|mut s| s.next_back()).unwrap_or_default();
+    let id = format!("{id}:{name}");
     Some(File { id, mimetype: "image/png".into(), thumb_360: Some(url.to_string()), ..Default::default() })
 }
 
@@ -485,7 +488,7 @@ mod tests {
             u
         };
         let own = avatar_file(&user("https://avatars.slack-edge.com/2026-10-18/1_48.png")).unwrap();
-        assert_eq!((own.id.as_str(), own.thumb_360.as_deref()), ("avatar:U1", Some("https://avatars.slack-edge.com/2026-10-18/1_48.png")));
+        assert_eq!((own.id.as_str(), own.thumb_360.as_deref()), ("avatar:U1:1_48.png", Some("https://avatars.slack-edge.com/2026-10-18/1_48.png")));
         // Real default: a Gravatar URL with Slack's picture as the fallback.
         let gravatar = "https://secure.gravatar.com/avatar/9aca10.jpg?s=48&d=https%3A%2F%2Fa.slack-edge.com%2Fdf10d%2Fimg%2Favatars%2Fava_0010-48.png";
         assert_eq!(avatar_file(&user(gravatar)).unwrap().thumb_360.as_deref(), Some("https://a.slack-edge.com/df10d/img/avatars/ava_0010-48.png"));
@@ -495,9 +498,12 @@ mod tests {
         assert!(avatar_file(&user("https://a.slack-edge.com/9cc0056/img/avatars/slack_system_user/slack_logo_mark.svg")).is_none(), "SVG (the Slack system user's): initials instead");
         // The large picture has its own cache id; without one the small picture is used.
         let mut u = user("https://avatars.slack-edge.com/2026-10-18/1_48.png");
-        assert_eq!(avatar_file_sized(&u, true).unwrap().id, "avatar:U1@192");
+        assert_eq!(avatar_file_sized(&u, true).unwrap().id, "avatar:U1@192:1_48.png");
         u.profile.image_192 = Some("https://avatars.slack-edge.com/2026-10-18/1_192.png".into());
         assert_eq!(avatar_file_sized(&u, true).unwrap().thumb_360.as_deref(), Some("https://avatars.slack-edge.com/2026-10-18/1_192.png"));
+        // A new picture is a new URL, so a new cache entry (not the old picture).
+        let changed = avatar_file(&user("https://avatars.slack-edge.com/2026-10-19/2_48.png")).unwrap();
+        assert_ne!(changed.id, own.id);
     }
 
     #[test]
@@ -521,7 +527,7 @@ mod tests {
         // An app's message (bot_profile, as Slack documents it) and a webhook post (icons).
         let app = bot(serde_json::json!({"ts": "1.0", "subtype": "bot_message", "bot_id": "B1", "bot_profile": {"id": "B1", "name": "deploys", "icons": {"image_36": "https://avatars.slack-edge.com/b_36.png", "image_48": "https://avatars.slack-edge.com/b_48.png", "image_72": "https://avatars.slack-edge.com/b_72.png"}}}));
         let small = message_avatar(&ws, &app, false).unwrap();
-        assert_eq!((small.id.as_str(), small.thumb_360.as_deref()), ("avatar:bot:B1", Some("https://avatars.slack-edge.com/b_48.png")));
+        assert_eq!((small.id.as_str(), small.thumb_360.as_deref()), ("avatar:bot:B1:b_48.png", Some("https://avatars.slack-edge.com/b_48.png")));
         assert_eq!(message_avatar(&ws, &app, true).unwrap().thumb_360.as_deref(), Some("https://avatars.slack-edge.com/b_72.png"), "the larger icon for two-row pictures");
         let hook = bot(serde_json::json!({"ts": "2.0", "subtype": "bot_message", "bot_id": "B2", "username": "ci", "icons": {"image_48": "https://avatars.slack-edge.com/h_48.png"}}));
         assert_eq!(message_avatar(&ws, &hook, false).unwrap().thumb_360.as_deref(), Some("https://avatars.slack-edge.com/h_48.png"));
