@@ -67,7 +67,8 @@ messages in the middle with a reply pane for threads on the right (in a narrow t
 takes the messages' place until you close it), the composer below, and a status
 line at the bottom: on the left a pill saying which mode you are in (NORMAL, INSERT, or the open
 dialog: JUMP, SEARCH, PREFS, …), then the unread and mention counts, other workspaces, your
-availability and `● live` while connected — a note or a ringing huddle takes their place; on the right
+status, and a dot for your presence as in Slack (green `● active`, dim `○ away`; "connecting…" after it while
+the connection is down) — a note or a ringing huddle takes their place; on the right
 the keys of a sequence under way (`␣h`, `^␣h` for Ctrl+Space) and the hints of where you are, ending
 in `? help` (`↑/↓ move · Enter thread · i type · ␣ actions · ? help`). A thumb on a pane's right border shows where you are when it scrolls. A conversation
 opened with unread messages has a red "new" line above the first of them; while you read further

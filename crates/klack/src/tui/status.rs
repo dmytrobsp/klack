@@ -21,10 +21,13 @@ pub struct Info {
     pub mentions: u64,
     /// The other workspaces' note (" · Alt+2 @3"), empty when all is read.
     pub others: String,
-    /// Your availability ("away", a status), empty when none.
+    /// Your status and paused notifications ("☕ lunch · 🔕 until 09:00"), empty when none.
     pub availability: String,
     /// Notifications are paused (the short forms keep the bell).
     pub paused: bool,
+    /// You appear away (the dot is dim).
+    pub away: bool,
+    /// Connected; while not, the info says "connecting…".
     pub live: bool,
     /// A status message or the ringing text; takes the info's place.
     pub note: Option<String>,
@@ -60,7 +63,7 @@ pub fn cut(s: &str, room: usize) -> String {
 struct Shape {
     /// The whole mode name, not its first letter.
     full_pill: bool,
-    /// 0 whole, 1 short (`3 · @1 ●`), 2 only the dot.
+    /// 0 whole, 1 short (`3 · @1 ●`), 2 only the dot (your presence).
     info: u8,
     /// How many of the last hints stay.
     hints: usize,
@@ -87,20 +90,27 @@ fn info_spans(info: &Info, level: u8, note_room: Option<usize>) -> Vec<Span<'sta
         };
         return vec![Span::raw(text)];
     }
-    let live = if info.live { Span::styled(if level == 0 { "● live" } else { "●" }, Style::default().fg(p.good)) } else { Span::styled(if level == 0 { "○ connecting" } else { "○" }, dim) };
-    match level {
+    // Your presence as in Slack: green active, dim away (paused notifications are the 🔕).
+    let label = if level > 0 { "" } else if info.away { " away" } else { " active" };
+    let dot = if info.away { Span::styled(format!("○{label}"), dim) } else { Span::styled(format!("●{label}"), Style::default().fg(p.good)) };
+    let mut out = match level {
         0 => {
             let mut text = format!("{} unread · {} mention{}{}", info.unread, info.mentions, if info.mentions == 1 { "" } else { "s" }, info.others);
             if !info.availability.is_empty() {
                 text.push_str(&format!(" · {}", info.availability));
             }
             text.push_str(" · ");
-            vec![Span::raw(text), live]
+            vec![Span::raw(text), dot]
         }
-        1 => vec![Span::raw(format!("{} · @{} {}", info.unread, info.mentions, if info.paused { "🔕 " } else { "" })), live],
-        _ if info.paused => vec![Span::raw("🔕 "), live],
-        _ => vec![live],
+        1 => vec![Span::raw(format!("{} · @{} {}", info.unread, info.mentions, if info.paused { "🔕 " } else { "" })), dot],
+        _ if info.paused => vec![Span::raw("🔕 "), dot],
+        _ => vec![dot],
+    };
+    // The connection shows only while it is down.
+    if !info.live && level < 2 {
+        out.push(Span::styled(if level == 0 { " · connecting…" } else { " connecting…" }, dim));
     }
+    out
 }
 
 fn right_spans(showcmd: &str, hints: &[(String, String)], key_only: bool) -> Vec<Span<'static>> {
@@ -212,7 +222,7 @@ mod tests {
     fn wide_shows_everything() {
         let s = at(110);
         assert!(s.starts_with(" NORMAL "), "{s:?}");
-        assert!(s.contains(" 3 unread · 1 mention · ● live"), "{s:?}");
+        assert!(s.contains(" 3 unread · 1 mention · ● active"), "{s:?}");
         assert!(s.ends_with("↑/↓ move · Enter thread · i type · ␣ actions · ? help "), "{s:?}");
         assert!(s.contains("␣ ↑/↓ move"), "the showcmd comes first on the right: {s:?}");
     }
@@ -287,10 +297,30 @@ mod tests {
 
     #[test]
     fn connecting_and_the_extras() {
-        let i = Info { live: false, others: " · Alt+2 @3".into(), availability: "away".into(), ..info() };
+        let i = Info { live: false, others: " · Alt+2 @3".into(), availability: "☕ lunch".into(), away: true, ..info() };
         let s = plain(&line(Pill::Insert, &i, "", &[], 100));
-        assert!(s.starts_with(" INSERT ") && s.contains("3 unread · 1 mention · Alt+2 @3 · away · ○ connecting"), "{s:?}");
+        assert!(s.starts_with(" INSERT ") && s.contains("3 unread · 1 mention · Alt+2 @3 · ☕ lunch · ○ away · connecting…"), "{s:?}");
+        let short = plain(&line(Pill::Insert, &Info { availability: String::new(), ..i.clone() }, "", &hints(), 80));
+        assert!(short.contains("3 · @1 ○ connecting…"), "{short:?}");
+        let up = plain(&line(Pill::Insert, &info(), "", &[], 100));
+        assert!(!up.contains("connecting") && !up.contains("live"), "connected says nothing: {up:?}");
         let two = Info { mentions: 2, ..info() };
         assert!(plain(&line(Pill::Normal, &two, "", &[], 100)).contains("2 mentions"));
+    }
+
+    #[test]
+    fn the_dot_is_your_presence() {
+        let p = crate::tui::theme::p();
+        let away = Info { away: true, ..info() };
+        let dot = |i: &Info, w| line(Pill::Normal, i, "␣", &hints(), w).spans.into_iter().find(|s| s.content.starts_with('●') || s.content.starts_with('○')).unwrap();
+        let wide = plain(&line(Pill::Normal, &away, "␣", &hints(), 110));
+        assert!(wide.contains("3 unread · 1 mention · ○ away") && !wide.contains('●'), "{wide:?}");
+        for w in [110, 80, 24] {
+            assert!(dot(&away, w).content.starts_with('○') && dot(&away, w).style.fg == Some(p.dim), "away at {w}: {:?}", dot(&away, w));
+            assert!(dot(&info(), w).content.starts_with('●') && dot(&info(), w).style.fg == Some(p.good), "active at {w}");
+        }
+        assert!(plain(&line(Pill::Normal, &away, "␣", &hints(), 80)).contains("3 · @1 ○"));
+        let offline = Info { live: false, ..info() };
+        assert!(dot(&offline, 80).content.starts_with('●'), "the connection doesn't dim your presence");
     }
 }

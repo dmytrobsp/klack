@@ -296,9 +296,14 @@ fn clears_note(resolved: &Resolved, in_sequence: bool) -> bool {
     }
 }
 
+/// Whether a command key drops `status`: not while its work goes on ("uploading x…").
+fn note_clears(status: &str) -> bool {
+    !status.ends_with('…')
+}
+
 /// Whether a status shown for `age` should go.
 fn status_expired(status: &str, age: Duration) -> bool {
-    !status.is_empty() && !status.ends_with('…') && age >= STATUS_TTL
+    !status.is_empty() && note_clears(status) && age >= STATUS_TTL
 }
 
 impl App {
@@ -2316,8 +2321,12 @@ impl App {
         self.keys.resolve(&self.active_contexts(), self.mode(), self.pending.keys(), Key::from_event(k))
     }
 
-    /// Drop the status bar's message (a command key was pressed). The ringing invitation is not a note.
+    /// Drop the status bar's message (a command key was pressed), unless work it names goes on.
+    /// The ringing invitation is not a note.
     fn clear_note(&mut self) {
+        if !note_clears(&self.status) {
+            return;
+        }
         self.status.clear();
         self.status_shown.0.clear();
     }
@@ -4756,6 +4765,7 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         others: super::others::label(&app.others.lock().unwrap_or_else(|e| e.into_inner()), app.workspace),
         availability: super::profile::availability(&app.ws, chrono::Utc::now().timestamp()),
         paused: app.ws.dnd.active(chrono::Utc::now().timestamp() as f64),
+        away: app.ws.presence.get(&app.ws.self_id) == Some(&false),
         live: app.connected,
         note,
     };
@@ -5078,6 +5088,9 @@ mod tests {
         assert!(clears_note(&Resolved::Pending, false), "the leader");
         assert!(clears_note(&Resolved::None, true), "ends a sequence with its own note");
         assert!(!clears_note(&Resolved::None, false), "typing");
+        use super::note_clears;
+        assert!(note_clears("left #general") && note_clears(""));
+        assert!(!note_clears("uploading notes.txt…") && !note_clears("posting notes…"), "work still going on keeps its note");
     }
 
     #[test]
