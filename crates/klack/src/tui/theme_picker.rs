@@ -23,6 +23,8 @@ pub struct ThemePicker {
     pub problem: Option<String>,
     /// Last drawn area, for clicks.
     pub area: Rect,
+    /// The theme rows at the last draw (the first is the first shown theme).
+    pub list: Rect,
 }
 
 impl ThemePicker {
@@ -48,6 +50,12 @@ impl ThemePicker {
         if n > 0 {
             self.selected = (self.selected as isize + delta).clamp(0, n as isize - 1) as usize;
         }
+    }
+
+    /// The theme drawn at a terminal position.
+    pub fn row_at(&self, column: u16, row: u16) -> Option<usize> {
+        let n = row.checked_sub(self.list.y)? as usize;
+        (self.list.contains((column, row).into()) && n < self.shown().len()).then_some(n)
     }
 
     pub fn type_char(&mut self, c: char) {
@@ -103,6 +111,7 @@ impl ThemePicker {
             .title_bottom(Line::styled(format!(" {} ", super::i18n::tr("type to filter")), Style::default().fg(p.dim)).right_aligned());
         let inner = block.inner(popup);
         f.render_widget(Paragraph::new(lines).block(block), popup);
+        self.list = Rect { y: inner.y + 2, height: inner.height.saturating_sub(2).min(shown.len() as u16), ..inner };
         f.set_cursor_position((inner.x + 3 + self.filter.chars().count() as u16, inner.y));
     }
 }
@@ -113,6 +122,16 @@ mod tests {
 
     fn names() -> Vec<String> {
         ["dark", "light", "terminal", "sunset"].map(String::from).into()
+    }
+
+    #[test]
+    fn a_click_maps_to_the_theme_drawn_there() {
+        let mut p = ThemePicker::new(false, names(), None);
+        p.list = Rect::new(21, 12, 38, 4);
+        assert_eq!((p.row_at(22, 12), p.row_at(22, 15)), (Some(0), Some(3)));
+        assert_eq!((p.row_at(22, 11), p.row_at(22, 16), p.row_at(20, 12)), (None, None, None), "filter line, below, side");
+        p.type_char('e');
+        assert_eq!((p.row_at(22, 13), p.row_at(22, 14)), (Some(1), None), "terminal and sunset match; only those are rows");
     }
 
     #[test]

@@ -568,6 +568,10 @@ pub struct Prefs {
     pub picker: Option<super::theme_picker::ThemePicker>,
     /// Last drawn area, for clicks.
     pub area: Rect,
+    /// The category column and the settings' rows at the last draw, and how many rows are shown.
+    pub cats: Rect,
+    pub list: Rect,
+    pub shown: usize,
 }
 
 impl Prefs {
@@ -605,6 +609,18 @@ impl Prefs {
         self.category = (self.category as isize + delta).rem_euclid(CATEGORIES.len() as isize + 1) as usize;
         self.set_filter(String::new());
         self.filter_focused = false;
+    }
+
+    /// The category drawn at a terminal position.
+    pub fn category_at(&self, column: u16, row: u16) -> Option<usize> {
+        let n = row.checked_sub(self.cats.y)? as usize;
+        (self.cats.contains((column, row).into()) && n <= CATEGORIES.len()).then_some(n)
+    }
+
+    /// The row (an index into `fields`, a group's header too) drawn at a terminal position.
+    pub fn row_at(&self, column: u16, row: u16) -> Option<usize> {
+        let n = row.checked_sub(self.list.y)? as usize;
+        (self.list.contains((column, row).into()) && n < self.shown).then_some(self.scroll + n)
     }
 
     pub fn selected_field(&self, keys: &Keymap) -> Option<Field> {
@@ -838,6 +854,7 @@ impl Prefs {
             })
             .collect();
         f.render_widget(Paragraph::new(cats), left);
+        self.cats = left;
         use unicode_width::UnicodeWidthStr;
         let tr = super::i18n::tr;
         let (good, dim) = (Style::default().fg(super::theme::p().good), Style::default().fg(super::theme::p().dim));
@@ -932,8 +949,10 @@ impl Prefs {
             _ => &[],
         };
         let shown = rows.len() as u16;
+        let rows_shown = rows.len();
         f.render_widget(Paragraph::new(rows), list_area);
         let list = Rect { height: (room as u16).min(list_area.height), ..list_area };
+        (self.list, self.shown) = (list, rows_shown);
         super::scroll::indicator_beside(f, popup, list, self.scroll, room, fields.len(), Style::default().fg(super::theme::p().accent));
         // The hints under a blank row, wrapped at words and indented like the rows.
         let below = Rect { x: right.x + 1, y: list_area.y + shown + 1, width: right.width.saturating_sub(1), height: list_area.height.saturating_sub(shown + 1) };
@@ -1148,6 +1167,31 @@ mod tests {
         assert_eq!(p.change(&mut ws, None, &Keymap::default()), Some(SlackChange::Command("/status :coffee: break for 30m".into())));
         p.editing = Some("  ".into());
         assert_eq!(p.change(&mut ws, None, &Keymap::default()), Some(SlackChange::Command("/status clear".into())));
+    }
+
+    #[test]
+    fn clicks_map_to_categories_and_rows() {
+        // Categories in the column at x 10..32 from y 5; settings rows from y 5 (Keys: from y 6).
+        let mut p = Prefs { cats: Rect::new(10, 5, 22, 20), list: Rect::new(32, 5, 60, 15), shown: 4, scroll: 3, ..Default::default() };
+        assert_eq!((p.category_at(11, 5), p.category_at(11, 7)), (Some(0), Some(2)));
+        assert_eq!(p.category_at(11, 5 + CATEGORIES.len() as u16), Some(CATEGORIES.len()), "Keys, the last");
+        assert_eq!(p.category_at(11, 6 + CATEGORIES.len() as u16), None, "below the last");
+        assert_eq!((p.category_at(11, 4), p.category_at(9, 5), p.category_at(32, 5)), (None, None, None), "border, side, other column");
+        assert_eq!((p.row_at(33, 5), p.row_at(33, 8)), (Some(3), Some(6)), "the scroll offset counts");
+        assert_eq!(p.row_at(33, 9), None, "below the last shown row");
+        assert_eq!((p.row_at(33, 4), p.row_at(31, 5)), (None, None), "above the list, in the category column");
+        // Keys: the filter line above the list; a group's header is a row of its own.
+        p.category = CATEGORIES.len();
+        p.list = Rect::new(32, 6, 60, 14);
+        p.scroll = 0;
+        p.shown = 3;
+        let keys = Keymap::default();
+        let header = p.fields(&keys).iter().position(|f| matches!(f, Field::GroupHeader(_))).unwrap();
+        p.shown = header + 1;
+        assert_eq!(p.row_at(40, 5), None, "the filter line");
+        assert_eq!(p.row_at(40, 6), Some(0));
+        let n = p.row_at(40, 6 + header as u16).unwrap();
+        assert!(matches!(p.fields(&keys)[n], Field::GroupHeader(_)), "a header maps to its field");
     }
 
     #[test]

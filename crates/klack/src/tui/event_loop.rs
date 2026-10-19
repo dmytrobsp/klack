@@ -1325,6 +1325,31 @@ impl App {
         self.composer_for(c.thread).complete(c.start, &format!("{}{space}", s.replacement), s.id.as_deref());
     }
 
+    /// Close the search and open its selected hit (Enter, or a click on it).
+    fn open_search_hit(&mut self) {
+        let Some(hit) = self.search.as_ref().and_then(|s| s.hits.get(s.selected).cloned()) else { return };
+        self.search = None;
+        self.open_hit(hit);
+    }
+
+    /// Close the threads list and open its selected thread (Enter, or a click on it).
+    fn open_thread_item(&mut self) {
+        let Some((channel, ts, thread_ts)) = self.threads.as_ref().and_then(|t| t.target()) else { return };
+        self.threads = None;
+        self.open_hit(super::search::Hit { channel, ts, thread_ts, user: None, text: String::new() });
+    }
+
+    /// Mark the activity list's selected item seen, close the list and open the item (Enter, or a click on it).
+    fn open_activity_item(&mut self) {
+        let Some(a) = self.activity.as_ref() else { return };
+        if let Some(key) = a.selected_item().map(|it| it.key.clone()) {
+            self.seen.insert(key, opened_now());
+        }
+        let Some((channel, ts, thread_ts)) = a.target() else { return };
+        self.activity = None;
+        self.open_hit(super::search::Hit { channel, ts, thread_ts, user: None, text: String::new() });
+    }
+
     /// Run the search overlay's query, or open its highlighted hit if the query is unchanged.
     fn search_enter(&mut self) {
         let Some(search) = self.search.as_mut() else { return };
@@ -1333,10 +1358,7 @@ impl App {
             return;
         }
         if query == search.searched && !search.busy {
-            if let Some(hit) = search.hits.get(search.selected).cloned() {
-                self.search = None;
-                self.open_hit(hit);
-            }
+            self.open_search_hit();
             return;
         }
         search.busy = true;
@@ -1732,25 +1754,17 @@ impl App {
     /// A key in the theme picker: typing filters, moving shows the theme at once, Enter keeps
     /// it (saved), Esc goes back to the theme before.
     fn theme_picker_key(&mut self, k: &crossterm::event::KeyEvent) {
-        use super::theme_picker::COLOUR_THEME;
         let action = self.action_in(Context::Switcher, k);
         let Some(p) = self.prefs.as_mut() else { return };
         let Some(picker) = p.picker.as_mut() else { return };
-        let appearance = &mut self.ws.settings.appearance;
         match action {
             Some(Action::Close) => p.picker = None,
             Some(Action::Up) => picker.move_by(-1),
             Some(Action::Down) => picker.move_by(1),
             Some(Action::Erase) => picker.erase(),
             Some(Action::Open) => {
-                let Some(name) = picker.highlighted().filter(|_| picker.problem.is_none()).map(String::from) else { return };
-                match (picker.workspace, name.as_str()) {
-                    (true, COLOUR_THEME) => drop(appearance.workspace_themes.remove(&self.ws.team_id)),
-                    (true, _) => drop(appearance.workspace_themes.insert(self.ws.team_id.clone(), name)),
-                    (false, _) => appearance.theme = name,
-                }
-                p.picker = None;
-                p.saved = Some(super::settings::save(&self.ws.settings).map(|path| path.display().to_string()));
+                self.keep_theme();
+                return;
             }
             _ => match (k.code, Key::from_event(k).is_text()) {
                 (KeyCode::Char(c), true) => picker.type_char(c),
@@ -1762,6 +1776,68 @@ impl App {
             // Closed: the theme in force for this workspace.
             None => drop(super::theme::set(self.ws.settings.appearance.theme_for(&self.ws.team_id))),
         }
+    }
+
+    /// Enter (or a second click) in the theme picker: keep the highlighted theme and save it.
+    fn keep_theme(&mut self) {
+        use super::theme_picker::COLOUR_THEME;
+        let Some(p) = self.prefs.as_mut() else { return };
+        let Some(picker) = p.picker.as_mut() else { return };
+        let Some(name) = picker.highlighted().filter(|_| picker.problem.is_none()).map(String::from) else { return };
+        let appearance = &mut self.ws.settings.appearance;
+        match (picker.workspace, name.as_str()) {
+            (true, COLOUR_THEME) => drop(appearance.workspace_themes.remove(&self.ws.team_id)),
+            (true, _) => drop(appearance.workspace_themes.insert(self.ws.team_id.clone(), name)),
+            (false, _) => appearance.theme = name,
+        }
+        p.picker = None;
+        p.saved = Some(super::settings::save(&self.ws.settings).map(|path| path.display().to_string()));
+        // Closed: the theme in force for this workspace.
+        drop(super::theme::set(self.ws.settings.appearance.theme_for(&self.ws.team_id)));
+    }
+
+    /// A left click in the open preferences (false: not on anything here). A category switches to
+    /// it; a row is selected, and the selected one acts as Enter; the theme picker's rows are
+    /// selected (shown at once) and the highlighted one is kept. A click while recording does
+    /// nothing; one off the field being typed in ends the typing, like Esc.
+    fn click_prefs(&mut self, column: u16, row: u16) -> bool {
+        let Some(p) = self.prefs.as_mut() else { return false };
+        if let Some(picker) = p.picker.as_mut() {
+            let Some(n) = picker.row_at(column, row) else { return false };
+            if n == picker.selected {
+                self.keep_theme();
+            } else {
+                picker.selected = n;
+                picker.preview(&self.ws.settings.appearance.theme);
+            }
+            return true;
+        }
+        if !p.area.contains((column, row).into()) {
+            return false;
+        }
+        if p.recording.is_some() {
+            return true;
+        }
+        let row_hit = p.row_at(column, row);
+        if p.editing.is_some() {
+            if row_hit != Some(p.selected) {
+                (p.editing, p.editing_icon) = (None, false);
+            }
+            return true;
+        }
+        if let Some(n) = p.category_at(column, row) {
+            if n != p.category {
+                p.switch_category(n as isize - p.category as isize);
+            }
+        } else if let Some(n) = row_hit {
+            p.filter_focused = false;
+            if n == p.selected {
+                self.change_preference();
+            } else {
+                p.selected = n;
+            }
+        }
+        true
     }
 
     /// Enter in the preferences: change a local setting (and save the file) or send a
@@ -3295,15 +3371,7 @@ fn handle_dialog(app: &mut App, ev: &Event) -> bool {
                 Some(Action::PageUp) => a.move_by(-(a.height.max(1) as isize)),
                 Some(Action::PageDown) => a.move_by(a.height.max(1) as isize),
                 Some(Action::Refresh) => app.open_activity(),
-                Some(Action::Open) => {
-                    if let Some(key) = a.selected_item().map(|it| it.key.clone()) {
-                        app.seen.insert(key, opened_now());
-                    }
-                    if let Some((channel, ts, thread_ts)) = a.target() {
-                        app.activity = None;
-                        app.open_hit(super::search::Hit { channel, ts, thread_ts, user: None, text: String::new() });
-                    }
-                }
+                Some(Action::Open) => app.open_activity_item(),
                 _ => {}
             }
         }
@@ -3317,12 +3385,7 @@ fn handle_dialog(app: &mut App, ev: &Event) -> bool {
                 Some(Action::PageUp) => t.move_by(-(t.height.max(1) as isize)),
                 Some(Action::PageDown) => t.move_by(t.height.max(1) as isize),
                 Some(Action::Refresh) => app.load_threads(false),
-                Some(Action::Open) => {
-                    if let Some((channel, ts, thread_ts)) = t.target() {
-                        app.threads = None;
-                        app.open_hit(super::search::Hit { channel, ts, thread_ts, user: None, text: String::new() });
-                    }
-                }
+                Some(Action::Open) => app.open_thread_item(),
                 _ => {}
             }
             // At the end of the list: the next page.
@@ -3478,8 +3541,9 @@ fn handle_dialog(app: &mut App, ev: &Event) -> bool {
         Event::Mouse(m) if matches!(m.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown) => {
             app.wheel_in_popup(m.kind == MouseEventKind::ScrollDown);
         }
-        // A click on a row of jump to, search, threads or activity picks it, as Enter does.
-        Event::Mouse(m) if m.kind == MouseEventKind::Down(MouseButton::Left) && click_row(app, m.column, m.row) => {}
+        // A click in the preferences, or on a row of jump to, activity, threads or search, as Enter does.
+        Event::Mouse(m) if m.kind == MouseEventKind::Down(MouseButton::Left) && app.prefs.is_some() && app.click_prefs(m.column, m.row) => {}
+        Event::Mouse(m) if m.kind == MouseEventKind::Down(MouseButton::Left) && app.prefs.is_none() && click_row(app, m.column, m.row) => {}
         // A click outside the dialog closes it; one inside does nothing.
         Event::Mouse(m) if matches!(m.kind, MouseEventKind::Down(_)) => {
             if !app.dialog_area().is_some_and(|a| a.contains((m.column, m.row).into())) {
@@ -3491,37 +3555,25 @@ fn handle_dialog(app: &mut App, ev: &Event) -> bool {
     true
 }
 
-/// A left click at a position on a row of the topmost jump to / search / threads / activity
+/// A left click at a position on a row of the topmost jump to / activity / threads / search
 /// list: selects it and does what Enter does. False when no such list has a row there.
 fn click_row(app: &mut App, column: u16, row: u16) -> bool {
     if let Some(sw) = app.switcher.as_mut() {
         let Some(n) = sw.row_at(column, row) else { return false };
         sw.selected = n;
         app.switch();
-    } else if let Some(search) = app.search.as_mut() {
-        let Some(n) = search.row_at(column, row) else { return false };
-        search.selected = n;
-        if let Some(hit) = search.hits.get(n).cloned() {
-            app.search = None;
-            app.open_hit(hit);
-        }
-    } else if let Some(t) = app.threads.as_mut() {
-        let Some(n) = t.row_at(column, row) else { return false };
-        t.selected = n;
-        if let Some((channel, ts, thread_ts)) = t.target() {
-            app.threads = None;
-            app.open_hit(super::search::Hit { channel, ts, thread_ts, user: None, text: String::new() });
-        }
     } else if let Some(a) = app.activity.as_mut() {
         let Some(n) = a.row_at(column, row) else { return false };
         a.selected = n;
-        if let Some(key) = a.selected_item().map(|it| it.key.clone()) {
-            app.seen.insert(key, opened_now());
-        }
-        if let Some((channel, ts, thread_ts)) = a.target() {
-            app.activity = None;
-            app.open_hit(super::search::Hit { channel, ts, thread_ts, user: None, text: String::new() });
-        }
+        app.open_activity_item();
+    } else if let Some(t) = app.threads.as_mut() {
+        let Some(n) = t.row_at(column, row) else { return false };
+        t.selected = n;
+        app.open_thread_item();
+    } else if let Some(search) = app.search.as_mut() {
+        let Some(n) = search.row_at(column, row) else { return false };
+        search.selected = n;
+        app.open_search_hit();
     } else {
         return false;
     }
