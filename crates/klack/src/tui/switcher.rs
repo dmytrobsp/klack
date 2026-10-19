@@ -79,7 +79,7 @@ impl Switcher {
 }
 
 /// Conversations in the sidebar, plus channels we are not in and people without a DM when
-/// searching; ranked against `query` (unread first when the query is empty). A query
+/// searching; ranked against `query` (unread first when the query is empty), then by activity. A query
 /// starting with `#` lists channels only, so `#` alone browses every channel.
 pub fn entries(ws: &Workspace, query: &str) -> Vec<Entry> {
     let channels_only = query.trim_start().starts_with('#');
@@ -115,7 +115,12 @@ pub fn entries(ws: &Workspace, query: &str) -> Vec<Entry> {
             }
         }
     }
-    out.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.label.to_lowercase().cmp(&b.1.label.to_lowercase())));
+    // As good a match: the most recently active first (as the sidebar lists DMs), then by name.
+    let active = |e: &Entry| match &e.target {
+        Target::Conversation(id) => ws.activity(id),
+        Target::User(_) => 0.0,
+    };
+    out.sort_by(|a, b| a.0.cmp(&b.0).then(active(&b.1).total_cmp(&active(&a.1))).then(a.1.label.to_lowercase().cmp(&b.1.label.to_lowercase())));
     out.into_iter().map(|(_, e)| e).take(MAX).collect()
 }
 
@@ -134,6 +139,21 @@ mod tests {
         w.conversations.insert("D1".into(), Conversation { id: "D1".into(), is_im: true, user: Some("U2".into()), ..Default::default() });
         w.unread.insert("C2".into(), super::super::state::Unread { has_unreads: true, mentions: 0 });
         w
+    }
+
+    #[test]
+    fn most_recently_active_first() {
+        let mut w = ws();
+        w.unread.clear();
+        w.conversations.insert("C3".into(), Conversation { id: "C3".into(), name: "general-chat".into(), is_channel: true, is_member: true, ..Default::default() });
+        w.note_activity("C1", 100.0);
+        w.note_activity("D1", 300.0);
+        w.note_activity("C3", 200.0);
+        let labels = |w: &Workspace, q: &str| entries(w, q).into_iter().map(|e| e.label).collect::<Vec<_>>();
+        assert_eq!(labels(&w, ""), ["bob", "#general-chat", "#general", "#random"], "by activity, never-active ones by name at the end");
+        assert_eq!(labels(&w, "gen"), ["#general-chat", "#general"], "as good a match: the more recent first");
+        w.unread.insert("C2".into(), super::super::state::Unread { has_unreads: true, mentions: 0 });
+        assert_eq!(labels(&w, "")[0], "#random", "unread still first");
     }
 
     #[test]

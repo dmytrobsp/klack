@@ -121,7 +121,7 @@ workspace account in `drafts/<team>-<user>.json` under the local data folder
 | Key | |
 |---|---|
 | Tab / Shift+Tab | move between sidebar, messages, composer, thread, reply box |
-| Alt+↑ / Alt+↓, Ctrl+K | previous / next conversation, jump to any conversation or person (`#` lists every channel, including ones you are not in) |
+| Alt+↑ / Alt+↓, Ctrl+K | previous / next conversation, jump to any conversation or person — unread first, then the most recently active (`#` lists every channel, including ones you are not in) |
 | Ctrl+F | search messages (more results load as you move down the list) |
 | mouse | click to select, wheel to scroll (also the help and the preferences; in lists like Ctrl+K, Ctrl+T, F5 and search it moves the selection), hover shading, right-click for a context menu (messages, sidebar entries); a thumb on a pane's right border shows where you are when it scrolls |
 | F5 | activity: mentions, reactions to your messages, thread replies |
