@@ -88,7 +88,7 @@ User: "<leader>f# is inconvenient, default keymap for "browse channels" should b
 shortcut that clears compose box".
 
 - [ ] Tests: `␣fc` → BrowseChannels (`␣f#` gone); composer action `clear` ("clear the box"), defaults `<leader> x` and
-  `<leader> backspace` (so Ctrl+Space x or Ctrl+Space Backspace while typing — the second asked by the user); clearing pushes the text to the sent-text history so ↑ brings it back; an edit in
+  `<leader> backspace` (so Ctrl+Space x or Ctrl+Space Backspace while typing — the second asked by the user); clearing is final — no recovery (user, 2026-10-20), ↑ in the empty box keeps "edit your last message"; an edit in
   progress is cancelled like Esc instead (never clears someone's edit silently) — Claude's calls.
 - [ ] Close (V11).
 
