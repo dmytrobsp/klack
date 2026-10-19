@@ -282,6 +282,13 @@ V. After U, asked by the user on 2026-10-19: features that have no UI yet — mu
    own reactions on the message first, clearly marked so they are easy to remove, then other people's, then the
    rest; there is no way to see who added which reaction (e.g. the picker's top lists the message's reactions with
    their people: `👍 2 · you, alice`). (The menu not running items on their shown key is fixed in U7.)
+   Small leftovers from U's reviews (none blocks; pick up when touching the area): paste into dialog text fields
+   (Ctrl+K, search, picker, F6 fields) is dropped; the wheel does nothing over Details / profile / snippet / viewer;
+   which-key offers huddle actions with no call; the which-key page isn't reset when the prefix changes and the last
+   page's footer can be cut; F6 → Keys lists load warnings only after a save; a dangling symlinked keys.toml becomes
+   a plain file on save; with `insert_leader = ""` the ringing note shows no keys while typing; help rows wider than
+   the key column shift their label; Copy is hidden for messages whose text is only in blocks; the README could say
+   that a [global] binding now beats an equal pane default (Enter / Esc / Tab included, with a warning).
 
 T. Asked by the user on 2026-10-19 (roadmap): "1. app size. how big is it now and can we make it smaller? 2. app
    memory consumption. we have to measure it, stress-test it and see if we can lower the RAM usage 3. compose
