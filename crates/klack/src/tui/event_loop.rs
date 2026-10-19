@@ -168,6 +168,8 @@ struct App {
     prefs: Option<super::prefs::Prefs>,
     /// The huddle view (␣hv), shown in place of the messages while Some.
     huddle_view: Option<super::huddle_view::HuddleView>,
+    /// The huddle view while a thread stands in its place (narrow): it comes back when the thread closes.
+    parked_huddle: Option<super::huddle_view::HuddleView>,
     /// Where the call bar was drawn (a click toggles the huddle view).
     call_bar_area: ratatui::layout::Rect,
     /// A profile picture the call bar wants loaded.
@@ -349,6 +351,8 @@ impl App {
             }
             self.save_drafts();
             self.current = selected.clone();
+            // A saved thread is only reopened in the conversation it was saved for.
+            self.start = self.start.take().filter(|(c, _)| selected.as_ref() == Some(c));
             if let Some(id) = &selected {
                 self.sidebar.remember(id);
             }
@@ -1334,8 +1338,11 @@ impl App {
             self.save_drafts();
         }
         self.broadcast = false;
+        if self.call.is_some() && self.huddle_view.is_none() {
+            self.huddle_view = self.parked_huddle.take();
+        }
         if matches!(self.focus, Focus::Thread | Focus::ThreadComposer) {
-            self.focus = Focus::Messages;
+            self.focus = focus_after_thread(self.huddle_view.is_some());
         }
     }
 
@@ -1578,6 +1585,7 @@ impl App {
 
     /// Show the huddle view in place of the messages, or the messages again.
     fn toggle_huddle_view(&mut self) {
+        self.parked_huddle = None;
         if self.huddle_view.take().is_some() {
             self.focus = Focus::Messages;
         } else if self.call.is_some() {
@@ -3111,6 +3119,7 @@ async fn run_workspace(
         preview_polled: None,
         prefs: None,
         huddle_view: None,
+        parked_huddle: None,
         call_bar_area: Default::default(),
         call_bar_wanted: None,
         menu: None,
@@ -4399,8 +4408,10 @@ fn handle_net(app: &mut App, msg: Net) {
                 tl.upsert(m);
             }
             tl.loaded = true;
+            let before = app.focus;
             app.open_thread_at(channel, ts);
             app.leave_composer(true);
+            app.focus = focus_after_thread_back(before, app.focus);
         }
         Net::Posted { channel, message } => {
             super::live::add_message(&mut app.ws, &channel, &message);
@@ -4716,6 +4727,9 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     if app.call.is_none() || matches!(app.focus, Focus::Messages | Focus::Composer) {
         app.huddle_view = None;
     }
+    if app.call.is_none() || matches!(app.focus, Focus::Messages | Focus::Composer) {
+        app.parked_huddle = None;
+    }
     // Back to the messages, not into the message box (only you start typing).
     if app.huddle_view.is_none() && app.focus == Focus::Huddle {
         app.focus = Focus::Messages;
@@ -4753,8 +4767,11 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     if app.narrow && app.thread.is_some() {
         if matches!(app.focus, Focus::Messages | Focus::Composer) {
             app.close_thread();
-        } else if app.huddle_view.take().is_some() && app.focus == Focus::Huddle {
-            app.focus = Focus::Thread;
+        } else if let Some(view) = app.huddle_view.take() {
+            app.parked_huddle = Some(view);
+            if app.focus == Focus::Huddle {
+                app.focus = Focus::Thread;
+            }
         }
     }
     let (messages_area, thread_area) = split_main(main, app.thread.is_some());
@@ -5050,6 +5067,18 @@ fn attachment_close(area: Rect, i: usize) -> (u16, u16) {
     (inner.right().saturating_sub(2), inner.y + i as u16)
 }
 
+/// Where the focus goes when the thread closes: back to the huddle view when it is shown
+/// (it opened from there), else the messages.
+fn focus_after_thread(huddle_shown: bool) -> Focus {
+    if huddle_shown { Focus::Huddle } else { Focus::Messages }
+}
+
+/// The restored thread opens in the background: the focus moves to it only if you were
+/// still on the messages (not in the message box, the sidebar, …).
+fn focus_after_thread_back(before: Focus, opened: Focus) -> Focus {
+    if before == Focus::Messages { opened } else { before }
+}
+
 /// The panes Tab cycles, left to right, top to bottom. Composers are left out: Tab never
 /// changes the mode, typing is the user's own action.
 fn pane_order(huddle: bool, narrow: bool, thread: bool) -> Vec<Focus> {
@@ -5101,6 +5130,15 @@ mod tests {
     }
 
     use slack_core::session::WorkspaceSession;
+
+    #[test]
+    fn closing_a_thread_returns_to_the_huddle_view() {
+        use super::{focus_after_thread, focus_after_thread_back, Focus};
+        assert_eq!(focus_after_thread(true), Focus::Huddle);
+        assert_eq!(focus_after_thread(false), Focus::Messages);
+        assert_eq!(focus_after_thread_back(Focus::Messages, Focus::Thread), Focus::Thread);
+        assert_eq!(focus_after_thread_back(Focus::Composer, Focus::Thread), Focus::Composer);
+    }
 
     #[test]
     fn tab_never_enters_a_composer() {
