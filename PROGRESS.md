@@ -223,7 +223,13 @@ H. Added by the user on 2026-10-19 (after queue G), in this order:
       dmytrobsp yet — they log in, e.g. `! gh auth login`, before the push), licence **MIT OR Apache-2.0**.
       Steps: H5a licence files; H5b CI workflow (build + test on Linux, macOS, Windows); H5c audit of the whole
       history for secrets and personal data before it goes public; H5d create the repo and push (after login,
-      confirming once more); H5e release builds per platform.
+      confirming once more); H5e release builds per platform. ~~H5a~~ — done.
+      H5c audit (2026-10-19, every commit's content and metadata): no real token or cookie anywhere (the only
+      `xoxc-` strings are a 16-character fixture in session.rs, checked against the real sessions), no keys, no
+      home paths, no blobs over 200 kB. Open questions put to the user: all 309 commits are authored
+      a work address — rewrite the authorship before the push?; the test
+      workspace's name/ids (rslack-testbed, T0CA6QW46KB, A's and B's user ids) in fixtures, PROGRESS and
+      history; whether PROGRESS.md (machine details: slack-rea, the macbook host, podman) is published.
 
 F. Agreed with the user on 2026-10-19 after queue E ("proceed with proposed order"); run autonomously, one
    verified commit per step:
