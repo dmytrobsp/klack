@@ -224,10 +224,11 @@ impl Dnd {
 
     pub fn active(&self, now: f64) -> bool {
         const DAY: f64 = 86_400.0;
-        // The window ending at `end` is `len` long, len being the schedule's daily span.
+        // The window ending at `end` starts at `start`'s time of day (local time, so not an hour
+        // off across a DST change).
         let scheduled = self.window.is_some_and(|(start, end)| {
-            let len = (end - start).rem_euclid(DAY);
-            end - len <= now && now < end
+            let begins = if end - start <= DAY { start } else { super::clock::window_start(start as i64, end as i64).map_or(end - (end - start).rem_euclid(DAY), |t| t as f64) };
+            begins <= now && now < end
         });
         self.snooze_until.is_some_and(|t| now < t) || scheduled
     }
