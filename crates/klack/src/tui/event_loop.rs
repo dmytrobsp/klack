@@ -735,6 +735,16 @@ impl App {
                 }
             }
             Some(Action::Down) => pane.move_selection(&order, 1),
+            // The menu of the selected message (with none, the newest), where it is drawn.
+            Some(Action::ContextMenu) => {
+                if pane.selected.is_none() {
+                    pane.move_selection(&order, 0);
+                }
+                if let Some(ts) = pane.selected.clone() {
+                    let at = pane.spot(&ts);
+                    self.message_menu(in_thread, ts, at);
+                }
+            }
             Some(Action::Top) => pane.move_selection(&order, isize::MIN / 2),
             Some(Action::Bottom) => pane.move_selection(&order, isize::MAX / 2),
             Some(Action::Back) if in_thread => self.close_thread(),
@@ -814,22 +824,28 @@ impl App {
         let at = (column, row);
         let panes = [(false, self.messages.message_at(column, row)), (true, if self.thread.is_some() { self.thread_pane.message_at(column, row) } else { None })];
         if let Some((thread, ts)) = panes.into_iter().find_map(|(t, ts)| ts.map(|ts| (t, ts))) {
-            let channel = self.current.clone().unwrap_or_default();
-            let own = self.ws.find_message(&channel, &ts).is_some_and(|m| m.user.as_deref() == Some(self.ws.self_id.as_str()));
-            if thread {
-                self.thread_pane.selected = Some(ts);
-                self.focus = Focus::Thread;
-            } else {
-                self.messages.selected = Some(ts);
-                self.focus = Focus::Messages;
-            }
-            self.menu = Some(Menu::new(Target::Message { thread }, at, &self.keys, own, false, false));
+            self.message_menu(thread, ts, at);
         } else if let Some(n) = self.sidebar.item_at(column, row) {
             self.sidebar.selected = n;
             let id = self.sidebar.selected_id().unwrap_or_default().to_string();
             let channel = self.ws.conversations.get(&id).is_some_and(|c| !c.is_dm() && c.is_member);
             self.menu = Some(Menu::new(Target::Conversation, at, &self.keys, false, channel, self.ws.starred.contains(&id)));
         }
+    }
+
+    /// The context menu of a message (selected now, its pane focused), at `at`.
+    fn message_menu(&mut self, thread: bool, ts: String, at: (u16, u16)) {
+        use super::menu::{Menu, Target};
+        let channel = self.current.clone().unwrap_or_default();
+        let own = self.ws.find_message(&channel, &ts).is_some_and(|m| m.user.as_deref() == Some(self.ws.self_id.as_str()));
+        if thread {
+            self.thread_pane.selected = Some(ts);
+            self.focus = Focus::Thread;
+        } else {
+            self.messages.selected = Some(ts);
+            self.focus = Focus::Messages;
+        }
+        self.menu = Some(Menu::new(Target::Message { thread }, at, &self.keys, own, false, false));
     }
 
     /// Run the context menu's chosen item, like its key would.

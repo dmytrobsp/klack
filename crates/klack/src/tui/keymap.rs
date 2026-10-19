@@ -75,6 +75,7 @@ impl Key {
             "delete" | "del" => KeyCode::Delete,
             "insert" | "ins" => KeyCode::Insert,
             "plus" => KeyCode::Char('+'),
+            "menu" => KeyCode::Menu,
             f if f.len() > 1 && f.starts_with('f') && f[1..].parse::<u8>().is_ok_and(|n| (1..=24).contains(&n)) => KeyCode::F(f[1..].parse().unwrap_or(1)),
             _ => {
                 let mut chars = name.chars();
@@ -326,6 +327,7 @@ pub enum Action {
     Bottom,
     Open,
     Star,
+    ContextMenu,
     MoveToSection,
     FoldSection,
     OpenThread,
@@ -450,6 +452,7 @@ actions! {
         Pin "pin" "pin / unpin" ["P"]
         Profile "profile" "profile card: author, ←/→ people mentioned" ["u"]
         ThreadHuddle "thread_huddle" "start or join a huddle in the message's thread" ["H"]
+        ContextMenu "menu" "the message's menu (as a right-click does)" ["m", "menu", "shift+f10"]
         Help "help" "this help" ["?"]
     }
     Composer {
@@ -909,6 +912,14 @@ mod tests {
         assert_eq!(map.lookup(Context::Sidebar, &[], k("x")), Lookup::None);
         assert_eq!(map.keys_label(Context::Sidebar, "up"), "↑ / k");
         assert_eq!(map.first_key(Context::Global, Action::Help).as_deref(), Some("F1"));
+        // The message menu from the keyboard: m, the Menu key (as kitty's protocol reports it)
+        // and Shift+F10 (F10 alone shares the screen).
+        for key in [k("m"), Key::new(KeyCode::Menu, KeyModifiers::NONE), Key::new(KeyCode::F(10), KeyModifiers::SHIFT)] {
+            assert_eq!(map.lookup(Context::Messages, &[], key), Lookup::Action(Action::ContextMenu), "{key:?}");
+        }
+        assert_eq!(map.lookup(Context::Global, &[], k("f10")), Lookup::Action(Action::ShareScreen));
+        assert_eq!(map.keys_label(Context::Messages, "menu"), "m / Menu / Shift+F10");
+        assert_eq!(k("menu").spec(), "menu", "written back as read");
         // Every action is reachable by default.
         for a in ACTIONS {
             assert!(!map.keys_label(a.context, a.name).is_empty(), "{}.{} has no key", a.context.name(), a.name);

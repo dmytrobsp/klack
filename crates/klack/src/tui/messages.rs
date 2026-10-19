@@ -153,6 +153,16 @@ impl MessagePane {
         self.rows.get((row - inner.y) as usize).cloned().flatten()
     }
 
+    /// Where a menu for a message opens: its first row on screen, past the gutter (the pane's
+    /// middle when it is not on screen).
+    pub fn spot(&self, ts: &str) -> (u16, u16) {
+        let inner = self.area.inner(ratatui::layout::Margin { horizontal: 1, vertical: 1 });
+        match self.rows.iter().position(|o| o.as_deref() == Some(ts)) {
+            Some(row) => (inner.x + GUTTER + 2, inner.y + row as u16),
+            None => (inner.x + inner.width / 3, inner.y + inner.height / 3),
+        }
+    }
+
     /// Select the message drawn at terminal row `row`; true if one was hit.
     pub fn click(&mut self, column: u16, row: u16) -> bool {
         match self.message_at(column, row) {
@@ -1014,6 +1024,14 @@ mod tests {
         // Selecting another message brings that one into view.
         pane.selected = Some("1700000000.000000".into());
         assert!(draw(&mut pane).contains("before"));
+    }
+
+    #[test]
+    fn a_menu_opens_at_the_message() {
+        let mut pane = MessagePane { area: Rect::new(10, 5, 40, 12), ..Default::default() };
+        pane.rows = vec![None, Some("1.0".into()), Some("2.0".into()), Some("2.0".into())];
+        assert_eq!(pane.spot("2.0"), (11 + super::GUTTER + 2, 8), "its first row, past the gutter");
+        assert_eq!(pane.spot("9.0"), (11 + 38 / 3, 6 + 10 / 3), "not on screen: inside the pane");
     }
 
     #[test]
