@@ -313,6 +313,7 @@ pub enum Action {
     Unbind,
     Reset,
     EditIcon,
+    Filter,
     Increase,
     Decrease,
     Vip,
@@ -656,9 +657,10 @@ actions! {
         PrevTab "previous_category" "previous category" "previous category" "⏪" ["left", "h", "shift+tab"]
         NextTab "next_category" "next category" "next category" "⏩" ["right", "l", "tab"]
         Open "change" "change the setting (Keys: record the new keys; on a group: rename it)" "change" "🔀" ["enter", "space"]
-        Unbind "unbind" "Keys: remove the action's keys (Backspace: erase the filter first)" "unbind" "🚫" ["delete", "backspace"]
+        Unbind "unbind" "Keys: remove the action's keys" "unbind" "🚫" ["delete", "backspace"]
         Reset "reset" "Keys: back to the default keys" "reset" "🔄" ["r"]
         EditIcon "edit_icon" "Keys: change a group's icon" "edit icon" "🎨" ["i"]
+        Filter "filter" "Keys: type to filter the list (Enter keeps it, Esc clears it)" "filter" "🔦" ["/"]
         Increase "increase" "raise a level (volumes, gain, threshold)" "increase" "➕" ["+", "="]
         Decrease "decrease" "lower a level" "decrease" "➖" ["-"]
         Close "close" "close" "close" "❎" ["esc", "q", "f6"]

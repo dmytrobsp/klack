@@ -9,7 +9,7 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 use std::time::{Duration, Instant};
 
-use super::keymap::{ACTIONS, Key, Keymap};
+use super::keymap::{ACTIONS, Action, Key, Keymap};
 use super::settings::Settings;
 use super::state::{LEVELS, Workspace, level_label};
 
@@ -517,6 +517,14 @@ impl Recording {
     }
 }
 
+/// The selection in F6 → Keys, kept across a change of the keymap (see `Prefs::anchor`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Anchor {
+    Field(Field),
+    /// A section header: the group's prefix, else the title.
+    Section(Option<Vec<Key>>, String),
+}
+
 /// Recorded keys in keys.toml notation: a leader that starts a longer sequence is
 /// `<leader>`; a leader alone (or later in it) is the key itself.
 pub fn recorded(keys: &Keymap, seq: &[Key]) -> String {
@@ -531,7 +539,7 @@ pub fn translatable() -> Vec<String> {
         Field::ConversationLevel, Field::ChannelDefault, Field::Keywords, Field::Vips, Field::Status, Field::Away, Field::Pause, Field::Input, Field::Output,
         Field::HuddleVolume, Field::SoundVolume, Field::MicGain, Field::SpeakingThreshold, Field::NoiseSuppression, Field::EchoCancellation, Field::Camera, Field::JoinSound, Field::SomeoneJoined, Field::SomeoneLeft, Field::RingSound, Field::RingTimeout, Field::AutoDecline, Field::AloneSound, Field::AloneSecs,
     ];
-    CATEGORIES.iter().map(|c| c.0).chain(["Keys", LEADER_LABEL, INSERT_LEADER_LABEL, RECORD_START, RECORD_DONE, "filter"]).chain(all.iter().chain(KEYS_SETTINGS).map(|f| f.fixed_label())).map(String::from).collect()
+    CATEGORIES.iter().map(|c| c.0).chain(["Keys", LEADER_LABEL, INSERT_LEADER_LABEL, RECORD_START, RECORD_DONE, "filter", "to filter", "to change", "Enter keep · Esc clear"]).chain(all.iter().chain(KEYS_SETTINGS).map(|f| f.fixed_label())).map(String::from).collect()
 }
 
 #[derive(Debug, Default)]
@@ -542,8 +550,10 @@ pub struct Prefs {
     pub editing_icon: bool,
     /// Keys being recorded for the selected Keys entry.
     pub recording: Option<Recording>,
-    /// Keys: only the rows that contain this (typed while the list is shown).
+    /// Keys: only the rows that contain this.
     pub filter: String,
+    /// Keys go to the filter (after `/`) until Enter or Esc.
+    pub filter_focused: bool,
     /// First row shown in the settings list.
     scroll: usize,
     pub category: usize,
@@ -593,8 +603,8 @@ impl Prefs {
 
     pub fn switch_category(&mut self, delta: isize) {
         self.category = (self.category as isize + delta).rem_euclid(CATEGORIES.len() as isize + 1) as usize;
-        self.selected = 0;
-        self.scroll = 0;
+        self.set_filter(String::new());
+        self.filter_focused = false;
     }
 
     pub fn selected_field(&self, keys: &Keymap) -> Option<Field> {
@@ -615,6 +625,48 @@ impl Prefs {
         self.filter = filter;
         self.selected = 0;
         self.scroll = 0;
+    }
+
+    /// A key while the filter has the focus: text goes into it (Space and letters too), the
+    /// text field's erase takes one back, done keeps it and cancel clears it; both leave it.
+    pub fn filter_key(&mut self, key: Key, action: Option<Action>) {
+        let mut filter = self.filter.clone();
+        match (action, key.code) {
+            (Some(Action::Open), _) => self.filter_focused = false,
+            (Some(Action::Close), _) => (filter, self.filter_focused) = (String::new(), false),
+            (Some(Action::Erase), _) => {
+                filter.pop();
+            }
+            (_, crossterm::event::KeyCode::Char(c)) if key.is_text() => filter.push(c),
+            _ => {}
+        }
+        // A new filter: the selection goes to its top.
+        if filter != self.filter {
+            self.set_filter(filter);
+        }
+    }
+
+    /// What is selected, in a form that a changed keymap keeps (a header by its group's prefix
+    /// or its title; sections come and go as keys are rebound).
+    pub fn anchor(&self, keys: &Keymap) -> Option<Anchor> {
+        match self.selected_field(keys)? {
+            Field::GroupHeader(n) => super::keymap::tree(keys).into_iter().nth(n).map(|s| Anchor::Section(s.prefix, s.title)),
+            f => Some(Anchor::Field(f)),
+        }
+    }
+
+    /// Select what `anchor` was before the keymap changed, wherever it is now (if still listed).
+    pub fn reselect(&mut self, anchor: Option<Anchor>, keys: &Keymap) {
+        let Some(anchor) = anchor else { return };
+        let sections = super::keymap::tree(keys);
+        let found = self.fields(keys).iter().position(|f| match (f, &anchor) {
+            (Field::GroupHeader(n), Anchor::Section(prefix, title)) => sections.get(*n).is_some_and(|s| if prefix.is_some() { s.prefix == *prefix } else { s.title == *title }),
+            (f, Anchor::Field(a)) => f == a,
+            _ => false,
+        });
+        if let Some(n) = found {
+            self.selected = n;
+        }
     }
 
     /// The prefix of the group whose header is selected (None elsewhere).
@@ -802,11 +854,15 @@ impl Prefs {
             f => f.label(),
         };
         let list_area = if keys_shown {
-            let line = if self.filter.is_empty() {
-                Line::from(vec![Span::styled(format!(" {}  ", tr("Keys")), bold), Span::styled(tr("type to filter").into_owned(), dim)])
-            } else {
-                Line::from(vec![Span::styled(format!(" {}  ", tr("Keys")), bold), Span::raw(format!("{}: ", tr("filter"))), Span::styled(format!("{}▏", self.filter), good)])
-            };
+            // The filter's key (`/`) and, while it has the focus, a cursor.
+            let slash = keys.first_key(super::keymap::Context::Preferences, Action::Filter).unwrap_or_default();
+            let mut line = vec![Span::styled(format!(" {}  ", tr("Keys")), bold)];
+            match (self.filter.is_empty(), self.filter_focused) {
+                (true, false) => line.push(Span::styled(format!("{slash} {}", tr("to filter")), dim)),
+                (_, true) => line.extend([Span::raw(format!("{}: ", tr("filter"))), Span::styled(format!("{}▏", self.filter), good), Span::styled(format!("  {}", tr("Enter keep · Esc clear")), dim)]),
+                (false, false) => line.extend([Span::raw(format!("{}: ", tr("filter"))), Span::styled(self.filter.clone(), good), Span::styled(format!("  {slash} {}", tr("to change")), dim)]),
+            }
+            let line = Line::from(line);
             f.render_widget(Paragraph::new(line), Rect { height: right.height.min(1), ..right });
             Rect { y: right.y + 1, height: right.height.saturating_sub(1), ..right }
         } else {
@@ -864,7 +920,7 @@ impl Prefs {
         let hints: &[&str] = match self.category_name() {
             "Keys" => &[
                 "Enter records keys until a 1 s pause (any key counts, Enter and Esc too). Delete unbinds, r resets.",
-                "Type to filter (Backspace erases, Esc clears). On a group: Enter renames it, i changes its icon.",
+                "/ filters (Enter keeps the filter, Esc clears it). On a group: Enter renames it, i changes its icon.",
             ],
             "Availability" => &["Status: \":emoji: text for 30m\" (or today); empty clears."],
             "Notifications" => &["All but the first are kept on Slack. Keywords: comma-separated."],
@@ -1219,6 +1275,72 @@ mod tests {
         assert_eq!((p.group_edit(&keys), p.editing.as_ref()), (None, None), "Direct keys is not a group: nothing to rename");
         p.edit_icon(&keys);
         assert!(p.editing.is_none());
+    }
+
+    #[test]
+    fn the_filter_takes_every_key_after_slash() {
+        use super::super::keymap::{Context, Mode, Resolved};
+        let keys = Keymap::load("").0;
+        let k = |s: &str| Key::parse(s).unwrap();
+        assert_eq!(keys.resolve(&[Context::Preferences], Mode::Dialog, &[], k("/")), Resolved::Action(Context::Preferences, Action::Filter), "/ is the filter, rebindable");
+        // As the event loop does: the text field's keys, else the key itself.
+        let press = |p: &mut Prefs, s: &str| {
+            let action = match keys.resolve(&[Context::TextField], Mode::Dialog, &[], k(s)) {
+                Resolved::Action(_, a) => Some(a),
+                _ => None,
+            };
+            p.filter_key(k(s), action);
+        };
+        let mut p = keys_prefs();
+        p.filter_focused = true;
+        for key in ["h", "u", "d", "space", "q", "r", "i", "j", "k", "l"] {
+            press(&mut p, key);
+        }
+        assert_eq!(p.filter, "hud qrijkl", "Space and the list's own keys type too");
+        press(&mut p, "backspace");
+        assert_eq!(p.filter, "hud qrijk");
+        p.selected = 3;
+        press(&mut p, "ctrl+x");
+        assert_eq!((p.filter.as_str(), p.selected), ("hud qrijk", 3), "Ctrl keys do not type");
+        press(&mut p, "x");
+        assert_eq!(p.selected, 0, "a new filter: back to the top");
+        press(&mut p, "enter");
+        assert_eq!((p.filter.as_str(), p.filter_focused), ("hud qrijkx", false), "Enter keeps it and goes back to the list");
+        p.filter_focused = true;
+        press(&mut p, "esc");
+        assert_eq!((p.filter.as_str(), p.filter_focused), ("", false), "Esc clears it");
+        p.filter = "mute".into();
+        p.filter_focused = true;
+        p.switch_category(1);
+        assert_eq!((p.filter.as_str(), p.filter_focused), ("", false), "another category drops the filter");
+    }
+
+    #[test]
+    fn the_selection_follows_the_edit() {
+        use super::super::keymap::{Context, LEADER};
+        use super::super::keys_file::{apply, Change};
+        let keys = Keymap::load("").0;
+        let mute = ACTIONS.iter().position(|a| a.context == Context::Global && a.name == "mute").unwrap();
+        let mut p = keys_prefs();
+        p.selected = p.fields(&keys).iter().position(|f| *f == Field::Binding(mute)).unwrap();
+        let anchor = p.anchor(&keys);
+        let after = Keymap::load(&apply("", &Change::Binding { context: Context::Global, name: "mute", seqs: Some(vec![]) }).unwrap()).0;
+        assert_ne!(p.selected_field(&after), Some(Field::Binding(mute)), "the rows moved: the same place is another action");
+        p.reselect(anchor, &after);
+        assert_eq!(p.selected_field(&after), Some(Field::Binding(mute)), "still the action unbound");
+        let fields = p.fields(&after);
+        let header = fields[..p.selected].iter().rposition(|f| matches!(f, Field::GroupHeader(_))).unwrap();
+        let Field::GroupHeader(n) = fields[header] else { unreachable!() };
+        assert_eq!(super::super::keymap::tree(&after)[n].title, "Unbound", "now under Unbound");
+        // A group's header, by its prefix (its title changes with the name).
+        let huddle = super::super::keymap::tree(&keys).iter().position(|s| s.title.ends_with("huddle")).unwrap();
+        p.selected = p.fields(&keys).iter().position(|f| *f == Field::GroupHeader(huddle)).unwrap();
+        let anchor = p.anchor(&keys);
+        let renamed = Keymap::load(&apply("[global]\nquit = []\nhelp = []\n", &Change::Group { prefix: "<leader> h".into(), name: Some("calls".into()), icon: None }).unwrap()).0;
+        p.reselect(anchor, &renamed);
+        let Some(Field::GroupHeader(n)) = p.selected_field(&renamed) else { panic!("{:?}", p.selected_field(&renamed)) };
+        let section = &super::super::keymap::tree(&renamed)[n];
+        assert_eq!((section.prefix.clone(), section.title.ends_with("calls")), (Some(vec![LEADER, Key::parse("h").unwrap()]), true));
     }
 
     #[test]

@@ -1678,6 +1678,8 @@ impl App {
     /// Change one entry of keys.toml (the rest of the file stays as the user wrote it) and use
     /// it; problems are shown under the preferences.
     fn save_keys(&mut self, change: &Change) {
+        // The selection stays on the entry changed, wherever the new tree puts it.
+        let anchor = self.prefs.as_ref().and_then(|p| p.anchor(&self.keys));
         let current = match super::keymap::config_path().map(std::fs::read_to_string) {
             Some(Err(e)) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
             Some(Ok(text)) => Ok(text),
@@ -1697,10 +1699,9 @@ impl App {
             self.keys = map;
         }
         if let Some(p) = self.prefs.as_mut() {
-            p.saved = Some(match (written, warnings.first()) {
-                (Ok(_), Some(w)) => Err(w.trim_start_matches("keys.toml: ").to_string()),
-                (result, _) => result,
-            });
+            // Written: saved, with a note when the keymap warns (never "not saved").
+            p.saved = Some(written.map(|path| super::keys_file::saved_note(&path, &warnings, change)));
+            p.reselect(anchor, &self.keys);
         }
     }
 
@@ -2033,6 +2034,8 @@ impl App {
         } else if let Some(p) = self.prefs.as_mut() {
             if p.recording.is_some() {
                 p.recording = None;
+            } else if p.filter_focused {
+                p.filter_focused = false;
             } else if p.picker.is_some() {
                 p.picker = None;
                 drop(super::theme::set(self.ws.settings.appearance.theme_for(&self.ws.team_id)));
@@ -3137,20 +3140,21 @@ fn handle_dialog(app: &mut App, ev: &Event) -> bool {
                 _ => {}
             }
         }
+        // The key list's filter after `/`: every printable key types into it.
+        Event::Key(k) if k.kind != KeyEventKind::Release && app.prefs.as_ref().is_some_and(|p| p.filter_focused) => {
+            let action = app.action_in(Context::TextField, &k);
+            if let Some(p) = app.prefs.as_mut() {
+                p.filter_key(Key::from_event(&k), action);
+            }
+        }
         Event::Key(k) if k.kind != KeyEventKind::Release && app.prefs.is_some() => {
             use super::prefs::Field;
             let action = app.action_in(Context::Preferences, &k);
             let Some(p) = app.prefs.as_mut() else { return true };
-            // The key list's filter: Backspace erases it before it unbinds, Esc clears it first.
-            let filtering = p.keys_shown() && !p.filter.is_empty();
-            if filtering && k.code == KeyCode::Backspace {
-                let mut filter = std::mem::take(&mut p.filter);
-                filter.pop();
-                p.set_filter(filter);
-                return true;
-            }
             match action {
-                Some(Action::Close) if filtering => p.set_filter(String::new()),
+                // A filter kept after Enter: Esc clears it before it closes.
+                Some(Action::Close) if p.keys_shown() && !p.filter.is_empty() => p.set_filter(String::new()),
+                Some(Action::Filter) if p.keys_shown() => p.filter_focused = true,
                 Some(Action::Close) => app.prefs = None,
                 Some(Action::Up) => p.move_by(-1, &app.keys),
                 Some(Action::Down) => p.move_by(1, &app.keys),
@@ -3178,14 +3182,6 @@ fn handle_dialog(app: &mut App, ev: &Event) -> bool {
                     Some(Field::InsertLeader) => app.save_keys(&Change::InsertLeader(None)),
                     _ => {}
                 },
-                // Other text goes to the key list's filter.
-                None if p.keys_shown() => {
-                    if let (KeyCode::Char(c), true) = (k.code, Key::from_event(&k).is_text()) {
-                        let mut filter = std::mem::take(&mut p.filter);
-                        filter.push(c);
-                        p.set_filter(filter);
-                    }
-                }
                 _ => {}
             }
         }

@@ -45,26 +45,46 @@ pub fn apply(text: &str, change: &Change) -> Result<String, String> {
 }
 
 /// Write `text` to `path` as a whole: into a file beside it, then renamed over it, so a crash
-/// never leaves half a file. The folder is made if needed; the file keeps its permissions.
+/// never leaves half a file. The folder is made if needed; the file keeps its permissions, and
+/// a symlinked keys.toml (dotfiles) stays a link: its target is written.
 pub fn write(path: &std::path::Path, text: &str) -> Result<(), String> {
     use std::io::Write;
-    let dir = path.parent().ok_or("no folder for keys.toml")?;
-    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    std::fs::create_dir_all(path.parent().ok_or("no folder for keys.toml")?).map_err(|e| e.to_string())?;
+    let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let dir = target.parent().ok_or("no folder for keys.toml")?;
+    let name = target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let temp = dir.join(format!(".{name}.{}.tmp", std::process::id()));
     let written = (|| {
         let mut file = std::fs::File::create(&temp)?;
         file.write_all(text.as_bytes())?;
-        if let Ok(meta) = std::fs::metadata(path) {
+        if let Ok(meta) = std::fs::metadata(&target) {
             file.set_permissions(meta.permissions())?;
         }
         file.sync_all()?;
-        std::fs::rename(&temp, path)
+        std::fs::rename(&temp, &target)
     })();
     if written.is_err() {
         let _ = std::fs::remove_file(&temp);
     }
     written.map_err(|e| e.to_string())
+}
+
+/// What F6 says once keys.toml is written to `path`: saved, with a note when the keymap warns
+/// (a warning about the changed entry first, e.g. a default that gave way to it).
+pub fn saved_note(path: &str, warnings: &[String], change: &Change) -> String {
+    let about = match change {
+        Change::Binding { name, .. } => name.to_string(),
+        Change::Leader(_) => "leader".into(),
+        Change::InsertLeader(_) => "insert_leader".into(),
+        Change::Group { prefix, .. } => prefix.clone(),
+    };
+    // Whole words only: `copy` is not in `copy_link`.
+    let mentions = |w: &str| if about.contains(' ') { w.contains(&about) } else { w.split(|c: char| !(c.is_alphanumeric() || c == '_')).any(|t| t == about) };
+    let note = warnings.iter().find(|w| mentions(w)).or(warnings.first());
+    match note {
+        Some(w) => format!("{path} · note: {}", w.trim_start_matches("keys.toml: ")),
+        None => path.to_string(),
+    }
 }
 
 /// A top-level string (`leader`), or removed.
@@ -282,6 +302,35 @@ mod tests {
         assert_eq!(left, ["keys.toml"], "no temporary file is left");
         std::fs::remove_file(&path).unwrap();
         std::fs::remove_dir(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_file_stays_a_link() {
+        let dir = std::env::temp_dir().join(format!("klack-keys-link-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("dotfiles")).unwrap();
+        let (target, link) = (dir.join("dotfiles/keys.toml"), dir.join("keys.toml"));
+        std::fs::write(&target, "# mine\n").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        write(&link, "leader = \"ctrl+b\"\n").unwrap();
+        assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink(), "the link stays a link");
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "leader = \"ctrl+b\"\n", "its target is written");
+        let left: Vec<_> = std::fs::read_dir(dir.join("dotfiles")).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(left, ["keys.toml"], "no temporary file is left");
+        std::fs::remove_file(&link).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn saved_with_a_note() {
+        let copy = bind(Context::Messages, "copy", Some(&["<leader> r"]));
+        assert_eq!(saved_note("/k.toml", &[], &copy), "/k.toml");
+        let warnings = vec!["keys.toml: [global] mute: unknown key 'hyper' (keeping the default)".to_string(), "keys.toml: [messages] default Space r of react gives way to copy".to_string()];
+        assert_eq!(saved_note("/k.toml", &warnings, &copy), "/k.toml · note: [messages] default Space r of react gives way to copy", "the warning about the change first");
+        let copy_link = bind(Context::Messages, "copy_link", Some(&["x"]));
+        assert_eq!(saved_note("/k.toml", &warnings, &copy_link), "/k.toml · note: [global] mute: unknown key 'hyper' (keeping the default)", "else the first; copy is not copy_link");
+        let group = Change::Group { prefix: "<leader> h".into(), name: Some("calls".into()), icon: None };
+        assert_eq!(saved_note("/k.toml", &["keys.toml: x".into(), "keys.toml: [groups] \"<leader> h\": bad".into()], &group), "/k.toml · note: [groups] \"<leader> h\": bad");
     }
 
     #[test]
