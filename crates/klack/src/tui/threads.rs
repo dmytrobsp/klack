@@ -79,6 +79,8 @@ pub struct Threads {
     pub list: Rect,
     pub first: usize,
     pub shown: usize,
+    /// The row the pointer is over (not the selection), at the last `Moved`.
+    pub hover: Option<usize>,
 }
 
 impl Threads {
@@ -109,6 +111,11 @@ impl Threads {
     pub fn row_at(&self, column: u16, row: u16) -> Option<usize> {
         let r = row.checked_sub(self.list.y)? as usize;
         (self.list.contains((column, row).into()) && r % 4 < 3).then(|| self.first + r / 4).filter(|n| *n < self.first + self.shown)
+    }
+
+    /// The pointer moved to a position: hover the thread there (none off the list).
+    pub fn hover_at(&mut self, column: u16, row: u16) {
+        self.hover = self.row_at(column, row);
     }
 
     /// At the end of the list (time to load more).
@@ -147,6 +154,8 @@ impl Threads {
                         l.spans.insert(0, super::sidebar::unread_mark(unread));
                         if n == self.selected {
                             *l = std::mem::take(l).style(Style::default().bg(p.selection));
+                        } else if self.hover == Some(n) {
+                            *l = std::mem::take(l).style(super::theme::hover_style());
                         }
                     }
                     lines.extend(rows);
@@ -273,5 +282,14 @@ mod tests {
         assert_eq!(t.row_at(6, 18), None, "below the last thread");
         assert_eq!(t.row_at(6, 9), None, "the border / title");
         assert_eq!(t.row_at(4, 10), None, "the side border");
+    }
+
+    #[test]
+    fn hover_follows_the_pointer_and_leaves_the_selection() {
+        let mut t = Threads { list: Rect::new(5, 10, 88, 28), first: 3, shown: 2, selected: 3, ..Default::default() };
+        t.hover_at(6, 14);
+        assert_eq!((t.hover, t.selected), (Some(4), 3));
+        t.hover_at(6, 13);
+        assert_eq!(t.hover, None, "the gap");
     }
 }

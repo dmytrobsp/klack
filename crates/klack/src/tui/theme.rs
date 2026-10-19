@@ -126,6 +126,11 @@ pub const ALL: [Palette; 3] = [DARK, LIGHT, TERMINAL];
 
 static CURRENT: RwLock<Palette> = RwLock::new(DARK);
 
+/// The look of a dialog's list row under the pointer (when it is not the selected one).
+pub fn hover_style() -> ratatui::style::Style {
+    ratatui::style::Style::default().bg(p().hover)
+}
+
 /// The palette in use.
 pub fn p() -> Palette {
     *CURRENT.read().unwrap_or_else(|e| e.into_inner())

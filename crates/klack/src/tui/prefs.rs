@@ -614,6 +614,9 @@ pub struct Prefs {
     pub cats: Rect,
     pub list: Rect,
     pub shown: usize,
+    /// The settings row and the category under the pointer (not the selected ones), at the last `Moved`.
+    pub hover: Option<usize>,
+    pub hover_category: Option<usize>,
     /// The notification schedule's kind at the last `sync`: which of its rows Availability shows.
     schedule: Option<slack_core::dnd::ScheduleDays>,
 }
@@ -758,6 +761,12 @@ impl Prefs {
     pub fn row_at(&self, column: u16, row: u16) -> Option<usize> {
         let n = row.checked_sub(self.list.y)? as usize;
         (self.list.contains((column, row).into()) && n < self.shown).then_some(self.scroll + n)
+    }
+
+    /// The pointer moved to a position: hover the row or category there (none elsewhere).
+    pub fn hover_at(&mut self, column: u16, row: u16) {
+        self.hover = self.row_at(column, row);
+        self.hover_category = self.category_at(column, row);
     }
 
     pub fn selected_field(&self, keys: &Keymap) -> Option<Field> {
@@ -1010,7 +1019,7 @@ impl Prefs {
             .enumerate()
             .map(|(n, name)| {
                 let line = Line::raw(format!(" {}", super::i18n::tr(name)));
-                if n == self.category { line.style(highlight.add_modifier(Modifier::BOLD)) } else { line }
+                if n == self.category { line.style(highlight.add_modifier(Modifier::BOLD)) } else if self.hover_category == Some(n) { line.style(super::theme::hover_style()) } else { line }
             })
             .collect();
         f.render_widget(Paragraph::new(cats), left);
@@ -1092,7 +1101,7 @@ impl Prefs {
                     Line::from(spans)
                 }
             };
-            rows.push(if selected { line.style(highlight) } else { line });
+            rows.push(if selected { line.style(highlight) } else if self.hover == Some(n) { line.style(super::theme::hover_style()) } else { line });
         }
         let fixed: &[&str] = match self.category_name() {
             "Keys" => &[
@@ -1847,5 +1856,16 @@ mod tests {
         assert!(text.contains("[appearance.workspace_themes]\nT1 = \"light\""), "{text}");
         assert_eq!(Settings::parse(&text).unwrap().appearance.theme_for("T1"), "light");
         assert!(!toml::to_string(&Settings::default()).unwrap().contains("workspace_themes"), "none: not written");
+    }
+
+    #[test]
+    fn hover_follows_the_pointer_on_rows_and_categories() {
+        let mut p = Prefs { cats: Rect::new(10, 5, 22, 20), list: Rect::new(32, 5, 60, 15), shown: 4, scroll: 3, selected: 4, category: 1, ..Default::default() };
+        p.hover_at(33, 6);
+        assert_eq!((p.hover, p.hover_category, p.selected, p.category), (Some(4), None, 4, 1), "a row");
+        p.hover_at(11, 7);
+        assert_eq!((p.hover, p.hover_category, p.selected, p.category), (None, Some(2), 4, 1), "a category");
+        p.hover_at(33, 20);
+        assert_eq!((p.hover, p.hover_category), (None, None));
     }
 }

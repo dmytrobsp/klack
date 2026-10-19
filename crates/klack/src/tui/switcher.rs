@@ -39,6 +39,8 @@ pub struct Switcher {
     pub list: Rect,
     pub first: usize,
     pub shown: usize,
+    /// The row the pointer is over (not the selection), at the last `Moved`.
+    pub hover: Option<usize>,
 }
 
 impl Switcher {
@@ -53,6 +55,11 @@ impl Switcher {
     /// The entry drawn at a terminal position.
     pub fn row_at(&self, column: u16, row: u16) -> Option<usize> {
         self.list.contains((column, row).into()).then(|| self.first + (row - self.list.y) as usize).filter(|n| *n < self.first + self.shown)
+    }
+
+    /// The pointer moved to a position: hover the entry there (none off the list).
+    pub fn hover_at(&mut self, column: u16, row: u16) {
+        self.hover = self.row_at(column, row);
     }
 
     pub fn draw(&mut self, f: &mut Frame, area: Rect, ws: &Workspace) {
@@ -82,7 +89,7 @@ impl Switcher {
             .map(|(n, e)| {
                 let style = if e.unread { Style::default().add_modifier(Modifier::BOLD) } else { Style::default() };
                 let line = Line::from(vec![Span::styled(format!(" {}", e.label), style), Span::styled(format!("  {}", e.detail), Style::default().fg(super::theme::p().dim))]);
-                if n == self.selected { line.style(Style::default().bg(super::theme::p().selection)) } else { line }
+                if n == self.selected { line.style(Style::default().bg(super::theme::p().selection)) } else if self.hover == Some(n) { line.style(super::theme::hover_style()) } else { line }
             })
             .collect();
         let lines = if lines.is_empty() { vec![Line::styled(" nothing matches", Style::default().fg(super::theme::p().dim))] } else { lines };
@@ -224,5 +231,32 @@ mod tests {
         let short = Switcher { list: Rect::new(10, 6, 40, 5), first: 0, shown: 2, ..Default::default() };
         assert_eq!(short.row_at(12, 7), Some(1));
         assert_eq!(short.row_at(12, 8), None, "below the last entry");
+    }
+
+    #[test]
+    fn hover_follows_the_pointer_and_leaves_the_selection() {
+        let mut sw = Switcher { list: Rect::new(10, 6, 40, 5), first: 20, shown: 5, selected: 22, ..Default::default() };
+        sw.hover_at(12, 8);
+        assert_eq!((sw.hover, sw.selected), (Some(22), 22));
+        sw.hover_at(12, 9);
+        assert_eq!((sw.hover, sw.selected), (Some(23), 22));
+        sw.hover_at(12, 5);
+        assert_eq!(sw.hover, None, "off the list");
+    }
+
+    #[test]
+    fn the_hovered_entry_is_shaded_and_the_selection_stays() {
+        let w = ws();
+        let mut sw = Switcher::default();
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 30)).unwrap();
+        terminal.draw(|f| sw.draw(f, f.area(), &w)).unwrap();
+        let list = sw.list;
+        assert!(sw.shown >= 2);
+        sw.hover_at(list.x + 2, list.y + 1);
+        assert_eq!(sw.hover, Some(1));
+        terminal.draw(|f| sw.draw(f, f.area(), &w)).unwrap();
+        let bg = |y: u16| terminal.backend().buffer()[(list.x + 2, y)].bg;
+        let p = crate::tui::theme::p();
+        assert_eq!((bg(list.y), bg(list.y + 1)), (p.selection, p.hover));
     }
 }

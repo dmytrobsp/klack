@@ -40,6 +40,8 @@ pub struct EmojiPicker {
     pub area: Rect,
     list: Rect,
     first: usize,
+    /// The row the pointer is over (not the selection), at the last `Moved`.
+    pub hover: Option<usize>,
     /// The message's reactions when the picker opened, in its order.
     present: Vec<Present>,
 }
@@ -132,6 +134,11 @@ impl EmojiPicker {
         self.list.contains((column, row).into()).then(|| self.first + (row - self.list.y) as usize)
     }
 
+    /// The pointer moved to a position: hover the candidate there (none off the list).
+    pub fn hover_at(&mut self, column: u16, row: u16) {
+        self.hover = self.row_at(column, row);
+    }
+
     pub fn draw(&mut self, f: &mut Frame, area: Rect, custom: &HashMap<String, String>) {
         let [popup] = Layout::horizontal([Constraint::Length(44)]).flex(Flex::Center).areas(area);
         let [popup] = Layout::vertical([Constraint::Length(16)]).flex(Flex::Center).areas(popup);
@@ -164,7 +171,7 @@ impl EmojiPicker {
                     spans.push(Span::styled(hint, Style::default().fg(pal.dim)));
                 }
                 let line = Line::from(spans);
-                if n == self.selected { line.style(Style::default().bg(super::theme::p().selection).add_modifier(Modifier::BOLD)) } else { line }
+                if n == self.selected { line.style(Style::default().bg(super::theme::p().selection).add_modifier(Modifier::BOLD)) } else if self.hover == Some(n) { line.style(super::theme::hover_style()) } else { line }
             })
             .collect();
         let lines = if lines.is_empty() { vec![Line::styled(" no matching emoji", Style::default().fg(super::theme::p().dim))] } else { lines };
@@ -262,5 +269,16 @@ mod tests {
         let names: Vec<String> = p.candidates(&HashMap::new()).into_iter().map(|c| c.name).collect();
         assert_eq!(&names[..3], ["tada", "partyparrot", "a"], "matching reactions on the message before the best match");
         assert_eq!(names.iter().filter(|n| *n == "tada").count(), 1, "{names:?}");
+    }
+
+    #[test]
+    fn hover_follows_the_pointer_and_leaves_the_selection() {
+        let mut p = EmojiPicker::default();
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 30)).unwrap();
+        terminal.draw(|f| p.draw(f, f.area(), &HashMap::new())).unwrap();
+        p.hover_at(20, 10);
+        assert_eq!((p.hover, p.selected), (Some(1), 0));
+        p.hover_at(20, 8);
+        assert_eq!(p.hover, None, "the search row");
     }
 }

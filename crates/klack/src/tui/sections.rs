@@ -24,6 +24,10 @@ pub struct MovePicker {
     pub naming: Option<String>,
     /// Last drawn area, for clicks.
     pub area: Rect,
+    /// The choice rows at the last draw.
+    pub list: Rect,
+    /// The row the pointer is over (not the selection), at the last `Moved`.
+    pub hover: Option<usize>,
 }
 
 impl MovePicker {
@@ -33,11 +37,21 @@ impl MovePicker {
         choices.extend(ws.sections.iter().filter(|s| s.kind == "standard").map(|s| Choice::Section { id: s.id.clone(), name: s.name.clone() }));
         choices.push(Choice::New);
         let selected = choices.iter().position(|c| matches!(c, Choice::Section { id, .. } if Some(id) == current.as_ref())).unwrap_or(0);
-        MovePicker { channel, choices, selected, naming: None, area: Rect::default() }
+        MovePicker { channel, choices, selected, naming: None, area: Rect::default(), list: Rect::default(), hover: None }
     }
 
     pub fn move_by(&mut self, delta: isize) {
         self.selected = (self.selected as isize + delta).clamp(0, self.choices.len() as isize - 1) as usize;
+    }
+
+    /// The choice drawn at a terminal position (none while naming a section).
+    pub fn row_at(&self, column: u16, row: u16) -> Option<usize> {
+        (self.naming.is_none() && self.list.contains((column, row).into())).then(|| (row - self.list.y) as usize).filter(|n| *n < self.choices.len())
+    }
+
+    /// The pointer moved to a position: hover the choice there (none off the list).
+    pub fn hover_at(&mut self, column: u16, row: u16) {
+        self.hover = self.row_at(column, row);
     }
 
     pub fn choice(&self) -> &Choice {
@@ -69,7 +83,7 @@ impl MovePicker {
                     spans.push(Span::styled("  ✓", Style::default().fg(super::theme::p().good)));
                 }
                 let line = Line::from(spans);
-                if n == self.selected { line.style(Style::default().bg(super::theme::p().selection)) } else { line }
+                if n == self.selected { line.style(Style::default().bg(super::theme::p().selection)) } else if self.hover == Some(n) { line.style(super::theme::hover_style()) } else { line }
             })
             .collect();
         if let Some(text) = &self.naming {
@@ -80,6 +94,7 @@ impl MovePicker {
             .border_style(Style::default().fg(super::theme::p().accent))
             .title(format!(" Move {name} to… "));
         let inner = block.inner(popup);
+        self.list = Rect { height: (self.choices.len() as u16).min(inner.height), ..inner };
         f.render_widget(Paragraph::new(lines).block(block), popup);
         if let Some(text) = &self.naming {
             f.set_cursor_position((inner.x + 8 + text.chars().count() as u16, inner.y + self.choices.len() as u16));
@@ -104,5 +119,23 @@ mod tests {
         assert_eq!(p.choices.len(), 4, "no section, Work, Fun, new");
         assert_eq!(p.choice(), &Choice::Section { id: "L2".into(), name: "Work".into() });
         assert_eq!(MovePicker::new(&ws, "C9".into()).choice(), &Choice::NoSection);
+    }
+
+    #[test]
+    fn hover_follows_the_pointer_and_leaves_the_selection() {
+        let mut ws = Workspace::default();
+        ws.sections = vec![Section { id: "L2".into(), kind: "standard".into(), name: "Work".into(), channels: vec!["C1".into()], ..Default::default() }];
+        let mut p = MovePicker::new(&ws, "C1".into());
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 30)).unwrap();
+        terminal.draw(|f| p.draw(f, f.area(), &ws)).unwrap();
+        let (x, y) = (p.list.x + 2, p.list.y);
+        let selected = p.selected;
+        p.hover_at(x, y + 2);
+        assert_eq!((p.hover, p.selected), (Some(2), selected));
+        p.hover_at(x, y + 3);
+        assert_eq!(p.hover, None, "below the last choice");
+        p.naming = Some(String::new());
+        p.hover_at(x, y);
+        assert_eq!(p.hover, None, "no hover while naming");
     }
 }

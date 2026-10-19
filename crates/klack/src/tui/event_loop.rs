@@ -2167,6 +2167,53 @@ impl App {
         mode_of(self.overlay(), self.focus)
     }
 
+    /// Forget the row the pointer was over in every dialog's list.
+    fn clear_dialog_hover(&mut self) {
+        if let Some((p, _, _)) = self.picker.as_mut() {
+            p.hover = None;
+        }
+        if let Some(p) = self.prefs.as_mut() {
+            (p.hover, p.hover_category) = (None, None);
+            if let Some(t) = p.picker.as_mut() {
+                t.hover = None;
+            }
+        }
+        self.switcher.iter_mut().for_each(|d| d.hover = None);
+        self.mover.iter_mut().for_each(|d| d.hover = None);
+        self.save.iter_mut().for_each(|d| d.hover = None);
+        self.activity.iter_mut().for_each(|d| d.hover = None);
+        self.threads.iter_mut().for_each(|d| d.hover = None);
+        self.search.iter_mut().for_each(|d| d.hover = None);
+    }
+
+    /// The pointer moved with a dialog open: shade the row of the topmost list under it (the
+    /// selection stays), none when it is off the list.
+    fn hover_dialog(&mut self, column: u16, row: u16) {
+        self.clear_dialog_hover();
+        if let Some(p) = self.prefs.as_mut() {
+            match p.picker.as_mut() {
+                Some(t) => t.hover_at(column, row),
+                None => p.hover_at(column, row),
+            }
+        } else if let Some(d) = self.switcher.as_mut() {
+            d.hover_at(column, row);
+        } else if let Some(d) = self.mover.as_mut() {
+            d.hover_at(column, row);
+        } else if let Some(d) = self.save.as_mut() {
+            d.hover_at(column, row);
+        } else if let Some(d) = self.activity.as_mut() {
+            d.hover_at(column, row);
+        } else if let Some(d) = self.threads.as_mut() {
+            d.hover_at(column, row);
+        } else if let Some(d) = self.search.as_mut() {
+            d.hover_at(column, row);
+        } else if let Some((p, _, _)) = self.picker.as_mut() {
+            let len = p.candidates(&self.ws.custom_emoji).len();
+            p.hover_at(column, row);
+            p.hover = p.hover.filter(|n| *n < len);
+        }
+    }
+
     /// The topmost dialog's area at the last draw (None without a dialog).
     fn dialog_area(&self) -> Option<Rect> {
         self.overlay()?;
@@ -3252,6 +3299,7 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
             app.sidebar.hover = None;
             app.messages.hover = None;
             app.thread_pane.hover = None;
+            app.clear_dialog_hover();
         }
         tracing::debug!(focused = app.terminal_focused, "terminal focus");
         return true;
@@ -3688,7 +3736,10 @@ fn handle_dialog(app: &mut App, ev: &Event) -> bool {
                 }
             }
         }
+        Event::Mouse(m) if m.kind == MouseEventKind::Moved => app.hover_dialog(m.column, m.row),
+        // The wheel moves the rows under the pointer: its hover waits for the next move.
         Event::Mouse(m) if matches!(m.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown) => {
+            app.clear_dialog_hover();
             app.wheel_in_popup(m.kind == MouseEventKind::ScrollDown);
         }
         // A click in the preferences, or on a row of jump to, activity, threads or search, as Enter does.

@@ -27,13 +27,15 @@ pub struct SaveDialog {
     pub area: Rect,
     rows: Rect,
     first: usize,
+    /// The row the pointer is over (not the selection), at the last `Moved`.
+    pub hover: Option<usize>,
 }
 
 impl SaveDialog {
     /// Every file ticked, going to `folder` (shown with `~` for home).
     pub fn new(files: Vec<File>, folder: &std::path::Path) -> SaveDialog {
         let ticked = vec![true; files.len()];
-        SaveDialog { files, ticked, selected: 0, folder: shown_folder(folder), editing: false, area: Rect::default(), rows: Rect::default(), first: 0 }
+        SaveDialog { files, ticked, selected: 0, folder: shown_folder(folder), editing: false, area: Rect::default(), rows: Rect::default(), first: 0, hover: None }
     }
 
     pub fn move_by(&mut self, delta: isize) {
@@ -64,6 +66,11 @@ impl SaveDialog {
     /// The file row drawn at a terminal position.
     pub fn row_at(&self, column: u16, row: u16) -> Option<usize> {
         self.rows.contains((column, row).into()).then(|| self.first + (row - self.rows.y) as usize).filter(|n| *n < self.files.len())
+    }
+
+    /// The pointer moved to a position: hover the file there (none off the list).
+    pub fn hover_at(&mut self, column: u16, row: u16) {
+        self.hover = self.row_at(column, row);
     }
 
     /// Folders the folder line could go on to.
@@ -111,7 +118,7 @@ impl SaveDialog {
                 let name: String = if name.chars().count() > room { name.chars().take(room.saturating_sub(1)).chain(['…']).collect() } else { name };
                 let pad = " ".repeat(room.saturating_sub(name.chars().count()));
                 let line = Line::from(vec![Span::raw(format!(" [{}] ", if *ticked { "x" } else { " " })), Span::raw(name), Span::raw(pad), Span::styled(format!("  {size}"), Style::default().fg(p.dim))]);
-                if n == self.selected && !self.editing { line.style(Style::default().bg(p.selection).add_modifier(Modifier::BOLD)) } else { line }
+                if n == self.selected && !self.editing { line.style(Style::default().bg(p.selection).add_modifier(Modifier::BOLD)) } else if self.hover == Some(n) { line.style(super::theme::hover_style()) } else { line }
             })
             .collect();
         lines.push(Line::raw(""));
@@ -217,5 +224,17 @@ mod tests {
         assert_eq!(expand_home("~/Downloads/"), home.join("Downloads/"));
         assert_eq!(expand_home("~other"), PathBuf::from("~other"));
         assert_eq!((tail("/tmp/abc/def/", 20), tail("/tmp/abc/def/", 8)), ("/tmp/abc/def/".to_string(), "…bc/def/".to_string()), "long folders show their end");
+    }
+
+    #[test]
+    fn hover_follows_the_pointer_and_leaves_the_selection() {
+        let mut d = SaveDialog::new(files(), std::path::Path::new("/tmp/x"));
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 30)).unwrap();
+        terminal.draw(|f| d.draw(f, f.area())).unwrap();
+        let y = d.rows.y;
+        d.hover_at(d.rows.x + 2, y + 1);
+        assert_eq!((d.hover, d.selected), (Some(1), 0));
+        d.hover_at(d.rows.x + 2, y + 3);
+        assert_eq!(d.hover, None, "below the last file");
     }
 }

@@ -66,6 +66,8 @@ pub struct Search {
     pub list: Rect,
     pub first: usize,
     pub shown: usize,
+    /// The row the pointer is over (not the selection), at the last `Moved`.
+    pub hover: Option<usize>,
 }
 
 impl Search {
@@ -76,6 +78,11 @@ impl Search {
     /// The hit drawn at a terminal position (each takes two rows).
     pub fn row_at(&self, column: u16, row: u16) -> Option<usize> {
         self.list.contains((column, row).into()).then(|| self.first + (row - self.list.y) as usize / 2).filter(|n| *n < self.first + self.shown)
+    }
+
+    /// The pointer moved to a position: hover the hit there (none off the list).
+    pub fn hover_at(&mut self, column: u16, row: u16) {
+        self.hover = self.row_at(column, row);
     }
 
     /// The page to load next, when the selection is near the end of the hits and there is
@@ -143,7 +150,7 @@ impl Search {
             let thread = if hit.thread_ts.is_some() { " · in thread" } else { "" };
             let body = format::plain_text(&format::message_blocks(&hit.text, &[]), &|i| text::inline_plain(ws, i)).replace('\n', " ");
             let body: String = body.chars().take(width.saturating_sub(2)).collect();
-            let style = if n == self.selected { Style::default().bg(super::theme::p().selection) } else { Style::default() };
+            let style = if n == self.selected { Style::default().bg(super::theme::p().selection) } else if self.hover == Some(n) { super::theme::hover_style() } else { Style::default() };
             lines.push(Line::from(vec![Span::styled(format!(" {who}"), Style::default().fg(text::user_color(hit.user.as_deref().unwrap_or("")))), Span::styled(format!(" · {place} · {when}{thread}"), Style::default().fg(super::theme::p().dim))]).style(style));
             lines.push(Line::raw(format!("   {body}")).style(style));
         }
@@ -217,5 +224,16 @@ mod tests {
         assert_eq!(s.row_at(6, 16), None, "below the last hit");
         assert_eq!(s.row_at(6, 9), None, "the query line");
         assert_eq!(s.row_at(4, 10), None, "the border");
+    }
+
+    #[test]
+    fn hover_follows_the_pointer_and_leaves_the_selection() {
+        let mut s = Search { list: Rect::new(5, 10, 80, 20), first: 7, shown: 3, selected: 8, ..Default::default() };
+        s.hover_at(6, 13);
+        assert_eq!((s.hover, s.selected), (Some(8), 8));
+        s.hover_at(6, 14);
+        assert_eq!(s.hover, Some(9));
+        s.hover_at(6, 16);
+        assert_eq!(s.hover, None, "below the last hit");
     }
 }

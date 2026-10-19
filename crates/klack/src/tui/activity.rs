@@ -101,6 +101,8 @@ pub struct Activity {
     pub list: Rect,
     pub first: usize,
     pub shown: usize,
+    /// The row the pointer is over (not the selection), at the last `Moved`.
+    pub hover: Option<usize>,
 }
 
 impl Activity {
@@ -113,6 +115,11 @@ impl Activity {
     pub fn row_at(&self, column: u16, row: u16) -> Option<usize> {
         let r = row.checked_sub(self.list.y)? as usize;
         (self.list.contains((column, row).into()) && r % 3 < 2).then(|| self.first + r / 3).filter(|n| *n < self.first + self.shown)
+    }
+
+    /// The pointer moved to a position: hover the item there (none off the list).
+    pub fn hover_at(&mut self, column: u16, row: u16) {
+        self.hover = self.row_at(column, row);
     }
 
     pub fn selected_item(&self) -> Option<&Item> {
@@ -171,6 +178,8 @@ impl Activity {
                         l.spans.insert(0, super::sidebar::unread_mark(it.unread));
                         if n == self.selected {
                             *l = std::mem::take(l).style(Style::default().bg(super::theme::p().selection));
+                        } else if self.hover == Some(n) {
+                            *l = std::mem::take(l).style(super::theme::hover_style());
                         }
                     }
                     lines.extend(row);
@@ -290,5 +299,14 @@ mod tests {
         assert_eq!(a.row_at(6, 13), Some(6));
         assert_eq!(a.row_at(6, 16), None, "below the last item");
         assert_eq!(a.row_at(6, 9), None, "the border / title");
+    }
+
+    #[test]
+    fn hover_follows_the_pointer_and_leaves_the_selection() {
+        let mut a = Activity { list: Rect::new(5, 10, 80, 20), first: 5, shown: 2, selected: 5, ..Default::default() };
+        a.hover_at(6, 13);
+        assert_eq!((a.hover, a.selected), (Some(6), 5));
+        a.hover_at(6, 12);
+        assert_eq!(a.hover, None, "the gap");
     }
 }

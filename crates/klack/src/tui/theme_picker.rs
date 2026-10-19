@@ -25,6 +25,8 @@ pub struct ThemePicker {
     pub area: Rect,
     /// The theme rows at the last draw (the first is the first shown theme).
     pub list: Rect,
+    /// The row the pointer is over (not the selection), at the last `Moved`.
+    pub hover: Option<usize>,
 }
 
 impl ThemePicker {
@@ -56,6 +58,11 @@ impl ThemePicker {
     pub fn row_at(&self, column: u16, row: u16) -> Option<usize> {
         let n = row.checked_sub(self.list.y)? as usize;
         (self.list.contains((column, row).into()) && n < self.shown().len()).then_some(n)
+    }
+
+    /// The pointer moved to a position: hover the theme there (none off the list).
+    pub fn hover_at(&mut self, column: u16, row: u16) {
+        self.hover = self.row_at(column, row);
     }
 
     pub fn type_char(&mut self, c: char) {
@@ -98,7 +105,7 @@ impl ThemePicker {
             let mut spans = vec![Span::raw(label), Span::raw(" ".repeat(pad))];
             spans.extend(swatch);
             let line = Line::from(spans);
-            lines.push(if n == self.selected { line.style(Style::default().bg(p.selection)) } else { line });
+            lines.push(if n == self.selected { line.style(Style::default().bg(p.selection)) } else if self.hover == Some(n) { line.style(super::theme::hover_style()) } else { line });
         }
         if let Some(problem) = &self.problem {
             lines.push(Line::styled(format!(" {problem}"), Style::default().fg(p.danger)));
@@ -154,5 +161,15 @@ mod tests {
         let p = ThemePicker::new(true, names(), None);
         assert_eq!((p.shown()[0], p.highlighted()), (COLOUR_THEME, Some(COLOUR_THEME)));
         assert_eq!(ThemePicker::new(true, names(), Some("light")).highlighted(), Some("light"));
+    }
+
+    #[test]
+    fn hover_follows_the_pointer_and_leaves_the_selection() {
+        let mut p = ThemePicker::new(false, names(), None);
+        p.list = Rect::new(21, 12, 38, 4);
+        p.hover_at(22, 14);
+        assert_eq!((p.hover, p.selected), (Some(2), 0));
+        p.hover_at(22, 16);
+        assert_eq!(p.hover, None, "below the last theme");
     }
 }
