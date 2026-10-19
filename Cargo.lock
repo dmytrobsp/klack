@@ -1983,7 +1983,7 @@ checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 
 [[package]]
 name = "huddle"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "ashpd",
@@ -2431,7 +2431,7 @@ dependencies = [
 
 [[package]]
 name = "klack"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aes",
  "anyhow",
@@ -5069,7 +5069,7 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
 name = "slack-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "directories",
