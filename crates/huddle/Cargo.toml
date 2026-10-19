@@ -3,6 +3,7 @@ name = "huddle"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "Slack huddles: Amazon Chime SDK signaling and WebRTC audio"
 
 [dependencies]

@@ -238,3 +238,9 @@ preferences, overlay titles and the status-bar hints go through translation so f
 - `crates/klack` — the TUI and the `ctl` CLI.
 
 Status and verification notes: `PROGRESS.md`. Design: `DESIGN.md`.
+
+## Licence
+
+klack is licensed under either of the [Apache License, Version 2.0](LICENSE-APACHE) or the
+[MIT licence](LICENSE-MIT), at your option. Unless you say otherwise, any contribution you submit
+for inclusion in klack is licensed the same way, without any additional terms or conditions.
