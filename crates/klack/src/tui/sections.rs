@@ -22,6 +22,8 @@ pub struct MovePicker {
     pub selected: usize,
     /// Typing the new section's name.
     pub naming: Option<String>,
+    /// Last drawn area, for clicks.
+    pub area: Rect,
 }
 
 impl MovePicker {
@@ -31,7 +33,7 @@ impl MovePicker {
         choices.extend(ws.sections.iter().filter(|s| s.kind == "standard").map(|s| Choice::Section { id: s.id.clone(), name: s.name.clone() }));
         choices.push(Choice::New);
         let selected = choices.iter().position(|c| matches!(c, Choice::Section { id, .. } if Some(id) == current.as_ref())).unwrap_or(0);
-        MovePicker { channel, choices, selected, naming: None }
+        MovePicker { channel, choices, selected, naming: None, area: Rect::default() }
     }
 
     pub fn move_by(&mut self, delta: isize) {
@@ -42,10 +44,11 @@ impl MovePicker {
         &self.choices[self.selected]
     }
 
-    pub fn draw(&self, f: &mut Frame, area: Rect, ws: &Workspace) {
+    pub fn draw(&mut self, f: &mut Frame, area: Rect, ws: &Workspace) {
         let rows = self.choices.len() as u16 + 2 + u16::from(self.naming.is_some());
         let [popup] = Layout::horizontal([Constraint::Length(44.min(area.width))]).flex(Flex::Center).areas(area);
         let [popup] = Layout::vertical([Constraint::Length(rows.min(area.height))]).flex(Flex::Center).areas(popup);
+        self.area = popup;
         super::media::clear_modal(f, popup);
         let c = ws.conversations.get(&self.channel);
         let name = c.map(|c| if c.is_dm() { ws.conversation_label(c) } else { format!("#{}", c.name) }).unwrap_or_default();

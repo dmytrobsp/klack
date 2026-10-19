@@ -95,6 +95,8 @@ pub struct Activity {
     pub requested: std::collections::HashSet<(String, String)>,
     /// Items per page on the last draw.
     pub height: usize,
+    /// Last drawn area, for clicks.
+    pub area: Rect,
 }
 
 impl Activity {
@@ -136,6 +138,7 @@ impl Activity {
     pub fn draw(&mut self, f: &mut Frame, area: Rect, ws: &Workspace) {
         let [popup] = Layout::horizontal([Constraint::Length(90.min(area.width))]).flex(Flex::Center).areas(area);
         let [popup] = Layout::vertical([Constraint::Length(30.min(area.height))]).flex(Flex::Center).areas(popup);
+        self.area = popup;
         super::media::clear_modal(f, popup);
         let block = Block::default()
             .borders(Borders::ALL)

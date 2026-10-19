@@ -73,6 +73,8 @@ pub struct Threads {
     pub loading: bool,
     /// Entries per page on the last draw.
     pub height: usize,
+    /// Last drawn area, for clicks.
+    pub area: Rect,
 }
 
 impl Threads {
@@ -115,6 +117,7 @@ impl Threads {
         let p = super::theme::p();
         let [popup] = Layout::horizontal([Constraint::Length(90.min(area.width))]).flex(Flex::Center).areas(area);
         let [popup] = Layout::vertical([Constraint::Length(30.min(area.height))]).flex(Flex::Center).areas(popup);
+        self.area = popup;
         super::media::clear_modal(f, popup);
         let block = Block::default().borders(Borders::ALL).border_style(Style::default().fg(p.accent)).title(format!(" {} ", super::i18n::tr("Threads")));
         let inner = block.inner(popup);

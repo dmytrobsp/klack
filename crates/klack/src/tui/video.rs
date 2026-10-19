@@ -83,6 +83,8 @@ pub struct Player {
     children: Vec<Child>,
     file: PathBuf,
     pub finished: bool,
+    /// Last drawn area, for clicks.
+    pub area: Rect,
 }
 
 impl Player {
@@ -125,6 +127,7 @@ impl Player {
             children,
             file,
             finished: false,
+            area: Rect::default(),
         })
     }
 
@@ -229,6 +232,7 @@ impl Player {
     }
 
     pub fn draw(&mut self, f: &mut Frame, area: Rect, picker: &Picker) {
+        self.area = area;
         super::media::clear_popup(f, area);
         let clock = |s: f64| format!("{}:{:02}", s as u64 / 60, s as u64 % 60);
         let total = self.duration.map(|d| format!(" / {}", clock(d))).unwrap_or_default();

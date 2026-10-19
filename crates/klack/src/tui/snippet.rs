@@ -18,11 +18,13 @@ pub struct SnippetView {
     pub scroll: usize,
     /// Rows of text on the last draw (for paging).
     pub height: usize,
+    /// Last drawn area, for clicks.
+    pub area: Rect,
 }
 
 impl SnippetView {
     pub fn new(file: File) -> SnippetView {
-        SnippetView { file, text: None, lines: vec![], scroll: 0, height: 0 }
+        SnippetView { file, text: None, lines: vec![], scroll: 0, height: 0, area: Rect::default() }
     }
 
     pub fn set_text(&mut self, result: Result<String, String>) {
@@ -46,6 +48,7 @@ impl SnippetView {
     }
 
     pub fn draw(&mut self, f: &mut Frame, area: Rect) {
+        self.area = area;
         super::media::clear_popup(f, area);
         let name = if self.file.title.is_empty() { &self.file.name } else { &self.file.title };
         let lang = super::highlight::language(&self.file).unwrap_or(&self.file.pretty_type);

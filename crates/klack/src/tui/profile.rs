@@ -18,11 +18,13 @@ pub struct ProfileCard {
     /// The people this card can show (author first, then mentions); `index` is shown.
     pub people: Vec<String>,
     pub index: usize,
+    /// Last drawn area, for clicks.
+    pub area: Rect,
 }
 
 impl ProfileCard {
     pub fn new(people: Vec<String>) -> Option<ProfileCard> {
-        (!people.is_empty()).then_some(ProfileCard { people, index: 0 })
+        (!people.is_empty()).then_some(ProfileCard { people, index: 0, area: Rect::default() })
     }
 
     pub fn user(&self) -> &str {
@@ -33,9 +35,10 @@ impl ProfileCard {
         self.index = (self.index as isize + delta).rem_euclid(self.people.len() as isize) as usize;
     }
 
-    pub fn draw(&self, f: &mut Frame, area: Rect, ws: &Workspace) {
+    pub fn draw(&mut self, f: &mut Frame, area: Rect, ws: &Workspace) {
         let [popup] = Layout::horizontal([Constraint::Length(56.min(area.width))]).flex(Flex::Center).areas(area);
         let [popup] = Layout::vertical([Constraint::Length(15.min(area.height))]).flex(Flex::Center).areas(popup);
+        self.area = popup;
         super::media::clear_modal(f, popup);
         let keys = if self.people.len() > 1 { format!(" {}/{} in this message ", self.index + 1, self.people.len()) } else { String::new() };
         let block = Block::default()

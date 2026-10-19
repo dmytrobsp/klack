@@ -13,7 +13,7 @@ use slack_core::types::{HistoryPage, User};
 use tokio::sync::mpsc;
 
 use super::composer::{Composer, KeyOutcome};
-use super::keymap::{Action, Context, Key, Keymap, Lookup};
+use super::keymap::{Action, Context, Key, Keymap, Lookup, Mode};
 use super::messages::MessagePane;
 use super::picker::EmojiPicker;
 use super::sidebar::Sidebar;
@@ -216,6 +216,8 @@ struct App {
     clipboard: super::clipboard::Clipboard,
     /// An action awaiting y/n confirmation.
     confirm: Option<Confirm>,
+    /// Where the y/n prompt was drawn.
+    confirm_area: Rect,
     /// Open reaction picker, with the message it targets.
     picker: Option<(EmojiPicker, String, String)>,
     rtm_commands: mpsc::UnboundedSender<slack_core::rtm::RtmCommand>,
@@ -1842,10 +1844,100 @@ impl App {
         self.prefs.as_ref().is_some_and(|p| p.capturing.is_some())
     }
 
-    /// The contexts a key press is looked up in now: the open overlay's, or the focused
-    /// pane's; plus global.
-    fn active_contexts(&self) -> Vec<Context> {
-        let overlay = if self.menu.is_some() {
+    /// Where input goes now (see [`mode_of`]).
+    fn mode(&self) -> Mode {
+        mode_of(self.overlay(), self.focus)
+    }
+
+    /// The topmost dialog's area at the last draw (None without a dialog).
+    fn dialog_area(&self) -> Option<Rect> {
+        self.overlay()?;
+        Some(if let Some(m) = &self.menu {
+            m.area
+        } else if let Some(h) = &self.help {
+            h.area
+        } else if let Some(p) = &self.prefs {
+            p.picker.as_ref().map_or(p.area, |t| t.area)
+        } else if let Some(s) = &self.switcher {
+            s.area
+        } else if let Some(m) = &self.mover {
+            m.area
+        } else if let Some(d) = &self.save {
+            d.area
+        } else if let Some(a) = &self.activity {
+            a.area
+        } else if let Some(t) = &self.threads {
+            t.area
+        } else if let Some(card) = &self.profile {
+            card.area
+        } else if let Some(d) = &self.details {
+            d.area
+        } else if let Some(s) = &self.search {
+            s.area
+        } else if let Some(p) = &self.player {
+            p.area
+        } else if let Some(s) = &self.snippet {
+            s.area
+        } else if let Some(v) = &self.viewer {
+            v.area
+        } else if self.confirm.is_some() {
+            self.confirm_area
+        } else {
+            self.picker.as_ref().map(|(p, _, _)| p.area).unwrap_or_default()
+        })
+    }
+
+    /// Close the topmost dialog as its close key would (a click outside it).
+    fn close_dialog(&mut self) {
+        if self.menu.is_some() {
+            self.menu = None;
+        } else if self.help.is_some() {
+            self.help = None;
+        } else if let Some(p) = self.prefs.as_mut() {
+            if p.capturing.is_some() {
+                p.capturing = None;
+            } else if p.picker.is_some() {
+                p.picker = None;
+                drop(super::theme::set(self.ws.settings.appearance.theme_for(&self.ws.team_id)));
+            } else if p.editing.is_some() {
+                p.editing = None;
+            } else {
+                self.prefs = None;
+            }
+        } else if self.switcher.is_some() {
+            self.switcher = None;
+        } else if let Some(m) = self.mover.as_mut() {
+            if m.naming.take().is_none() {
+                self.mover = None;
+            }
+        } else if self.save.is_some() {
+            self.save = None;
+        } else if self.activity.is_some() {
+            self.activity = None;
+        } else if self.threads.is_some() {
+            self.threads = None;
+        } else if self.profile.is_some() {
+            self.profile = None;
+        } else if self.details.is_some() {
+            self.details = None;
+        } else if self.search.is_some() {
+            self.search = None;
+        } else if self.player.is_some() {
+            self.player = None;
+        } else if self.snippet.is_some() {
+            self.snippet = None;
+        } else if self.viewer.is_some() {
+            self.viewer = None;
+        } else if self.confirm.is_some() {
+            self.confirm = None;
+        } else {
+            self.picker = None;
+        }
+    }
+
+    /// The context of the topmost open dialog, if any.
+    fn overlay(&self) -> Option<Context> {
+        if self.menu.is_some() {
             Some(Context::Menu)
         } else if self.help.is_some() {
             Some(Context::Help)
@@ -1886,22 +1978,25 @@ impl App {
             Some(Context::Picker)
         } else {
             None
-        };
-        let mut out = vec![Context::Global];
-        match overlay {
-            Some(c) => out.push(c),
-            None => {
-                if self.completion.is_some() {
-                    out.push(Context::Completion);
-                }
-                out.push(match self.focus {
-                    Focus::Sidebar => Context::Sidebar,
-                    Focus::Huddle => Context::Huddle,
-                    Focus::Messages | Focus::Thread => Context::Messages,
-                    Focus::Composer | Focus::ThreadComposer => Context::Composer,
-                });
-            }
         }
+    }
+
+    /// The contexts a key press is looked up in now: the open dialog's alone, or global
+    /// and the focused pane's.
+    fn active_contexts(&self) -> Vec<Context> {
+        if let Some(c) = self.overlay() {
+            return vec![c];
+        }
+        let mut out = vec![Context::Global];
+        if self.completion.is_some() {
+            out.push(Context::Completion);
+        }
+        out.push(match self.focus {
+            Focus::Sidebar => Context::Sidebar,
+            Focus::Huddle => Context::Huddle,
+            Focus::Messages | Focus::Thread => Context::Messages,
+            Focus::Composer | Focus::ThreadComposer => Context::Composer,
+        });
         out
     }
 
@@ -1912,7 +2007,19 @@ impl App {
             return false;
         }
         let key = Key::from_event(k);
-        let results: Vec<Lookup> = self.active_contexts().into_iter().map(|c| self.keys.lookup(c, &self.pending, key)).collect();
+        let mut results: Vec<Lookup> = self.active_contexts().into_iter().map(|c| self.keys.lookup(c, &self.pending, key)).collect();
+        // A dialog leaves out the global keys, but quit works there too (also as a sequence).
+        if self.mode() == Mode::Dialog {
+            let mut seq = self.pending.clone();
+            seq.push(key);
+            let quits = self.keys.sequences(Context::Global, "quit");
+            if quits.contains(&seq) {
+                return false;
+            }
+            if quits.iter().any(|s| s.len() > seq.len() && s.starts_with(&seq)) {
+                results.push(Lookup::Pending);
+            }
+        }
         if results.iter().any(|r| matches!(r, Lookup::Action(_))) {
             return false;
         }
@@ -2573,6 +2680,7 @@ async fn run_workspace(
         broadcast: false,
         clipboard,
         confirm: None,
+        confirm_area: Default::default(),
         picker: None,
         rtm_commands: rtm.commands.clone(),
         connected: false,
@@ -2713,8 +2821,31 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
 }
 
 fn handle_event(app: &mut App, ev: Event) -> bool {
+    if let Event::FocusGained | Event::FocusLost = ev {
+        app.terminal_focused = matches!(ev, Event::FocusGained);
+        if !app.terminal_focused {
+            app.sidebar.hover = None;
+            app.messages.hover = None;
+            app.thread_pane.hover = None;
+        }
+        tracing::debug!(focused = app.terminal_focused, "terminal focus");
+        return true;
+    }
+    if let Event::Key(k) = &ev {
+        if k.kind != KeyEventKind::Release && app.global(k) == Some(Action::Quit) && !app.capturing_key() {
+            return false;
+        }
+    }
+    match app.mode() {
+        Mode::Dialog => handle_dialog(app, &ev),
+        Mode::Normal | Mode::Insert => handle_main(app, ev),
+    }
+}
+
+/// Input while a dialog is open: the topmost dialog takes every key and click; nothing under
+/// it reacts.
+fn handle_dialog(app: &mut App, ev: &Event) -> bool {
     match ev {
-        Event::Key(k) if k.kind != KeyEventKind::Release && app.global(&k) == Some(Action::Quit) && !app.capturing_key() => return false,
         Event::Key(k) if k.kind != KeyEventKind::Release && app.menu.is_some() => {
             let action = app.action_in(Context::Menu, &k);
             let Some(m) = app.menu.as_mut() else { return true };
@@ -2825,9 +2956,6 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
                 }
                 _ => {}
             }
-        }
-        Event::Key(k) if k.kind != KeyEventKind::Release && app.global(&k) == Some(Action::Preferences) => {
-            app.prefs = Some(super::prefs::Prefs::new());
         }
         Event::Key(k) if k.kind != KeyEventKind::Release && app.switcher.is_some() => {
             let len = app.switcher.as_ref().map(|s| s.entries(&app.ws).len()).unwrap_or(0);
@@ -2943,7 +3071,6 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
                 _ => {}
             }
         }
-        Event::Key(k) if k.kind != KeyEventKind::Release && app.global(&k) == Some(Action::Activity) => app.open_activity(),
         Event::Key(k) if k.kind != KeyEventKind::Release && app.threads.is_some() => {
             let action = app.action_in(Context::Threads, &k);
             let Some(t) = app.threads.as_mut() else { return true };
@@ -2967,7 +3094,6 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
                 app.load_threads(true);
             }
         }
-        Event::Key(k) if k.kind != KeyEventKind::Release && app.global(&k) == Some(Action::Threads) => app.load_threads(false),
         Event::Key(k) if k.kind != KeyEventKind::Release && app.profile.is_some() => {
             let action = app.action_in(Context::Profile, &k);
             let Some(card) = app.profile.as_mut() else { return true };
@@ -3011,26 +3137,6 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
                 _ => {}
             }
         }
-        Event::Key(k) if k.kind != KeyEventKind::Release && app.global(&k) == Some(Action::Details) => app.open_details(),
-        Event::Key(k) if k.kind != KeyEventKind::Release && app.global(&k) == Some(Action::Huddle) => app.toggle_huddle(),
-        Event::Key(k) if k.kind != KeyEventKind::Release && app.global(&k) == Some(Action::DeclineHuddle) => app.decline_huddle(false),
-        Event::Key(k) if k.kind != KeyEventKind::Release && app.global(&k) == Some(Action::HuddleThread) => app.open_huddle_thread(),
-        Event::Key(k) if k.kind != KeyEventKind::Release && app.global(&k) == Some(Action::HuddleView) => app.toggle_huddle_view(),
-        Event::Key(k) if k.kind != KeyEventKind::Release && app.global(&k) == Some(Action::ShareScreen) => app.toggle_share(),
-        Event::Key(k) if k.kind != KeyEventKind::Release && app.global(&k) == Some(Action::Camera) => {
-            let wanted = app.ws.settings.video.camera.clone();
-            app.status = match app.call.as_mut() {
-                Some(call) => call.toggle_camera(wanted.as_deref()).unwrap_or_else(|e| format!("camera: {e}")),
-                None => "not in a huddle".into(),
-            };
-        }
-        Event::Key(k) if k.kind != KeyEventKind::Release && app.global(&k) == Some(Action::Mute) => {
-            if let Some(call) = app.call.as_mut() {
-                if let Err(e) = call.toggle_mute() {
-                    app.status = format!("microphone: {e}");
-                }
-            }
-        }
         Event::Key(k) if k.kind != KeyEventKind::Release && app.search.is_some() => {
             let action = app.action_in(Context::Search, &k);
             let Some(search) = app.search.as_mut() else { return true };
@@ -3051,20 +3157,6 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
                     }
                 }
             }
-        }
-        Event::Key(k) if k.kind != KeyEventKind::Release && app.global(&k) == Some(Action::Search) => {
-            app.search = Some(super::search::Search::default());
-        }
-        Event::Key(k) if k.kind != KeyEventKind::Release && app.global(&k) == Some(Action::Switcher) => {
-            app.switcher = Some(super::switcher::Switcher::default());
-        }
-        Event::Key(k)
-            if k.kind != KeyEventKind::Release
-                && (app.global(&k) == Some(Action::Help)
-                    || app.focus == Focus::Sidebar && app.action_in(Context::Sidebar, &k) == Some(Action::Help)
-                    || matches!(app.focus, Focus::Messages | Focus::Thread) && app.action_in(Context::Messages, &k) == Some(Action::Help)) =>
-        {
-            app.help = Some(super::help::Help::default());
         }
         Event::Key(k) if k.kind != KeyEventKind::Release && app.player.is_some() => {
             let action = app.action_in(Context::Player, &k);
@@ -3117,31 +3209,6 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
                 }
             }
         }
-        Event::Key(k) if k.kind != KeyEventKind::Release && app.completion.is_some() && app.action_in(Context::Completion, &k).is_some() => {
-            let action = app.action_in(Context::Completion, &k);
-            // A command or choice typed out in full sends on the send key, as if the list were not
-            // there (mentions are accepted, to be sent as such).
-            let typed_command = app.completion.as_ref().and_then(|c| {
-                let s = c.items.get(c.selected)?;
-                let composer = if c.thread { &app.thread_composer } else { &app.composer };
-                (s.id.is_none() && s.replacement == composer.token(c.start)).then_some(c.thread)
-            });
-            let send_key = app.action_in(Context::Composer, &k) == Some(Action::Send);
-            let Some(c) = app.completion.as_mut() else { return true };
-            match action {
-                Some(Action::Up) => c.move_by(-1),
-                Some(Action::Down) => c.move_by(1),
-                Some(Action::Accept) if send_key && typed_command.is_some() => {
-                    app.completion = None;
-                    app.send(typed_command.unwrap_or_default());
-                }
-                Some(Action::Accept) => app.accept_completion(),
-                _ => {
-                    app.completion_dismissed = Some((c.thread, c.start));
-                    app.completion = None;
-                }
-            }
-        }
         Event::Key(k) if k.kind != KeyEventKind::Release && app.picker.is_some() => {
             let custom = app.ws.custom_emoji.clone();
             let action = app.action_in(Context::Picker, &k);
@@ -3172,35 +3239,64 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
                 }
             }
         }
+        Event::Mouse(m) if matches!(m.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown) => {
+            app.wheel_in_popup(m.kind == MouseEventKind::ScrollDown);
+        }
+        // A click outside the dialog closes it; one inside does nothing.
+        Event::Mouse(m) if matches!(m.kind, MouseEventKind::Down(_)) => {
+            if !app.dialog_area().is_some_and(|a| a.contains((m.column, m.row).into())) {
+                app.close_dialog();
+            }
+        }
+        _ => {}
+    }
+    true
+}
+
+/// Input on the main screen (no dialog open): the global keys, the suggestion list, the
+/// focused pane, the mouse.
+fn handle_main(app: &mut App, ev: Event) -> bool {
+    match ev {
         Event::Key(k) if k.kind != KeyEventKind::Release => {
-            if let Some(action) = app.global(&k) {
+            let global = app.global(&k);
+            // Moving around (Tab, Alt+↑/↓, PageUp/PageDown, workspaces) comes after a pane's help key
+            // and the suggestion list (Tab accepts a suggestion); the views and huddle keys first.
+            let late = global.is_some_and(|a| matches!(a, Action::Workspace1 | Action::Workspace2 | Action::Workspace3 | Action::Workspace4 | Action::Workspace5 | Action::Workspace6 | Action::Workspace7 | Action::Workspace8 | Action::Workspace9 | Action::PrevConversation | Action::NextConversation | Action::ScrollUp | Action::ScrollDown | Action::FocusNext | Action::FocusPrev));
+            if let Some(action) = global.filter(|_| !late) {
+                return run_global(app, action);
+            }
+            if app.focus == Focus::Sidebar && app.action_in(Context::Sidebar, &k) == Some(Action::Help) || matches!(app.focus, Focus::Messages | Focus::Thread) && app.action_in(Context::Messages, &k) == Some(Action::Help) {
+                app.help = Some(super::help::Help::default());
+                return true;
+            }
+            if app.completion.is_some() && app.action_in(Context::Completion, &k).is_some() {
+                let action = app.action_in(Context::Completion, &k);
+                // A command or choice typed out in full sends on the send key, as if the list were not
+                // there (mentions are accepted, to be sent as such).
+                let typed_command = app.completion.as_ref().and_then(|c| {
+                    let s = c.items.get(c.selected)?;
+                    let composer = if c.thread { &app.thread_composer } else { &app.composer };
+                    (s.id.is_none() && s.replacement == composer.token(c.start)).then_some(c.thread)
+                });
+                let send_key = app.action_in(Context::Composer, &k) == Some(Action::Send);
+                let Some(c) = app.completion.as_mut() else { return true };
                 match action {
-                    Action::Quit => return false,
-                    Action::Workspace1 => app.switch_workspace(0),
-                    Action::Workspace2 => app.switch_workspace(1),
-                    Action::Workspace3 => app.switch_workspace(2),
-                    Action::Workspace4 => app.switch_workspace(3),
-                    Action::Workspace5 => app.switch_workspace(4),
-                    Action::Workspace6 => app.switch_workspace(5),
-                    Action::Workspace7 => app.switch_workspace(6),
-                    Action::Workspace8 => app.switch_workspace(7),
-                    Action::Workspace9 => app.switch_workspace(8),
-                    Action::PrevConversation => app.sidebar.move_by_conversation(-1),
-                    Action::NextConversation => app.sidebar.move_by_conversation(1),
-                    Action::ScrollUp => {
-                        app.messages.scroll_up(app.messages.area.height.saturating_sub(3) as usize);
-                        app.maybe_load_older();
+                    Some(Action::Up) => c.move_by(-1),
+                    Some(Action::Down) => c.move_by(1),
+                    Some(Action::Accept) if send_key && typed_command.is_some() => {
+                        app.completion = None;
+                        app.send(typed_command.unwrap_or_default());
                     }
-                    Action::ScrollDown => app.messages.scroll_down(app.messages.area.height.saturating_sub(3) as usize),
-                    Action::FocusNext | Action::FocusPrev => {
-                        let order = app.focus_order();
-                        let pos = order.iter().position(|f| *f == app.focus).unwrap_or(0);
-                        let step = if action == Action::FocusNext { 1 } else { order.len() - 1 };
-                        app.focus = order[(pos + step) % order.len()];
+                    Some(Action::Accept) => app.accept_completion(),
+                    _ => {
+                        app.completion_dismissed = Some((c.thread, c.start));
+                        app.completion = None;
                     }
-                    _ => {}
                 }
                 return true;
+            }
+            if let Some(action) = global {
+                return run_global(app, action);
             }
             match app.focus {
                 Focus::Sidebar => {
@@ -3251,18 +3347,8 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
                 }
             }
         }
-        Event::FocusGained | Event::FocusLost => {
-            app.terminal_focused = matches!(ev, Event::FocusGained);
-            if !app.terminal_focused {
-                app.sidebar.hover = None;
-                app.messages.hover = None;
-                app.thread_pane.hover = None;
-            }
-            tracing::debug!(focused = app.terminal_focused, "terminal focus");
-        }
         Event::Paste(text) if app.focus == Focus::Composer => app.composer.insert_str(&text.replace("\r\n", "\n")),
         Event::Paste(text) if app.focus == Focus::ThreadComposer => app.thread_composer.insert_str(&text.replace("\r\n", "\n")),
-        Event::Mouse(m) if matches!(m.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown) && app.wheel_in_popup(m.kind == MouseEventKind::ScrollDown) => {}
         Event::Mouse(m) if m.kind == MouseEventKind::Moved => {
             let (c, r) = (m.column, m.row);
             app.sidebar.hover = app.sidebar.item_at(c, r);
@@ -3325,6 +3411,63 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
             MouseEventKind::ScrollDown if app.thread.is_some() && app.thread_pane.area.contains((m.column, m.row).into()) => app.thread_pane.scroll_down(3),
             _ => {}
         },
+        _ => {}
+    }
+    true
+}
+
+/// What a global key does. False to quit.
+fn run_global(app: &mut App, action: Action) -> bool {
+    match action {
+        Action::Quit => return false,
+        Action::Help => app.help = Some(super::help::Help::default()),
+        Action::Preferences => app.prefs = Some(super::prefs::Prefs::new()),
+        Action::Switcher => app.switcher = Some(super::switcher::Switcher::default()),
+        Action::Search => app.search = Some(super::search::Search::default()),
+        Action::Activity => app.open_activity(),
+        Action::Threads => app.load_threads(false),
+        Action::Details => app.open_details(),
+        Action::Huddle => app.toggle_huddle(),
+        Action::DeclineHuddle => app.decline_huddle(false),
+        Action::HuddleThread => app.open_huddle_thread(),
+        Action::HuddleView => app.toggle_huddle_view(),
+        Action::ShareScreen => app.toggle_share(),
+        Action::Camera => {
+            let wanted = app.ws.settings.video.camera.clone();
+            app.status = match app.call.as_mut() {
+                Some(call) => call.toggle_camera(wanted.as_deref()).unwrap_or_else(|e| format!("camera: {e}")),
+                None => "not in a huddle".into(),
+            };
+        }
+        Action::Mute => {
+            if let Some(call) = app.call.as_mut() {
+                if let Err(e) = call.toggle_mute() {
+                    app.status = format!("microphone: {e}");
+                }
+            }
+        }
+        Action::Workspace1 => app.switch_workspace(0),
+        Action::Workspace2 => app.switch_workspace(1),
+        Action::Workspace3 => app.switch_workspace(2),
+        Action::Workspace4 => app.switch_workspace(3),
+        Action::Workspace5 => app.switch_workspace(4),
+        Action::Workspace6 => app.switch_workspace(5),
+        Action::Workspace7 => app.switch_workspace(6),
+        Action::Workspace8 => app.switch_workspace(7),
+        Action::Workspace9 => app.switch_workspace(8),
+        Action::PrevConversation => app.sidebar.move_by_conversation(-1),
+        Action::NextConversation => app.sidebar.move_by_conversation(1),
+        Action::ScrollUp => {
+            app.messages.scroll_up(app.messages.area.height.saturating_sub(3) as usize);
+            app.maybe_load_older();
+        }
+        Action::ScrollDown => app.messages.scroll_down(app.messages.area.height.saturating_sub(3) as usize),
+        Action::FocusNext | Action::FocusPrev => {
+            let order = app.focus_order();
+            let pos = order.iter().position(|f| *f == app.focus).unwrap_or(0);
+            let step = if action == Action::FocusNext { 1 } else { order.len() - 1 };
+            app.focus = order[(pos + step) % order.len()];
+        }
         _ => {}
     }
     true
@@ -3837,11 +3980,14 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     if let Some((picker, _, _)) = app.picker.as_mut() {
         picker.draw(f, main, &app.ws.custom_emoji);
     }
-    match &app.confirm {
-        Some(Confirm::Delete { .. }) => draw_confirm(f, main, "Delete this message? y / n"),
-        Some(Confirm::Leave(channel)) => draw_confirm(f, main, &format!("Leave #{}? y / n", app.ws.channel_label(channel))),
-        Some(Confirm::DeleteSection { name, .. }) => draw_confirm(f, main, &format!("Delete the section {name}? y / n")),
-        None => {}
+    let question = match &app.confirm {
+        Some(Confirm::Delete { .. }) => Some("Delete this message?".to_string()),
+        Some(Confirm::Leave(channel)) => Some(format!("Leave #{}?", app.ws.channel_label(channel))),
+        Some(Confirm::DeleteSection { name, .. }) => Some(format!("Delete the section {name}?")),
+        None => None,
+    };
+    if let Some(q) = question {
+        app.confirm_area = draw_confirm(f, main, &confirm_question(&q, &app.keys));
     }
     if let Some(d) = app.save.as_mut() {
         d.draw(f, main);
@@ -3877,10 +4023,10 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     if let Some(sw) = app.switcher.as_mut() {
         sw.draw(f, body, &app.ws);
     }
-    if let Some(search) = &app.search {
+    if let Some(search) = app.search.as_mut() {
         search.draw(f, body, &app.ws);
     }
-    if let Some(d) = &app.details {
+    if let Some(d) = app.details.as_mut() {
         d.draw(f, body, &app.ws);
     }
     if let Some(t) = app.threads.as_mut() {
@@ -3889,10 +4035,10 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     if let Some(a) = app.activity.as_mut() {
         a.draw(f, body, &app.ws);
     }
-    if let Some(card) = &app.profile {
+    if let Some(card) = app.profile.as_mut() {
         card.draw(f, body, &app.ws);
     }
-    if let Some(m) = &app.mover {
+    if let Some(m) = app.mover.as_mut() {
         m.draw(f, body, &app.ws);
     }
     if let Some(p) = app.prefs.as_mut() {
@@ -3929,6 +4075,24 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         ratatui::text::Span::styled(if app.connected { "● live " } else { "○ connecting " }, if app.connected { ratatui::style::Style::default().fg(p.good) } else { dim }),
     ];
     f.render_widget(Paragraph::new(status_line(pill, typing, &crumb, &middle, right, status.width)), status);
+}
+
+/// The mode for the topmost dialog (`overlay`) and the focused pane: a dialog owns all input;
+/// in a message box keys type.
+fn mode_of(overlay: Option<Context>, focus: Focus) -> Mode {
+    match (overlay, focus) {
+        (Some(_), _) => Mode::Dialog,
+        (None, Focus::Composer | Focus::ThreadComposer) => Mode::Insert,
+        (None, _) => Mode::Normal,
+    }
+}
+
+/// A yes / no question with the key that confirms ("Delete this message? y / n").
+fn confirm_question(q: &str, keys: &Keymap) -> String {
+    match keys.first_key(Context::Confirm, Action::Yes) {
+        Some(yes) => format!("{q} {yes} / n"),
+        None => q.to_string(),
+    }
 }
 
 /// The status bar's pill — where keys go: the open dialog, or the focused pane — and whether
@@ -3998,7 +4162,8 @@ fn status_line(pill: &str, typing: bool, crumb: &str, middle: &str, right: Vec<r
     ratatui::text::Line::from(spans)
 }
 
-fn draw_confirm(f: &mut ratatui::Frame, area: ratatui::layout::Rect, question: &str) {
+/// The yes / no prompt, centred in `area`; returns where it was drawn.
+fn draw_confirm(f: &mut ratatui::Frame, area: ratatui::layout::Rect, question: &str) -> Rect {
     use ratatui::layout::Flex;
     use ratatui::style::Style;
     use ratatui::widgets::{Block, Borders};
@@ -4007,6 +4172,7 @@ fn draw_confirm(f: &mut ratatui::Frame, area: ratatui::layout::Rect, question: &
     super::media::clear_modal(f, popup);
     let block = Block::default().borders(Borders::ALL).border_style(Style::default().fg(super::theme::p().danger));
     f.render_widget(Paragraph::new(format!(" {question}")).block(block), popup);
+    popup
 }
 
 /// The channel composer, or the thread pane's (`thread`).
@@ -4227,6 +4393,26 @@ mod tests {
         assert!(status_expired("left #general", s(8)));
         assert!(!status_expired("uploading notes.txt…", s(600)), "still going on");
         assert!(!status_expired("", s(600)));
+    }
+
+    #[test]
+    fn confirm_prompt_names_the_bound_key() {
+        use crate::tui::keymap::Keymap;
+        let rebound = super::confirm_question("delete this message?", &Keymap::load("[confirm]\nyes = \"j\"\n").0);
+        assert!(rebound.ends_with("j / n"), "{rebound:?}");
+        let default = super::confirm_question("delete this message?", &Keymap::load("").0);
+        assert!(default.ends_with("y / n"), "{default:?}");
+    }
+
+    #[test]
+    fn dialogs_take_the_mode() {
+        use super::{Focus, mode_of};
+        use crate::tui::keymap::{Context, Mode};
+        assert_eq!(mode_of(Some(Context::Search), Focus::Composer), Mode::Dialog, "a dialog over the composer");
+        assert_eq!(mode_of(None, Focus::Composer), Mode::Insert);
+        assert_eq!(mode_of(None, Focus::ThreadComposer), Mode::Insert);
+        assert_eq!(mode_of(None, Focus::Messages), Mode::Normal);
+        assert_eq!(mode_of(None, Focus::Huddle), Mode::Normal);
     }
 
     fn session(team_id: &str, team: &str, user: &str) -> WorkspaceSession {

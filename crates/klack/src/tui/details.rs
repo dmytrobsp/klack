@@ -26,11 +26,13 @@ pub struct Details {
     pub members: Option<Vec<String>>,
     pub pins: Option<Vec<Message>>,
     pub selected: usize,
+    /// Last drawn area, for clicks.
+    pub area: Rect,
 }
 
 impl Details {
     pub fn new(channel: String) -> Details {
-        Details { channel, tab: Tab::About, info: None, members: None, pins: None, selected: 0 }
+        Details { channel, tab: Tab::About, info: None, members: None, pins: None, selected: 0, area: Rect::default() }
     }
 
     pub fn switch_tab(&mut self, delta: isize) {
@@ -53,9 +55,10 @@ impl Details {
         self.selected = if len == 0 { 0 } else { (self.selected as isize + delta).clamp(0, len as isize - 1) as usize };
     }
 
-    pub fn draw(&self, f: &mut Frame, area: Rect, ws: &Workspace) {
+    pub fn draw(&mut self, f: &mut Frame, area: Rect, ws: &Workspace) {
         let [popup] = Layout::horizontal([Constraint::Length(80.min(area.width))]).flex(Flex::Center).areas(area);
         let [popup] = Layout::vertical([Constraint::Length(26.min(area.height))]).flex(Flex::Center).areas(popup);
+        self.area = popup;
         super::media::clear_modal(f, popup);
         let conv = self.info.as_ref().or_else(|| ws.conversations.get(&self.channel));
         let name = conv.map(|c| if c.is_dm() { ws.conversation_label(c) } else { format!("#{}", c.name) }).unwrap_or_else(|| self.channel.clone());

@@ -21,6 +21,8 @@ pub struct ThemePicker {
     pub selected: usize,
     /// Why the highlighted theme cannot be shown.
     pub problem: Option<String>,
+    /// Last drawn area, for clicks.
+    pub area: Rect,
 }
 
 impl ThemePicker {
@@ -65,11 +67,12 @@ impl ThemePicker {
         self.problem = super::theme::set(&name).err();
     }
 
-    pub fn draw(&self, f: &mut Frame, area: Rect, base: &str) {
-        let shown = self.shown();
-        let rows = (shown.len().max(1) + 4 + usize::from(self.problem.is_some())) as u16;
+    pub fn draw(&mut self, f: &mut Frame, area: Rect, base: &str) {
+        let rows = (self.shown().len().max(1) + 4 + usize::from(self.problem.is_some())) as u16;
         let [popup] = Layout::horizontal([Constraint::Length(40.min(area.width))]).flex(Flex::Center).areas(area);
         let [popup] = Layout::vertical([Constraint::Length(rows.min(area.height))]).flex(Flex::Center).areas(popup);
+        self.area = popup;
+        let shown = self.shown();
         super::media::clear_popup(f, popup);
         let p = super::theme::p();
         let mut lines = vec![Line::from(vec![Span::styled(" › ", Style::default().fg(p.dim)), Span::styled(self.filter.clone(), Style::default().add_modifier(Modifier::BOLD))]), Line::raw("")];

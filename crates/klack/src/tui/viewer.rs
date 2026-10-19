@@ -24,11 +24,13 @@ pub struct Viewer {
     pub image: Loaded,
     /// The image encoded for the last inner area it was drawn in.
     encoded: Option<(Size, Protocol)>,
+    /// Last drawn area, for clicks.
+    pub area: Rect,
 }
 
 impl Viewer {
     pub fn new(files: Vec<File>, index: usize) -> Viewer {
-        Viewer { files, index, image: Loaded::Loading, encoded: None }
+        Viewer { files, index, image: Loaded::Loading, encoded: None, area: Rect::default() }
     }
 
     pub fn file(&self) -> &File {
@@ -59,6 +61,7 @@ impl Viewer {
     }
 
     pub fn draw(&mut self, f: &mut Frame, area: Rect, picker: &Picker) {
+        self.area = area;
         super::media::clear_popup(f, area);
         let file = self.file().clone();
         let name = if file.title.is_empty() { file.name.clone() } else { file.title.clone() };

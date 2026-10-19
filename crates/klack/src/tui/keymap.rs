@@ -632,6 +632,15 @@ actions! {
     }
 }
 
+/// Where input goes: a dialog takes it all; otherwise the composer (typing) or the
+/// main-screen panes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    Normal,
+    Insert,
+    Dialog,
+}
+
 /// What a key press means in a context, given keys pressed before it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lookup {

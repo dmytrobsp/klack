@@ -33,6 +33,8 @@ pub struct Switcher {
     pub selected: usize,
     /// Rows of the list at the last draw (a page for PageUp / PageDown).
     pub height: usize,
+    /// Last drawn area, for clicks.
+    pub area: Rect,
 }
 
 impl Switcher {
@@ -47,6 +49,7 @@ impl Switcher {
     pub fn draw(&mut self, f: &mut Frame, area: Rect, ws: &Workspace) {
         let [popup] = Layout::horizontal([Constraint::Length(60.min(area.width))]).flex(Flex::Center).areas(area);
         let [popup] = Layout::vertical([Constraint::Length(18.min(area.height))]).flex(Flex::Center).areas(popup);
+        self.area = popup;
         super::media::clear_modal(f, popup);
         let items = self.entries(ws);
         let mut block = Block::default().borders(Borders::ALL).border_style(Style::default().fg(super::theme::p().accent)).title(format!(" {} ", super::i18n::tr("Jump to…")));

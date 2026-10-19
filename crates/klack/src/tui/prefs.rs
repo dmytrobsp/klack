@@ -430,6 +430,8 @@ pub struct Prefs {
     pub saved: Option<Result<String, String>>,
     /// Choosing a theme (the colour theme, or the workspace's own).
     pub picker: Option<super::theme_picker::ThemePicker>,
+    /// Last drawn area, for clicks.
+    pub area: Rect,
 }
 
 impl Prefs {
@@ -576,6 +578,7 @@ impl Prefs {
 
     pub fn draw(&mut self, f: &mut Frame, area: Rect, ws: &Workspace, current: Option<&str>, keys: &Keymap) {
         let popup = popup_area(area);
+        self.area = popup;
         super::media::clear_modal(f, popup);
         let saved = match &self.saved {
             Some(Ok(path)) => format!(" saved to {path} "),
@@ -649,7 +652,7 @@ impl Prefs {
             let dim = Style::default().fg(super::theme::p().dim);
             f.render_widget(Paragraph::new(hints.iter().map(|h| Line::styled(*h, dim)).collect::<Vec<_>>()).wrap(Wrap { trim: true }), below);
         }
-        if let Some(picker) = &self.picker {
+        if let Some(picker) = self.picker.as_mut() {
             picker.draw(f, area, &ws.settings.appearance.theme);
         }
     }
