@@ -3830,7 +3830,7 @@ fn handle_main(app: &mut App, ev: Event) -> bool {
             let resolved = app.resolve(&k);
             match resolved {
                 Resolved::Action(Context::Global, action) => return run_global(app, action),
-                Resolved::Action(Context::Sidebar | Context::Messages, Action::Help) => {
+                Resolved::Action(Context::Sidebar | Context::Messages | Context::Huddle, Action::Help) => {
                     app.help = Some(super::help::Help::default());
                     return true;
                 }
@@ -4691,6 +4691,14 @@ fn split_main(main: Rect, thread: bool) -> (Option<Rect>, Option<Rect>) {
     }
 }
 
+/// The screen split into the body, the call bar and the status line; an empty row separates
+/// the call bar from the status line, only when there is a call bar.
+fn bottom_rows(area: Rect, call_rows: u16) -> [Rect; 3] {
+    let gap = u16::from(call_rows > 0);
+    let [body, call_bar, _, status] = Layout::vertical([Constraint::Min(1), Constraint::Length(call_rows), Constraint::Length(gap), Constraint::Length(1)]).areas(area);
+    [body, call_bar, status]
+}
+
 fn draw(f: &mut ratatui::Frame, app: &mut App) {
     app.screen = f.area();
     // A sequence started before a dialog opened (or closed) is over.
@@ -4713,11 +4721,8 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         app.focus = Focus::Messages;
     }
     let mode = app.mode();
-    let key = |a| app.keys.first_shown_in(mode, Context::Global, a).unwrap_or_default();
-    let call_keys = (key(Action::Mute), key(Action::Huddle), key(Action::HuddleThread), key(Action::HuddleView), key(Action::Camera), key(Action::ShareScreen));
-    let bar_keys = super::huddle_view::Keys { mute: &call_keys.0, leave: &call_keys.1, thread: &call_keys.2, view: &call_keys.3, camera: &call_keys.4, share: &call_keys.5 };
     let call_rows = app.call.as_ref().map_or(0, |call| call.bar_rows(&app.ws, &app.media, f.area().width));
-    let [body, call_bar, status] = Layout::vertical([Constraint::Min(1), Constraint::Length(call_rows), Constraint::Length(1)]).areas(f.area());
+    let [body, call_bar, status] = bottom_rows(f.area(), call_rows);
     let above_status = body;
     app.call_bar_area = call_bar;
     if let Some(call) = &app.call {
@@ -4777,7 +4782,7 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         app.messages.area = Default::default();
         app.messages.hover = None;
         app.composer_area = Default::default();
-        view.draw(f, main, call, &app.ws, &app.media, bar_keys);
+        view.draw(f, main, call, &app.ws, &app.media);
     } else {
         let inner_w = main.width.saturating_sub(2) as usize;
         let composer_h = app.composer.height(inner_w);
@@ -5084,6 +5089,17 @@ fn attachment_at(area: Rect, closable: usize, column: u16, row: u16) -> Option<u
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_gap_separates_the_call_bar_from_the_status_line() {
+        use ratatui::layout::Rect; use super::bottom_rows;
+        let area = Rect { x: 0, y: 0, width: 80, height: 30 };
+        let [body, bar, status] = bottom_rows(area, 2);
+        assert_eq!((body.height, bar.height, status.height), (26, 2, 1));
+        assert_eq!(status.y - (bar.y + bar.height), 1, "one empty row");
+        let [body, bar, status] = bottom_rows(area, 0);
+        assert_eq!((body.height, bar.height, status.y), (29, 0, 29), "no call, no gap");
+    }
+
     use slack_core::session::WorkspaceSession;
 
     #[test]

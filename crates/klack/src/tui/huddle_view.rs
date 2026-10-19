@@ -1,6 +1,6 @@
 //! The huddle view (␣hv): instead of the message pane, a tile per participant with their
 //! picture or video (the border lights up while they speak, 🔇 in the title when muted),
-//! and the call's controls underneath.
+//! and the audio settings underneath.
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Rect};
@@ -133,7 +133,7 @@ pub fn layout(n: usize, area: Rect, scroll: usize) -> Grid {
 }
 
 /// The footer lines that fit and their height: at most a third of the view's `height`, so
-/// tiles keep the room; the audio line goes first, then the controls are cut.
+/// tiles keep the room; the lines that do not fit are cut.
 pub fn footer(lines: &[String], width: usize, height: u16) -> (Vec<String>, u16) {
     let budget = (height / 3).max(1);
     let mut shown: Vec<String> = Vec::new();
@@ -144,7 +144,7 @@ pub fn footer(lines: &[String], width: usize, height: u16) -> (Vec<String>, u16)
             shown.push(line.clone());
             used += rows;
         } else if shown.is_empty() {
-            // Not even the controls fit: as much of them as the budget allows.
+            // Not even the first fits: as much of it as the budget allows.
             shown.push(line.clone());
             used = budget;
         }
@@ -170,27 +170,6 @@ pub fn stage_split(area: Rect, others: usize) -> (Rect, Rect) {
 /// "▲ 4 more" / "▼ 6 more".
 pub fn more_marker(up: bool, n: usize) -> String {
     format!("{} {n} more", if up { "▲" } else { "▼" })
-}
-
-/// The call's keys in a line, shortened when `width` is too narrow for the long form.
-pub fn controls(keys: Keys, muted: bool, camera_on: bool, sharing: bool, width: usize) -> String {
-    let Keys { mute, leave, thread, view, camera, share } = keys;
-    let mic = if muted { "unmute" } else { "mute" };
-    let cam = if camera_on { "camera off" } else { "camera on" };
-    let screen = if sharing { "stop sharing" } else { "share screen" };
-    let long = format!(" {mute} {mic} · {camera} {cam} · {share} {screen} · {thread} thread · {leave} leave · {view} back to the messages");
-    if long.chars().count() <= width { long } else { format!(" {mute} {mic} · {camera} {cam} · {share} {screen} · {thread} thread · {leave} leave · {view} messages") }
-}
-
-/// The call's keys, for the hints.
-#[derive(Debug, Clone, Copy)]
-pub struct Keys<'a> {
-    pub mute: &'a str,
-    pub leave: &'a str,
-    pub thread: &'a str,
-    pub view: &'a str,
-    pub camera: &'a str,
-    pub share: &'a str,
 }
 
 /// Rows `text` takes when wrapped at word boundaries to `width` (as `Wrap { trim: true }`).
@@ -250,8 +229,7 @@ fn tile_block(title: Span<'static>, speaking: bool, selected: bool) -> Block<'st
 }
 
 impl HuddleView {
-    /// `keys`: mute, leave, thread and view keys, for the controls line.
-    pub fn draw(&mut self, f: &mut Frame, area: Rect, call: &Call, ws: &Workspace, media: &Media, keys: Keys) {
+    pub fn draw(&mut self, f: &mut Frame, area: Rect, call: &Call, ws: &Workspace, media: &Media) {
         let dim = Style::default().fg(super::theme::p().dim);
         let green = Style::default().fg(super::theme::p().own);
         let place = call.place(ws);
@@ -266,9 +244,9 @@ impl HuddleView {
             .title(Line::from(vec![Span::styled(format!(" 🎧 {place} "), green.add_modifier(Modifier::BOLD)), Span::styled(format!("· {people} · {state} "), dim)]));
         let inner = block.inner(area);
         f.render_widget(block, area);
-        // The controls and audio lines, wrapped in a narrow pane.
+        // The audio line, wrapped in a narrow pane.
         let width = inner.width as usize;
-        let all = [controls(keys, call.muted, call.camera_on(), call.is_sharing(), width), audio_summary(&ws.settings.audio, width)];
+        let all = [audio_summary(&ws.settings.audio, width)];
         let (texts, footer_h) = footer(&all, width, inner.height);
         let tiles_area = Rect { height: inner.height.saturating_sub(footer_h + 1), y: inner.y + 1, ..inner };
         let footer = Rect { y: inner.y + inner.height - footer_h, height: footer_h, ..inner };
@@ -593,9 +571,6 @@ mod tests {
         assert_eq!(wrapped_rows(" vol 100% · gain 100% · gate off · noise off", 80), 1);
         assert_eq!(wrapped_rows(" vol 100% · gain 100% · gate off · noise off", 38), 2);
         assert_eq!(wrapped_rows("abcdefghij", 4), 3, "a long word is broken");
-        let keys = Keys { mute: "F4", leave: "F3", thread: "F7", view: "F8", camera: "F9", share: "F10" };
-        assert_eq!(controls(keys, true, false, false, 120), " F4 unmute · F9 camera on · F10 share screen · F7 thread · F3 leave · F8 back to the messages");
-        assert_eq!(controls(keys, false, true, true, 40), " F4 mute · F9 camera off · F10 stop sharing · F7 thread · F3 leave · F8 messages");
     }
 
     #[test]

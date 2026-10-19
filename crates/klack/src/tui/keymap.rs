@@ -654,6 +654,7 @@ actions! {
         NextTab "right" "the tile to the right" "right" "👉" ["right", "l"]
         Open "maximize" "maximize the tile, or all tiles again" "maximize" "🔲" ["enter", "f"]
         Close "back" "all tiles again, or leave the tiles" "back" "🔙" ["esc"]
+        Help "help" "this help" "help" "❓" ["?"]
     }
     Preferences {
         Up "up" "previous setting" "up" "🔼" ["up", "k"]
@@ -1410,7 +1411,7 @@ pub fn hints_for(context: Context) -> &'static [(Action, &'static str)] {
         Context::Preferences => &[(Open, "change"), (NextTab, "category"), (Close, "close")],
         Context::Menu => &[(Open, "choose"), (Close, "close")],
         Context::Save => &[(Open, "save"), (Tick, "tick"), (TickAll, "all"), (Folder, "folder"), (Close, "close")],
-        Context::Huddle => &[(Open, "maximize"), (NextTab, "next tile"), (Close, "back")],
+        Context::Huddle => &[(Open, "maximize"), (NextTab, "next tile"), (Close, "back"), (Help, "help")],
     }
 }
 
@@ -1438,7 +1439,7 @@ impl Keymap {
             } else {
                 self.first_key(context, *action)
             };
-            if *action == Action::Help && matches!(context, Context::Sidebar | Context::Messages) && self.leader_key().is_some() {
+            if *action == Action::Help && matches!(context, Context::Sidebar | Context::Messages | Context::Huddle) && self.leader_key().is_some() {
                 out.push((self.show(&[LEADER]), super::i18n::tr("actions").into_owned()));
             }
             if let Some(key) = key {
@@ -1588,6 +1589,7 @@ mod tests {
         assert_eq!(words(Context::Sidebar), "↑/↓ move · Enter open · ␣ actions · ? help");
         assert_eq!(words(Context::Composer), "Alt+Enter new line · Enter send · Esc normal");
         assert_eq!(words(Context::Confirm), "y yes");
+        assert!(words(Context::Huddle).ends_with("␣ actions · ? help"), "{}", words(Context::Huddle));
         // A sequence in a hint is short, its leader the one pressed there (a dialog: Ctrl+Space).
         assert_eq!(words(Context::Profile), "Enter message · ^␣hp huddle · ^␣v VIP · → next person · Esc close");
         let (map, _) = Keymap::load("[messages]\ntype = []\nopen_thread = \"R\"\n");
