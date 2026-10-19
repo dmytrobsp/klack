@@ -30,6 +30,21 @@ Web API calls fail, to try what klack does when Slack refuses (release builds ig
 `KLACK_DAYS_LATER=31` makes the sidebar think it is 31 days later (to see quiet conversations hide). Tokens and cookies are
 never logged — keep it that way.
 
+## Memory
+
+Watch `VmRSS` / `RssAnon` in `/proc/<pid>/status` while using a release build on a busy
+workspace (`RssAnon` is klack's own memory; the rest is mostly the program file). To see what
+holds it, build with the heap profiler and quit normally (Ctrl+Q); `dhat-heap.json` lands in
+the working folder:
+
+    CARGO_PROFILE_RELEASE_LTO=thin CARGO_PROFILE_RELEASE_STRIP=false \
+    CARGO_PROFILE_RELEASE_DEBUG=line-tables-only cargo build --release --features dhat-heap
+
+Load the file in [dhat's viewer](https://nnethercote.github.io/dh_view/dh_view.html), or sum
+`gb` (bytes held at the peak) per allocation site from its `pps`. An optimised build with
+`CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS=true` keeps `KLACK_FAIL`, e.g. to measure on a real
+account without marking anything read: `KLACK_FAIL=conversations.mark,subscriptions.thread.mark`.
+
 ## Layout
 
 - `crates/slack-core` — sessions, Web API, real-time events, message formatting.

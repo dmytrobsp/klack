@@ -68,8 +68,14 @@ fn init_logging(profile: &str) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "dhat-heap")]
+#[global_allocator]
+static ALLOC: dhat::Alloc = dhat::Alloc;
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    #[cfg(feature = "dhat-heap")]
+    let _profiler = dhat::Profiler::new_heap();
     // rustls and reqwest are built without a crypto provider of their own (one fewer to carry):
     // ring, as webrtc uses, is the one for every TLS connection.
     let _ = rustls::crypto::ring::default_provider().install_default();
