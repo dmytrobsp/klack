@@ -40,7 +40,37 @@ pub struct Draft {
     cursor: usize,
     mentions: Vec<(String, String)>,
     editing: Option<String>,
+    /// Kept while klack runs, not saved with the text.
+    #[serde(skip)]
+    attachments: Vec<Attachment>,
 }
+
+impl Draft {
+    /// Whether it is worth saving across runs (attachments are not saved).
+    pub fn has_text(&self) -> bool {
+        !self.text.trim().is_empty() || self.editing.is_some()
+    }
+}
+
+/// A file waiting in a composer to be sent with the message (pasted with Ctrl+V).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Attachment {
+    pub name: String,
+    pub size: u64,
+    pub data: AttachmentData,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum AttachmentData {
+    /// A file on disk (copied in a file manager), read when sent.
+    File(std::path::PathBuf),
+    /// A pasted picture, as PNG.
+    Png(std::sync::Arc<Vec<u8>>),
+}
+
+/// Attachment rows above the text: one per attachment up to this many, else one fewer and
+/// "… and N more".
+const ATTACHMENT_ROWS: usize = 4;
 
 #[derive(Debug, Default, Clone)]
 pub struct Composer {
@@ -52,6 +82,8 @@ pub struct Composer {
     pub editing: Option<String>,
     history: Vec<String>,
     history_pos: Option<usize>,
+    /// Sent with the message.
+    pub attachments: Vec<Attachment>,
 }
 
 impl Composer {
@@ -80,6 +112,9 @@ impl Composer {
             Some(Action::WordRight) => self.word_right(),
             Some(Action::Left) => self.left(),
             Some(Action::Right) => self.right(),
+            Some(Action::Backspace) if self.chars.is_empty() && !self.attachments.is_empty() => {
+                self.attachments.pop();
+            }
             Some(Action::Backspace) => self.backspace(),
             Some(Action::DeleteForward) => self.delete(),
             Some(Action::Up) if self.is_empty() && self.editing.is_none() => return KeyOutcome::UpWhenEmpty,
@@ -128,14 +163,14 @@ impl Composer {
 
     /// What is typed, as a draft (None when nothing is), leaving it in place.
     pub fn draft(&self) -> Option<Draft> {
-        (!self.is_empty() || self.editing.is_some()).then(|| Draft { text: self.chars.iter().collect(), cursor: self.cursor, mentions: self.mentions.clone(), editing: self.editing.clone() })
+        (!self.is_empty() || self.editing.is_some() || !self.attachments.is_empty()).then(|| Draft { text: self.chars.iter().collect(), cursor: self.cursor, mentions: self.mentions.clone(), editing: self.editing.clone(), attachments: self.attachments.clone() })
     }
 
     /// Put a draft back in place of what is there.
     pub fn restore(&mut self, d: Draft) {
         self.clear();
         self.chars = d.text.chars().collect();
-        (self.cursor, self.mentions, self.editing) = (d.cursor.min(self.chars.len()), d.mentions, d.editing);
+        (self.cursor, self.mentions, self.editing, self.attachments) = (d.cursor.min(self.chars.len()), d.mentions, d.editing, d.attachments);
     }
 
     pub fn clear(&mut self) {
@@ -144,6 +179,7 @@ impl Composer {
         self.mentions.clear();
         self.editing = None;
         self.history_pos = None;
+        self.attachments.clear();
     }
 
     pub fn insert(&mut self, c: char) {
@@ -444,6 +480,24 @@ impl Composer {
         if col >= width.max(1) { (row as u16 + 1, 0) } else { (row as u16, col as u16) }
     }
 
+    /// The attachment lines drawn above the text, and how many of them stand for one
+    /// attachment each (the rest is "… and N more").
+    pub fn attachment_lines(&self) -> (Vec<String>, usize) {
+        let n = self.attachments.len();
+        let shown = if n <= ATTACHMENT_ROWS { n } else { ATTACHMENT_ROWS - 1 };
+        let mut lines: Vec<String> = self.attachments[..shown].iter().map(|a| format!("📎 {} · {}", a.name, super::text::human_size(a.size))).collect();
+        if shown < n {
+            lines.push(format!("📎 … and {} more", n - shown));
+        }
+        (lines, shown)
+    }
+
+    /// The composer's height with its border at `width` (inside the border): attachments
+    /// and up to eight rows of text.
+    pub fn height(&self, width: usize) -> u16 {
+        self.rows(width).clamp(1, 8) + self.attachment_lines().0.len() as u16 + 2
+    }
+
     /// Rows needed to show the text at `width`.
     pub fn rows(&self, width: usize) -> u16 {
         (self.wrap(width).len()).max(self.cursor_position(width).0 as usize + 1) as u16
@@ -625,6 +679,31 @@ mod tests {
         c.insert_str("abcdef");
         assert_eq!(c.cursor_position(4), (1, 2));
         assert_eq!(c.rows(4), 2);
+    }
+
+    #[test]
+    fn attachments_wait_in_the_composer() {
+        let keys = Keymap::load("").0;
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        let file = |name: &str| Attachment { name: name.into(), size: 2048, data: AttachmentData::File(name.into()) };
+        let mut c = Composer::default();
+        c.attachments = vec![file("a.png"), file("b.pdf")];
+        assert_eq!(c.attachment_lines(), (vec!["📎 a.png · 2.0 KB".to_string(), "📎 b.pdf · 2.0 KB".into()], 2));
+        assert_eq!(c.height(20), 5, "two attachments, one row of text, the border");
+        let draft = c.take_draft().expect("attachments alone are a draft");
+        assert!(!draft.has_text(), "not saved across runs");
+        assert!(c.attachments.is_empty());
+        c.restore(draft);
+        c.insert('x');
+        c.handle_key(key(KeyCode::Backspace), &keys);
+        assert_eq!((c.text(), c.attachments.len()), (String::new(), 2), "Backspace deletes text first");
+        c.handle_key(key(KeyCode::Backspace), &keys);
+        assert_eq!(c.attachments, vec![file("a.png")], "then the last attachment");
+        c.attachments = (0..6).map(|i| file(&format!("{i}.txt"))).collect();
+        let (lines, shown) = c.attachment_lines();
+        assert_eq!((lines.len(), shown, lines[3].as_str()), (4, 3, "📎 … and 3 more"));
+        c.clear();
+        assert!(c.attachments.is_empty(), "sent or cancelled with the text");
     }
 
     #[test]

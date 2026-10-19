@@ -32,6 +32,9 @@ fn parse(text: &str) -> serde_json::Result<Drafts> {
 /// Save the drafts; with none left the file is removed.
 pub fn save(team: &str, user: &str, drafts: &Drafts) {
     let Some(path) = path(team, user) else { return };
+    // Attachments stay with klack's run; a draft of only attachments is not saved.
+    let drafts: Drafts = drafts.iter().filter(|(_, d)| d.has_text()).map(|(k, d)| (k.clone(), d.clone())).collect();
+    let drafts = &drafts;
     let result = if drafts.is_empty() {
         match std::fs::remove_file(&path) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),

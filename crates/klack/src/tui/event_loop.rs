@@ -59,6 +59,8 @@ enum Net {
     VideoReady { title: String, result: Result<std::path::PathBuf, String> },
     /// Result of a file save or upload, shown in the status bar.
     FileDone(String),
+    /// A pasted picture, encoded for a composer (the reply box's when `thread`).
+    Pasted { thread: bool, result: Result<super::composer::Attachment, String> },
     /// `dnd.info` asked again after the known quiet-hours window ended.
     Dnd(Value),
     /// User prefs fetched again.
@@ -1985,24 +1987,41 @@ impl App {
         });
     }
 
-    /// Ctrl+V in a composer: text from the system clipboard is typed in; a picture or copied
-    /// files are reported.
+    /// Ctrl+V in a composer: text from the system clipboard is typed in, a picture or copied
+    /// files are attached to the message.
     fn paste(&mut self, thread: bool) {
         use super::clipboard::Pasted;
-        match self.clipboard.paste() {
+        use super::composer::{Attachment, AttachmentData};
+        let pasted = self.clipboard.paste();
+        if !matches!(pasted, Pasted::Text(_) | Pasted::Nothing(_)) && self.composer_for(thread).editing.is_some() {
+            self.status = "an edited message keeps its files; send pictures and files in a new one".into();
+            return;
+        }
+        match pasted {
             Pasted::Text(text) => self.composer_for(thread).insert_str(&text.replace("\r\n", "\n")),
             Pasted::Files(files) => {
-                let names: Vec<String> = files.iter().map(|f| f.file_name().map_or_else(|| f.display().to_string(), |n| n.to_string_lossy().to_string())).collect();
-                self.status = format!("clipboard: {} file(s): {}", files.len(), names.join(", "));
+                let (mut attached, mut skipped) = (Vec::new(), Vec::new());
+                for path in files {
+                    let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().to_string());
+                    match std::fs::metadata(&path) {
+                        Ok(m) if m.is_file() => {
+                            attached.push(name.clone());
+                            self.composer_for(thread).attachments.push(Attachment { name, size: m.len(), data: AttachmentData::File(path) });
+                        }
+                        Ok(_) => skipped.push(format!("{name} (a folder)")),
+                        Err(e) => skipped.push(format!("{name} ({e})")),
+                    }
+                }
+                self.status = attached_status(&attached, &skipped);
             }
             Pasted::Image { width, height, rgba } => {
-                self.status = format!("clipboard: a {width}×{height} picture…");
+                self.status = format!("attaching a {width}×{height} picture…");
                 let tx = self.net.clone();
                 tokio::task::spawn_blocking(move || {
-                    let _ = tx.send(Net::FileDone(match super::clipboard::png(width, height, rgba) {
-                        Ok(png) => format!("clipboard: a {width}×{height} picture, {} as PNG", super::text::human_size(png.len() as u64)),
-                        Err(e) => format!("the pasted picture could not be read: {e:#}"),
-                    }));
+                    let result = super::clipboard::png(width, height, rgba)
+                        .map(|png| Attachment { name: "image.png".into(), size: png.len() as u64, data: AttachmentData::Png(std::sync::Arc::new(png)) })
+                        .map_err(|e| format!("the pasted picture could not be read: {e:#}"));
+                    let _ = tx.send(Net::Pasted { thread, result });
                 });
             }
             Pasted::Nothing(why) => self.status = why.into(),
@@ -2184,6 +2203,20 @@ struct Ring {
 const RING_EVERY: Duration = Duration::from_millis(2500);
 
 /// "uploading a.mp4… 42% (3.1 of 7.4 MB)"; once all is sent, Slack still has to file it.
+/// The status after pasting files: what was attached and what could not be.
+fn attached_status(attached: &[String], skipped: &[String]) -> String {
+    let mut parts = Vec::new();
+    match attached {
+        [] => {}
+        [one] => parts.push(format!("attached {one}")),
+        many => parts.push(format!("attached {} files", many.len())),
+    }
+    if !skipped.is_empty() {
+        parts.push(format!("not attached: {}", skipped.join(", ")));
+    }
+    parts.join(" · ")
+}
+
 fn upload_status(name: &str, sent: u64, total: u64) -> String {
     if sent >= total {
         return format!("uploading {name}… sent, Slack is filing it");
@@ -3018,11 +3051,18 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
         Event::Mouse(m) => match m.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 let picked = app.completion.as_ref().and_then(|c| c.row_at(if c.thread { app.thread_composer_area } else { app.composer_area }, m.column, m.row));
+                let close = [(false, app.composer_area), (true, app.thread_composer_area)]
+                    .into_iter()
+                    .filter(|&(thread, _)| !thread || app.thread.is_some())
+                    .find_map(|(thread, area)| attachment_at(area, if thread { &app.thread_composer } else { &app.composer }.attachment_lines().1, m.column, m.row).map(|i| (thread, i)));
                 if let Some(n) = picked {
                     if let Some(c) = app.completion.as_mut() {
                         c.selected = n;
                     }
                     app.accept_completion();
+                } else if let Some((thread, i)) = close {
+                    let removed = app.composer_for(thread).attachments.remove(i);
+                    app.status = format!("removed {}", removed.name);
                 } else if app.huddle_view.as_mut().is_some_and(|v| v.click(m.column, m.row)) {
                     app.focus = Focus::Huddle;
                 } else if let Some(i) = app.rail.iter().position(|r| r.contains((m.column, m.row).into())) {
@@ -3242,6 +3282,13 @@ fn handle_net(app: &mut App, msg: Net) {
             tl.loading = false;
         }
         Net::FileDone(message) => app.status = message,
+        Net::Pasted { thread, result } => match result {
+            Ok(a) => {
+                app.status = format!("attached {} ({})", a.name, super::text::human_size(a.size));
+                app.composer_for(thread).attachments.push(a);
+            }
+            Err(e) => app.status = e,
+        },
         Net::DetailsInfo(c) => {
             if let Some(d) = app.details.as_mut().filter(|d| d.channel == c.id) {
                 d.info = Some(c);
@@ -3487,7 +3534,7 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     // (`main` stays the whole area when the thread takes it, for the dialogs drawn over it.)
     let main = messages_area.unwrap_or(main);
     if let (Some(area), Some((channel, ts))) = (thread_area, app.thread.clone()) {
-        let h = app.thread_composer.rows(area.width.saturating_sub(2) as usize).clamp(1, 8) + 2;
+        let h = app.thread_composer.height(area.width.saturating_sub(2) as usize);
         let [pane, comp] = Layout::vertical([Constraint::Min(3), Constraint::Length(h)]).areas(area);
         let title = format!("Thread · {} · {} close", app.ws.channel_label(&channel), app.keys.first_key(Context::Messages, Action::Back).unwrap_or_default());
         let timeline = app.ws.threads.get(&super::state::thread_key(&channel, &ts));
@@ -3510,7 +3557,7 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         view.draw(f, main, call, &app.ws, &app.media, bar_keys);
     } else {
         let inner_w = main.width.saturating_sub(2) as usize;
-        let composer_h = app.composer.rows(inner_w).clamp(1, 8) + 2;
+        let composer_h = app.composer.height(inner_w);
         let [msgs, comp] = Layout::vertical([Constraint::Min(3), Constraint::Length(composer_h)]).areas(main);
         let current = app.current.clone();
         let timeline = current.as_deref().and_then(|c| app.ws.timelines.get(c));
@@ -3731,6 +3778,19 @@ fn draw_composer(f: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &App,
     }
     let inner = block.inner(area);
     let width = inner.width as usize;
+    // Attachments on top, each with a ✕ that removes it, then the text.
+    let (attachments, closable) = composer.attachment_lines();
+    let below = (attachments.len() as u16).min(inner.height);
+    let accent = Style::default().fg(super::theme::p().accent);
+    for (i, line) in attachments.iter().enumerate().take(below as usize) {
+        let row = Rect { y: inner.y + i as u16, height: 1, width: inner.width.saturating_sub(3), ..inner };
+        f.render_widget(Paragraph::new(line.as_str()).style(accent), row);
+        if i < closable {
+            let (x, y) = attachment_close(area, i);
+            f.render_widget(Paragraph::new("✕").style(Style::default().fg(super::theme::p().dim)), Rect::new(x, y, 1, 1));
+        }
+    }
+    let inner = Rect { y: inner.y + below, height: inner.height - below, ..inner };
     let (row, col) = composer.cursor_position(width);
     // Scroll so the cursor line stays visible.
     let skip = row.saturating_sub(inner.height.saturating_sub(1));
@@ -3745,19 +3805,59 @@ fn draw_composer(f: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &App,
         // Wrapped by the composer itself, so the cursor lands where the text is.
         Paragraph::new(composer.wrapped(width).into_iter().map(ratatui::text::Line::raw).collect::<Vec<_>>())
     };
-    f.render_widget(text.scroll((skip, 0)).block(block), area);
+    f.render_widget(block, area);
+    f.render_widget(text.scroll((skip, 0)), inner);
     if focused {
         // A faint tint shows where typing goes (from slk).
-        f.buffer_mut().set_style(inner, Style::default().bg(super::theme::p().hover));
+        f.buffer_mut().set_style(block_inner(area), Style::default().bg(super::theme::p().hover));
         if !app.covered() {
             f.set_cursor_position((inner.x + col, inner.y + row - skip));
         }
     }
 }
 
+/// Inside a composer's border.
+fn block_inner(area: Rect) -> Rect {
+    ratatui::widgets::Block::default().borders(ratatui::widgets::Borders::ALL).inner(area)
+}
+
+/// Where the ✕ that removes attachment `i` sits in a composer drawn at `area`.
+fn attachment_close(area: Rect, i: usize) -> (u16, u16) {
+    let inner = block_inner(area);
+    (inner.right().saturating_sub(2), inner.y + i as u16)
+}
+
+/// The attachment whose ✕ is at (`column`, `row`) — a cell either side counts — of the
+/// `closable` ones in a composer drawn at `area`.
+fn attachment_at(area: Rect, closable: usize, column: u16, row: u16) -> Option<usize> {
+    (0..closable).find(|&i| {
+        let (x, y) = attachment_close(area, i);
+        row == y && column + 1 >= x && column <= x + 1 && y < block_inner(area).bottom()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use slack_core::session::WorkspaceSession;
+
+    #[test]
+    fn attachments_close_at_their_cross() {
+        use ratatui::layout::Rect;
+        let area = Rect::new(10, 20, 40, 6);
+        assert_eq!(super::attachment_close(area, 0), (47, 21));
+        assert_eq!(super::attachment_close(area, 1), (47, 22));
+        assert_eq!(super::attachment_at(area, 2, 47, 22), Some(1));
+        assert_eq!(super::attachment_at(area, 2, 46, 21), Some(0), "a cell to the left");
+        assert_eq!(super::attachment_at(area, 2, 30, 21), None, "the name does nothing");
+        assert_eq!(super::attachment_at(area, 1, 47, 22), None, "\"… and N more\" has no cross");
+    }
+
+    #[test]
+    fn pasting_files_says_what_happened() {
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        assert_eq!(super::attached_status(&s(&["a.pdf"]), &[]), "attached a.pdf");
+        assert_eq!(super::attached_status(&s(&["a.pdf", "b.png"]), &s(&["pics (a folder)"])), "attached 2 files · not attached: pics (a folder)");
+    }
 
     #[test]
     fn a_thread_takes_the_messages_place_when_narrow() {
