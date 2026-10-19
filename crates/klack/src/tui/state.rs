@@ -11,6 +11,17 @@ pub struct Unread {
     pub mentions: u64,
 }
 
+/// Now in epoch seconds (debug builds: `KLACK_DAYS_LATER=N` pretends it is N days later, to try
+/// what hides after a quiet month).
+pub fn now_secs() -> f64 {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
+    #[cfg(debug_assertions)]
+    if let Some(days) = std::env::var("KLACK_DAYS_LATER").ok().and_then(|d| d.parse::<f64>().ok()) {
+        return now + days * 86_400.0;
+    }
+    now
+}
+
 /// One conversation's loaded messages, oldest first.
 #[derive(Debug, Clone, Default)]
 pub struct Timeline {
@@ -92,6 +103,8 @@ pub struct Workspace {
     pub huddles: HashMap<String, Huddle>,
     /// A channel we are not in, shown in the sidebar while it is being looked at.
     pub preview: Option<String>,
+    /// The conversation open (or just jumped to): in the sidebar however quiet it is.
+    pub shown: Option<String>,
     /// Starred conversations.
     pub starred: std::collections::HashSet<String>,
     /// Sidebar sections in display order (`users.channelSections.list`).
@@ -446,15 +459,27 @@ impl Workspace {
 
     /// Sidebar order: channels (alphabetical), then DMs (open ones), Slackbot last.
     pub fn sidebar(&self) -> (Vec<String>, Vec<String>) {
+        self.conversation_lists(true)
+    }
+
+    /// [`Self::sidebar`]'s lists with the quiet conversations too (Ctrl+K finds those).
+    pub fn listed(&self) -> (Vec<String>, Vec<String>) {
+        self.conversation_lists(false)
+    }
+
+    fn conversation_lists(&self, hide_quiet: bool) -> (Vec<String>, Vec<String>) {
         let shown = |c: &Conversation| c.is_member || self.preview.as_deref() == Some(c.id.as_str());
         let previewed = |c: &Conversation| self.preview.as_deref() == Some(c.id.as_str());
-        let mut channels: Vec<&Conversation> = self.conversations.values().filter(|c| !c.is_dm() && shown(c) && (!c.is_archived || previewed(c))).collect();
+        let now = now_secs();
+        let lively = |c: &&Conversation| !hide_quiet || self.lively(c, now);
+        let mut channels: Vec<&Conversation> = self.conversations.values().filter(|c| !c.is_dm() && shown(c) && (!c.is_archived || previewed(c))).filter(lively).collect();
         channels.sort_by_key(|c| c.name.to_lowercase());
         let mut dms: Vec<&Conversation> = self
             .conversations
             .values()
             .filter(|c| c.is_dm() && !c.is_archived)
             .filter(|c| c.user.as_deref().is_none_or(|u| self.users.get(u).is_none_or(|u| !u.deleted)))
+            .filter(lively)
             .collect();
         // The most recently active first, as Slack does; never-active ones by name at the end.
         dms.sort_by(|a, b| self.activity(&b.id).total_cmp(&self.activity(&a.id)).then_with(|| self.conversation_label(a).to_lowercase().cmp(&self.conversation_label(b).to_lowercase())));
@@ -546,6 +571,20 @@ impl Workspace {
                 );
             }
         }
+    }
+
+    /// Whether conversation `c` stays in the sidebar at `now`: it had a message (or was created)
+    /// within `hide_inactive_days`, or is starred, unread, open, previewed or has a huddle.
+    pub fn lively(&self, c: &Conversation, now: f64) -> bool {
+        let days = self.settings.appearance.hide_inactive_days;
+        if days == 0 || self.starred.contains(&c.id) || self.shown.as_deref() == Some(c.id.as_str()) || self.preview.as_deref() == Some(c.id.as_str()) || self.huddles.contains_key(&c.id) {
+            return true;
+        }
+        if self.unread.get(&c.id).is_some_and(|u| u.has_unreads || u.mentions > 0) {
+            return true;
+        }
+        let last = self.activity(&c.id).max(c.created.unwrap_or(0.0));
+        last >= now - days as f64 * 86_400.0
     }
 
     /// A message at `t` in conversation `id`; true if that is newer than what was known.
@@ -640,6 +679,7 @@ mod tests {
     #[test]
     fn previewed_channel_is_in_the_sidebar() {
         let mut ws = Workspace::default();
+        ws.settings.appearance.hide_inactive_days = 0;
         ws.conversations.insert("C1".into(), Conversation { id: "C1".into(), name: "mine".into(), is_channel: true, is_member: true, ..Default::default() });
         ws.add_channels(vec![
             Conversation { id: "C1".into(), name: "mine".into(), is_channel: true, num_members: Some(3), ..Default::default() },
@@ -660,6 +700,7 @@ mod tests {
 
     fn sections_ws() -> Workspace {
         let mut ws = Workspace::default();
+        ws.settings.appearance.hide_inactive_days = 0;
         for (id, name) in [("C1", "alpha"), ("C2", "beta"), ("C3", "gamma")] {
             ws.conversations.insert(id.into(), Conversation { id: id.into(), name: name.into(), is_channel: true, is_member: true, ..Default::default() });
         }
@@ -701,6 +742,7 @@ mod tests {
     #[test]
     fn dm_partners_missing_from_the_user_list() {
         let mut ws = Workspace::default();
+        ws.settings.appearance.hide_inactive_days = 0;
         ws.users.insert("U1".into(), User { id: "U1".into(), ..Default::default() });
         for (id, user) in [("D1", "U1"), ("D2", "USLACK"), ("D3", "USLACK")] {
             ws.conversations.insert(id.into(), Conversation { id: id.into(), is_im: true, user: Some(user.into()), ..Default::default() });
@@ -765,6 +807,7 @@ mod tests {
     #[test]
     fn direct_messages_by_latest_activity() {
         let mut ws = Workspace::default();
+        ws.settings.appearance.hide_inactive_days = 0;
         for (id, user, name) in [("D1", "U1", "bob"), ("D2", "U2", "carol"), ("D3", "U3", "alice")] {
             ws.users.insert(user.into(), User { id: user.into(), name: name.into(), ..Default::default() });
             ws.conversations.insert(id.into(), Conversation { id: id.into(), is_im: true, user: Some(user.into()), ..Default::default() });
@@ -779,5 +822,35 @@ mod tests {
         assert!(ws.note_activity("D1", 1792370000.0), "a new message moves it");
         assert!(!ws.note_activity("D1", 1792000000.0), "an older one does not");
         assert_eq!(ws.sidebar().1, ["D1", "D2", "D3"]);
+    }
+
+    #[test]
+    fn quiet_conversations_leave_the_sidebar() {
+        let now = 1_800_000_000.0;
+        let day = 86_400.0;
+        let mut ws = Workspace::default();
+        for (id, name, created) in [("C1", "busy", 0.0), ("C2", "quiet", 0.0), ("C3", "starred", 0.0), ("C4", "unread", 0.0), ("C5", "new", now - day), ("C6", "open", 0.0)] {
+            ws.conversations.insert(id.into(), Conversation { id: id.into(), name: name.into(), is_channel: true, is_member: true, created: Some(created).filter(|c| *c > 0.0), ..Default::default() });
+        }
+        ws.note_activity("C1", now - 2.0 * day);
+        ws.note_activity("C2", now - 40.0 * day);
+        ws.note_activity("C3", now - 400.0 * day);
+        ws.starred.insert("C3".into());
+        ws.unread.insert("C4".into(), Unread { has_unreads: true, mentions: 0 });
+        ws.shown = Some("C6".into());
+        let lively: Vec<&str> = ["C1", "C2", "C3", "C4", "C5", "C6"].into_iter().filter(|id| ws.lively(&ws.conversations[*id], now)).collect();
+        assert_eq!(lively, ["C1", "C3", "C4", "C5", "C6"], "only the 40-day quiet one goes (30 days)");
+        ws.settings.appearance.hide_inactive_days = 60;
+        assert!(ws.lively(&ws.conversations["C2"], now));
+        ws.settings.appearance.hide_inactive_days = 0;
+        let nothing_known = Conversation { id: "C9".into(), ..Default::default() };
+        assert!(ws.lively(&nothing_known, now), "0 days: never hidden");
+        // The full list (Ctrl+K) has them all whatever the setting (`sidebar` uses the clock).
+        ws.settings.appearance.hide_inactive_days = 1;
+        let real = now_secs();
+        ws.latest.insert("C1".into(), real - 3600.0);
+        ws.latest.insert("C2".into(), real - 40.0 * day);
+        assert!(ws.listed().0.len() > ws.sidebar().0.len());
+        assert_eq!(ws.listed().0.len(), 6);
     }
 }

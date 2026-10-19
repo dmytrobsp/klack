@@ -55,6 +55,9 @@ pub struct Appearance {
     pub compact: bool,
     /// Colour theme: dark, light or terminal (the terminal's own colours).
     pub theme: String,
+    /// Channels and DMs without a message for this many days leave the sidebar (starred, unread
+    /// and open ones stay; Ctrl+K still finds them); 0 keeps them all.
+    pub hide_inactive_days: u32,
     /// A theme of its own for some workspaces (team id → theme), to tell them apart.
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub workspace_themes: std::collections::BTreeMap<String, String>,
@@ -69,7 +72,7 @@ impl Appearance {
 
 impl Default for Appearance {
     fn default() -> Self {
-        Appearance { compact: false, theme: "dark".into(), workspace_themes: Default::default() }
+        Appearance { compact: false, theme: "dark".into(), hide_inactive_days: 30, workspace_themes: Default::default() }
     }
 }
 

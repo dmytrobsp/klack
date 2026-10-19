@@ -102,6 +102,10 @@ pub fn apply(ws: &mut Workspace, ev: &Value, current: Option<&str>) -> Effects {
                         let is_dm = ws.conversations.get(&channel).is_some_and(|c| c.is_dm());
                         let mention = is_dm || mentions_me(ws, &m);
                         let u = ws.unread.entry(channel.clone()).or_default();
+                        // Newly unread: a quiet conversation comes back to the sidebar.
+                        if !u.has_unreads {
+                            fx.rebuild_sidebar = true;
+                        }
                         u.has_unreads = true;
                         if mention {
                             u.mentions += 1;
@@ -528,6 +532,7 @@ mod tests {
     #[test]
     fn archiving_the_open_channel_keeps_it_open() {
         let mut w = Workspace::default();
+        w.settings.appearance.hide_inactive_days = 0;
         for id in ["C1", "C2"] {
             w.conversations.insert(id.into(), slack_core::types::Conversation { id: id.into(), name: id.to_lowercase(), is_channel: true, is_member: true, ..Default::default() });
         }

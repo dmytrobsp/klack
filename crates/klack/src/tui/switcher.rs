@@ -84,7 +84,7 @@ impl Switcher {
 pub fn entries(ws: &Workspace, query: &str) -> Vec<Entry> {
     let channels_only = query.trim_start().starts_with('#');
     let q = query.trim().trim_start_matches(['#', '@']).to_lowercase();
-    let (channels, dms) = ws.sidebar();
+    let (channels, dms) = ws.listed();
     let mut out: Vec<(u8, Entry)> = Vec::new();
     let mut dm_users = std::collections::HashSet::new();
     let dms = if channels_only { vec![] } else { dms };

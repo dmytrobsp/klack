@@ -269,6 +269,11 @@ impl App {
             }
             self.save_drafts();
             self.current = selected.clone();
+            // A quiet conversation left behind leaves the sidebar again.
+            if self.ws.shown != selected {
+                self.ws.shown = selected.clone();
+                self.sidebar.rebuild(&self.ws);
+            }
             // Where the unread part starts, kept while the conversation stays open (it is
             // marked read right away).
             self.messages.new_since = selected.as_ref().filter(|id| self.ws.unread.get(*id).is_some_and(|u| u.has_unreads)).and_then(|id| self.ws.conversations.get(id)).and_then(|c| c.last_read.clone());
@@ -1155,6 +1160,7 @@ impl App {
         if self.current.as_deref() == Some(hit.channel.as_str()) {
             self.show_hit(hit);
         } else {
+            self.reveal(&hit.channel);
             self.sidebar.select_id(&self.ws, &hit.channel);
             self.pending_hit = Some(hit);
         }
@@ -1233,10 +1239,18 @@ impl App {
     fn jump_to(&mut self, id: &str) {
         if self.ws.is_outside(id) {
             self.ws.preview = Some(id.to_string());
-            self.sidebar.rebuild(&self.ws);
         }
+        self.reveal(id);
         self.sidebar.select_id(&self.ws, id);
         self.focus = Focus::Composer;
+    }
+
+    /// Put conversation `id` in the sidebar however quiet it is (until another one is open).
+    fn reveal(&mut self, id: &str) {
+        if self.ws.shown.as_deref() != Some(id) {
+            self.ws.shown = Some(id.to_string());
+            self.sidebar.rebuild(&self.ws);
+        }
     }
 
     /// Act on the quick switcher's highlighted entry.
@@ -1529,7 +1543,7 @@ impl App {
             if p.saved.is_none() && p.editing.is_none() && p.picker.is_none() {
                 p.saved = Some(super::settings::save(&self.ws.settings).map(|path| path.display().to_string()));
             }
-            if field == Some(super::prefs::Field::Compact) {
+            if matches!(field, Some(super::prefs::Field::Compact | super::prefs::Field::HideInactive)) {
                 // The sidebar's gaps between sections follow it.
                 self.sidebar.rebuild(&self.ws);
             }

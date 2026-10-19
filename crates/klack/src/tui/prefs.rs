@@ -18,6 +18,7 @@ pub const DATE_FORMATS: &[&str] = &["%A, %B %-d", "%a %-d %b", "%d.%m.%Y", "%Y-%
 pub enum Field {
     Theme,
     WorkspaceTheme,
+    HideInactive,
     /// The leader key for chords.
     Leader,
     /// An action's keys (index into `keymap::ACTIONS`).
@@ -79,13 +80,15 @@ pub const ALONE_VOLUME: u32 = 40;
 const RING_TIMEOUTS: &[u32] = &[15, 30, 45, 60, 90, 120];
 /// Seconds between fetches of a previewed channel (0: off).
 const PREVIEW_REFRESH: &[u32] = &[0, 5, 10, 15, 30, 60, 120];
+/// Days without a message before a conversation leaves the sidebar (0: never).
+const HIDE_INACTIVE: &[u32] = &[0, 1, 7, 14, 30, 60, 90];
 
 /// Pause lengths offered, in minutes (0: not paused).
 pub const PAUSES: &[u64] = &[0, 30, 60, 120, 480];
 
 pub const CATEGORIES: &[(&str, &[Field])] = &[
     ("Availability", &[Field::Status, Field::Away, Field::Pause]),
-    ("Appearance", &[Field::Theme, Field::WorkspaceTheme, Field::Compact]),
+    ("Appearance", &[Field::Theme, Field::WorkspaceTheme, Field::Compact, Field::HideInactive]),
     ("Messages & media", &[Field::InlineImages, Field::Avatars, Field::LargeAvatars, Field::PreviewRefresh, Field::Graphics, Field::EmojiAsNames]),
     ("Language & region", &[Field::Clock24, Field::DateFormat, Field::TimeZone, Field::Language]),
     ("Notifications", &[Field::Desktop, Field::Sound, Field::ConversationLevel, Field::ChannelDefault, Field::Keywords, Field::Vips]),
@@ -125,6 +128,7 @@ impl Field {
             Field::Leader | Field::Binding(_) => "",
             Field::Theme => "Colour theme",
             Field::WorkspaceTheme => "Theme for this workspace",
+            Field::HideInactive => "Hide conversations quiet for",
             Field::Compact => "Compact (no gaps between authors or sidebar sections)",
             Field::InlineImages => "Show image thumbnails",
             Field::Avatars => "Show profile pictures",
@@ -180,6 +184,11 @@ impl Field {
         match self {
             Field::Leader | Field::Binding(_) => String::new(),
             Field::Theme => s.appearance.theme.clone(),
+            Field::HideInactive => match s.appearance.hide_inactive_days {
+                0 => "never".into(),
+                1 => "a day".into(),
+                n => format!("{n} days"),
+            },
             Field::WorkspaceTheme => s.appearance.workspace_themes.get(&ws.team_id).cloned().unwrap_or_else(|| "(colour theme)".into()),
             Field::Compact => yes(s.appearance.compact),
             Field::InlineImages => yes(s.messages.inline_images),
@@ -261,6 +270,7 @@ impl Field {
             Field::RingTimeout => s.huddle.ring_timeout_secs = step(RING_TIMEOUTS, s.huddle.ring_timeout_secs, up, wrap),
             Field::AloneSecs => s.huddle.alone_secs = step(ALONE_SECS, s.huddle.alone_secs, up, wrap),
             Field::PreviewRefresh => s.messages.preview_refresh_secs = step(PREVIEW_REFRESH, s.messages.preview_refresh_secs, up, wrap),
+            Field::HideInactive => s.appearance.hide_inactive_days = step(HIDE_INACTIVE, s.appearance.hide_inactive_days, up, wrap),
             Field::MicGain => a.mic_gain = step(GAINS, a.mic_gain, up, wrap),
             Field::SpeakingThreshold => a.speaking_threshold_db = step(THRESHOLDS, a.speaking_threshold_db, up, wrap),
             _ => return false,
@@ -288,7 +298,7 @@ impl Field {
             Field::InlineImages => s.messages.inline_images ^= true,
             Field::Avatars => s.messages.avatars ^= true,
             Field::LargeAvatars => s.messages.large_avatars ^= true,
-            Field::PreviewRefresh => {
+            Field::PreviewRefresh | Field::HideInactive => {
                 self.adjust(s, true, true);
             }
             Field::Graphics => {
@@ -387,7 +397,7 @@ const LEADER_LABEL: &str = "Leader key (for chords such as Leader k)";
 /// Category names and fixed labels, for translation templates.
 pub fn translatable() -> Vec<String> {
     let all = [
-        Field::Theme, Field::WorkspaceTheme, Field::Compact, Field::InlineImages, Field::Avatars, Field::LargeAvatars, Field::PreviewRefresh, Field::Graphics, Field::EmojiAsNames, Field::Clock24, Field::DateFormat, Field::TimeZone, Field::Language, Field::Desktop, Field::Sound,
+        Field::Theme, Field::WorkspaceTheme, Field::Compact, Field::HideInactive, Field::InlineImages, Field::Avatars, Field::LargeAvatars, Field::PreviewRefresh, Field::Graphics, Field::EmojiAsNames, Field::Clock24, Field::DateFormat, Field::TimeZone, Field::Language, Field::Desktop, Field::Sound,
         Field::ConversationLevel, Field::ChannelDefault, Field::Keywords, Field::Vips, Field::Status, Field::Away, Field::Pause, Field::Input, Field::Output,
         Field::HuddleVolume, Field::SoundVolume, Field::MicGain, Field::SpeakingThreshold, Field::NoiseSuppression, Field::EchoCancellation, Field::Camera, Field::JoinSound, Field::SomeoneJoined, Field::SomeoneLeft, Field::RingSound, Field::RingTimeout, Field::AutoDecline, Field::AloneSound, Field::AloneSecs,
     ];

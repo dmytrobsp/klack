@@ -359,6 +359,7 @@ mod tests {
 
     fn ws() -> Workspace {
         let mut ws = Workspace::default();
+        ws.settings.appearance.hide_inactive_days = 0;
         for (id, name, im) in [("C1", "general", false), ("C2", "random", false), ("D1", "", true)] {
             ws.conversations.insert(
                 id.into(),
