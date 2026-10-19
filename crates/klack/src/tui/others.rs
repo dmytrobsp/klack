@@ -33,6 +33,43 @@ pub fn badge(counts: &Value) -> Badge {
 /// Badges by workspace index, shared with the poller.
 pub type Badges = Arc<Mutex<HashMap<usize, Badge>>>;
 
+/// Workspace logos by index (only workspaces with a logo of their own), for the rail.
+pub type Logos = Arc<Mutex<HashMap<usize, slack_core::types::File>>>;
+
+/// A workspace's logo from `team.info`'s `icon`, as a pseudo file for the picture cache:
+/// None for Slack's stand-in picture (`image_default`) or one not on Slack's CDN.
+pub fn logo_file(team: &str, icon: &Value) -> Option<slack_core::types::File> {
+    if icon["image_default"].as_bool() != Some(false) {
+        return None;
+    }
+    let url = ["image_88", "image_102", "image_68", "image_132"].iter().find_map(|k| icon[*k].as_str())?;
+    let parsed = slack_core::reqwest::Url::parse(url).ok()?;
+    let slack_hosted = parsed.scheme() == "https" && parsed.host_str().is_some_and(|h| h == "slack-edge.com" || h.ends_with(".slack-edge.com"));
+    // Fetched like a profile picture: without the session, cut to fill its cells.
+    slack_hosted.then(|| slack_core::types::File { id: format!("{}team:{team}", super::media::AVATAR_PREFIX), mimetype: "image/png".into(), thumb_360: Some(url.to_string()), ..Default::default() })
+}
+
+/// Ask each workspace for its logo once (nothing to do with a single workspace).
+pub fn spawn_logos(sessions: Vec<WorkspaceSession>, logos: Logos) {
+    if sessions.len() < 2 {
+        return;
+    }
+    tokio::spawn(async move {
+        for (i, session) in sessions.into_iter().enumerate() {
+            let team = session.team_id.clone();
+            let Ok(client) = Client::new(session) else { continue };
+            match client.call_raw("team.info", &[]).await {
+                Ok(v) => {
+                    if let Some(file) = logo_file(&team, &v["team"]["icon"]) {
+                        logos.lock().unwrap_or_else(|e| e.into_inner()).insert(i, file);
+                    }
+                }
+                Err(e) => tracing::debug!("team.info of workspace {}: {e}", i + 1),
+            }
+        }
+    });
+}
+
 /// Ask every workspace but the shown one (`shown`, kept current by the caller) for its counts,
 /// now, every [`POLL`] and whenever `wake` is notified (a switch); nothing to do with a single
 /// workspace.
@@ -182,6 +219,18 @@ pub fn label(badges: &HashMap<usize, Badge>, shown: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn logos_only_of_their_own() {
+        let stand_in = serde_json::json!({"image_88": "https://a.slack-edge.com/80588/img/avatars-teams/ava_0016-88.png", "image_default": true});
+        assert!(logo_file("T1", &stand_in).is_none(), "Slack's stand-in picture: the initials instead");
+        let own = serde_json::json!({"image_68": "https://avatars.slack-edge.com/2026-10-19/1_68.png", "image_88": "https://avatars.slack-edge.com/2026-10-19/1_88.png", "image_default": false});
+        let file = logo_file("T1", &own).unwrap();
+        assert_eq!((file.id.as_str(), file.thumb_360.as_deref()), ("avatar:team:T1", Some("https://avatars.slack-edge.com/2026-10-19/1_88.png")));
+        let elsewhere = serde_json::json!({"image_88": "https://example.com/logo.png", "image_default": false});
+        assert!(logo_file("T1", &elsewhere).is_none(), "nothing fetched from third parties");
+        assert!(logo_file("T1", &serde_json::Value::Null).is_none());
+    }
 
     #[test]
     fn badges_from_counts() {

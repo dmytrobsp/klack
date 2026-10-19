@@ -25,6 +25,7 @@ pub mod others;
 pub mod picker;
 pub mod prefs;
 pub mod profile;
+pub mod rail;
 pub mod scroll;
 pub mod search;
 pub mod sections;

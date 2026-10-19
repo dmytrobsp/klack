@@ -108,6 +108,11 @@ struct App {
     workspaces: Vec<String>,
     /// Unread state of the other workspaces (polled in the background).
     others: super::others::Badges,
+    /// The workspace rail's tiles at the last draw (none without a rail).
+    rail: Vec<ratatui::layout::Rect>,
+    /// Workspace logos for the rail, and those it wanted at the last draw.
+    logos: super::others::Logos,
+    rail_wanted: Vec<(slack_core::types::File, (u16, u16))>,
     /// A notification clicked in another workspace, opened once this one has booted.
     open_after: super::others::OpenAfter,
     workspace: usize,
@@ -1880,7 +1885,7 @@ impl App {
     /// Start loading thumbnails that were on screen but not cached yet.
     fn request_thumbs(&mut self) {
         let view = self.huddle_view.as_mut().map(|v| std::mem::take(&mut v.wanted)).unwrap_or_default();
-        let wanted: Vec<_> = self.messages.wanted.drain(..).chain(self.thread_pane.wanted.drain(..)).chain(view).chain(self.call_bar_wanted.take()).collect();
+        let wanted: Vec<_> = self.messages.wanted.drain(..).chain(self.thread_pane.wanted.drain(..)).chain(view).chain(self.call_bar_wanted.take()).chain(self.rail_wanted.drain(..)).collect();
         for (file, size) in wanted {
             if self.media.thumbs.contains_key(&file.id) {
                 continue;
@@ -2025,6 +2030,8 @@ pub async fn run(profile: slack_core::session::Profile, team: Option<&str>) -> R
     let (clicks_tx, mut clicks) = mpsc::unbounded_channel();
     super::others::spawn_watchers(sessions.clone(), labels.clone(), shown.clone(), clicks_tx);
     let open_after: super::others::OpenAfter = Default::default();
+    let logos: super::others::Logos = Default::default();
+    super::others::spawn_logos(sessions.clone(), logos.clone());
 
     for w in &keymap.1 {
         tracing::warn!("{w}");
@@ -2056,7 +2063,7 @@ pub async fn run(profile: slack_core::session::Profile, team: Option<&str>) -> R
         // Keys may have been rebound in the preferences meanwhile.
         let mut keymap = super::keymap::load_user();
         keymap.1.extend(settings_problem);
-        let (next, kept_media, kept_clipboard) = run_workspace(client, (labels.clone(), index, badges.clone(), open_after.clone()), &mut clicks, &keymap, &settings, &mut terminal, &mut events, media, clipboard).await?;
+        let (next, kept_media, kept_clipboard) = run_workspace(client, (labels.clone(), index, badges.clone(), open_after.clone(), logos.clone()), &mut clicks, &keymap, &settings, &mut terminal, &mut events, media, clipboard).await?;
         (media, clipboard) = (kept_media, kept_clipboard);
         match next {
             Some(i) => index = i,
@@ -2079,7 +2086,7 @@ fn workspace_labels(sessions: &[slack_core::session::WorkspaceSession]) -> Vec<S
 /// One workspace until quit (None) or a switch (Some(index)); hands back what outlives it.
 async fn run_workspace(
     client: Client,
-    workspaces: (Vec<String>, usize, super::others::Badges, super::others::OpenAfter),
+    workspaces: (Vec<String>, usize, super::others::Badges, super::others::OpenAfter, super::others::Logos),
     clicks: &mut mpsc::UnboundedReceiver<super::others::Click>,
     keymap: &(Keymap, Vec<String>),
     settings: &super::settings::Settings,
@@ -2100,7 +2107,10 @@ async fn run_workspace(
         workspaces: workspaces.0,
         workspace: workspaces.1,
         others: workspaces.2,
+        rail: Vec::new(),
         open_after: workspaces.3,
+        logos: workspaces.4,
+        rail_wanted: Vec::new(),
         switch_to: None,
         media,
         viewer: None,
@@ -2741,6 +2751,8 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
                     app.accept_completion();
                 } else if app.huddle_view.as_mut().is_some_and(|v| v.click(m.column, m.row)) {
                     app.focus = Focus::Huddle;
+                } else if let Some(i) = app.rail.iter().position(|r| r.contains((m.column, m.row).into())) {
+                    app.switch_workspace(i);
                 } else if let Some(name) = app.sidebar.header_at(m.column, m.row) {
                     app.sidebar.toggle_fold_keeping(&app.ws, &name, app.current.as_deref());
                 } else if app.sidebar.click(m.column, m.row) {
@@ -3125,6 +3137,17 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
             app.call_bar_wanted = Some(w);
         }
     }
+    // The workspace rail, with two or more workspaces and room for it.
+    let body = if app.workspaces.len() > 1 && body.width >= 60 {
+        let [rail, rest] = Layout::horizontal([Constraint::Length(super::rail::WIDTH), Constraint::Min(1)]).areas(body);
+        let badges = app.others.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let logos = app.logos.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        (app.rail, app.rail_wanted) = super::rail::draw(f, rail, &app.workspaces, app.workspace, &badges, &logos, &app.media);
+        rest
+    } else {
+        app.rail.clear();
+        body
+    };
     let side_w = (body.width / 4).clamp(18, 32);
     let [side, main] = Layout::horizontal([Constraint::Length(side_w), Constraint::Min(10)]).areas(body);
     // A thread's draft counts for its conversation.

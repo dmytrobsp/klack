@@ -51,7 +51,11 @@ HUDDLE, or the open dialog: JUMP, SEARCH, PREFS, …), where you are (`#social �
 counts and messages — or, while a dialog is open, its keys — then F1 for all keys and whether klack
 is connected. A thumb on a pane's right border shows where you are when it scrolls. A conversation
 opened with unread messages has a red "new" line above the first of them; while you read further
-up, the bottom border counts the newer messages below ("↓ 3 newer").
+up, the bottom border counts the newer messages below ("↓ 3 newer"). With two or more
+workspaces in the profile a rail on the far left has a tile for each — its logo where it has
+one and the terminal draws pictures, else its initials and number in a colour of its own — with
+the shown one marked and, below the others, what is waiting there (`@3`, or `•` for anything
+unread); a click on a tile switches, like Alt+1…9.
 
 ## Signing in
 

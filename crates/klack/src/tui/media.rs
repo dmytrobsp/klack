@@ -105,6 +105,11 @@ impl Media {
         self.avatars = protocol != ProtocolType::Halfblocks && std::env::var("KLACK_AVATARS").map_or(true, |v| v != "0");
     }
 
+    /// The terminal draws real pictures (not half blocks).
+    pub fn graphics(&self) -> bool {
+        self.picker.protocol_type() != ProtocolType::Halfblocks
+    }
+
     /// Cells to reserve under an image file's line when at most `max_cols` wide, or None
     /// for non-images.
     pub fn thumb_size(&self, file: &File, max_cols: u16) -> Option<(u16, u16)> {
