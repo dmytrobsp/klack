@@ -2510,16 +2510,7 @@ impl App {
 
     /// Focus order for Tab: left to right, top to bottom.
     fn focus_order(&self) -> Vec<Focus> {
-        // The huddle view stands in for the messages and the composer.
-        let mut order = if self.huddle_view.is_some() { vec![Focus::Sidebar, Focus::Huddle] } else { vec![Focus::Sidebar, Focus::Messages, Focus::Composer] };
-        // A narrow terminal's thread stands in for them.
-        if self.narrow && self.thread.is_some() {
-            order.truncate(1);
-        }
-        if self.thread.is_some() {
-            order.extend([Focus::Thread, Focus::ThreadComposer]);
-        }
-        order
+        pane_order(self.huddle_view.is_some(), self.narrow, self.thread.is_some())
     }
 
     /// A dialog or popup is open over the panes (the composer's cursor must not show through).
@@ -3805,10 +3796,7 @@ fn run_global(app: &mut App, action: Action) -> bool {
         }
         Action::ScrollDown => app.messages.scroll_down(app.messages.area.height.saturating_sub(3) as usize),
         Action::FocusNext | Action::FocusPrev => {
-            let order = app.focus_order();
-            let pos = order.iter().position(|f| *f == app.focus).unwrap_or(0);
-            let step = if action == Action::FocusNext { 1 } else { order.len() - 1 };
-            app.focus = order[(pos + step) % order.len()];
+            app.focus = step_focus(&app.focus_order(), app.focus, action == Action::FocusNext);
         }
         _ => {}
     }
@@ -4573,6 +4561,34 @@ fn attachment_close(area: Rect, i: usize) -> (u16, u16) {
     (inner.right().saturating_sub(2), inner.y + i as u16)
 }
 
+/// The panes Tab cycles, left to right, top to bottom. Composers are left out: Tab never
+/// changes the mode, typing is the user's own action.
+fn pane_order(huddle: bool, narrow: bool, thread: bool) -> Vec<Focus> {
+    // The huddle view stands in for the messages.
+    let mut order = if huddle { vec![Focus::Sidebar, Focus::Huddle] } else { vec![Focus::Sidebar, Focus::Messages] };
+    // A narrow terminal's thread stands in for them.
+    if narrow && thread {
+        order.truncate(1);
+    }
+    if thread {
+        order.push(Focus::Thread);
+    }
+    order
+}
+
+/// The pane Tab (or Shift+Tab) moves to from `from`. A composer counts as its own pane
+/// (the messages, the thread), so Tab from it goes to the pane after that one.
+fn step_focus(order: &[Focus], from: Focus, forward: bool) -> Focus {
+    let pane = match from {
+        Focus::Composer => Focus::Messages,
+        Focus::ThreadComposer => Focus::Thread,
+        f => f,
+    };
+    let pos = order.iter().position(|f| *f == pane).unwrap_or(0);
+    let step = if forward { 1 } else { order.len() - 1 };
+    order[(pos + step) % order.len()]
+}
+
 /// The attachment whose ✕ is at (`column`, `row`) — a cell either side counts — of the
 /// `closable` ones in a composer drawn at `area`.
 fn attachment_at(area: Rect, closable: usize, column: u16, row: u16) -> Option<usize> {
@@ -4585,6 +4601,27 @@ fn attachment_at(area: Rect, closable: usize, column: u16, row: u16) -> Option<u
 #[cfg(test)]
 mod tests {
     use slack_core::session::WorkspaceSession;
+
+    #[test]
+    fn tab_never_enters_a_composer() {
+        use super::{pane_order, step_focus, Focus};
+        for (huddle, narrow, thread) in [(false, false, false), (false, false, true), (false, true, true), (true, false, false), (true, false, true)] {
+            let order = pane_order(huddle, narrow, thread);
+            assert!(!order.contains(&Focus::Composer) && !order.contains(&Focus::ThreadComposer), "{huddle} {narrow} {thread}");
+            for &f in &order {
+                for fwd in [true, false] {
+                    assert!(order.contains(&step_focus(&order, f, fwd)));
+                }
+            }
+        }
+        assert_eq!(pane_order(false, false, true), [Focus::Sidebar, Focus::Messages, Focus::Thread]);
+        assert_eq!(pane_order(false, true, true), [Focus::Sidebar, Focus::Thread]);
+        let order = pane_order(false, false, true);
+        assert_eq!(step_focus(&order, Focus::Composer, true), Focus::Thread, "Tab from the message box");
+        assert_eq!(step_focus(&order, Focus::ThreadComposer, true), Focus::Sidebar, "Tab from the reply box");
+        assert_eq!(step_focus(&order, Focus::Composer, false), Focus::Sidebar);
+        assert_eq!(step_focus(&order, Focus::Messages, true), Focus::Thread);
+    }
 
     #[test]
     fn attachments_close_at_their_cross() {
