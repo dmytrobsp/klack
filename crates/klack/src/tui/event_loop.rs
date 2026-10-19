@@ -794,6 +794,21 @@ impl App {
         });
     }
 
+    /// Esc in a composer: back to the message list (the reply box: the thread), the newest
+    /// message selected.
+    fn leave_composer(&mut self, thread: bool) {
+        self.focus = if thread { Focus::Thread } else { Focus::Messages };
+        let timeline = match (&self.thread, thread) {
+            (Some((c, ts)), true) => self.ws.threads.get(&super::state::thread_key(c, ts)),
+            _ => self.current.as_ref().and_then(|c| self.ws.timelines.get(c)),
+        };
+        let order: Vec<String> = timeline.map(|t| super::messages::shown_messages(t, thread).map(|m| m.ts.clone()).collect()).unwrap_or_default();
+        let pane = if thread { &mut self.thread_pane } else { &mut self.messages };
+        pane.selected = None;
+        pane.move_selection(&order, 0);
+        pane.to_bottom();
+    }
+
     /// A messages-context action on the message pane or (`in_thread`) the thread pane;
     /// keys and the context menu both come here.
     fn message_action(&mut self, action: Action, in_thread: bool) {
@@ -827,9 +842,27 @@ impl App {
             }
             Some(Action::Top) => pane.move_selection(&order, isize::MIN / 2),
             Some(Action::Bottom) => pane.move_selection(&order, isize::MAX / 2),
+            Some(Action::HalfPageUp | Action::HalfPageDown) => {
+                let up = action == Action::HalfPageUp;
+                let half = (pane.area.height.saturating_sub(2) / 2).max(1) as usize;
+                // The selection goes with the page: half of the messages on screen.
+                let step = (pane.shown_count() / 2).max(1) as isize;
+                if up {
+                    pane.scroll_up(half);
+                    pane.move_selection(&order, -step);
+                    if !in_thread {
+                        self.maybe_load_older();
+                    }
+                } else {
+                    pane.scroll_down(half);
+                    pane.move_selection(&order, step);
+                }
+            }
+            // Esc closes a thread; the messages pane has nothing to go back to.
             Some(Action::Back) if in_thread => self.close_thread(),
+            Some(Action::Back) => {}
             Some(Action::Type) if in_thread => self.focus = Focus::ThreadComposer,
-            Some(Action::Back | Action::Type) => self.focus = Focus::Composer,
+            Some(Action::Type) => self.focus = Focus::Composer,
             Some(Action::OpenThread) if !in_thread => {
                 if let Some(ts) = self.messages.selected.clone() {
                     self.open_thread(&ts);
@@ -967,6 +1000,8 @@ impl App {
             Action::Down => self.sidebar.move_by(1),
             Action::Top => self.sidebar.move_by(isize::MIN / 2),
             Action::Bottom => self.sidebar.move_by(isize::MAX / 2),
+            Action::HalfPageUp => self.sidebar.move_by(-((self.sidebar.area.height.saturating_sub(2) / 2).max(1) as isize)),
+            Action::HalfPageDown => self.sidebar.move_by((self.sidebar.area.height.saturating_sub(2) / 2).max(1) as isize),
             Action::Open if self.sidebar.selected_folded().is_some() => self.sidebar.toggle_selected_fold(&self.ws, self.current.as_deref()),
             Action::Open if self.sidebar.on_threads() => self.load_threads(false),
             Action::Open => self.focus = Focus::Composer,
@@ -3331,12 +3366,12 @@ fn handle_main(app: &mut App, ev: Event) -> bool {
                         return true;
                     }
                     let composer = if thread { &mut app.thread_composer } else { &mut app.composer };
-                    match composer.handle_key(k, &app.keys) {
+                    match composer.handle_resolved(k, action) {
                         KeyOutcome::Done => {}
                         KeyOutcome::Typed => app.notify_typing(thread),
                         KeyOutcome::Submit if app.composer_for(thread).editing.is_some() => app.save_edit(thread),
                         KeyOutcome::Submit => app.send(thread),
-                        KeyOutcome::Leave => app.focus = if thread { Focus::Thread } else { Focus::Sidebar },
+                        KeyOutcome::Leave => app.leave_composer(thread),
                         KeyOutcome::UpWhenEmpty => {
                             if let Some(ts) = app.last_own_message(thread) {
                                 app.start_edit(&ts, thread);
@@ -4059,7 +4094,7 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     let top = app.active_contexts().into_iter().find(|c| *c != Context::Completion).unwrap_or(Context::Global);
     // The theme picker borrows the switcher's keys but is not the switcher.
     let picking = app.prefs.as_ref().is_some_and(|p| p.picker.is_some());
-    let (pill, typing) = if picking { ("THEME", true) } else { mode_label(top, app.focus, app.composer.editing.is_some()) };
+    let (pill, typing) = if picking { ("THEME", true) } else { mode_label(top, app.focus) };
     let mut crumb = app.current.as_deref().and_then(|c| app.ws.conversations.get(c)).map(|c| if c.is_dm() { app.ws.conversation_label(c) } else { format!("#{}", c.name) }).unwrap_or_default();
     match app.focus {
         Focus::Thread | Focus::ThreadComposer if app.thread.is_some() => crumb.push_str(" › Thread"),
@@ -4100,7 +4135,7 @@ fn confirm_question(q: &str, keys: &Keymap) -> String {
 
 /// The status bar's pill — where keys go: the open dialog, or the focused pane — and whether
 /// that is typing.
-fn mode_label(top: Context, focus: Focus, editing: bool) -> (&'static str, bool) {
+fn mode_label(top: Context, focus: Focus) -> (&'static str, bool) {
     match top {
         Context::Menu => ("MENU", false),
         Context::Save => ("SAVE", false),
@@ -4120,13 +4155,8 @@ fn mode_label(top: Context, focus: Focus, editing: bool) -> (&'static str, bool)
         Context::Confirm => ("CONFIRM", false),
         Context::Picker => ("REACT", true),
         _ => match focus {
-            Focus::Sidebar => ("SIDEBAR", false),
-            Focus::Huddle => ("HUDDLE", false),
-            Focus::Messages => ("MESSAGES", false),
-            Focus::Thread => ("THREAD", false),
-            Focus::ThreadComposer => ("REPLY", true),
-            Focus::Composer if editing => ("EDITING", true),
-            Focus::Composer => ("COMPOSE", true),
+            Focus::Sidebar | Focus::Huddle | Focus::Messages | Focus::Thread => ("NORMAL", false),
+            Focus::ThreadComposer | Focus::Composer => ("INSERT", true),
         },
     }
 }
@@ -4184,7 +4214,7 @@ fn draw_composer(f: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &App,
     use ratatui::widgets::{Block, Borders};
     let composer = if thread { &app.thread_composer } else { &app.composer };
     let focused = app.focus == if thread { Focus::ThreadComposer } else { Focus::Composer };
-    let border = if focused { Style::default().fg(super::theme::p().accent) } else { Style::default().fg(super::theme::p().dim) };
+    let border = if focused { Style::default().fg(super::theme::p().good) } else { Style::default().fg(super::theme::p().dim) };
     let target = app.current.as_deref().map(|c| app.ws.channel_label(c)).unwrap_or_default();
     let typing = if thread {
         app.thread.as_ref().map(|(c, ts)| app.ws.typing_in(&super::state::thread_key(c, ts))).unwrap_or_default()
@@ -4345,8 +4375,9 @@ mod tests {
         assert!(!narrow.contains("unread"), "the middle goes first: {narrow:?}");
         let tiny = plain(super::status_line("MESSAGES", false, "#social", "x", right(), 20));
         assert!(tiny.starts_with(" MESSAGES "), "{tiny:?}");
-        assert_eq!(super::mode_label(crate::tui::keymap::Context::Confirm, super::Focus::Messages, false), ("CONFIRM", false));
-        assert_eq!(super::mode_label(crate::tui::keymap::Context::Composer, super::Focus::Composer, true), ("EDITING", true));
+        assert_eq!(super::mode_label(crate::tui::keymap::Context::Confirm, super::Focus::Messages), ("CONFIRM", false));
+        assert_eq!(super::mode_label(crate::tui::keymap::Context::Composer, super::Focus::Composer), ("INSERT", true));
+        assert_eq!(super::mode_label(crate::tui::keymap::Context::Messages, super::Focus::Sidebar), ("NORMAL", false));
     }
 
     #[test]

@@ -2,7 +2,9 @@
 
 use crossterm::event::{KeyCode, KeyEvent};
 
-use super::keymap::{Action, Context, Key, Keymap, Mode, Resolved};
+use super::keymap::{Action, Key};
+#[cfg(test)]
+use super::keymap::{Context, Keymap, Mode, Resolved};
 use unicode_width::UnicodeWidthChar;
 
 /// What a key press in the composer asks the app to do.
@@ -99,14 +101,21 @@ pub struct Composer {
 }
 
 impl Composer {
-    /// Apply an editing key (bindings from the `composer` context of `keys`); plain
-    /// characters are typed.
+    /// Apply an editing key (bindings from the `composer` context of `keys`, no sequence
+    /// pending); plain characters are typed.
+    #[cfg(test)]
     pub fn handle_key(&mut self, k: KeyEvent, keys: &Keymap) -> KeyOutcome {
-        let key = Key::from_event(&k);
-        let action = match keys.resolve(&[Context::Composer], Mode::Insert, &[], key) {
+        let action = match keys.resolve(&[Context::Composer], Mode::Insert, &[], Key::from_event(&k)) {
             Resolved::Action(_, a) => Some(a),
             Resolved::Pending | Resolved::None => None,
         };
+        self.handle_resolved(k, action)
+    }
+
+    /// Like [`Composer::handle_key`], for a key the caller already resolved (so an action reached
+    /// through a leader sequence acts); with no action, plain characters are typed.
+    pub fn handle_resolved(&mut self, k: KeyEvent, action: Option<Action>) -> KeyOutcome {
+        let key = Key::from_event(&k);
         match action {
             Some(Action::Leave) if self.editing.is_some() => self.clear(),
             Some(Action::Leave) => return KeyOutcome::Leave,
@@ -682,6 +691,22 @@ mod tests {
         assert_eq!(c.editing, None);
         c.restore(d);
         assert_eq!(c.editing.as_deref(), Some("10.0"));
+    }
+
+    #[test]
+    fn composer_sequence_acts() {
+        let key = |code, mods| KeyEvent::new(code, mods);
+        let (keys, warnings) = Keymap::load("[composer]\nbold = \"<leader> b\"\n");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let mut c = Composer::default();
+        // The caller resolved Ctrl+Space, b to the action; the composer acts on it, types nothing.
+        let action = match keys.resolve(&[Context::Composer], Mode::Insert, &[super::super::keymap::LEADER], Key::from_event(&key(KeyCode::Char('b'), KeyModifiers::NONE))) {
+            Resolved::Action(_, a) => Some(a),
+            _ => None,
+        };
+        assert_eq!(action, Some(Action::Bold));
+        assert_eq!(c.handle_resolved(key(KeyCode::Char('b'), KeyModifiers::NONE), action), KeyOutcome::Done);
+        assert_eq!(c.text(), "**");
     }
 
     #[test]

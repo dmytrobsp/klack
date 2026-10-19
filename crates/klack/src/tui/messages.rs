@@ -123,6 +123,11 @@ impl MessagePane {
         self.down += n - here;
     }
 
+    /// How many different messages the last draw showed.
+    pub fn shown_count(&self) -> usize {
+        self.rows.iter().flatten().collect::<std::collections::HashSet<_>>().len()
+    }
+
     /// Back to the newest message, following new ones.
     pub fn to_bottom(&mut self) {
         (self.anchor, self.scroll, self.down) = (None, 0, 0);

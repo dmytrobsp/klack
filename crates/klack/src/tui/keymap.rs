@@ -320,6 +320,8 @@ pub enum Action {
     NextConversation,
     ScrollUp,
     ScrollDown,
+    HalfPageUp,
+    HalfPageDown,
     FocusNext,
     FocusPrev,
     Workspace1,
@@ -442,7 +444,9 @@ actions! {
         Down "down" "next conversation" ["down", "j"]
         Top "top" "first conversation" ["home", "g"]
         Bottom "bottom" "last conversation" ["end", "G"]
-        Open "open" "type in the chosen conversation" ["enter", "i", "esc"]
+        HalfPageUp "half_page_up" "half a page up" ["ctrl+u"]
+        HalfPageDown "half_page_down" "half a page down" ["ctrl+d"]
+        Open "open" "type in the chosen conversation" ["enter", "i"]
         Star "star" "star / unstar" ["*"]
         MoveToSection "move_to_section" "move to a section (or a new one)" ["m"]
         FoldSection "fold_section" "fold / unfold the section (folded: what is unread in it)" ["space", "z"]
@@ -453,8 +457,10 @@ actions! {
         Down "down" "next message" ["down", "j"]
         Top "top" "first message" ["home", "g"]
         Bottom "bottom" "last message" ["end", "G"]
+        HalfPageUp "half_page_up" "half a page up" ["ctrl+u"]
+        HalfPageDown "half_page_down" "half a page down" ["ctrl+d"]
         OpenThread "open_thread" "open the message's thread" ["enter"]
-        Back "back" "back to the composer (in a thread: close it)" ["esc"]
+        Back "back" "close the thread (in the messages pane: nothing)" ["esc"]
         Type "type" "type (in a thread: reply)" ["i"]
         React "react" "add a reaction" ["r"]
         Edit "edit" "edit your message" ["e"]
@@ -750,6 +756,7 @@ impl Keymap {
             match table.get(name).map(|v| v.as_str()) {
                 Some(Some(s)) if s.trim().is_empty() => *slot = None,
                 Some(Some(s)) => match Key::parse(s) {
+                    Ok(k) if name == "insert_leader" && k.is_text() => warnings.push(format!("keys.toml: insert_leader '{}' would be typed as text; use a key with Ctrl/Alt", k.label())),
                     Ok(k) => *slot = Some(k),
                     Err(e) => warnings.push(format!("keys.toml: {name}: {e}")),
                 },
@@ -867,6 +874,11 @@ impl Keymap {
                     .collect::<Result<Vec<Key>, String>>()?;
                 if seq.is_empty() {
                     return Err("empty key".into());
+                }
+                // A leader spelled out at the start of a sequence (v0.5.0 files) is the leader.
+                let mut seq = seq;
+                if seq.len() > 1 && self.leader == Some(seq[0]) {
+                    seq[0] = LEADER;
                 }
                 if seq.len() == 1 && seq[0].is_text() && context.types_text() {
                     return Err(format!("'{}' would be typed as text here; use a key with Ctrl/Alt or a <leader> sequence", seq[0].label()));
@@ -1293,6 +1305,39 @@ mod tests {
         assert_eq!(map.resolve(&[Context::Messages, Context::Global], Mode::Normal, &[], k("e")), Resolved::Pending);
         assert_eq!(map.resolve(&[Context::Messages, Context::Global], Mode::Normal, &[k("e")], k("x")), Resolved::Action(Context::Messages, Action::React));
         assert!(warnings.iter().any(|w| w.contains("default e of edit gives way to react")), "{warnings:?}");
+    }
+
+    #[test]
+    fn normal_insert_defaults() {
+        use Context::*;
+        let (map, warnings) = Keymap::load("");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(map.resolve(&[Sidebar, Global], Mode::Normal, &[], k("esc")), Resolved::None);
+        assert_eq!(map.resolve(&[Messages, Global], Mode::Normal, &[], k("ctrl+d")), Resolved::Action(Messages, Action::HalfPageDown));
+        assert_eq!(map.resolve(&[Messages, Global], Mode::Normal, &[], k("ctrl+u")), Resolved::Action(Messages, Action::HalfPageUp));
+        assert_eq!(map.resolve(&[Sidebar, Global], Mode::Normal, &[], k("ctrl+d")), Resolved::Action(Sidebar, Action::HalfPageDown));
+        assert_eq!(map.resolve(&[Sidebar, Global], Mode::Normal, &[], k("i")), Resolved::Action(Sidebar, Action::Open));
+        assert_eq!(map.resolve(&[Messages, Global], Mode::Normal, &[], k("esc")), Resolved::Action(Messages, Action::Back));
+    }
+
+    #[test]
+    fn composer_sequence_and_spelled_out_leader() {
+        use Context::*;
+        // A v0.5.0 file spells the leader out in a sequence: it stands for the leader.
+        let (map, warnings) = Keymap::load("leader = \"ctrl+b\"\n[global]\njump_to = \"ctrl+b k\"\n");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(map.resolve(&[Messages, Global], Mode::Normal, &[], k("ctrl+b")), Resolved::Pending);
+        assert_eq!(map.resolve(&[Messages, Global], Mode::Normal, &[LEADER], k("k")), Resolved::Action(Global, Action::Switcher));
+        // A leader alone stays the key itself.
+        let (map, _) = Keymap::load("leader = \"ctrl+b\"\n[global]\njump_to = \"ctrl+b\"\n");
+        assert_eq!(map.resolve(&[Messages, Global], Mode::Normal, &[], k("ctrl+b")), Resolved::Action(Global, Action::Switcher));
+    }
+
+    #[test]
+    fn insert_leader_must_not_type() {
+        let (map, warnings) = Keymap::load("insert_leader = \"x\"\n");
+        assert_eq!(warnings, vec!["keys.toml: insert_leader 'x' would be typed as text; use a key with Ctrl/Alt".to_string()]);
+        assert_eq!(map.insert_leader, Some(k("ctrl+space")));
     }
 
     #[test]
