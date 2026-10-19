@@ -37,14 +37,36 @@ pub struct Sidebar {
     hidden: std::collections::HashMap<String, Vec<String>>,
     /// Where the folded sections are kept (one file per workspace account).
     fold_file: Option<std::path::PathBuf>,
+    /// The conversation open last time (opened again at start), and where it is kept.
+    pub remembered: Option<String>,
+    open_file: Option<std::path::PathBuf>,
 }
 
 impl Sidebar {
     /// A sidebar for one workspace account, with the sections folded there last time.
     pub fn for_account(team: &str, user: &str) -> Self {
-        let fold_file = slack_core::session::project_dirs().map(|d| d.data_local_dir().join("sidebar").join(format!("{team}-{user}.json")));
+        Self::kept_in(slack_core::session::project_dirs().map(|d| d.data_local_dir().join("sidebar")), team, user)
+    }
+
+    /// A sidebar whose folds and last conversation are kept in folder `dir`.
+    fn kept_in(dir: Option<std::path::PathBuf>, team: &str, user: &str) -> Self {
+        let fold_file = dir.as_ref().map(|d| d.join(format!("{team}-{user}.json")));
+        let open_file = dir.as_ref().map(|d| d.join(format!("{team}-{user}.open")));
         let folded = fold_file.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default();
-        Sidebar { folded, fold_file, ..Default::default() }
+        let remembered = open_file.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).map(|id| id.trim().to_string()).filter(|id| !id.is_empty());
+        Sidebar { folded, fold_file, remembered, open_file, ..Default::default() }
+    }
+
+    /// Keep conversation `id` as the one to open next time.
+    pub fn remember(&mut self, id: &str) {
+        if self.remembered.as_deref() == Some(id) {
+            return;
+        }
+        self.remembered = Some(id.to_string());
+        let Some(path) = &self.open_file else { return };
+        if let Err(e) = path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| std::fs::write(path, id)) {
+            tracing::warn!("keeping the open conversation in {}: {e}", path.display());
+        }
     }
 
     fn save_folds(&self) {
@@ -425,6 +447,18 @@ mod tests {
         assert!(unread.spans[2].style.add_modifier.contains(Modifier::BOLD));
         assert_eq!((text(&muted).as_str(), muted.spans[2].style.fg), (" # random", Some(p.dim)), "muted: dim, no bar");
         assert_eq!((text(&read).chars().next(), read.spans[2].style.fg), (Some(' '), Some(p.read)), "read: a step back");
+    }
+
+    #[test]
+    fn the_last_conversation_is_kept() {
+        let dir = std::env::temp_dir().join(format!("klack-last-{}", std::process::id()));
+        let mut s = Sidebar::kept_in(Some(dir.clone()), "T1", "U1");
+        assert_eq!(s.remembered, None, "nothing kept yet");
+        s.remember("C2");
+        assert_eq!(std::fs::read_to_string(dir.join("T1-U1.open")).unwrap(), "C2");
+        assert_eq!(Sidebar::kept_in(Some(dir.clone()), "T1", "U1").remembered.as_deref(), Some("C2"), "the next start finds it");
+        assert_eq!(Sidebar::kept_in(Some(dir.clone()), "T2", "U1").remembered, None, "per workspace account");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

@@ -286,6 +286,9 @@ impl App {
             }
             self.save_drafts();
             self.current = selected.clone();
+            if let Some(id) = &selected {
+                self.sidebar.remember(id);
+            }
             // A quiet conversation left behind leaves the sidebar again.
             if self.ws.shown != selected {
                 self.ws.shown = selected.clone();
@@ -3410,6 +3413,9 @@ fn handle_net(app: &mut App, msg: Net) {
             let after = app.open_after.lock().unwrap_or_else(|e| e.into_inner()).take_if(|(i, _)| *i == app.workspace);
             if let Some((_, target)) = after {
                 app.open_target(target);
+            } else if let Some(id) = app.sidebar.remembered.clone().filter(|id| app.ws.conversations.get(id).is_some_and(|c| !c.is_archived)) {
+                // Back where you were last time.
+                app.jump_to(&id);
             }
             for user in app.ws.unknown_dm_users() {
                 let (client, tx) = (app.client.clone(), app.net.clone());
