@@ -3007,6 +3007,19 @@ async fn run_workspace(
     Ok((switch_to, media, clipboard))
 }
 
+/// Whether an event, once handled, ends the key sequence under way: a key press that did not
+/// continue it, a click, the wheel or a paste. A key release (Windows reports them), a mouse
+/// move, focus and a resize leave it.
+fn ends_sequence(ev: &Event) -> bool {
+    use crossterm::event::MouseEventKind;
+    match ev {
+        Event::Key(k) => k.kind != KeyEventKind::Release,
+        Event::Mouse(m) => !matches!(m.kind, MouseEventKind::Moved | MouseEventKind::Drag(_)),
+        Event::Paste(_) => true,
+        Event::FocusGained | Event::FocusLost | Event::Resize(..) => false,
+    }
+}
+
 /// Returns false to quit.
 fn handle_terminal(app: &mut App, ev: Event) -> bool {
     if let Event::Key(k) = &ev {
@@ -3014,8 +3027,11 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
             return true;
         }
     }
+    let ends = ends_sequence(&ev);
     let keep_going = handle_event(app, ev);
-    app.pending.clear();
+    if ends {
+        app.pending.clear();
+    }
     keep_going
 }
 
@@ -3764,13 +3780,14 @@ fn run_global(app: &mut App, action: Action) -> bool {
                 None => "not in a huddle".into(),
             };
         }
-        Action::Mute => {
-            if let Some(call) = app.call.as_mut() {
+        Action::Mute => match app.call.as_mut() {
+            Some(call) => {
                 if let Err(e) = call.toggle_mute() {
                     app.status = format!("microphone: {e}");
                 }
             }
-        }
+            None => app.status = "not in a huddle".into(),
+        },
         Action::Workspace1 => app.switch_workspace(0),
         Action::Workspace2 => app.switch_workspace(1),
         Action::Workspace3 => app.switch_workspace(2),
@@ -4368,7 +4385,7 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         let mut children = app.offered(&contexts, mode, app.pending.keys());
         // A leader as a next key shows as the leader's key.
         for c in children.iter_mut().filter(|c| c.key == LEADER) {
-            c.key = app.keys.leader_key().unwrap_or(LEADER);
+            c.key = app.keys.leader_for(mode).unwrap_or(LEADER);
         }
         let settings = &app.ws.settings.which_key;
         let pages = super::which_key::layout(&children, above_status, settings.max_height_percent, settings.icons).pages;
@@ -4392,8 +4409,8 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     };
     let (unread, mentions) = app.ws.total_unread();
     let note = if let Some(ring) = &app.ringing {
-        let key = |a| app.keys.sequences(Context::Global, a).first().map(|s| app.keys.show_in(app.mode(), s)).unwrap_or_default();
-        Some(format!("📞 {} invites you to a huddle · {} join · {} decline", app.ws.user_name(&ring.user), key("huddle"), key("decline_huddle")))
+        let key = |a| app.keys.first_shown_in(app.mode(), Context::Global, a).unwrap_or_default();
+        Some(format!("📞 {} invites you to a huddle · {} join · {} decline", app.ws.user_name(&ring.user), key(Action::Huddle), key(Action::DeclineHuddle)))
     } else if app.status.is_empty() {
         None
     } else {
@@ -4768,6 +4785,23 @@ mod tests {
         let dialog = Here { dialog: true, ..here };
         assert!(!applies(&dialog, C::Global, Search) && !applies(&dialog, C::Global, HuddleView) && applies(&dialog, C::Global, Mute), "nothing opens under a dialog");
         assert!(!applies(&Here { leavable: true, ..dialog }, C::Global, LeaveConversation), "its y/n would open under the dialog");
+    }
+
+    #[test]
+    fn what_ends_a_key_sequence() {
+        use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+        let key = |kind| Event::Key(KeyEvent { kind, ..KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE) });
+        let mouse = |kind| Event::Mouse(MouseEvent { kind, column: 3, row: 4, modifiers: KeyModifiers::NONE });
+        // Windows reports releases: Space up must not cancel ␣ before the next key.
+        assert!(!super::ends_sequence(&key(KeyEventKind::Release)));
+        assert!(super::ends_sequence(&key(KeyEventKind::Press)) && super::ends_sequence(&key(KeyEventKind::Repeat)));
+        // Hovering, focus and a resize leave it; a click, the wheel and a paste end it.
+        for ev in [mouse(MouseEventKind::Moved), mouse(MouseEventKind::Drag(MouseButton::Left)), Event::FocusGained, Event::FocusLost, Event::Resize(80, 24)] {
+            assert!(!super::ends_sequence(&ev), "{ev:?}");
+        }
+        for ev in [mouse(MouseEventKind::Down(MouseButton::Left)), mouse(MouseEventKind::Up(MouseButton::Left)), mouse(MouseEventKind::ScrollDown), mouse(MouseEventKind::ScrollUp), Event::Paste("x".into())] {
+            assert!(super::ends_sequence(&ev), "{ev:?}");
+        }
     }
 
     fn session(team_id: &str, team: &str, user: &str) -> WorkspaceSession {

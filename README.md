@@ -65,10 +65,11 @@ or open, F6 → Appearance; Ctrl+K still finds them and shows them while open; w
 bold with a bar in the first column, muted conversations are dimmed and not counted), the
 messages in the middle with a reply pane for threads on the right (in a narrow terminal the thread
 takes the messages' place until you close it), the composer below, and a status
-bar at the bottom: a pill saying which mode you are in (NORMAL, INSERT, or the open dialog: JUMP,
-SEARCH, PREFS, …), where you are (`#social › Thread`), unread
-counts and messages — or, while a dialog is open, its keys — then F1 for all keys and whether klack
-is connected. A thumb on a pane's right border shows where you are when it scrolls. A conversation
+line at the bottom: on the left a pill saying which mode you are in (NORMAL, INSERT, or the open
+dialog: JUMP, SEARCH, PREFS, …), then the unread and mention counts, other workspaces, your
+availability and `● live` while connected — a note or a ringing huddle takes their place; on the right
+the keys of a sequence under way (`␣h`, `^␣h` for Ctrl+Space) and the hints of where you are, ending
+in `? help` (`↑/↓ move · Enter thread · i type · ␣ actions · ? help`). A thumb on a pane's right border shows where you are when it scrolls. A conversation
 opened with unread messages has a red "new" line above the first of them; while you read further
 up, the bottom border counts the newer messages below ("↓ 3 newer"). With two or more
 workspaces in the profile a rail on the far left has a tile for each — its logo where it has

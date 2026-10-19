@@ -834,16 +834,26 @@ impl Keymap {
         };
         let (leader, insert_leader) = default_leaders();
         let mut map = Keymap { leader: Some(leader), insert_leader: Some(insert_leader), ..Default::default() };
+        // Whether keys.toml chose the insert leader (else a user's key on it wins over it).
+        let mut insert_chosen = false;
         for (name, slot) in [("leader", &mut map.leader), ("insert_leader", &mut map.insert_leader)] {
             match table.get(name).map(|v| v.as_str()) {
                 Some(Some(s)) if s.trim().is_empty() => *slot = None,
                 Some(Some(s)) => match Key::parse(s) {
                     Ok(k) if name == "insert_leader" && k.is_text() => warnings.push(format!("keys.toml: insert_leader '{}' would be typed as text; use a key with Ctrl/Alt", k.label())),
-                    Ok(k) => *slot = Some(k),
+                    Ok(k) => {
+                        *slot = Some(k);
+                        insert_chosen |= name == "insert_leader";
+                    }
                     Err(e) => warnings.push(format!("keys.toml: {name}: {e}")),
                 },
                 Some(None) => warnings.push(format!("keys.toml: {name} must be a string such as \"ctrl+b\"")),
                 None => {}
+            }
+        }
+        if let (Some(leader), None) = (map.leader, map.insert_leader) {
+            if leader.is_text() {
+                warnings.push(format!("keys.toml: insert_leader is empty and the leader {} types text, so typing and dialogs have no leader (the huddle keys while typing, the profile card's huddle and VIP can't be reached); set insert_leader to a key with Ctrl/Alt", leader.label()));
             }
         }
         // Overrides: (context, action name) → key strings.
@@ -933,23 +943,43 @@ impl Keymap {
             Context::Composer | Context::Completion => !seq[0].is_text(),
             _ => !seq[0].is_text() && (seq[0] == LEADER || name == "quit"),
         };
-        // A pane's or dialog's default that would make a user's [global] sequence only the start
-        // of a longer one there gives way to it too (`huddle = "<leader> h"` beats ␣hT and ␣hp).
-        let user_global: Vec<(Vec<Key>, &str)> = bound.iter().filter(|(c, .., user)| *c == Context::Global && *user).map(|(_, s, name, _)| (s.clone(), *name)).collect();
+        // A pane's or dialog's default that equals, starts or extends a user's [global] sequence
+        // gives way to it too where it applies (`huddle = "<leader> h"` beats ␣hT and ␣hp,
+        // `mute = "<leader> r"` beats react's ␣r). A default written out again is still a default.
+        let default_of = |map: &Keymap, name: &str| ACTIONS.iter().find(|a| a.context == Context::Global && a.name == name).map(|a| map.defaults(a)).unwrap_or_default();
+        let user_global: Vec<(Vec<Key>, &str)> = bound.iter().filter(|(c, s, name, user)| *c == Context::Global && *user && !default_of(&map, name).contains(s)).map(|(_, s, name, _)| (s.clone(), *name)).collect();
         bound.retain(|(context, other, owner, user)| {
-            let Some((_, name)) = user_global.iter().find(|(seq, name)| !*user && *context != Context::Global && other.len() > seq.len() && other.starts_with(seq) && applies(*context, seq, name)) else { return true };
+            let Some((_, name)) = user_global.iter().find(|(seq, name)| !*user && *context != Context::Global && (other.starts_with(seq) || seq.starts_with(other)) && applies(*context, seq, name)) else { return true };
             warnings.push(format!("keys.toml: [{}] default {} of {owner} gives way to [global] {name}", context.name(), map.label(other)));
             map.bindings.remove(&(*context, other.clone()));
             map.keys.get_mut(&(*context, *owner)).map(|v| v.retain(|s| s != other));
             false
         });
-        // The user's [global] sequences that a pane or dialog binding hides where it applies (a
-        // default written out again is still a default).
-        let default_of = |name: &str| ACTIONS.iter().find(|a| a.context == Context::Global && a.name == name).map(|a| map.defaults(a)).unwrap_or_default();
-        for (_, seq, name, _) in bound.iter().filter(|(c, s, name, user)| *c == Context::Global && *user && !default_of(name).contains(s)) {
+        // The user's [global] sequences that a pane or dialog binding hides where it applies.
+        for (_, seq, name, _) in bound.iter().filter(|(c, s, name, user)| *c == Context::Global && *user && !default_of(&map, name).contains(s)) {
             for (context, other, owner, _) in bound.iter().filter(|(c, ..)| *c != Context::Global) {
                 if applies(*context, seq, name) && (other.starts_with(seq) || seq.starts_with(other)) {
                     warnings.push(format!("keys.toml: [global] {} is hidden by [{}] {owner}", map.label(seq), context.name()));
+                }
+            }
+        }
+        // A user's single key on a leader: the default insert leader gives way to it; otherwise
+        // the leader starts sequences where it acts, so the binding can't be reached there (it is
+        // kept: where nothing starts with the leader, the key falls through to it).
+        let normal = |c: Context| matches!(c, Context::Global | Context::Sidebar | Context::Messages | Context::Huddle);
+        for (context, seq, name, _) in bound.iter().filter(|(_, s, _, user)| *user && s.len() == 1) {
+            let (key, section) = (seq[0].label(), context.name());
+            if Some(seq[0]) == map.insert_leader {
+                if insert_chosen {
+                    warnings.push(format!("keys.toml: {key} in [{section}] {name} is the insert leader; it starts sequences everywhere, so this binding can't be reached"));
+                } else {
+                    warnings.push(format!("keys.toml: insert_leader {key} gives way to [{section}] {name} (typing and dialogs then have no leader); set insert_leader in keys.toml to use another key"));
+                    map.insert_leader = None;
+                }
+            } else if Some(seq[0]) == map.leader && (normal(*context) || !seq[0].is_text()) {
+                let here: &[Context] = if *context == Context::Global { &[Context::Global, Context::Sidebar, Context::Messages, Context::Huddle] } else { &[*context, Context::Global] };
+                if map.bindings.keys().any(|(c, s)| here.contains(c) && s.len() > 1 && s[0] == LEADER) {
+                    warnings.push(format!("keys.toml: {key} in [{section}] {name} is the leader key; it starts sequences there, so this binding can't be reached"));
                 }
             }
         }
@@ -1041,9 +1071,10 @@ impl Keymap {
                 if seq.is_empty() {
                     return Err("empty key".into());
                 }
-                // A leader spelled out at the start of a sequence (v0.5.0 files) is the leader.
+                // A leader (or the insert leader) spelled out at the start of a sequence (v0.5.0
+                // files) is the leader.
                 let mut seq = seq;
-                if seq.len() > 1 && self.leader == Some(seq[0]) {
+                if seq.len() > 1 && (self.leader == Some(seq[0]) || self.insert_leader == Some(seq[0])) {
                     seq[0] = LEADER;
                 }
                 if seq.len() == 1 && seq[0].is_text() && context.types_text() {
@@ -1171,7 +1202,7 @@ impl Keymap {
     /// The first sequence of an action in short form with the leader of `mode` (`␣hm` in
     /// NORMAL, `^␣hm` while typing), for the huddle bar and the ringing note.
     pub fn first_shown_in(&self, mode: Mode, context: Context, action: Action) -> Option<String> {
-        self.first_sequence(context, action).map(|s| self.show_with(self.leader_for(mode), s))
+        self.first_pressable(context, action, self.leader_for(mode)).map(|s| self.show_with(self.leader_for(mode), s))
     }
 
     /// A sequence as help shows it, the leader as its key ("Space h m", "Ctrl+B k").
@@ -1189,24 +1220,26 @@ impl Keymap {
         self.show_with(self.leader_key(), seq)
     }
 
-    /// A sequence in short form with the leader of `mode`.
-    pub fn show_in(&self, mode: Mode, seq: &[Key]) -> String {
-        self.show_with(self.leader_for(mode), seq)
-    }
-
     fn show_with(&self, leader: Option<Key>, seq: &[Key]) -> String {
         seq.iter().map(|k| if *k == LEADER { leader.map_or_else(|| LEADER.label(), short) } else { short(*k) }).collect()
     }
 
-    /// The keys of an action in a context, as shown in help ("↑ / k", "Ctrl+Space h p").
+    /// The keys of an action in a context, as shown in help ("↑ / k", "Ctrl+Space h p");
+    /// a `<leader>` sequence where there is no leader is left out.
     pub fn keys_label(&self, context: Context, name: &str) -> String {
-        self.keys.iter().find(|((c, n), _)| *c == context && *n == name).map(|(_, seqs)| seqs.iter().map(|s| self.label_with(self.leader_in(context), s)).collect::<Vec<_>>().join(" / ")).unwrap_or_default()
+        let leader = self.leader_in(context);
+        self.keys.iter().find(|((c, n), _)| *c == context && *n == name).map(|(_, seqs)| seqs.iter().filter(|s| pressable(leader, s)).map(|s| self.label_with(leader, s)).collect::<Vec<_>>().join(" / ")).unwrap_or_default()
     }
 
-    /// The first sequence of an action.
+    /// The first sequence of an action that can be pressed in its context.
     fn first_sequence(&self, context: Context, action: Action) -> Option<&Vec<Key>> {
+        self.first_pressable(context, action, self.leader_in(context))
+    }
+
+    /// The first sequence of an action that can be pressed with `leader` as `<leader>`.
+    fn first_pressable(&self, context: Context, action: Action, leader: Option<Key>) -> Option<&Vec<Key>> {
         let info = ACTIONS.iter().find(|a| a.context == context && a.action == action)?;
-        self.keys.get(&(context, info.name))?.first()
+        self.keys.get(&(context, info.name))?.iter().find(|s| pressable(leader, s))
     }
 
     /// The first key of an action, for short hints ("F1 help").
@@ -1219,6 +1252,11 @@ impl Keymap {
     pub fn first_shown(&self, context: Context, action: Action) -> Option<String> {
         self.first_sequence(context, action).map(|s| self.show_with(self.leader_in(context), s))
     }
+}
+
+/// Whether `seq` can be pressed where `<leader>` is pressed as `leader` (None: there is none).
+fn pressable(leader: Option<Key>, seq: &[Key]) -> bool {
+    seq[0] != LEADER || leader.is_some()
 }
 
 /// A group of rows in the shared tree (F1 help, F6 → Keys, `ctl keys-template`).
@@ -1243,8 +1281,17 @@ pub struct TreeRow {
 
 /// Every action by where its first key sequence leads: the direct keys, the leader's keys on
 /// the selected message or conversation, one section per group, typing, each dialog, and
-/// the actions without a key. Empty sections are left out.
+/// the actions without a key. Empty sections are left out. Workspaces 1…9 share one row.
 pub fn tree(keys: &Keymap) -> Vec<Section> {
+    tree_with(keys, true)
+}
+
+/// [`tree`] with a row for each workspace, so F6 → Keys can rebind each of them.
+pub fn keys_tree(keys: &Keymap) -> Vec<Section> {
+    tree_with(keys, false)
+}
+
+fn tree_with(keys: &Keymap, workspaces_together: bool) -> Vec<Section> {
     let (mut message, mut conversation, mut typing, mut unbound) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     // Direct keys by pane: everywhere, sidebar, messages and thread, huddle view.
     let mut direct: [Vec<TreeRow>; 4] = Default::default();
@@ -1252,19 +1299,24 @@ pub fn tree(keys: &Keymap) -> Vec<Section> {
     let mut dialogs: Vec<(Context, Vec<TreeRow>)> = Vec::new();
     for (index, info) in ACTIONS.iter().enumerate() {
         // Workspaces 2…9 are listed with the first.
-        if info.name.starts_with("workspace_") && info.name != "workspace_1" {
+        if workspaces_together && info.name.starts_with("workspace_") && info.name != "workspace_1" {
             continue;
         }
         let seqs = keys.sequences(info.context, info.name);
         let leader = keys.leader_in(info.context);
         let (label, icon) = keys.label_of(info);
-        let mut shown: Vec<String> = seqs.iter().map(|s| keys.label_with(leader, s)).collect();
+        // A <leader> sequence where there is no leader can't be pressed: not offered.
+        let reachable: Vec<&Vec<Key>> = seqs.iter().filter(|s| pressable(leader, s)).collect();
+        let mut shown: Vec<String> = reachable.iter().map(|s| keys.label_with(leader, s)).collect();
         let mut label = label;
-        if info.name == "workspace_1" {
+        if workspaces_together && info.name == "workspace_1" {
             // "Alt+1 … Alt+9": each way of reaching them.
             let last = keys.sequences(info.context, "workspace_9");
-            shown = seqs.iter().zip(&last).map(|(a, b)| format!("{} … {}", keys.label_with(leader, a), keys.label_with(leader, b))).collect();
+            shown = reachable.iter().zip(last.iter().filter(|s| pressable(leader, s))).map(|(a, b)| format!("{} … {}", keys.label_with(leader, a), keys.label_with(leader, b))).collect();
             label = super::i18n::tr("workspace 1…9").into_owned();
+        }
+        if shown.is_empty() && !seqs.is_empty() {
+            shown.push(super::i18n::tr("(no leader here)").into_owned());
         }
         let row = TreeRow { info: index, keys: shown.join(" / "), label, icon };
         let Some(first) = seqs.first() else {
@@ -1535,14 +1587,20 @@ mod tests {
 
     #[test]
     fn global_keys_hidden_by_a_pane_are_reported() {
-        let (_, warnings) = Keymap::load("[global]\nhelp = \"ctrl+e\"\n");
+        // A pane's own (user) binding hides a user's [global] one: reported.
+        let (_, warnings) = Keymap::load("[global]\nhelp = \"ctrl+e\"\n[composer]\nline_end = \"ctrl+e\"\n");
         assert_eq!(warnings, vec!["keys.toml: [global] Ctrl+E is hidden by [composer] line_end".to_string()]);
+        // A pane's default gives way to it instead.
+        let (_, warnings) = Keymap::load("[global]\nhelp = \"ctrl+e\"\n");
+        assert_eq!(warnings, vec!["keys.toml: [composer] default Ctrl+E of line_end gives way to [global] help".to_string()]);
         assert!(Keymap::load("[global]\nfocus_next = \"tab\"\n").1.is_empty(), "the default written out: Tab in the suggestions is on purpose");
         // Defaults may do it on purpose; a printable global key does not act where it types.
         assert!(Keymap::load("").1.is_empty());
-        let (_, warnings) = Keymap::load("[global]\nmute = \"j\"\n");
+        let (map, warnings) = Keymap::load("[global]\nmute = \"j\"\n");
         assert_eq!(warnings.len(), 3, "sidebar, messages, huddle view: {warnings:?}");
-        assert!(warnings.iter().all(|w| w.starts_with("keys.toml: [global] j is hidden by")));
+        assert!(warnings.iter().all(|w| w.contains("default j of down gives way to [global] mute")), "{warnings:?}");
+        assert_eq!(map.resolve(&[Context::Messages, Context::Global], Mode::Normal, &[], k("j")), Resolved::Action(Context::Global, Action::Mute));
+        assert_eq!(map.resolve(&[Context::Messages, Context::Global], Mode::Normal, &[], k("down")), Resolved::Action(Context::Messages, Action::Down));
     }
 
     fn k(s: &str) -> Key {
@@ -1849,7 +1907,7 @@ mod tests {
         assert!(warnings.contains(&"keys.toml: [profile] default Space h p of huddle gives way to [global] huddle".to_string()), "{warnings:#?}");
         assert_eq!(warnings.len(), 8, "{warnings:#?}");
         // A pane's own binding still hides a global one (reported, not dropped).
-        let (map, warnings) = Keymap::load("[global]\nsearch = \"<leader> r\"\n");
+        let (map, warnings) = Keymap::load("[global]\nsearch = \"<leader> r\"\n[messages]\nreact = \"<leader> r\"\n");
         assert_eq!(map.resolve(&[Messages, Global], Mode::Normal, &[LEADER], k("r")), Resolved::Action(Messages, Action::React));
         assert_eq!(warnings, vec!["keys.toml: [global] Space r is hidden by [messages] react".to_string()]);
     }
@@ -1875,5 +1933,88 @@ mod tests {
         // A leader that never types is the leader everywhere.
         let map = Keymap::load("leader = \"ctrl+b\"\ninsert_leader = \"\"\n").0;
         assert_eq!(map.first_shown_in(Mode::Insert, Context::Global, Action::Mute).as_deref(), Some("^Bhm"));
+    }
+
+    #[test]
+    fn a_user_key_on_the_leader_is_reported() {
+        use Context::*;
+        // v0.5.0's F6 wrote this for anyone who edited fold: z keeps working, Space is reported.
+        let (map, warnings) = Keymap::load("[sidebar]\nfold_section = [\"space\", \"z\"]\n");
+        assert_eq!(warnings, vec!["keys.toml: Space in [sidebar] fold_section is the leader key; it starts sequences there, so this binding can't be reached".to_string()]);
+        assert_eq!(map.sequences(Sidebar, "fold_section"), vec![vec![k("space")], vec![k("z")]], "nothing is dropped");
+        assert_eq!(map.resolve(&[Sidebar, Global], Mode::Normal, &[], k("z")), Resolved::Action(Sidebar, Action::FoldSection));
+        assert_eq!(map.resolve(&[Sidebar, Global], Mode::Normal, &[], k("space")), Resolved::Pending);
+        // Where the leader does not act (Space in a dialog) the key is the dialog's: no warning.
+        assert!(Keymap::load("[help]\npage_down = \"space\"\n").1.is_empty());
+        // A leader that never types acts everywhere.
+        let (_, warnings) = Keymap::load("leader = \"ctrl+b\"\n[snippet]\ncopy = \"ctrl+b\"\n");
+        assert_eq!(warnings, vec!["keys.toml: Ctrl+B in [snippet] copy is the leader key; it starts sequences there, so this binding can't be reached".to_string()]);
+    }
+
+    #[test]
+    fn a_user_key_on_the_default_insert_leader_wins() {
+        use Context::*;
+        let (map, warnings) = Keymap::load("[global]\njump_to = \"ctrl+space\"\n");
+        assert_eq!(map.insert_leader, None);
+        assert_eq!(warnings, vec!["keys.toml: insert_leader Ctrl+Space gives way to [global] jump_to (typing and dialogs then have no leader); set insert_leader in keys.toml to use another key".to_string()]);
+        assert_eq!(map.resolve(&[Messages, Global], Mode::Normal, &[], k("ctrl+space")), Resolved::Action(Global, Action::Switcher));
+        assert_eq!(map.resolve(&[Composer, Global], Mode::Insert, &[], k("ctrl+space")), Resolved::Action(Global, Action::Switcher));
+        // Set on purpose: the binding is the one that can't be reached.
+        let (map, warnings) = Keymap::load("insert_leader = \"ctrl+space\"\n[global]\njump_to = \"ctrl+space\"\n");
+        assert_eq!(map.insert_leader, Some(k("ctrl+space")));
+        assert_eq!(warnings, vec!["keys.toml: Ctrl+Space in [global] jump_to is the insert leader; it starts sequences everywhere, so this binding can't be reached".to_string()]);
+        assert_eq!(map.resolve(&[Composer, Global], Mode::Insert, &[], k("ctrl+space")), Resolved::Pending);
+    }
+
+    #[test]
+    fn a_user_global_sequence_beats_a_pane_default_it_equals_or_extends() {
+        use Context::*;
+        let (map, warnings) = Keymap::load("[global]\nmute = \"<leader> r\"\n");
+        assert_eq!(map.resolve(&[Messages, Global], Mode::Normal, &[LEADER], k("r")), Resolved::Action(Global, Action::Mute));
+        assert!(map.sequences(Messages, "react").is_empty());
+        assert_eq!(warnings, vec!["keys.toml: [messages] default Space r of react gives way to [global] mute".to_string()]);
+        let (map, warnings) = Keymap::load("[global]\nmute = \"<leader> r x\"\n");
+        assert_eq!(map.resolve(&[Messages, Global], Mode::Normal, &[LEADER], k("r")), Resolved::Pending);
+        assert_eq!(map.resolve(&[Messages, Global], Mode::Normal, &[LEADER, k("r")], k("x")), Resolved::Action(Global, Action::Mute));
+        assert_eq!(warnings, vec!["keys.toml: [messages] default Space r of react gives way to [global] mute".to_string()]);
+        // A default written out again is still a default: Ctrl+A stays line start while typing.
+        let (map, warnings) = Keymap::load("[global]\nactivity = \"ctrl+a\"\n");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(map.resolve(&[Composer, Global], Mode::Insert, &[], k("ctrl+a")), Resolved::Action(Composer, Action::LineStart));
+    }
+
+    #[test]
+    fn no_insert_leader_with_a_text_leader_is_reported() {
+        use Context::*;
+        let (map, warnings) = Keymap::load("insert_leader = \"\"\n");
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].starts_with("keys.toml: insert_leader is empty and the leader Space types"), "{warnings:?}");
+        // Help does not offer a key that can't be pressed there.
+        assert_eq!(map.keys_label(Profile, "huddle"), "");
+        assert_eq!(map.first_key(Profile, Action::Vip), None);
+        let row = tree(&map).into_iter().flat_map(|s| s.rows).find(|r| ACTIONS[r.info].context == Profile && ACTIONS[r.info].name == "huddle").unwrap();
+        assert_eq!(row.keys, "(no leader here)");
+        assert!(!tree(&map).iter().flat_map(|s| &s.rows).any(|r| r.keys.contains("<leader>")));
+        // The panes keep the leader.
+        assert_eq!(map.keys_label(Messages, "react"), "Space r");
+    }
+
+    #[test]
+    fn a_spelled_out_insert_leader_is_the_leader() {
+        use Context::*;
+        let (map, warnings) = Keymap::load("[global]\njump_to = \"ctrl+space x\"\n");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(map.sequences(Global, "jump_to"), vec![vec![LEADER, k("x")]]);
+        assert_eq!(map.resolve(&[Messages, Global], Mode::Normal, &[LEADER], k("x")), Resolved::Action(Global, Action::Switcher));
+        assert_eq!(map.resolve(&[Composer, Global], Mode::Insert, &[LEADER], k("x")), Resolved::Action(Global, Action::Switcher));
+    }
+
+    #[test]
+    fn keys_tree_lists_each_workspace() {
+        let map = Keymap::load("").0;
+        let rows: Vec<TreeRow> = keys_tree(&map).into_iter().flat_map(|s| s.rows).filter(|r| ACTIONS[r.info].name.starts_with("workspace_")).collect();
+        assert_eq!(rows.len(), 9, "{rows:?}");
+        assert_eq!((rows[1].label.as_str(), rows[1].keys.as_str()), ("workspace 2", "Alt+2 / Space w 2"));
+        assert_eq!(tree(&map).into_iter().flat_map(|s| s.rows).filter(|r| ACTIONS[r.info].name.starts_with("workspace_")).count(), 1, "help keeps one row");
     }
 }

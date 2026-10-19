@@ -35,7 +35,7 @@ pub enum Field {
     Leader,
     /// The leader while typing and in dialogs.
     InsertLeader,
-    /// A section of the key tree (index into `keymap::tree`); a group's can be renamed.
+    /// A section of the key tree (index into `keymap::keys_tree`); a group's can be renamed.
     GroupHeader(usize),
     /// An action's keys (index into `keymap::ACTIONS`).
     Binding(usize),
@@ -585,7 +585,7 @@ impl Prefs {
             let filter = self.filter.to_lowercase();
             let hit = |text: &str| text.to_lowercase().contains(&filter);
             let mut out: Vec<Field> = KEYS_SETTINGS.iter().copied().filter(|f| hit(&f.label())).collect();
-            for (n, section) in super::keymap::tree(keys).iter().enumerate() {
+            for (n, section) in super::keymap::keys_tree(keys).iter().enumerate() {
                 let rows: Vec<Field> = section.rows.iter().filter(|r| hit(&r.label) || hit(&super::i18n::tr(ACTIONS[r.info].description)) || hit(&r.keys)).map(|r| Field::Binding(r.info)).collect();
                 if !rows.is_empty() {
                     out.push(Field::GroupHeader(n));
@@ -650,7 +650,7 @@ impl Prefs {
     /// or its title; sections come and go as keys are rebound).
     pub fn anchor(&self, keys: &Keymap) -> Option<Anchor> {
         match self.selected_field(keys)? {
-            Field::GroupHeader(n) => super::keymap::tree(keys).into_iter().nth(n).map(|s| Anchor::Section(s.prefix, s.title)),
+            Field::GroupHeader(n) => super::keymap::keys_tree(keys).into_iter().nth(n).map(|s| Anchor::Section(s.prefix, s.title)),
             f => Some(Anchor::Field(f)),
         }
     }
@@ -658,7 +658,7 @@ impl Prefs {
     /// Select what `anchor` was before the keymap changed, wherever it is now (if still listed).
     pub fn reselect(&mut self, anchor: Option<Anchor>, keys: &Keymap) {
         let Some(anchor) = anchor else { return };
-        let sections = super::keymap::tree(keys);
+        let sections = super::keymap::keys_tree(keys);
         let found = self.fields(keys).iter().position(|f| match (f, &anchor) {
             (Field::GroupHeader(n), Anchor::Section(prefix, title)) => sections.get(*n).is_some_and(|s| if prefix.is_some() { s.prefix == *prefix } else { s.title == *title }),
             (f, Anchor::Field(a)) => f == a,
@@ -672,7 +672,7 @@ impl Prefs {
     /// The prefix of the group whose header is selected (None elsewhere).
     fn selected_group(&self, keys: &Keymap) -> Option<Vec<Key>> {
         let Some(Field::GroupHeader(n)) = self.selected_field(keys) else { return None };
-        super::keymap::tree(keys).into_iter().nth(n)?.prefix
+        super::keymap::keys_tree(keys).into_iter().nth(n)?.prefix
     }
 
     /// Enter on a group's header: start editing its name; Enter again gives the change for
@@ -846,7 +846,7 @@ impl Prefs {
         let fields = self.fields(keys);
         // Keys: the bindings by the tree, under the category's line with the filter.
         let keys_shown = self.keys_shown();
-        let sections = if keys_shown { super::keymap::tree(keys) } else { Vec::new() };
+        let sections = if keys_shown { super::keymap::keys_tree(keys) } else { Vec::new() };
         let tree_row = |i: usize| sections.iter().flat_map(|s| &s.rows).find(|r| r.info == i);
         let icons = ws.settings.which_key.icons;
         let label_of = |field: &Field| match field {
@@ -1172,17 +1172,22 @@ mod tests {
         let p = keys_prefs();
         assert_eq!(p.category_name(), "Keys");
         let mut want = vec![Field::WhichKeyShow, Field::WhichKeyCorner, Field::WhichKeyDelay, Field::WhichKeyHeight, Field::WhichKeyIcons, Field::Leader, Field::InsertLeader];
-        for (n, section) in super::super::keymap::tree(&keys).iter().enumerate() {
+        for (n, section) in super::super::keymap::keys_tree(&keys).iter().enumerate() {
             want.push(Field::GroupHeader(n));
             want.extend(section.rows.iter().map(|r| Field::Binding(r.info)));
         }
         assert_eq!(p.fields(&keys), want);
+        // Each workspace is its own row, so 2…9 can be rebound here too.
+        for n in 1..=9 {
+            let i = ACTIONS.iter().position(|a| a.name == format!("workspace_{n}")).unwrap();
+            assert!(want.contains(&Field::Binding(i)), "workspace_{n}");
+        }
     }
 
     #[test]
     fn filter_narrows_bindings() {
         let keys = Keymap::load("").0;
-        let sections = super::super::keymap::tree(&keys);
+        let sections = super::super::keymap::keys_tree(&keys);
         let index = |context: super::super::keymap::Context, name: &str| ACTIONS.iter().position(|a| a.context == context && a.name == name).unwrap();
         let mut p = keys_prefs();
         p.filter = "huddle".into();
@@ -1252,7 +1257,7 @@ mod tests {
     fn renaming_a_group() {
         use super::super::keys_file::Change;
         let keys = Keymap::load("").0;
-        let sections = super::super::keymap::tree(&keys);
+        let sections = super::super::keymap::keys_tree(&keys);
         let huddle = sections.iter().position(|s| s.title.ends_with("huddle")).unwrap();
         let mut p = keys_prefs();
         p.selected = p.fields(&keys).iter().position(|f| *f == Field::GroupHeader(huddle)).unwrap();
@@ -1331,15 +1336,15 @@ mod tests {
         let fields = p.fields(&after);
         let header = fields[..p.selected].iter().rposition(|f| matches!(f, Field::GroupHeader(_))).unwrap();
         let Field::GroupHeader(n) = fields[header] else { unreachable!() };
-        assert_eq!(super::super::keymap::tree(&after)[n].title, "Unbound", "now under Unbound");
+        assert_eq!(super::super::keymap::keys_tree(&after)[n].title, "Unbound", "now under Unbound");
         // A group's header, by its prefix (its title changes with the name).
-        let huddle = super::super::keymap::tree(&keys).iter().position(|s| s.title.ends_with("huddle")).unwrap();
+        let huddle = super::super::keymap::keys_tree(&keys).iter().position(|s| s.title.ends_with("huddle")).unwrap();
         p.selected = p.fields(&keys).iter().position(|f| *f == Field::GroupHeader(huddle)).unwrap();
         let anchor = p.anchor(&keys);
         let renamed = Keymap::load(&apply("[global]\nquit = []\nhelp = []\n", &Change::Group { prefix: "<leader> h".into(), name: Some("calls".into()), icon: None }).unwrap()).0;
         p.reselect(anchor, &renamed);
         let Some(Field::GroupHeader(n)) = p.selected_field(&renamed) else { panic!("{:?}", p.selected_field(&renamed)) };
-        let section = &super::super::keymap::tree(&renamed)[n];
+        let section = &super::super::keymap::keys_tree(&renamed)[n];
         assert_eq!((section.prefix.clone(), section.title.ends_with("calls")), (Some(vec![LEADER, Key::parse("h").unwrap()]), true));
     }
 

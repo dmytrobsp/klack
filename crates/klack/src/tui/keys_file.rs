@@ -334,6 +334,15 @@ mod tests {
     }
 
     #[test]
+    fn recording_the_leader_alone_says_it_cant_be_reached() {
+        let keys = Keymap::load("").0;
+        let space = super::super::prefs::recorded(&keys, &[Key::parse("space").unwrap()]);
+        let change = Change::Binding { context: Context::Sidebar, name: "fold_section", seqs: Some(vec![space]) };
+        let (_, warnings) = Keymap::load(&apply("", &change).unwrap());
+        assert_eq!(saved_note("/k.toml", &warnings, &change), "/k.toml · note: Space in [sidebar] fold_section is the leader key; it starts sequences there, so this binding can't be reached");
+    }
+
+    #[test]
     fn broken_file_is_not_touched() {
         assert!(apply("[messages\nreact=", &bind(Context::Messages, "pin", Some(&["P"]))).is_err());
         assert!(apply("messages = 3\n", &bind(Context::Messages, "pin", Some(&["P"]))).is_err());
