@@ -119,6 +119,7 @@ impl Composer {
         match action {
             Some(Action::Leave) if self.editing.is_some() => self.clear(),
             Some(Action::Leave) => return KeyOutcome::Leave,
+            Some(Action::ClearBox) => self.clear(),
             Some(Action::Newline) => self.insert('\n'),
             Some(Action::Send) => return KeyOutcome::Submit,
             Some(Action::Bold) => self.toggle_marker('*'),
@@ -658,6 +659,18 @@ pub fn escape_text(text: &str) -> String {
 mod tests {
     use super::*;
     use crossterm::event::KeyModifiers;
+
+    #[test]
+    fn clear_box_is_final_and_cancels_an_edit() {
+        let mut c = Composer::default();
+        for ch in "hello".chars() { c.insert(ch); }
+        assert_eq!(c.handle_resolved(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE), Some(Action::ClearBox)), KeyOutcome::Done);
+        assert!(c.text().is_empty() && c.cursor == 0 && c.draft().is_none());
+        c.insert('a');
+        c.editing = Some("1.0".into());
+        c.handle_resolved(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE), Some(Action::ClearBox));
+        assert!(c.editing.is_none() && c.text().is_empty());
+    }
 
     #[test]
     fn editing_and_lines() {

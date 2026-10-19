@@ -378,6 +378,7 @@ pub enum Action {
     Backspace,
     DeleteForward,
     AlsoToChannel,
+    ClearBox,
     Accept,
     Dismiss,
     Close,
@@ -434,7 +435,7 @@ actions! {
         Quit "quit" "quit" "quit" "🚪" ["ctrl+q"]
         Help "help" "this help" "help" "❓" ["f1"]
         Switcher "jump_to" "jump to a conversation or person (# alone: every channel)" "jump to" "🧭" ["ctrl+k", "<leader> <leader>", "<leader> f f"]
-        BrowseChannels "browse_channels" "every channel (jump to with #)" "browse channels" "📚" ["<leader> f #"]
+        BrowseChannels "browse_channels" "every channel (jump to with #)" "browse channels" "📚" ["<leader> f c"]
         Search "search" "search messages" "search" "🔍" ["ctrl+f", "<leader> f s"]
         Details "details" "conversation details: about, members, pins" "details" "📇" ["<leader> c d"]
         Star "star" "star / unstar the conversation" "star" "⭐" ["<leader> c s"]
@@ -542,6 +543,7 @@ actions! {
         DeleteForward "delete_forward" "delete at the cursor" "delete forward" "🧽" ["delete"]
         AlsoToChannel "also_to_channel" "reply box: also send to the channel" "also to channel" "📣" ["alt+a"]
         Paste "paste" "paste from the clipboard: text, a picture, copied files" "paste" "📋" ["ctrl+v"]
+        ClearBox "clear" "clear the message box for good (an edit in progress is cancelled)" "clear the box" "🧼" ["<leader> x", "<leader> backspace"]
     }
     Completion {
         Up "up" "previous suggestion" "up" "🔼" ["up", "shift+tab"]
@@ -1828,7 +1830,8 @@ mod tests {
         assert_eq!(at(&[LEADER, k("a")], "n"), Resolved::Action(Global, Action::PauseNotifications), "␣an pauses or resumes at once");
         assert_eq!(at(&[LEADER, k("a")], "N"), Resolved::Action(Global, Action::PauseFor), "␣aN: /dnd in the box");
         assert_eq!(at(&[LEADER, k("a")], "p"), Resolved::None, "␣ap is gone");
-        assert_eq!(at(&[LEADER, k("f")], "#"), Resolved::Action(Global, Action::BrowseChannels));
+        assert_eq!(at(&[LEADER, k("f")], "c"), Resolved::Action(Global, Action::BrowseChannels));
+        assert_eq!(at(&[LEADER, k("f")], "#"), Resolved::None, "␣f# is gone");
         assert_eq!(at(&[LEADER, k("w")], "3"), Resolved::Action(Global, Action::Workspace3));
         assert_eq!(at(&[LEADER], "space"), Resolved::Action(Global, Action::Switcher), "␣␣ jumps");
         assert_eq!(at(&[], "alt+3"), Resolved::Action(Global, Action::Workspace3), "beside Alt+n");
@@ -2035,13 +2038,23 @@ mod tests {
     }
 
     #[test]
+    fn clear_box_keys() {
+        use Context::*;
+        let map = Keymap::load("").0;
+        for key in ["x", "backspace"] {
+            assert_eq!(map.resolve(&[Composer, Global], Mode::Insert, &[LEADER], k(key)), Resolved::Action(Composer, Action::ClearBox), "{key}");
+        }
+        assert_eq!(map.resolve(&[Composer, Global], Mode::Insert, &[], k("backspace")), Resolved::Action(Composer, Action::Backspace));
+    }
+
+    #[test]
     fn a_spelled_out_insert_leader_is_the_leader() {
         use Context::*;
-        let (map, warnings) = Keymap::load("[global]\njump_to = \"ctrl+space x\"\n");
+        let (map, warnings) = Keymap::load("[global]\njump_to = \"ctrl+space q\"\n");
         assert!(warnings.is_empty(), "{warnings:?}");
-        assert_eq!(map.sequences(Global, "jump_to"), vec![vec![LEADER, k("x")]]);
-        assert_eq!(map.resolve(&[Messages, Global], Mode::Normal, &[LEADER], k("x")), Resolved::Action(Global, Action::Switcher));
-        assert_eq!(map.resolve(&[Composer, Global], Mode::Insert, &[LEADER], k("x")), Resolved::Action(Global, Action::Switcher));
+        assert_eq!(map.sequences(Global, "jump_to"), vec![vec![LEADER, k("q")]]);
+        assert_eq!(map.resolve(&[Messages, Global], Mode::Normal, &[LEADER], k("q")), Resolved::Action(Global, Action::Switcher));
+        assert_eq!(map.resolve(&[Composer, Global], Mode::Insert, &[LEADER], k("q")), Resolved::Action(Global, Action::Switcher));
     }
 
     #[test]

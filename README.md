@@ -162,7 +162,7 @@ members, pins) · `␣b` what it notifies about · `␣l` leave. The same, and m
 | `␣h` huddle | `h` join or leave · `m` mute · `t` its thread · `v` huddle view · `c` camera · `s` share screen · `d` decline an invitation |
 | `␣n` new | `c` channel · `p` private channel · `d` DM · `s` snippet · `f` upload a file |
 | `␣a` availability | `s` set status · `c` clear it · `a` away / active · `n` pause notifications for 30 minutes, or resume them when paused · `N` pause for a time you type (`/dnd `) |
-| `␣f` find | `f` jump to · `s` search · `a` activity · `t` threads · `#` every channel |
+| `␣f` find | `f` jump to · `s` search · `a` activity · `t` threads · `c` every channel (channels) |
 | `␣w` workspace | `1` … `9` |
 
 In the sidebar `z` (or a click on a header) folds / unfolds the section: folded, only "▸ name" shows,

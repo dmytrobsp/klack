@@ -2315,7 +2315,9 @@ impl App {
         let mode = self.mode();
         self.pending.sync(mode);
         let typed = Key::from_event(k);
-        if super::which_key::handle_key(&mut self.pending, self.which_key.as_mut(), typed) {
+        // Backspace goes back a key, unless the sequence binds it (`^␣ Backspace` clears the box).
+        let bound = k.code == crossterm::event::KeyCode::Backspace && k.modifiers.is_empty() && !matches!(self.resolve(k), Resolved::None);
+        if !bound && super::which_key::handle_key(&mut self.pending, self.which_key.as_mut(), typed) {
             self.pending_since = Some(std::time::Instant::now());
             return true;
         }
