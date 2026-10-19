@@ -79,6 +79,11 @@ impl Media {
             tracing::info!("the terminal advertises sixel but did not report its cell size: using sixel");
             picker.set_protocol_type(ProtocolType::Sixel);
         }
+        let term_program = std::env::var("TERM_PROGRAM").unwrap_or_default();
+        if let Some(better) = override_for(picker.protocol_type(), &term_program) {
+            tracing::info!("{term_program} answers the kitty query but cannot draw kitty's placeholders: using {better:?}");
+            picker.set_protocol_type(better);
+        }
         tracing::info!(protocol = ?picker.protocol_type(), font = ?picker.font_size(), capabilities = ?picker.capabilities(), "terminal graphics");
         let detected = picker.protocol_type();
         let mut media = Media { picker, thumbs: HashMap::new(), avatars: false, detected };
@@ -189,6 +194,13 @@ pub fn thumb_cells(file: &File, font: FontSize, max_cols: u16, max_rows: u16) ->
     let cols = ((w * scale) / fw).ceil().clamp(1.0, max_cols as f64) as u16;
     let rows = ((h * scale) / fh).ceil().clamp(1.0, max_rows as f64) as u16;
     Some((cols, rows))
+}
+
+/// A better protocol than the one detected, for terminals that answer the kitty graphics query
+/// without drawing kitty's Unicode placeholders (which ratatui-image uses): WezTerm, whose
+/// iTerm2 protocol works. `term_program` is `$TERM_PROGRAM`.
+fn override_for(detected: ProtocolType, term_program: &str) -> Option<ProtocolType> {
+    (detected == ProtocolType::Kitty && term_program == "WezTerm").then_some(ProtocolType::Iterm2)
 }
 
 /// The kitty protocol draws a picture with these placeholder cells (ratatui-image's
@@ -429,6 +441,10 @@ mod tests {
     #[test]
     fn graphics_choices() {
         // xterm's real replies: as a VT340 (sixel) and by default.
+        assert_eq!(override_for(ProtocolType::Kitty, "WezTerm"), Some(ProtocolType::Iterm2), "WezTerm: no kitty placeholders");
+        assert_eq!(override_for(ProtocolType::Kitty, "kitty"), None);
+        assert_eq!(override_for(ProtocolType::Kitty, ""), None);
+        assert_eq!(override_for(ProtocolType::Sixel, "WezTerm"), None, "only the kitty answer is overridden");
         assert!(da1_has_sixel(b"\x1b[?63;1;2;4;6;9;15;16;22;28c"));
         assert!(!da1_has_sixel(b"\x1b[?64;1;2;6;9;15;16;17;18;21;22;28c"));
         assert!(!da1_has_sixel(b"\x1b[?63;1;2;14c"), "14 is not 4");

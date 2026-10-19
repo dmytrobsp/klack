@@ -27,7 +27,7 @@ on Linux. On a fresh system that is (each line checked with a clean checkout in 
 To run: `libasound.so.2` (ALSA's library, on every desktop Linux) and the C++ runtime. Optional:
 **ffmpeg / ffprobe on PATH** for video playback, cameras and (outside Wayland) screen sharing; a
 D-Bus notification service for desktop notifications; a terminal with graphics for real images
-(kitty, WezTerm, Ghostty, iTerm2, or any sixel terminal; others get half-block images). Without a
+(kitty, WezTerm, Ghostty, iTerm2, foot or any sixel terminal; others get half-block images). Without a
 sound card huddles still work (silently, with a note in the call bar); without system CA
 certificates klack uses the Mozilla roots it carries.
 
