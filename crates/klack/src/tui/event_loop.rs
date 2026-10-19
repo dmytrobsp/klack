@@ -4532,7 +4532,7 @@ fn draw_composer(f: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &App,
         let hint = if thread {
             format!("{} to reply", app.keys.first_key(Context::Messages, Action::Type).unwrap_or_default())
         } else {
-            format!("Press {} or click a conversation to type", app.keys.first_key(Context::Global, Action::FocusNext).unwrap_or_default())
+            format!("Press {} or click a conversation to type", app.keys.first_key(Context::Messages, Action::Type).unwrap_or_default())
         };
         Paragraph::new(ratatui::text::Text::styled(hint, Style::default().fg(super::theme::p().dim))).wrap(ratatui::widgets::Wrap { trim: false })
     } else {
