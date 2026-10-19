@@ -92,7 +92,10 @@ unread); a click on a tile switches, like Alt+1…9.
   the code only after a captcha, which needs a browser — the window above does it.)
 
 Sessions are saved per profile in `~/.config/klack/<profile>/session.json` (owner-only
-permissions). Use `--profile NAME` to keep several accounts apart. Signing in to more workspaces
+permissions). Use `--profile NAME` to keep several accounts apart. Profiles separate accounts only:
+the preferences (`settings.toml`, everything in F6), `keys.toml`, `themes/` and `locales/` are shared
+by all profiles; each profile has its own sessions and its own log/cache folder. To tell workspaces
+apart, give each a theme of its own (F6 → Appearance → Theme for this workspace). Signing in to more workspaces
 with the same profile adds them to it: inside the app, `Alt+1 … Alt+9` switches between them
 and `/workspace [name]` lists them or switches by name. The status bar notes unread messages in the
 others ("Alt+2 @3": three unread DMs or mentions there; "Alt+2 •": something unread), checked every 30 s,

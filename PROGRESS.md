@@ -204,6 +204,8 @@ K. Sidebar like Slack's, plus picking the browser profile — asked by the user 
   K2 (NEXT). Hide channels and DMs without activity for 30 days (configurable in F6: never / 1 / 7 / 14 / 30 / 60 / 90
       days); starred ones never hide, nor unread ones, the one shown, a previewed one; jumping to a hidden one
       (Ctrl+K, search, notification) shows it until you move away.
+  (Asked 2026-10-19: profiles share settings — intended; the user chose to keep it so, documented in the
+  README's "Signing in".)
   K3. `--from-browser`: when several browser profiles sign in to the workspace, list them (profile name and the
       account) and ask which; without a terminal to ask in, the freshest.
 
