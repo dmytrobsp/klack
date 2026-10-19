@@ -1,0 +1,73 @@
+# Release builds. A `v*` tag (matching the Cargo version) builds every platform and publishes a GitHub
+# Release with the archives and SHA256SUMS; a manual run only builds them (artifacts, no release).
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 22.04: an older glibc, so the binary runs on more distributions.
+          - { name: x86_64-linux, os: ubuntu-22.04, target: x86_64-unknown-linux-gnu, archive: tar.gz }
+          - { name: aarch64-macos, os: macos-14, target: aarch64-apple-darwin, archive: tar.gz }
+          - { name: x86_64-macos, os: macos-14, target: x86_64-apple-darwin, archive: tar.gz }
+          - { name: x86_64-windows, os: ubuntu-22.04, target: x86_64-pc-windows-gnu, archive: zip }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Packages (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq pkg-config cmake libasound2-dev mingw-w64
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - run: cargo build --locked --release --target ${{ matrix.target }}
+      - name: Package
+        shell: bash
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"]=="klack"))')
+          dir=klack-$version-${{ matrix.name }}
+          mkdir "$dir"
+          exe=klack; [ "${{ matrix.archive }}" = zip ] && exe=klack.exe
+          cp "target/${{ matrix.target }}/release/$exe" README.md LICENSE-MIT LICENSE-APACHE "$dir/"
+          if [ "${{ matrix.archive }}" = zip ]; then zip -qr "$dir.zip" "$dir"; else tar -czf "$dir.tar.gz" "$dir"; fi
+          ls -l "$dir".*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: klack-${{ matrix.name }}
+          path: klack-*.${{ matrix.archive }}
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: The tag matches the Cargo version
+        run: |
+          version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          [ "${GITHUB_REF_NAME}" = "v$version" ] || { echo "tag ${GITHUB_REF_NAME} but Cargo version $version"; exit 1; }
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: cd dist && sha256sum klack-* > SHA256SUMS && cat SHA256SUMS
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "klack $GITHUB_REF_NAME" --generate-notes
