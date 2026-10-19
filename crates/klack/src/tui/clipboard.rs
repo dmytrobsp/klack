@@ -2,6 +2,19 @@
 //! clipboard is reachable (e.g. over SSH).
 
 use std::io::Write;
+use std::path::PathBuf;
+
+/// What a paste found on the system clipboard.
+#[derive(Debug, PartialEq)]
+pub enum Pasted {
+    /// Files copied in a file manager.
+    Files(Vec<PathBuf>),
+    Text(String),
+    /// A picture (a screenshot, an image copied in a browser), as RGBA pixels.
+    Image { width: usize, height: usize, rgba: Vec<u8> },
+    /// Nothing that can be pasted; says why.
+    Nothing(&'static str),
+}
 
 #[derive(Default)]
 pub struct Clipboard {
@@ -14,13 +27,17 @@ pub struct Clipboard {
 }
 
 impl Clipboard {
-    /// Copy `text`; returns how it was copied.
-    pub fn copy(&mut self, text: &str) -> &'static str {
+    fn system(&mut self) -> Option<&mut arboard::Clipboard> {
         if self.system.is_none() && !self.unavailable {
             self.system = arboard::Clipboard::new().map_err(|e| tracing::warn!("no system clipboard: {e}")).ok();
             self.unavailable = self.system.is_none();
         }
-        if let Some(cb) = self.system.as_mut() {
+        self.system.as_mut()
+    }
+
+    /// Copy `text`; returns how it was copied.
+    pub fn copy(&mut self, text: &str) -> &'static str {
+        if let Some(cb) = self.system() {
             match cb.set_text(text) {
                 Ok(()) => {
                     self.last = Some(text.to_string());
@@ -33,6 +50,26 @@ impl Clipboard {
         "terminal clipboard (OSC 52)"
     }
 
+    /// Read the clipboard for a paste: files first (a file manager offers their paths as text
+    /// too), then text (some apps offer a picture of copied text as well), then a picture.
+    pub fn paste(&mut self) -> Pasted {
+        let Some(cb) = self.system() else { return Pasted::Nothing("no system clipboard here") };
+        if let Some(files) = cb.get().file_list().ok().filter(|f| !f.is_empty()) {
+            return Pasted::Files(files);
+        }
+        if let Some(text) = cb.get_text().ok().filter(|t| !t.is_empty()) {
+            return Pasted::Text(text);
+        }
+        match cb.get_image() {
+            Ok(image) => Pasted::Image { width: image.width, height: image.height, rgba: image.bytes.into_owned() },
+            Err(arboard::Error::ContentNotAvailable) => Pasted::Nothing("the clipboard is empty or holds nothing klack can paste"),
+            Err(e) => {
+                tracing::warn!("clipboard paste failed: {e}");
+                Pasted::Nothing("the clipboard could not be read")
+            }
+        }
+    }
+
     /// Before exiting: our copy dies with the process on Linux, so if the clipboard still
     /// holds it, hand it to the terminal via OSC 52 (ignored by terminals without support).
     pub fn hand_off(&mut self) {
@@ -41,6 +78,14 @@ impl Clipboard {
             osc52(&last);
         }
     }
+}
+
+/// A pasted picture as a PNG file's bytes.
+pub fn png(width: usize, height: usize, rgba: Vec<u8>) -> anyhow::Result<Vec<u8>> {
+    let image = image::RgbaImage::from_raw(width as u32, height as u32, rgba).ok_or_else(|| anyhow::anyhow!("a {width}×{height} picture with the wrong number of pixels"))?;
+    let mut out = std::io::Cursor::new(Vec::new());
+    image.write_to(&mut out, image::ImageFormat::Png)?;
+    Ok(out.into_inner())
 }
 
 fn osc52(text: &str) {
@@ -75,5 +120,14 @@ mod tests {
         assert_eq!(super::base64(b"fo"), "Zm8=");
         assert_eq!(super::base64(b"foo"), "Zm9v");
         assert_eq!(super::base64("héllo".as_bytes()), "aMOpbGxv");
+    }
+
+    #[test]
+    fn pasted_pictures_become_png() {
+        let rgba = vec![255, 0, 0, 255, 0, 0, 255, 128];
+        let png = super::png(2, 1, rgba.clone()).unwrap();
+        assert!(png.starts_with(b"\x89PNG"));
+        assert_eq!(image::load_from_memory(&png).unwrap().to_rgba8().into_raw(), rgba);
+        assert!(super::png(2, 2, rgba).is_err(), "too few pixels");
     }
 }

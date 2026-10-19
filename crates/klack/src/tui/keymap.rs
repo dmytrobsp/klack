@@ -328,6 +328,7 @@ pub enum Action {
     Open,
     Star,
     ContextMenu,
+    Paste,
     MoveToSection,
     FoldSection,
     OpenThread,
@@ -476,6 +477,7 @@ actions! {
         Backspace "backspace" "delete before the cursor" ["backspace"]
         DeleteForward "delete_forward" "delete at the cursor" ["delete"]
         AlsoToChannel "also_to_channel" "reply box: also send to the channel" ["alt+a"]
+        Paste "paste" "paste from the clipboard: text, a picture, copied files" ["ctrl+v"]
     }
     Completion {
         Up "up" "previous suggestion" ["up", "shift+tab"]

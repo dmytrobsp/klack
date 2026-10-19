@@ -18,6 +18,8 @@ pub enum KeyOutcome {
     Leave,
     /// ↑ in an empty composer: edit our last message.
     UpWhenEmpty,
+    /// Ctrl+V: paste from the system clipboard.
+    Paste,
 }
 
 /// What an autocomplete token looks like at the cursor.
@@ -81,6 +83,7 @@ impl Composer {
             Some(Action::Backspace) => self.backspace(),
             Some(Action::DeleteForward) => self.delete(),
             Some(Action::Up) if self.is_empty() && self.editing.is_none() => return KeyOutcome::UpWhenEmpty,
+            Some(Action::Paste) => return KeyOutcome::Paste,
             Some(Action::Up) => {
                 self.up();
             }

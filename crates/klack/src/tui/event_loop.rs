@@ -1985,6 +1985,30 @@ impl App {
         });
     }
 
+    /// Ctrl+V in a composer: text from the system clipboard is typed in; a picture or copied
+    /// files are reported.
+    fn paste(&mut self, thread: bool) {
+        use super::clipboard::Pasted;
+        match self.clipboard.paste() {
+            Pasted::Text(text) => self.composer_for(thread).insert_str(&text.replace("\r\n", "\n")),
+            Pasted::Files(files) => {
+                let names: Vec<String> = files.iter().map(|f| f.file_name().map_or_else(|| f.display().to_string(), |n| n.to_string_lossy().to_string())).collect();
+                self.status = format!("clipboard: {} file(s): {}", files.len(), names.join(", "));
+            }
+            Pasted::Image { width, height, rgba } => {
+                self.status = format!("clipboard: a {width}×{height} picture…");
+                let tx = self.net.clone();
+                tokio::task::spawn_blocking(move || {
+                    let _ = tx.send(Net::FileDone(match super::clipboard::png(width, height, rgba) {
+                        Ok(png) => format!("clipboard: a {width}×{height} picture, {} as PNG", super::text::human_size(png.len() as u64)),
+                        Err(e) => format!("the pasted picture could not be read: {e:#}"),
+                    }));
+                });
+            }
+            Pasted::Nothing(why) => self.status = why.into(),
+        }
+    }
+
     /// Save the attachments of message `ts` to the downloads folder.
     fn save_files(&mut self, ts: &str) {
         let Some(channel) = self.current.clone() else { return };
@@ -2967,6 +2991,7 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
                                 app.start_edit(&ts, thread);
                             }
                         }
+                        KeyOutcome::Paste => app.paste(thread),
                     }
                 }
             }
