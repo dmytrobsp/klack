@@ -43,7 +43,7 @@ enum Net {
     Posted { channel: String, message: slack_core::types::Message },
     /// All replies of a thread (parent first).
     Replies { channel: String, ts: String, page: HistoryPage },
-    /// Conversation details loaded for the F2 overlay.
+    /// Conversation details loaded for the details overlay.
     DetailsInfo(slack_core::types::Conversation),
     DetailsMembers { channel: String, members: Vec<String> },
     DetailsPins { channel: String, pins: Vec<slack_core::types::Message> },
@@ -140,7 +140,7 @@ struct App {
     call: Option<super::call::Call>,
     /// Presence subscription sent on the current RTM connection.
     presence_subscribed: bool,
-    /// Open conversation details (F2).
+    /// Open conversation details (␣cd).
     details: Option<super::details::Details>,
     /// Open profile card.
     profile: Option<super::profile::ProfileCard>,
@@ -150,15 +150,15 @@ struct App {
     menu: Option<super::menu::Menu>,
     /// Open preferences (F6).
     prefs: Option<super::prefs::Prefs>,
-    /// The huddle view (F8), shown in place of the messages while Some.
+    /// The huddle view (␣hv), shown in place of the messages while Some.
     huddle_view: Option<super::huddle_view::HuddleView>,
     /// Where the call bar was drawn (a click toggles the huddle view).
     call_bar_area: ratatui::layout::Rect,
     /// A profile picture the call bar wants loaded.
     call_bar_wanted: Option<(slack_core::types::File, (u16, u16))>,
-    /// Open activity view (F5).
+    /// Open activity view (Ctrl+A).
     activity: Option<super::activity::Activity>,
-    /// The save dialog (`s`).
+    /// The save dialog (`␣s`).
     save: Option<super::save::SaveDialog>,
     /// Open Threads view (Ctrl+T).
     threads: Option<super::threads::Threads>,
@@ -831,12 +831,9 @@ impl App {
             self.status = "open a conversation first".into();
             return;
         }
-        let c = &mut self.composer;
-        // Attachments would be sent with the command as their text.
-        let filled = if c.attachments.is_empty() { prefilled(&c.text(), c.editing.is_some(), command, wrap) } else { Err("the message box is in use") };
-        match filled {
+        match prefill_box(&self.composer, self.thread_composer.editing.is_some(), command, wrap) {
             Ok((text, cursor)) => {
-                c.set_with_cursor(&text, cursor);
+                self.composer.set_with_cursor(&text, cursor);
                 self.focus = Focus::Composer;
             }
             Err(note) => self.status = note.into(),
@@ -917,6 +914,7 @@ impl App {
                     self.open_thread(&ts);
                 }
             }
+            Some(Action::OpenThread) => self.status = "already in the thread".into(),
             Some(Action::React) => {
                 if let (Some(channel), Some(ts)) = (self.current.clone(), self.selected_ts()) {
                     self.picker = Some((EmojiPicker::default(), channel, ts));
@@ -1204,6 +1202,10 @@ impl App {
         let Some(m) = self.current.as_deref().and_then(|c| self.ws.find_message(c, ts)) else { return };
         let ws = &self.ws;
         let text = slack_core::format::plain_text(&slack_core::format::message_blocks(&m.text, &m.blocks), &|i| super::text::inline_plain(ws, i));
+        if text.trim().is_empty() {
+            self.status = "no text in this message".into();
+            return;
+        }
         let how = self.clipboard.copy(&text);
         self.status = format!("copied message text to the {how}");
     }
@@ -1488,7 +1490,7 @@ impl App {
         }
     }
 
-    /// F8: show the huddle view in place of the messages, or the messages again.
+    /// Show the huddle view in place of the messages, or the messages again.
     fn toggle_huddle_view(&mut self) {
         if self.huddle_view.take().is_some() {
             self.focus = Focus::Composer;
@@ -1500,11 +1502,11 @@ impl App {
             self.huddle_view = Some(Default::default());
             self.focus = Focus::Huddle;
         } else {
-            self.status = format!("not in a huddle ({} joins this conversation's)", self.keys.first_key(Context::Global, Action::Huddle).unwrap_or_default());
+            self.status = format!("not in a huddle ({} joins this conversation's)", self.keys.first_shown(Context::Global, Action::Huddle).unwrap_or_default());
         }
     }
 
-    /// F10: share the screen (the desktop asks what; nothing blocks meanwhile), or stop.
+    /// Share the screen (the desktop asks what; nothing blocks meanwhile), or stop.
     fn toggle_share(&mut self) {
         let Some(call) = self.call.as_mut() else {
             self.status = "not in a huddle".into();
@@ -1527,7 +1529,7 @@ impl App {
         }
     }
 
-    /// F3: join (or start) the huddle of the current conversation, or leave the one we are in.
+    /// Join (or start) the huddle of the current conversation, or leave the one we are in.
     fn toggle_huddle(&mut self) {
         if let Some(call) = self.call.as_mut() {
             call.leave();
@@ -1666,6 +1668,7 @@ impl App {
             std::fs::write(&path, text).map_err(|e| e.to_string()).map(|_| path.display().to_string())
         });
         if written.is_ok() {
+            super::messages::set_open_key(map.first_shown(Context::Messages, Action::Open).unwrap_or_default());
             self.keys = map;
         }
         if let Some(p) = self.prefs.as_mut() {
@@ -1849,7 +1852,7 @@ impl App {
         });
     }
 
-    /// F5: open the activity view and load the feed.
+    /// Open the activity view and load the feed.
     fn open_activity(&mut self) {
         self.activity = Some(super::activity::Activity::default());
         let (client, tx) = (self.client.clone(), self.net.clone());
@@ -2196,7 +2199,7 @@ impl App {
         }
     }
 
-    /// Profile card `h`: a huddle in the DM with `user`.
+    /// The profile card's huddle: one in the DM with `user`.
     fn huddle_with(&mut self, user: String) {
         if user == self.ws.self_id {
             self.status = "that is you".into();
@@ -2504,6 +2507,34 @@ impl App {
             || self.picker.is_some()
     }
 
+    /// Whether `action` of `context` makes sense now (see [`applies`]).
+    fn applies(&self, context: Context, action: Action) -> bool {
+        let leavable = |id: &str| self.ws.conversations.get(id).is_some_and(|c| !c.is_dm() && c.is_member);
+        let selected = self.sidebar.selected_id();
+        let here = Here {
+            offers: self.selected_ts().and_then(|ts| self.current.as_deref().and_then(|c| self.ws.find_message(c, &ts))).map(|m| super::menu::Offers::of(m, &self.ws.self_id)),
+            in_thread: self.focus == Focus::Thread,
+            outside: self.current.as_deref().is_some_and(|c| self.ws.is_outside(c)),
+            leavable: self.current.as_deref().is_some_and(leavable),
+            selected_leavable: selected.is_some_and(leavable),
+            selected: selected.is_some(),
+            card: self.profile.is_some(),
+            dialog: self.mode() == Mode::Dialog,
+        };
+        applies(&here, context, action)
+    }
+
+    /// The next keys after `prefix` that which-key offers: what doesn't apply here is left
+    /// out (edit on others' messages, join when a member…), and so are groups left empty.
+    fn offered(&self, contexts: &[Context], mode: Mode, prefix: &[Key]) -> Vec<super::keymap::Child> {
+        let mut children = self.keys.children(contexts, mode, prefix);
+        children.retain(|c| match c.action {
+            Some((context, action)) => self.applies(context, action),
+            None => !self.offered(contexts, mode, &[prefix, &[c.key]].concat()).is_empty(),
+        });
+        children
+    }
+
     /// The selected message of the focused pane.
     fn selected_ts(&self) -> Option<String> {
         match self.focus {
@@ -2709,6 +2740,7 @@ pub async fn run(profile: slack_core::session::Profile, team: Option<&str>) -> R
         // Keys may have been rebound in the preferences meanwhile.
         let mut keymap = super::keymap::load_user();
         keymap.1.extend(settings_problem);
+        super::messages::set_open_key(keymap.0.first_shown(Context::Messages, Action::Open).unwrap_or_default());
         let (next, kept_media, kept_clipboard) = run_workspace(client, (labels.clone(), index, badges.clone(), open_after.clone(), logos.clone()), &mut clicks, &keymap, &settings, &mut terminal, &mut events, media, clipboard).await?;
         (media, clipboard) = (kept_media, kept_clipboard);
         match next {
@@ -2978,7 +3010,7 @@ fn handle_dialog(app: &mut App, ev: &Event) -> bool {
         if k.kind != KeyEventKind::Release && !app.capturing_key() {
             match app.resolve(k) {
                 Resolved::Action(Context::Global, action) if opens_something(action) => {
-                    app.status = "close the dialog first (Esc)".into();
+                    app.status = close_first(&app.keys, app.overlay());
                     return true;
                 }
                 Resolved::Action(Context::Global, action) => return run_global(app, action),
@@ -2995,7 +3027,13 @@ fn handle_dialog(app: &mut App, ev: &Event) -> bool {
                 Some(Action::Down) => m.move_by(1),
                 Some(Action::Open) => app.run_menu(),
                 Some(Action::Close) => app.menu = None,
-                _ => {}
+                // An item's own key runs it (`r` for the `␣r` shown beside it).
+                _ => {
+                    if let Some(n) = m.item_for_key(Key::from_event(k)).and_then(|item| m.items.iter().position(|i| i.0 == item)) {
+                        m.selected = n;
+                        app.run_menu();
+                    }
+                }
             }
         }
         // The reaction picker: a click on an emoji reacts with it, a click outside closes it.
@@ -3560,7 +3598,62 @@ fn handle_main(app: &mut App, ev: Event) -> bool {
 /// dialog (the insert leader reaches them there).
 fn opens_something(action: Action) -> bool {
     use Action::*;
-    matches!(action, Switcher | BrowseChannels | Search | Threads | Activity | Details | MoveToSection | Help | Preferences | LeaveConversation | DeleteSection | RenameSection | NewChannel | NewPrivateChannel | NewDm | NewSnippet | Upload | SetStatus | PauseNotifications)
+    matches!(action, Switcher | BrowseChannels | Search | Threads | Activity | Details | MoveToSection | Help | Preferences | LeaveConversation | DeleteSection | RenameSection | NewChannel | NewPrivateChannel | NewDm | NewSnippet | Upload | SetStatus | PauseNotifications | HuddleThread | HuddleView)
+}
+
+/// The note for an action that would open something under the dialog `overlay`, naming
+/// the dialog's close key (a y/n question has none: any other key is no).
+fn close_first(keys: &Keymap, overlay: Option<Context>) -> String {
+    if overlay == Some(Context::Confirm) {
+        return "answer the question first".into();
+    }
+    match overlay.and_then(|c| keys.first_key(c, Action::Close)) {
+        Some(key) => format!("close the dialog first ({key})"),
+        None => "close the dialog first".into(),
+    }
+}
+
+/// [`prefilled`] for the message box `c`; `other_editing`: the reply box is editing a message.
+fn prefill_box(c: &Composer, other_editing: bool, command: &str, wrap: Wrap) -> Result<(String, usize), &'static str> {
+    // Attachments would be sent with the command as their text.
+    if c.attachments.is_empty() { prefilled(&c.text(), c.editing.is_some() || other_editing, command, wrap) } else { Err("the message box is in use") }
+}
+
+/// Where you are, as far as which actions apply (see [`applies`]).
+#[derive(Debug, Clone, Copy, Default)]
+struct Here {
+    /// What the selected message offers (None: no message selected).
+    offers: Option<super::menu::Offers>,
+    /// The thread pane has the focus.
+    in_thread: bool,
+    /// The current conversation is a channel you are not in.
+    outside: bool,
+    /// The current conversation is a channel you can leave.
+    leavable: bool,
+    /// So is the conversation selected in the sidebar.
+    selected_leavable: bool,
+    /// A conversation (not a header or Threads) is selected in the sidebar.
+    selected: bool,
+    /// A profile card is open.
+    card: bool,
+    /// A dialog is open: nothing opens under it.
+    dialog: bool,
+}
+
+/// Whether `action` of `context` makes sense here; which-key leaves the others out.
+fn applies(here: &Here, context: Context, action: Action) -> bool {
+    use Action::*;
+    match (context, action) {
+        (Context::Global, _) if here.dialog && opens_something(action) => false,
+        (Context::Messages, OpenThread) => !here.in_thread,
+        (Context::Messages, Edit | Delete | Open | Save | Copy) => here.offers.is_some_and(|o| o.allows(action)),
+        (Context::Global, JoinConversation) => here.outside,
+        (Context::Global, LeaveConversation) => here.leavable,
+        (Context::Sidebar, LeaveConversation) => here.selected_leavable,
+        (Context::Sidebar, Star | MoveToSection | Details | NotificationLevel) => here.selected,
+        (Context::Profile, Huddle) => here.card,
+        _ => true,
+    }
 }
 
 /// What a global key does. False to quit.
@@ -4085,7 +4178,7 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     if app.huddle_view.is_none() && app.focus == Focus::Huddle {
         app.focus = Focus::Composer;
     }
-    let key = |a| app.keys.first_key(Context::Global, a).unwrap_or_default();
+    let key = |a| app.keys.first_shown(Context::Global, a).unwrap_or_default();
     let call_keys = (key(Action::Mute), key(Action::Huddle), key(Action::HuddleThread), key(Action::HuddleView), key(Action::Camera), key(Action::ShareScreen));
     let bar_keys = super::huddle_view::Keys { mute: &call_keys.0, leave: &call_keys.1, thread: &call_keys.2, view: &call_keys.3, camera: &call_keys.4, share: &call_keys.5 };
     let call_rows = app.call.as_ref().map_or(0, |call| call.bar_rows(&app.ws, &app.media, bar_keys, f.area().width));
@@ -4222,7 +4315,7 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     // which-key: the keys that can come next.
     if app.which_key.is_some() {
         let contexts = app.active_contexts();
-        let mut children = app.keys.children(&contexts, mode, app.pending.keys());
+        let mut children = app.offered(&contexts, mode, app.pending.keys());
         // A leader as a next key shows as the leader's key.
         for c in children.iter_mut().filter(|c| c.key == LEADER) {
             c.key = app.keys.leader_key().unwrap_or(LEADER);
@@ -4582,7 +4675,49 @@ mod tests {
     fn views_do_not_open_over_a_dialog() {
         use crate::tui::keymap::Action;
         assert!(super::opens_something(Action::Switcher) && super::opens_something(Action::Upload) && super::opens_something(Action::Details));
+        assert!(super::opens_something(Action::HuddleThread) && super::opens_something(Action::HuddleView), "^␣ht / ^␣hv would open them under the dialog");
         assert!(!super::opens_something(Action::NotificationLevel) && !super::opens_something(Action::Mute) && !super::opens_something(Action::AwayActive));
+        // The note names the dialog's own close key.
+        use crate::tui::keymap::{Context, Keymap};
+        let keys = Keymap::load("").0;
+        assert_eq!(super::close_first(&keys, Some(Context::Search)), "close the dialog first (Esc)");
+        let rebound = Keymap::load("[search]\nclose = \"ctrl+g\"\n").0;
+        assert_eq!(super::close_first(&rebound, Some(Context::Search)), "close the dialog first (Ctrl+G)");
+        assert_eq!(super::close_first(&keys, Some(Context::Confirm)), "answer the question first");
+    }
+
+    #[test]
+    fn no_prefill_during_a_reply_edit() {
+        use super::{Wrap, prefill_box};
+        use crate::tui::composer::Composer;
+        let c = Composer::default();
+        assert_eq!(prefill_box(&c, false, "/status ", Wrap::No), Ok(("/status ".into(), 8)));
+        assert_eq!(prefill_box(&c, true, "/status ", Wrap::No), Err("finish or cancel the edit first"), "the reply box is editing a message");
+        assert_eq!(prefill_box(&c, true, "/upload ", Wrap::Caption), Err("finish or cancel the edit first"));
+    }
+
+    #[test]
+    fn which_key_leaves_out_what_does_not_apply() {
+        use super::{Here, applies};
+        use crate::tui::keymap::{Action::*, Context as C};
+        use crate::tui::menu::Offers;
+        let theirs = Offers { own: false, open: false, save: false, text: true };
+        let here = Here { offers: Some(theirs), ..Default::default() };
+        assert!(!applies(&here, C::Messages, Edit) && !applies(&here, C::Messages, Delete), "others' messages");
+        assert!(!applies(&here, C::Messages, Open) && !applies(&here, C::Messages, Save), "nothing to open or save");
+        assert!(applies(&here, C::Messages, Copy) && applies(&here, C::Messages, React) && applies(&here, C::Messages, OpenThread));
+        assert!(!applies(&Here { offers: Some(Offers { text: false, ..theirs }), ..here }, C::Messages, Copy), "no text");
+        assert!(!applies(&Here { offers: None, ..here }, C::Messages, Edit), "no message selected");
+        assert!(!applies(&Here { in_thread: true, ..here }, C::Messages, OpenThread), "already in the thread");
+        assert!(!applies(&here, C::Global, JoinConversation) && applies(&Here { outside: true, ..here }, C::Global, JoinConversation), "join only from outside");
+        assert!(!applies(&here, C::Global, LeaveConversation) && applies(&Here { leavable: true, ..here }, C::Global, LeaveConversation), "no leaving a DM");
+        assert!(!applies(&here, C::Sidebar, LeaveConversation) && applies(&Here { selected_leavable: true, ..here }, C::Sidebar, LeaveConversation));
+        assert!(!applies(&here, C::Sidebar, Star) && applies(&Here { selected: true, ..here }, C::Sidebar, Star), "a header or Threads is selected");
+        assert!(!applies(&here, C::Profile, Huddle) && applies(&Here { card: true, ..here }, C::Profile, Huddle));
+        assert!(applies(&here, C::Global, Mute) && applies(&here, C::Global, Huddle));
+        let dialog = Here { dialog: true, ..here };
+        assert!(!applies(&dialog, C::Global, Search) && !applies(&dialog, C::Global, HuddleView) && applies(&dialog, C::Global, Mute), "nothing opens under a dialog");
+        assert!(!applies(&Here { leavable: true, ..dialog }, C::Global, LeaveConversation), "its y/n would open under the dialog");
     }
 
     fn session(team_id: &str, team: &str, user: &str) -> WorkspaceSession {

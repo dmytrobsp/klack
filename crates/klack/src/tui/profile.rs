@@ -1,6 +1,6 @@
 //! Profile cards: a person's name, title, status, local time and presence, with actions
-//! (message, huddle). Opened with `u` on a message (its author, then anyone it mentions) and
-//! from the Members tab of F2.
+//! (message, huddle). Opened with `␣u` on a message (its author, then anyone it mentions) and
+//! from the Members tab of the details.
 
 use chrono::{FixedOffset, TimeZone, Utc};
 use ratatui::Frame;

@@ -116,5 +116,10 @@ mod tests {
         assert!(rows.iter().any(|r| r.contains("(unbound)") && r.contains("pin")));
         assert!(rows.iter().any(|r| r.contains("Alt+1 … Alt+9")));
         assert!(!rows.iter().any(|r| r.contains("workspace 2")), "one row for all workspaces");
+        // The defaults: the message's actions behind the leader, the card's behind Ctrl+Space.
+        let rows = text(&lines(&Keymap::load("").0));
+        assert!(rows.iter().any(|r| r.trim_start().starts_with("Space r ") && r.contains("add a reaction")), "{rows:#?}");
+        assert!(rows.iter().any(|r| r.trim_start().starts_with("Ctrl+Space h p ") && r.contains("start a huddle with them")));
+        assert!(rows.iter().any(|r| r.trim_start().starts_with("Space h h ") && r.contains("join or leave the huddle")));
     }
 }

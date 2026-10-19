@@ -277,8 +277,8 @@ impl Context {
             Context::Help => "This help",
             Context::Preferences => "Preferences",
             Context::Menu => "Context menu (right-click)",
-            Context::Save => "Save files (s)",
-            Context::Huddle => "Huddle view (F8)",
+            Context::Save => "Save files",
+            Context::Huddle => "Huddle view",
         }
     }
 
@@ -433,7 +433,7 @@ actions! {
         Switcher "jump_to" "jump to a conversation or person (# alone: every channel)" "jump to" "🧭" ["ctrl+k", "<leader> <leader>", "<leader> f f"]
         BrowseChannels "browse_channels" "every channel (jump to with #)" "browse channels" "📚" ["<leader> f #"]
         Search "search" "search messages" "search" "🔍" ["ctrl+f", "<leader> f s"]
-        Details "details" "conversation details: about, members, pins" "details" "📇" ["f2", "<leader> c d"]
+        Details "details" "conversation details: about, members, pins" "details" "📇" ["<leader> c d"]
         Star "star" "star / unstar the conversation" "star" "⭐" ["<leader> c s"]
         MoveToSection "move_to_section" "move the conversation to a section (or a new one)" "move to section" "📦" ["<leader> c m"]
         NotificationLevel "notification_level" "what the conversation notifies about: the next level" "notifications" "🔔" ["<leader> c b"]
@@ -450,14 +450,14 @@ actions! {
         ClearStatus "clear_status" "clear your status" "clear status" "🧹" ["<leader> a c"]
         AwayActive "away" "appear away, or active again" "away / active" "🌙" ["<leader> a a"]
         PauseNotifications "pause_notifications" "pause notifications (/dnd)" "pause notifications" "🔕" ["<leader> a p"]
-        Huddle "huddle" "join or leave the huddle" "join / leave" "🎧" ["f3"]
-        Mute "mute" "mute or unmute in the huddle" "mute" "🔇" ["f4"]
-        HuddleThread "huddle_thread" "open the huddle's thread (yours, or this conversation's)" "huddle thread" "🧵" ["f7"]
-        HuddleView "huddle_view" "show or hide the huddle view (in place of the messages)" "huddle view" "📺" ["f8"]
-        Camera "camera" "switch your camera on or off in the huddle (chosen in F6)" "camera" "📷" ["f9"]
-        ShareScreen "share_screen" "share your screen in the huddle, or stop (the desktop asks what to share)" "share screen" "💻" ["f10"]
-        DeclineHuddle "decline_huddle" "decline the huddle invitation that is ringing (the huddle key joins it)" "decline" "📵" ["shift+f3"]
-        Activity "activity" "mentions, reactions, threads" "activity" "🔔" ["f5", "<leader> f a"]
+        Huddle "huddle" "join or leave the huddle" "join / leave" "🎧" ["<leader> h h"]
+        Mute "mute" "mute or unmute in the huddle" "mute" "🔇" ["<leader> h m"]
+        HuddleThread "huddle_thread" "open the huddle's thread (yours, or this conversation's)" "huddle thread" "🧵" ["<leader> h t"]
+        HuddleView "huddle_view" "show or hide the huddle view (in place of the messages)" "huddle view" "📺" ["<leader> h v"]
+        Camera "camera" "switch your camera on or off in the huddle (chosen in F6)" "camera" "📷" ["<leader> h c"]
+        ShareScreen "share_screen" "share your screen in the huddle, or stop (the desktop asks what to share)" "share screen" "💻" ["<leader> h s"]
+        DeclineHuddle "decline_huddle" "decline the huddle invitation that is ringing (the huddle key joins it)" "decline" "📵" ["<leader> h d"]
+        Activity "activity" "mentions, reactions, threads" "activity" "🔔" ["ctrl+a", "<leader> f a"]
         Threads "threads" "every thread you are in, unread first" "threads" "🧵" ["ctrl+t", "<leader> f t"]
         Preferences "preferences" "preferences" "preferences" "🔧" ["f6"]
         PrevConversation "previous_conversation" "previous conversation" "previous" "🔼" ["alt+up"]
@@ -485,8 +485,8 @@ actions! {
         HalfPageDown "half_page_down" "half a page down" "half page down" "⏬" ["ctrl+d"]
         Open "open" "type in the conversation; on a header: fold / unfold; Threads: open it" "open" "📂" ["enter"]
         Type "type" "type in the conversation" "type" "💬" ["i"]
-        Star "star" "star / unstar" "star" "⭐" ["*", "<leader> s"]
-        MoveToSection "move_to_section" "move to a section (or a new one)" "move" "📦" ["m", "<leader> m"]
+        Star "star" "star / unstar" "star" "⭐" ["<leader> s"]
+        MoveToSection "move_to_section" "move to a section (or a new one)" "move" "📦" ["<leader> m"]
         Details "details" "conversation details: about, members, pins" "details" "📇" ["<leader> d"]
         NotificationLevel "notification_level" "what the conversation notifies about: the next level" "notifications" "🔔" ["<leader> b"]
         LeaveConversation "leave" "leave the channel (y/n)" "leave" "👋" ["<leader> l"]
@@ -500,20 +500,20 @@ actions! {
         Bottom "bottom" "last message" "bottom" "🔚" ["end", "G"]
         HalfPageUp "half_page_up" "half a page up" "half page up" "⏫" ["ctrl+u"]
         HalfPageDown "half_page_down" "half a page down" "half page down" "⏬" ["ctrl+d"]
-        OpenThread "open_thread" "open the message's thread" "thread" "🧵" ["enter"]
+        OpenThread "open_thread" "open the message's thread" "thread" "🧵" ["enter", "<leader> t"]
         Back "back" "close the thread (in the messages pane: nothing)" "back" "🔙" ["esc"]
         Type "type" "type (in a thread: reply)" "type" "💬" ["i"]
-        React "react" "add a reaction" "react" "😀" ["r"]
-        Edit "edit" "edit your message" "edit" "📝" ["e"]
-        Delete "delete" "delete your message" "delete" "❌" ["d"]
-        Copy "copy" "copy the text" "copy" "📄" ["y"]
-        CopyLink "copy_link" "copy a link to the message" "copy link" "🔗" ["Y"]
-        Open "open" "open a link, picture, video or snippet (a list when there are several)" "open" "📂" ["o"]
-        Save "save" "save attachments" "save" "💾" ["s"]
-        Pin "pin" "pin / unpin" "pin / unpin" "📌" ["P"]
-        Profile "profile" "profile card: author, ←/→ people mentioned" "profile" "👤" ["u"]
-        ThreadHuddle "thread_huddle" "start or join a huddle in the message's thread" "thread huddle" "🎧" ["H"]
-        ContextMenu "menu" "the message's menu (as a right-click does)" "menu" "📜" ["m", "menu", "shift+f10"]
+        React "react" "add a reaction" "react" "😀" ["<leader> r"]
+        Edit "edit" "edit your message" "edit" "📝" ["<leader> e"]
+        Delete "delete" "delete your message" "delete" "❌" ["<leader> d"]
+        Copy "copy" "copy the text" "copy" "📄" ["<leader> y"]
+        CopyLink "copy_link" "copy a link to the message" "copy link" "🔗" ["<leader> Y"]
+        Open "open" "open a link, picture, video or snippet (a list when there are several)" "open" "📂" ["<leader> o"]
+        Save "save" "save attachments" "save" "💾" ["<leader> s"]
+        Pin "pin" "pin / unpin" "pin / unpin" "📌" ["<leader> p"]
+        Profile "profile" "profile card: author, ←/→ people mentioned" "profile" "👤" ["<leader> u"]
+        ThreadHuddle "thread_huddle" "start or join a huddle in the message's thread" "thread huddle" "🎧" ["<leader> h T"]
+        ContextMenu "menu" "the message's menu (as a right-click does)" "menu" "📜" ["<leader> m"]
         Help "help" "this help" "help" "❓" ["?"]
     }
     Composer {
@@ -571,7 +571,7 @@ actions! {
         Erase "erase" "delete a character" "erase" "🧽" ["backspace"]
     }
     Details {
-        Close "close" "close" "close" "❎" ["esc", "f2", "q"]
+        Close "close" "close" "close" "❎" ["esc", "q"]
         PrevTab "previous_tab" "previous tab" "previous tab" "⏪" ["left", "h", "shift+tab"]
         NextTab "next_tab" "next tab" "next tab" "⏩" ["right", "l", "tab"]
         Up "up" "previous row" "up" "🔼" ["up", "k"]
@@ -583,11 +583,11 @@ actions! {
         PrevTab "previous_person" "previous person in the message" "previous person" "⏪" ["left", "shift+tab"]
         NextTab "next_person" "next person in the message" "next person" "⏩" ["right", "tab"]
         Open "message" "message them" "message" "💬" ["enter", "m"]
-        Huddle "huddle" "start a huddle with them" "huddle" "🎧" ["h"]
-        Vip "vip" "add to / remove from your VIPs" "VIP" "💎" ["v"]
+        Huddle "huddle" "start a huddle with them" "huddle with them" "🎧" ["<leader> h p"]
+        Vip "vip" "add to / remove from your VIPs" "VIP" "💎" ["<leader> v"]
     }
     Activity {
-        Close "close" "close" "close" "❎" ["esc", "f5", "q"]
+        Close "close" "close" "close" "❎" ["esc", "ctrl+a", "q"]
         Up "up" "previous item" "up" "🔼" ["up", "k"]
         Down "down" "next item" "down" "🔽" ["down", "j"]
         PageUp "page_up" "page up" "page up" "⏫" ["pageup"]
@@ -925,17 +925,28 @@ impl Keymap {
                 }
             }
         }
+        // Where a [global] sequence counts in a pane's or dialog's lookup.
+        let applies = |context: Context, seq: &[Key], name: &str| match context {
+            Context::Sidebar | Context::Messages | Context::Huddle => true,
+            Context::Composer | Context::Completion => !seq[0].is_text(),
+            _ => !seq[0].is_text() && (seq[0] == LEADER || name == "quit"),
+        };
+        // A pane's or dialog's default that would make a user's [global] sequence only the start
+        // of a longer one there gives way to it too (`huddle = "<leader> h"` beats ␣hT and ␣hp).
+        let user_global: Vec<(Vec<Key>, &str)> = bound.iter().filter(|(c, .., user)| *c == Context::Global && *user).map(|(_, s, name, _)| (s.clone(), *name)).collect();
+        bound.retain(|(context, other, owner, user)| {
+            let Some((_, name)) = user_global.iter().find(|(seq, name)| !*user && *context != Context::Global && other.len() > seq.len() && other.starts_with(seq) && applies(*context, seq, name)) else { return true };
+            warnings.push(format!("keys.toml: [{}] default {} of {owner} gives way to [global] {name}", context.name(), map.label(other)));
+            map.bindings.remove(&(*context, other.clone()));
+            map.keys.get_mut(&(*context, *owner)).map(|v| v.retain(|s| s != other));
+            false
+        });
         // The user's [global] sequences that a pane or dialog binding hides where it applies (a
         // default written out again is still a default).
         let default_of = |name: &str| ACTIONS.iter().find(|a| a.context == Context::Global && a.name == name).map(|a| map.defaults(a)).unwrap_or_default();
         for (_, seq, name, _) in bound.iter().filter(|(c, s, name, user)| *c == Context::Global && *user && !default_of(name).contains(s)) {
             for (context, other, owner, _) in bound.iter().filter(|(c, ..)| *c != Context::Global) {
-                let applies = match context {
-                    Context::Sidebar | Context::Messages | Context::Huddle => true,
-                    Context::Composer | Context::Completion => !seq[0].is_text(),
-                    _ => !seq[0].is_text() && (seq[0] == LEADER || *name == "quit"),
-                };
-                if applies && (other.starts_with(seq) || seq.starts_with(other)) {
+                if applies(*context, seq, name) && (other.starts_with(seq) || seq.starts_with(other)) {
                     warnings.push(format!("keys.toml: [global] {} is hidden by [{}] {owner}", map.label(seq), context.name()));
                 }
             }
@@ -1133,26 +1144,54 @@ impl Keymap {
         self.leader.or(self.insert_leader)
     }
 
+    /// The key `<leader>` is pressed as in `context`: the leader in the NORMAL panes; in the
+    /// message box and dialogs the insert leader, else a leader that never types.
+    pub fn leader_in(&self, context: Context) -> Option<Key> {
+        match context {
+            Context::Global | Context::Sidebar | Context::Messages | Context::Huddle => self.leader_key(),
+            _ => self.insert_leader.or(self.leader.filter(|k| !k.is_text())),
+        }
+    }
+
     /// A sequence as help shows it, the leader as its key ("Space h m", "Ctrl+B k").
     pub fn label(&self, seq: &[Key]) -> String {
-        seq.iter().map(|k| if *k == LEADER { self.leader_key().unwrap_or(LEADER) } else { *k }.label()).collect::<Vec<_>>().join(" ")
+        self.label_with(self.leader_key(), seq)
+    }
+
+    fn label_with(&self, leader: Option<Key>, seq: &[Key]) -> String {
+        seq.iter().map(|k| if *k == LEADER { leader.unwrap_or(LEADER) } else { *k }.label()).collect::<Vec<_>>().join(" ")
     }
 
     /// A sequence in short form, for the status bar, which-key and menus: Space `␣`, Ctrl+X
     /// `^X`, Ctrl+Space `^␣`, Alt+x `M-x`, others as in help; no separators (`␣h`, `^␣hm`).
     pub fn show(&self, seq: &[Key]) -> String {
-        seq.iter().map(|k| if *k == LEADER { self.leader_key().map_or_else(|| LEADER.label(), short) } else { short(*k) }).collect()
+        self.show_with(self.leader_key(), seq)
     }
 
-    /// The keys of an action in a context, as shown in help ("↑ / k").
+    fn show_with(&self, leader: Option<Key>, seq: &[Key]) -> String {
+        seq.iter().map(|k| if *k == LEADER { leader.map_or_else(|| LEADER.label(), short) } else { short(*k) }).collect()
+    }
+
+    /// The keys of an action in a context, as shown in help ("↑ / k", "Ctrl+Space h p").
     pub fn keys_label(&self, context: Context, name: &str) -> String {
-        self.keys.iter().find(|((c, n), _)| *c == context && *n == name).map(|(_, seqs)| seqs.iter().map(|s| self.label(s)).collect::<Vec<_>>().join(" / ")).unwrap_or_default()
+        self.keys.iter().find(|((c, n), _)| *c == context && *n == name).map(|(_, seqs)| seqs.iter().map(|s| self.label_with(self.leader_in(context), s)).collect::<Vec<_>>().join(" / ")).unwrap_or_default()
+    }
+
+    /// The first sequence of an action.
+    fn first_sequence(&self, context: Context, action: Action) -> Option<&Vec<Key>> {
+        let info = ACTIONS.iter().find(|a| a.context == context && a.action == action)?;
+        self.keys.get(&(context, info.name))?.first()
     }
 
     /// The first key of an action, for short hints ("F1 help").
     pub fn first_key(&self, context: Context, action: Action) -> Option<String> {
-        let info = ACTIONS.iter().find(|a| a.context == context && a.action == action)?;
-        self.keys.get(&(context, info.name))?.first().map(|s| self.label(s))
+        self.first_sequence(context, action).map(|s| self.label_with(self.leader_in(context), s))
+    }
+
+    /// The first sequence of an action in short form, its leader as pressed in `context`
+    /// (`␣r`, `^␣hp`, `Enter`), for menus and the huddle bar.
+    pub fn first_shown(&self, context: Context, action: Action) -> Option<String> {
+        self.first_sequence(context, action).map(|s| self.show_with(self.leader_in(context), s))
     }
 }
 
@@ -1203,6 +1242,8 @@ impl Keymap {
                     (Some(up), Some(down)) => Some(format!("{up}/{down}")),
                     (up, down) => up.or(down),
                 }
+            } else if self.first_sequence(context, *action).is_some_and(|s| s.len() > 1) {
+                self.first_shown(context, *action)
             } else {
                 self.first_key(context, *action)
             };
@@ -1324,20 +1365,16 @@ mod tests {
         let (map, warnings) = Keymap::load("");
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(one(&map, Context::Global, &[], k("ctrl+k")), Resolved::Action(Context::Global, Action::Switcher));
-        assert_eq!(one(&map, Context::Messages, &[], k("Y")), Resolved::Action(Context::Messages, Action::CopyLink));
-        assert_eq!(one(&map, Context::Messages, &[], k("y")), Resolved::Action(Context::Messages, Action::Copy));
+        assert_eq!(one(&map, Context::Messages, &[LEADER], k("Y")), Resolved::Action(Context::Messages, Action::CopyLink));
+        assert_eq!(one(&map, Context::Messages, &[LEADER], k("y")), Resolved::Action(Context::Messages, Action::Copy));
         assert_eq!(one(&map, Context::Composer, &[], k("ctrl+j")), Resolved::Action(Context::Composer, Action::Newline));
         assert_eq!(one(&map, Context::Details, &[], k("tab")), Resolved::Action(Context::Details, Action::NextTab));
         assert_eq!(one(&map, Context::Sidebar, &[], k("x")), Resolved::None);
         assert_eq!(map.keys_label(Context::Sidebar, "up"), "↑ / k");
         assert_eq!(map.first_key(Context::Global, Action::Help).as_deref(), Some("F1"));
-        // The message menu from the keyboard: m, the Menu key (as kitty's protocol reports it)
-        // and Shift+F10 (F10 alone shares the screen).
-        for key in [k("m"), Key::new(KeyCode::Menu, KeyModifiers::NONE), Key::new(KeyCode::F(10), KeyModifiers::SHIFT)] {
-            assert_eq!(one(&map, Context::Messages, &[], key), Resolved::Action(Context::Messages, Action::ContextMenu), "{key:?}");
-        }
-        assert_eq!(one(&map, Context::Global, &[], k("f10")), Resolved::Action(Context::Global, Action::ShareScreen));
-        assert_eq!(map.keys_label(Context::Messages, "menu"), "m / Menu / Shift+F10");
+        // The message menu from the keyboard: ␣m (the Menu key and Shift+F10 are free now).
+        assert_eq!(one(&map, Context::Messages, &[LEADER], k("m")), Resolved::Action(Context::Messages, Action::ContextMenu));
+        assert_eq!(map.keys_label(Context::Messages, "menu"), "Space m");
         assert_eq!(k("menu").spec(), "menu", "written back as read");
         // Every action is reachable by default.
         for a in ACTIONS {
@@ -1400,6 +1437,8 @@ mod tests {
         assert_eq!(words(Context::Sidebar), "↑/↓ move · Enter open · ␣ actions · ? help");
         assert_eq!(words(Context::Composer), "Alt+Enter new line · Enter send · Esc normal");
         assert_eq!(words(Context::Confirm), "y yes");
+        // A sequence in a hint is short, its leader the one pressed there (a dialog: Ctrl+Space).
+        assert_eq!(words(Context::Profile), "Enter message · ^␣hp huddle · ^␣v VIP · → next person · Esc close");
         let (map, _) = Keymap::load("[messages]\ntype = []\nopen_thread = \"R\"\n");
         let h = map.context_hints(Context::Messages);
         assert_eq!(h[1], ("R".to_string(), "thread".to_string()));
@@ -1520,15 +1559,15 @@ mod tests {
 
     #[test]
     fn user_binding_beats_a_default_of_another_action() {
-        let (map, warnings) = Keymap::load("[messages]\nreact = \"e\"\n");
-        assert_eq!(map.resolve(&[Context::Messages, Context::Global], Mode::Normal, &[], k("e")), Resolved::Action(Context::Messages, Action::React));
+        let (map, warnings) = Keymap::load("[messages]\nreact = \"<leader> e\"\n");
+        assert_eq!(map.resolve(&[Context::Messages, Context::Global], Mode::Normal, &[LEADER], k("e")), Resolved::Action(Context::Messages, Action::React));
         assert!(map.sequences(Context::Messages, "edit").is_empty());
-        assert_eq!(warnings, vec!["keys.toml: [messages] default e of edit gives way to react".to_string()]);
+        assert_eq!(warnings, vec!["keys.toml: [messages] default Space e of edit gives way to react".to_string()]);
         // A user sequence that a default starts.
-        let (map, warnings) = Keymap::load("[messages]\nreact = \"e x\"\n");
-        assert_eq!(map.resolve(&[Context::Messages, Context::Global], Mode::Normal, &[], k("e")), Resolved::Pending);
-        assert_eq!(map.resolve(&[Context::Messages, Context::Global], Mode::Normal, &[k("e")], k("x")), Resolved::Action(Context::Messages, Action::React));
-        assert!(warnings.iter().any(|w| w.contains("default e of edit gives way to react")), "{warnings:?}");
+        let (map, warnings) = Keymap::load("[messages]\nreact = \"<leader> e x\"\n");
+        assert_eq!(map.resolve(&[Context::Messages, Context::Global], Mode::Normal, &[LEADER], k("e")), Resolved::Pending);
+        assert_eq!(map.resolve(&[Context::Messages, Context::Global], Mode::Normal, &[LEADER, k("e")], k("x")), Resolved::Action(Context::Messages, Action::React));
+        assert!(warnings.iter().any(|w| w.contains("default Space e of edit gives way to react")), "{warnings:?}");
     }
 
     #[test]
@@ -1573,17 +1612,19 @@ mod tests {
         let short = |map: &Keymap, c: &[Child]| c.iter().map(|c| format!("{} {}{}", map.show(&[c.key]), if c.group { "group " } else { "" }, c.label)).collect::<Vec<_>>();
         let top = map.children(&[Messages, Global], Mode::Normal, &[LEADER]);
         // The pane's actions, then global's, then the groups by key.
-        assert_eq!(short(&map, &top), ["r react", "␣ jump to", "a group availability", "c group conversation", "f group find", "h group huddle", "n group new", "w group workspace"]);
-        assert_eq!((top[0].action, top[0].icon.as_str()), (Some((Messages, Action::React)), "😀"));
-        assert_eq!((top[5].action, top[5].icon.as_str()), (None, "🎧"), "from GROUPS");
+        let message = ["t thread", "r react", "e edit", "d delete", "y copy", "Y copy link", "o open", "s save", "p pin / unpin", "u profile", "m menu"];
+        assert_eq!(short(&map, &top), [&message[..], &["␣ jump to", "a group availability", "c group conversation", "f group find", "h group huddle", "n group new", "w group workspace"]].concat());
+        assert_eq!((top[1].action, top[1].icon.as_str()), (Some((Messages, Action::React)), "😀"));
+        assert_eq!((top[15].action, top[15].icon.as_str()), (None, "🎧"), "from GROUPS");
+        // The huddle group: global's, and the pane's own ␣hT.
         let huddle = map.children(&[Messages, Global], Mode::Normal, &[LEADER, k("h")]);
-        assert_eq!(short(&map, &huddle), ["m mute"]);
-        assert_eq!(huddle[0].action, Some((Global, Action::Mute)));
+        assert_eq!(short(&map, &huddle), ["T thread huddle", "h join / leave", "m mute", "t huddle thread", "v huddle view", "c camera", "s share screen", "d decline"]);
+        assert_eq!(huddle[2].action, Some((Global, Action::Mute)));
         // [groups] renames a prefix; a prefix nobody named is +<key>.
         let (map, warnings) = Keymap::load(&format!("{text}[sidebar]\nstar = \"<leader> x s\"\n[groups]\n\"<leader> h\" = {{ name = \"calls\", icon = \"📞\" }}\n"));
         assert!(warnings.is_empty(), "{warnings:?}");
         let top = map.children(&[Messages, Global], Mode::Normal, &[LEADER]);
-        assert_eq!((top[5].label.as_str(), top[5].icon.as_str()), ("calls", "📞"));
+        assert_eq!((top[15].label.as_str(), top[15].icon.as_str()), ("calls", "📞"));
         let groups = |c: Vec<Child>| short(&map, &c.into_iter().filter(|c| c.group).collect::<Vec<_>>());
         assert_eq!(groups(map.children(&[Sidebar, Global], Mode::Normal, &[LEADER])), ["a group availability", "c group conversation", "f group find", "h group calls", "n group new", "w group workspace", "x group +x"]);
         // The pane wins a key both bind; [global] text keys do not count in INSERT.
@@ -1603,7 +1644,7 @@ mod tests {
         let top = map.children(&[Messages, Global], Mode::Normal, &[LEADER]);
         let at = |key: &str| top.iter().find(|c| c.key == k(key)).map(|c| (c.label.as_str(), c.icon.as_str()));
         assert_eq!((at("/"), at("h")), (Some(("find it", "🧐")), Some(("calls", "🎧"))), "a name alone keeps the default icon");
-        assert_eq!(map.children(&[Messages, Global], Mode::Normal, &[LEADER, k("h")])[0].label, "hush");
+        assert_eq!(map.children(&[Messages, Global], Mode::Normal, &[LEADER, k("h")]).iter().find(|c| c.key == k("m")).map(|c| c.label.as_str()), Some("hush"));
         let (_, warnings) = Keymap::load("[labels.nowhere]\nx = \"y\"\n[labels.global]\nnothing = \"z\"\nmute = 3\n[groups]\n\"<leader> hyper+x\" = \"bad\"\n");
         assert_eq!(warnings.len(), 4, "{warnings:#?}");
         // Written back with the bindings.
@@ -1652,6 +1693,103 @@ mod tests {
         let (none, _) = Keymap::load("leader = \"\"\ninsert_leader = \"\"\n");
         assert_eq!(none.resolve(&[Messages, Global], Mode::Normal, &[], k("ctrl+k")), Resolved::Action(Global, Action::Switcher));
         assert_eq!(none.to_toml(None, None), "leader = \"\"\ninsert_leader = \"\"\n", "the leader sequences are not written out as removed");
+    }
+
+    #[test]
+    fn defaults_follow_the_tree() {
+        use Context::*;
+        let (map, warnings) = Keymap::load("");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let normal = |c: Context, pending: &[Key], key: &str| map.resolve(&[c, Global], Mode::Normal, pending, k(key));
+        // The selected message's own actions are one key after the leader.
+        let message = [("r", Action::React), ("e", Action::Edit), ("d", Action::Delete), ("y", Action::Copy), ("Y", Action::CopyLink), ("o", Action::Open), ("s", Action::Save), ("p", Action::Pin), ("u", Action::Profile), ("t", Action::OpenThread), ("m", Action::ContextMenu)];
+        for (key, action) in message {
+            assert_eq!(normal(Messages, &[LEADER], key), Resolved::Action(Messages, action), "␣{key}");
+        }
+        assert_eq!(normal(Messages, &[], "r"), Resolved::None, "r alone does nothing");
+        assert_eq!(normal(Messages, &[], "enter"), Resolved::Action(Messages, Action::OpenThread), "Enter still opens the thread");
+        // The huddle group, from every pane.
+        let huddle = [("h", Action::Huddle), ("d", Action::DeclineHuddle), ("m", Action::Mute), ("c", Action::Camera), ("s", Action::ShareScreen), ("v", Action::HuddleView), ("t", Action::HuddleThread)];
+        for (key, action) in huddle {
+            for c in [Sidebar, Messages, Huddle] {
+                assert_eq!(normal(c, &[LEADER, k("h")], key), Resolved::Action(Global, action), "{c:?} ␣h{key}");
+            }
+        }
+        assert_eq!(normal(Messages, &[LEADER, k("h")], "T"), Resolved::Action(Messages, Action::ThreadHuddle));
+        // The profile card is a dialog: its leader is Ctrl+Space, Space stays the card's.
+        let card = |pending: &[Key], key: &str| map.resolve(&[Profile, Global], Mode::Dialog, pending, k(key));
+        assert_eq!(card(&[], "ctrl+space"), Resolved::Pending);
+        assert_eq!(card(&[], "space"), Resolved::None);
+        assert_eq!(card(&[], "h"), Resolved::None, "h alone no longer starts a huddle");
+        assert_eq!(card(&[LEADER, k("h")], "p"), Resolved::Action(Profile, Action::Huddle));
+        assert_eq!(card(&[LEADER, k("h")], "m"), Resolved::Action(Global, Action::Mute), "the global huddle keys stay");
+        assert_eq!(card(&[LEADER], "v"), Resolved::Action(Profile, Action::Vip));
+        // Activity is a direct key like threads; in a message box Ctrl+A stays line start.
+        assert_eq!(normal(Messages, &[], "ctrl+a"), Resolved::Action(Global, Action::Activity));
+        assert_eq!(map.resolve(&[Composer, Global], Mode::Insert, &[], k("ctrl+a")), Resolved::Action(Composer, Action::LineStart));
+        // The sidebar's star and move are behind the leader too.
+        assert_eq!((normal(Sidebar, &[], "*"), normal(Sidebar, &[], "m")), (Resolved::None, Resolved::None));
+        // The F-keys other than F1 and F6 (and the Menu key) are free.
+        for key in ["f2", "f3", "f4", "f5", "f7", "f8", "f9", "f10", "shift+f3", "shift+f10", "menu"] {
+            for c in Context::ALL {
+                let mode = match c {
+                    Global | Sidebar | Messages | Huddle => Mode::Normal,
+                    Composer | Completion => Mode::Insert,
+                    _ => Mode::Dialog,
+                };
+                assert_eq!(map.resolve(&[c, Global], mode, &[], k(key)), Resolved::None, "{key} in {c:?}");
+            }
+        }
+        // No single printable key in a NORMAL pane acts on anything: they move, open, type, fold.
+        let looks = [Action::Up, Action::Down, Action::Top, Action::Bottom, Action::Type, Action::FoldSection, Action::Help, Action::Open, Action::PrevTab, Action::NextTab];
+        for ((c, seq), action) in &map.bindings {
+            if matches!(c, Global | Sidebar | Messages | Huddle) && seq.len() == 1 && seq[0].is_text() {
+                assert!(looks.contains(action), "{c:?} {} acts: {action:?}", map.label(seq));
+            }
+        }
+        // Every action is reachable by default.
+        for a in ACTIONS {
+            assert!(!map.keys_label(a.context, a.name).is_empty(), "{}.{} has no key", a.context.name(), a.name);
+        }
+    }
+
+    #[test]
+    fn a_dialog_s_keys_show_its_leader() {
+        let (map, _) = Keymap::load("");
+        assert_eq!(map.keys_label(Context::Profile, "huddle"), "Ctrl+Space h p");
+        assert_eq!(map.first_key(Context::Profile, Action::Vip).as_deref(), Some("Ctrl+Space v"));
+        assert_eq!(map.keys_label(Context::Messages, "react"), "Space r");
+        assert_eq!(map.first_shown(Context::Messages, Action::React).as_deref(), Some("␣r"));
+        assert_eq!(map.first_shown(Context::Profile, Action::Huddle).as_deref(), Some("^␣hp"));
+        assert_eq!(map.first_shown(Context::Global, Action::Mute).as_deref(), Some("␣hm"));
+        assert_eq!(map.first_shown(Context::Messages, Action::OpenThread).as_deref(), Some("Enter"));
+        // A leader that never types is the leader in dialogs too.
+        let (map, _) = Keymap::load("leader = \"ctrl+b\"\ninsert_leader = \"\"\n");
+        assert_eq!(map.keys_label(Context::Profile, "huddle"), "Ctrl+B h p");
+    }
+
+    #[test]
+    fn a_user_leader_h_beats_the_huddle_group() {
+        use Context::*;
+        let (map, warnings) = Keymap::load("[global]\nhuddle = \"<leader> h\"\n");
+        assert_eq!(map.resolve(&[Messages, Global], Mode::Normal, &[], k("space")), Resolved::Pending);
+        assert_eq!(map.resolve(&[Messages, Global], Mode::Normal, &[LEADER], k("h")), Resolved::Action(Global, Action::Huddle));
+        assert_eq!(map.resolve(&[Sidebar, Global], Mode::Normal, &[LEADER], k("h")), Resolved::Action(Global, Action::Huddle));
+        assert_eq!(map.resolve(&[Profile, Global], Mode::Dialog, &[LEADER], k("h")), Resolved::Action(Global, Action::Huddle));
+        // The defaults it blocks give way, each named.
+        for (name, key) in [("decline_huddle", "d"), ("mute", "m"), ("camera", "c"), ("share_screen", "s"), ("huddle_view", "v"), ("huddle_thread", "t")] {
+            assert!(map.sequences(Global, name).is_empty(), "{name}");
+            assert!(warnings.contains(&format!("keys.toml: [global] default Space h {key} of {name} gives way to huddle")), "{name}: {warnings:#?}");
+        }
+        // So do the panes' and the card's ␣h… defaults, which would make ␣h wait there.
+        assert!(map.sequences(Messages, "thread_huddle").is_empty() && map.sequences(Profile, "huddle").is_empty());
+        assert!(warnings.contains(&"keys.toml: [messages] default Space h T of thread_huddle gives way to [global] huddle".to_string()), "{warnings:#?}");
+        assert!(warnings.contains(&"keys.toml: [profile] default Space h p of huddle gives way to [global] huddle".to_string()), "{warnings:#?}");
+        assert_eq!(warnings.len(), 8, "{warnings:#?}");
+        // A pane's own binding still hides a global one (reported, not dropped).
+        let (map, warnings) = Keymap::load("[global]\nsearch = \"<leader> r\"\n");
+        assert_eq!(map.resolve(&[Messages, Global], Mode::Normal, &[LEADER], k("r")), Resolved::Action(Messages, Action::React));
+        assert_eq!(warnings, vec!["keys.toml: [global] Space r is hidden by [messages] react".to_string()]);
     }
 
     #[test]

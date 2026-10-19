@@ -105,6 +105,18 @@ pub type OpenAfter = Arc<Mutex<Option<Click>>>;
 
 /// Start a headless watcher for every workspace of a profile with several; each runs only
 /// while its workspace is not the shown one (that one notifies itself).
+/// How to join a huddle of workspace `index` from another one ("Alt+2, then Space h h,"), with
+/// the keys bound now.
+fn join_keys(keys: &super::keymap::Keymap, index: usize) -> String {
+    use super::keymap::{Action::*, Context};
+    let switch = [Workspace1, Workspace2, Workspace3, Workspace4, Workspace5, Workspace6, Workspace7, Workspace8, Workspace9].get(index).and_then(|a| keys.first_key(Context::Global, *a));
+    let huddle = keys.first_key(Context::Global, Huddle).unwrap_or_default();
+    match switch {
+        Some(switch) => format!("{switch}, then {huddle},"),
+        None => format!("{huddle} in its workspace"),
+    }
+}
+
 pub fn spawn_watchers(sessions: Vec<WorkspaceSession>, labels: Vec<String>, shown: Arc<AtomicUsize>, clicks: tokio::sync::mpsc::UnboundedSender<Click>) {
     if sessions.len() < 2 {
         return;
@@ -178,7 +190,7 @@ async fn watch_hidden(index: usize, client: &Client, label: &str, shown: &Atomic
         }
         let note = match (&fx.incoming, &fx.huddle_started) {
             (Some((channel, m)), _) => super::notify::notification(&ws, channel, m, false, now).map(|n| (n, super::notify::Target::message(channel, m))),
-            (None, Some((channel, user))) => super::notify::huddle_notification(&ws, channel, user, false, now, &format!("Alt+{}, then F3,", index + 1))
+            (None, Some((channel, user))) => super::notify::huddle_notification(&ws, channel, user, false, now, &join_keys(&super::keymap::load_user().0, index))
                 .map(|n| (n, super::notify::Target { channel: channel.clone(), ts: None, thread_ts: None })),
             _ => None,
         };
@@ -230,6 +242,14 @@ mod tests {
         let elsewhere = serde_json::json!({"image_88": "https://example.com/logo.png", "image_default": false});
         assert!(logo_file("T1", &elsewhere).is_none(), "nothing fetched from third parties");
         assert!(logo_file("T1", &serde_json::Value::Null).is_none());
+    }
+
+    #[test]
+    fn joining_from_elsewhere_names_the_bound_keys() {
+        let keys = crate::tui::keymap::Keymap::load("").0;
+        assert_eq!(join_keys(&keys, 1), "Alt+2, then Space h h,");
+        let rebound = crate::tui::keymap::Keymap::load("[global]\nhuddle = \"f3\"\nworkspace_2 = \"ctrl+2\"\n").0;
+        assert_eq!(join_keys(&rebound, 1), "Ctrl+2, then F3,");
     }
 
     #[test]

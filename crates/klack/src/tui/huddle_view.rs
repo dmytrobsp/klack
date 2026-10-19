@@ -1,4 +1,4 @@
-//! The huddle view (F8): instead of the message pane, a tile per participant with their
+//! The huddle view (␣hv): instead of the message pane, a tile per participant with their
 //! picture or video (the border lights up while they speak, 🔇 in the title when muted),
 //! and the call's controls underneath.
 

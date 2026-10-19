@@ -1,4 +1,4 @@
-//! Activity (F5): mentions, reactions to your messages and thread updates from
+//! Activity (Ctrl+A): mentions, reactions to your messages and thread updates from
 //! `activity.feed`, newest first. Message texts are fetched per item as they are shown.
 
 use std::collections::HashMap;

@@ -44,7 +44,7 @@ pub enum Field {
     ChannelDefault,
     /// Slack: words that notify like a mention.
     Keywords,
-    /// Slack: your VIPs (changed with v on a profile card).
+    /// Slack: your VIPs (changed on a profile card).
     Vips,
     /// Slack: your status (a text field: `:emoji: text`).
     Status,
@@ -149,7 +149,7 @@ impl Field {
             Field::ConversationLevel => "This conversation notifies about",
             Field::ChannelDefault => "Channels notify about (default)",
             Field::Keywords => "Keywords",
-            Field::Vips => "VIPs (v on a profile card)",
+            Field::Vips => "VIPs (also on a profile card)",
             Field::Status => "Status",
             Field::Away => "Appear away",
             Field::Pause => "Pause notifications",
@@ -161,7 +161,7 @@ impl Field {
             Field::SpeakingThreshold => "Speaking threshold",
             Field::NoiseSuppression => "Noise suppression",
             Field::EchoCancellation => "Echo cancellation",
-            Field::Camera => "Camera (F9 in a huddle)",
+            Field::Camera => "Camera (for huddles)",
             Field::JoinSound => "Sound when you join",
             Field::SomeoneJoined => "Sound when someone joins",
             Field::SomeoneLeft => "Sound when someone leaves",

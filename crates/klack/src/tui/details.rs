@@ -1,4 +1,4 @@
-//! Conversation details overlay (F2): about, members, pinned messages.
+//! Conversation details overlay (␣cd): about, members, pinned messages.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};

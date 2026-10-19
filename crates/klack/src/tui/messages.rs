@@ -433,8 +433,16 @@ fn keep_in_view(total: usize, height: usize, scroll: usize, first: usize, last: 
 /// Lines of a snippet shown under its file line.
 const SNIPPET_PREVIEW: usize = 5;
 
+/// The open key as the snippet preview names it (`␣o`; empty: not set yet).
+static OPEN_KEY: std::sync::RwLock<String> = std::sync::RwLock::new(String::new());
+
+/// The key that opens a message's things, for "+N more lines · ␣o to view".
+pub fn set_open_key(key: String) {
+    *OPEN_KEY.write().unwrap_or_else(|e| e.into_inner()) = key;
+}
+
 /// A snippet's first lines in a code box (clipped, not wrapped), then how many are left.
-fn snippet_preview(file: &File, width: usize) -> Vec<Line<'static>> {
+fn snippet_preview(file: &File, width: usize, open_key: &str) -> Vec<Line<'static>> {
     let mut out: Vec<Line<'static>> = super::highlight::preview(file, Style::default().fg(super::theme::p().code_fg))
         .into_iter()
         .take(SNIPPET_PREVIEW)
@@ -444,7 +452,8 @@ fn snippet_preview(file: &File, width: usize) -> Vec<Line<'static>> {
     // Slack's own count first: `lines` includes a trailing newline as a line.
     let more = file.lines_more.or(file.lines.map(|n| n.saturating_sub(shown))).unwrap_or(0);
     if more > 0 {
-        let note = Span::styled(format!("+{more} more line{} · o to view", if more == 1 { "" } else { "s" }), Style::default().fg(super::theme::p().dim));
+        let view = if open_key.is_empty() { String::new() } else { format!(" · {open_key} to view") };
+        let note = Span::styled(format!("+{more} more line{}{view}", if more == 1 { "" } else { "s" }), Style::default().fg(super::theme::p().dim));
         out.push(Line::from(super::highlight::clip_spans(vec![note], width.saturating_sub(2))));
     }
     text::shaded(out, width)
@@ -817,7 +826,7 @@ pub fn message_body(ws: &Workspace, m: &Message, width: usize, summary: bool, th
             Span::styled(format!("  {}", text::human_size(file.size)), Style::default().fg(super::theme::p().dim)),
         ]));
         if file.is_snippet() {
-            out.extend(snippet_preview(file, width));
+            out.extend(snippet_preview(file, width, &OPEN_KEY.read().unwrap_or_else(|e| e.into_inner())));
         }
         // Fitted to the pane (the thread pane is narrow); a smaller fit is cached separately.
         if let Some(size) = thumb_size(file, width.min(u16::MAX as usize) as u16).filter(|(cols, _)| (*cols as usize) <= width) {
@@ -910,14 +919,15 @@ mod tests {
     #[test]
     fn snippet_preview_is_clipped_and_counted() {
         let f = File { mode: "snippet".into(), preview: Some("fn main() {\n\tlet a_very_long_name = 1;\n}".into()), lines: Some(9), ..Default::default() };
-        let rows = plain(&snippet_preview(&f, 20));
-        assert_eq!(rows, vec![" fn main() {        ", "     let a_very_lo… ", " }                  ", " +6 more lines · o… "], "a shaded box, every row as wide");
-        assert!(snippet_preview(&f, 20).iter().all(|l| l.spans.iter().all(|s| s.style.bg == Some(crate::tui::theme::p().code_bg))));
+        let rows = plain(&snippet_preview(&f, 20, "␣o"));
+        assert_eq!(rows, vec![" fn main() {        ", "     let a_very_lo… ", " }                  ", " +6 more lines · ␣… "], "a shaded box, every row as wide");
+        assert!(snippet_preview(&f, 20, "␣o").iter().all(|l| l.spans.iter().all(|s| s.style.bg == Some(crate::tui::theme::p().code_bg))));
+        assert!(plain(&snippet_preview(&f, 40, "^O"))[3].contains("+6 more lines · ^O to view"), "the open key as bound");
         let short = File { mode: "snippet".into(), preview: Some("one".into()), lines: Some(1), ..Default::default() };
-        assert_eq!(plain(&snippet_preview(&short, 20)), vec![" one "]);
+        assert_eq!(plain(&snippet_preview(&short, 20, "␣o")), vec![" one "]);
         // Real values for a 3-line file ending in a newline.
         let trailing = File { mode: "snippet".into(), preview: Some("a\nb\nc\n".into()), lines: Some(4), lines_more: Some(0), ..Default::default() };
-        assert_eq!(plain(&snippet_preview(&trailing, 20)).len(), 3);
+        assert_eq!(plain(&snippet_preview(&trailing, 20, "␣o")).len(), 3);
     }
 
     #[test]
