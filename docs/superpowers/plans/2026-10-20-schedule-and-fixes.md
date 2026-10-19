@@ -87,8 +87,8 @@ task (Tasks 5–14); keys and modes: `docs/superpowers/specs/2026-10-19-keymap-r
 User: "<leader>f# is inconvenient, default keymap for "browse channels" should be <leader>fc"; "we should come up with a
 shortcut that clears compose box".
 
-- [ ] Tests: `␣fc` → BrowseChannels (`␣f#` gone); composer action `clear` ("clear the box"), default `<leader> x`
-  (so Ctrl+Space x while typing); clearing pushes the text to the sent-text history so ↑ brings it back; an edit in
+- [ ] Tests: `␣fc` → BrowseChannels (`␣f#` gone); composer action `clear` ("clear the box"), defaults `<leader> x` and
+  `<leader> backspace` (so Ctrl+Space x or Ctrl+Space Backspace while typing — the second asked by the user); clearing pushes the text to the sent-text history so ↑ brings it back; an edit in
   progress is cancelled like Esc instead (never clears someone's edit silently) — Claude's calls.
 - [ ] Close (V11).
 
