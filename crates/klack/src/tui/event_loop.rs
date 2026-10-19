@@ -248,6 +248,32 @@ struct App {
 /// describes something still going on (loading, uploading, joining, a dialog open).
 const STATUS_TTL: Duration = Duration::from_secs(8);
 
+/// What a prefilled command does with a draft in the message box.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Wrap {
+    /// Refuse while the box holds text.
+    No,
+    /// The draft follows on the same line (`/upload <path> text`).
+    Caption,
+    /// The draft goes on the lines below (`/snippet` + its body).
+    Body,
+}
+
+/// The message box's text and cursor with `command` put in front of `text` (see [`Wrap`]),
+/// the cursor right after the command; an error note when it cannot be done.
+fn prefilled(text: &str, editing: bool, command: &str, wrap: Wrap) -> Result<(String, usize), &'static str> {
+    let cursor = command.chars().count();
+    if editing {
+        return Err("finish or cancel the edit first");
+    }
+    match wrap {
+        _ if text.trim().is_empty() => Ok((command.to_string(), cursor)),
+        Wrap::No => Err("the message box is in use"),
+        Wrap::Caption => Ok((format!("{command} {text}"), cursor)),
+        Wrap::Body => Ok((format!("{command}\n{text}"), cursor)),
+    }
+}
+
 /// Whether a status shown for `age` should go.
 fn status_expired(status: &str, age: Duration) -> bool {
     !status.is_empty() && !status.ends_with('…') && age >= STATUS_TTL
@@ -798,6 +824,25 @@ impl App {
         });
     }
 
+    /// `␣n…`, `␣as`, `␣ap`: `command` in the conversation's message box (also from the thread
+    /// pane), the cursor after it, typing there; a draft wraps as `wrap` says, or it refuses.
+    fn prefill(&mut self, command: &str, wrap: Wrap) {
+        if self.current.is_none() {
+            self.status = "open a conversation first".into();
+            return;
+        }
+        let c = &mut self.composer;
+        // Attachments would be sent with the command as their text.
+        let filled = if c.attachments.is_empty() { prefilled(&c.text(), c.editing.is_some(), command, wrap) } else { Err("the message box is in use") };
+        match filled {
+            Ok((text, cursor)) => {
+                c.set_with_cursor(&text, cursor);
+                self.focus = Focus::Composer;
+            }
+            Err(note) => self.status = note.into(),
+        }
+    }
+
     /// Esc in a composer: back to the message list (the reply box: the thread), the newest
     /// message selected.
     fn leave_composer(&mut self, thread: bool) {
@@ -1008,7 +1053,11 @@ impl App {
             Action::HalfPageDown => self.sidebar.move_by((self.sidebar.area.height.saturating_sub(2) / 2).max(1) as isize),
             Action::Open if self.sidebar.selected_folded().is_some() => self.sidebar.toggle_selected_fold(&self.ws, self.current.as_deref()),
             Action::Open if self.sidebar.on_threads() => self.load_threads(false),
-            Action::Open => self.focus = Focus::Composer,
+            Action::Open | Action::Type => self.focus = Focus::Composer,
+            // The selected conversation is the current one.
+            Action::Details | Action::NotificationLevel | Action::LeaveConversation if self.sidebar.selected_id().is_some() => {
+                run_global(self, action);
+            }
             Action::FoldSection => self.sidebar.toggle_selected_fold(&self.ws, self.current.as_deref()),
             Action::Star => {
                 if let Some(id) = self.sidebar.selected_id().map(String::from) {
@@ -1711,36 +1760,55 @@ impl App {
             return;
         }
         let Some(change) = change else { return };
-        if let SlackChange::Command(text) = &change {
-            match super::commands::parse(text, text) {
-                Some(Ok(cmd)) => self.run_command(current.unwrap_or_default(), cmd, None),
-                Some(Err(e)) => self.status = e,
-                None => {}
-            }
-            return;
-        }
-        // A reset also drops the mute, which is put back after it.
-        let mut remute = false;
-        let (name, value, channel) = match &change {
-            SlackChange::ConversationLevel { channel, level } if level == "default" => {
-                self.ws.notify.channels.remove(channel);
-                remute = self.ws.muted.contains(channel);
-                ("reset", "default".to_string(), Some(channel.clone()))
-            }
-            SlackChange::ConversationLevel { channel, level } => {
-                self.ws.notify.channels.insert(channel.clone(), level.clone());
-                ("desktop", level.clone(), Some(channel.clone()))
-            }
+        match change {
+            SlackChange::Command(text) => self.run_text(&text),
+            SlackChange::ConversationLevel { channel, level } => self.set_conversation_level(channel, level),
             SlackChange::ChannelDefault(level) => {
                 self.ws.notify.global = level.clone();
-                ("global_desktop", level.clone(), None)
+                self.save_notification_pref("global_desktop", level, None, false);
             }
             SlackChange::Keywords(words) => {
                 self.ws.notify.keywords = words.split(',').filter(|w| !w.is_empty()).map(String::from).collect();
-                ("global_keywords", words.clone(), None)
+                self.save_notification_pref("global_keywords", words, None, false);
             }
-            SlackChange::Command(_) => return,
-        };
+        }
+    }
+
+    /// Run a slash command typed out (`/status clear`) in the current conversation.
+    fn run_text(&mut self, text: &str) {
+        match super::commands::parse(text, text) {
+            Some(Ok(cmd)) => self.run_command(self.current.clone().unwrap_or_default(), cmd, None),
+            Some(Err(e)) => self.status = e,
+            None => {}
+        }
+    }
+
+    /// ␣cb: the current conversation notifies about the next level (as F6 → Notifications
+    /// does), and the status line says which.
+    fn cycle_conversation_level(&mut self) {
+        let Some(channel) = self.current.clone() else { return };
+        let level = super::prefs::next_conversation_level(self.ws.notify.channels.get(&channel).map(String::as_str));
+        self.set_conversation_level(channel.clone(), level);
+        let mpim = self.ws.conversations.get(&channel).is_some_and(|c| c.is_mpim);
+        let own = self.ws.notify.channels.contains_key(&channel);
+        self.status = format!("{} notifies about {}{}", self.ws.channel_label(&channel), super::state::level_label(self.ws.notify.level(&channel, mpim)), if own { "" } else { " (the default)" });
+    }
+
+    /// A conversation's own level ("default": none), here at once and then on Slack.
+    fn set_conversation_level(&mut self, channel: String, level: String) {
+        if level == "default" {
+            self.ws.notify.channels.remove(&channel);
+            // A reset also drops the mute, which is put back after it.
+            let remute = self.ws.muted.contains(&channel);
+            self.save_notification_pref("reset", level, Some(channel), remute);
+        } else {
+            self.ws.notify.channels.insert(channel.clone(), level.clone());
+            self.save_notification_pref("desktop", level, Some(channel), false);
+        }
+    }
+
+    /// Send a notification setting; on failure say so and fetch the prefs again.
+    fn save_notification_pref(&self, name: &'static str, value: String, channel: Option<String>, remute: bool) {
         let (client, tx) = (self.client.clone(), self.net.clone());
         tokio::spawn(async move {
             let mut result = client.set_notification_pref(name, &value, channel.as_deref()).await;
@@ -2908,8 +2976,13 @@ fn handle_dialog(app: &mut App, ev: &Event) -> bool {
     // The global leader sequences (Ctrl+Space h m mutes with a dialog open).
     if let Event::Key(k) = ev {
         if k.kind != KeyEventKind::Release && !app.capturing_key() {
-            if let Resolved::Action(Context::Global, action) = app.resolve(k) {
-                return run_global(app, action);
+            match app.resolve(k) {
+                Resolved::Action(Context::Global, action) if opens_something(action) => {
+                    app.status = "close the dialog first (Esc)".into();
+                    return true;
+                }
+                Resolved::Action(Context::Global, action) => return run_global(app, action),
+                _ => {}
             }
         }
     }
@@ -3483,6 +3556,13 @@ fn handle_main(app: &mut App, ev: Event) -> bool {
     true
 }
 
+/// Global actions that open a view, a dialog or the message box: none of them opens over a
+/// dialog (the insert leader reaches them there).
+fn opens_something(action: Action) -> bool {
+    use Action::*;
+    matches!(action, Switcher | BrowseChannels | Search | Threads | Activity | Details | MoveToSection | Help | Preferences | LeaveConversation | DeleteSection | RenameSection | NewChannel | NewPrivateChannel | NewDm | NewSnippet | Upload | SetStatus | PauseNotifications)
+}
+
 /// What a global key does. False to quit.
 fn run_global(app: &mut App, action: Action) -> bool {
     match action {
@@ -3494,6 +3574,42 @@ fn run_global(app: &mut App, action: Action) -> bool {
         Action::Activity => app.open_activity(),
         Action::Threads => app.load_threads(false),
         Action::Details => app.open_details(),
+        Action::Star => {
+            if let Some(id) = app.current.clone() {
+                app.toggle_star(id);
+            }
+        }
+        Action::MoveToSection => match app.current.clone() {
+            Some(id) if app.ws.is_outside(&id) => app.status = "join the channel to file it in a section".into(),
+            Some(id) => app.mover = Some(super::sections::MovePicker::new(&app.ws, id)),
+            None => {}
+        },
+        Action::NotificationLevel => app.cycle_conversation_level(),
+        Action::LeaveConversation | Action::JoinConversation | Action::DeleteSection => {
+            use super::commands::Command;
+            let cmd = match action {
+                Action::LeaveConversation => Command::Leave,
+                Action::JoinConversation => Command::Join(None),
+                _ => Command::SectionDelete,
+            };
+            if let Some(id) = app.current.clone() {
+                app.run_command(id, cmd, None);
+            }
+        }
+        Action::RenameSection => app.prefill("/section rename ", Wrap::No),
+        Action::NewChannel => app.prefill("/create ", Wrap::No),
+        Action::NewPrivateChannel => app.prefill("/create-private ", Wrap::No),
+        Action::NewDm => app.prefill("/dm @", Wrap::No),
+        Action::NewSnippet => app.prefill("/snippet ", Wrap::Body),
+        Action::Upload => app.prefill("/upload ", Wrap::Caption),
+        Action::SetStatus => app.prefill("/status ", Wrap::No),
+        Action::PauseNotifications => app.prefill("/dnd ", Wrap::No),
+        Action::ClearStatus => app.run_text("/status clear"),
+        Action::AwayActive => {
+            let away = app.ws.presence.get(&app.ws.self_id) != Some(&false);
+            app.run_command(app.current.clone().unwrap_or_default(), super::commands::Command::Away(away), None);
+        }
+        Action::BrowseChannels => app.switcher = Some(super::switcher::Switcher { query: "#".into(), ..Default::default() }),
         Action::Huddle => app.toggle_huddle(),
         Action::DeclineHuddle => app.decline_huddle(false),
         Action::HuddleThread => app.open_huddle_thread(),
@@ -4438,6 +4554,35 @@ mod tests {
         assert_eq!(mode_of(None, Focus::ThreadComposer), Mode::Insert);
         assert_eq!(mode_of(None, Focus::Messages), Mode::Normal);
         assert_eq!(mode_of(None, Focus::Huddle), Mode::Normal);
+    }
+
+    #[test]
+    fn prefill_keeps_drafts() {
+        use super::{Wrap, prefilled};
+        use crate::tui::composer::Composer;
+        let fill = |draft: &str, command: &str, wrap: Wrap| {
+            let mut c = Composer::default();
+            c.set(draft);
+            let (text, cursor) = prefilled(&c.text(), false, command, wrap)?;
+            c.set_with_cursor(&text, cursor);
+            Ok::<_, &str>((c.text(), c.cursor()))
+        };
+        assert_eq!(fill("", "/create ", Wrap::No), Ok(("/create ".into(), 8)));
+        assert_eq!(fill("hello", "/upload ", Wrap::Caption), Ok(("/upload  hello".into(), 8)), "the draft becomes the upload's message");
+        assert_eq!(fill("line", "/snippet ", Wrap::Body), Ok(("/snippet \nline".into(), 9)), "the draft becomes the snippet's body");
+        assert_eq!(fill("hello", "/create ", Wrap::No), Err("the message box is in use"));
+        assert_eq!(fill(" ", "/dm @", Wrap::No), Ok(("/dm @".into(), 5)), "blank is empty");
+        assert!(prefilled("", true, "/status ", Wrap::No).is_err() && prefilled("x", true, "/upload ", Wrap::Caption).is_err(), "never during an edit");
+        let mut c = Composer::default();
+        c.set_with_cursor("abc", 9);
+        assert_eq!(c.cursor(), 3, "kept inside the text");
+    }
+
+    #[test]
+    fn views_do_not_open_over_a_dialog() {
+        use crate::tui::keymap::Action;
+        assert!(super::opens_something(Action::Switcher) && super::opens_something(Action::Upload) && super::opens_something(Action::Details));
+        assert!(!super::opens_something(Action::NotificationLevel) && !super::opens_something(Action::Mute) && !super::opens_something(Action::AwayActive));
     }
 
     fn session(team_id: &str, team: &str, user: &str) -> WorkspaceSession {

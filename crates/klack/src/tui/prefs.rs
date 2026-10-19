@@ -381,7 +381,7 @@ pub enum SlackChange {
 }
 
 /// A conversation's own level cycles through the three and back to "default" (no override).
-fn next_conversation_level(own: Option<&str>) -> String {
+pub fn next_conversation_level(own: Option<&str>) -> String {
     match own {
         None => LEVELS[0].to_string(),
         Some(l) if l == LEVELS[LEVELS.len() - 1] => "default".to_string(),

@@ -175,6 +175,12 @@ impl Composer {
         self.cursor = self.chars.len();
     }
 
+    /// Replace the text (mentions and attachments stay), the cursor at `cursor` (a char index).
+    pub fn set_with_cursor(&mut self, text: &str, cursor: usize) {
+        self.set(text);
+        self.cursor = cursor.min(self.chars.len());
+    }
+
     /// Take what is typed out, leaving the composer empty; None when there is nothing to keep.
     pub fn take_draft(&mut self) -> Option<Draft> {
         let draft = self.draft();

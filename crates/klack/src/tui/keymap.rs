@@ -389,6 +389,21 @@ pub enum Action {
     SeekBack,
     SeekForward,
     Yes,
+    NotificationLevel,
+    LeaveConversation,
+    JoinConversation,
+    RenameSection,
+    DeleteSection,
+    NewChannel,
+    NewPrivateChannel,
+    NewDm,
+    NewSnippet,
+    Upload,
+    SetStatus,
+    ClearStatus,
+    AwayActive,
+    PauseNotifications,
+    BrowseChannels,
 }
 
 macro_rules! actions {
@@ -415,9 +430,26 @@ actions! {
     Global {
         Quit "quit" "quit" "quit" "🚪" ["ctrl+q"]
         Help "help" "this help" "help" "❓" ["f1"]
-        Switcher "jump_to" "jump to a conversation or person (# alone: every channel)" "jump to" "🧭" ["ctrl+k"]
-        Search "search" "search messages" "search" "🔍" ["ctrl+f"]
-        Details "details" "conversation details: about, members, pins" "details" "📇" ["f2"]
+        Switcher "jump_to" "jump to a conversation or person (# alone: every channel)" "jump to" "🧭" ["ctrl+k", "<leader> <leader>", "<leader> f f"]
+        BrowseChannels "browse_channels" "every channel (jump to with #)" "browse channels" "📚" ["<leader> f #"]
+        Search "search" "search messages" "search" "🔍" ["ctrl+f", "<leader> f s"]
+        Details "details" "conversation details: about, members, pins" "details" "📇" ["f2", "<leader> c d"]
+        Star "star" "star / unstar the conversation" "star" "⭐" ["<leader> c s"]
+        MoveToSection "move_to_section" "move the conversation to a section (or a new one)" "move to section" "📦" ["<leader> c m"]
+        NotificationLevel "notification_level" "what the conversation notifies about: the next level" "notifications" "🔔" ["<leader> c b"]
+        LeaveConversation "leave" "leave the channel (y/n)" "leave" "👋" ["<leader> c l"]
+        JoinConversation "join" "join the channel you are looking at" "join" "📥" ["<leader> c j"]
+        RenameSection "rename_section" "rename the conversation's section (/section rename)" "rename section" "📝" ["<leader> c r"]
+        DeleteSection "delete_section" "delete the conversation's section (y/n)" "delete section" "❌" ["<leader> c x"]
+        NewChannel "new_channel" "create a channel (/create)" "channel" "📢" ["<leader> n c"]
+        NewPrivateChannel "new_private_channel" "create a private channel (/create-private)" "private channel" "🔒" ["<leader> n p"]
+        NewDm "new_dm" "a DM or group DM (/dm)" "DM" "📩" ["<leader> n d"]
+        NewSnippet "new_snippet" "post a snippet (/snippet; the draft becomes its body)" "snippet" "🧾" ["<leader> n s"]
+        Upload "upload" "upload a file (/upload; the draft becomes its message)" "upload a file" "📎" ["<leader> n f"]
+        SetStatus "set_status" "set your status (/status)" "set status" "💭" ["<leader> a s"]
+        ClearStatus "clear_status" "clear your status" "clear status" "🧹" ["<leader> a c"]
+        AwayActive "away" "appear away, or active again" "away / active" "🌙" ["<leader> a a"]
+        PauseNotifications "pause_notifications" "pause notifications (/dnd)" "pause notifications" "🔕" ["<leader> a p"]
         Huddle "huddle" "join or leave the huddle" "join / leave" "🎧" ["f3"]
         Mute "mute" "mute or unmute in the huddle" "mute" "🔇" ["f4"]
         HuddleThread "huddle_thread" "open the huddle's thread (yours, or this conversation's)" "huddle thread" "🧵" ["f7"]
@@ -425,8 +457,8 @@ actions! {
         Camera "camera" "switch your camera on or off in the huddle (chosen in F6)" "camera" "📷" ["f9"]
         ShareScreen "share_screen" "share your screen in the huddle, or stop (the desktop asks what to share)" "share screen" "💻" ["f10"]
         DeclineHuddle "decline_huddle" "decline the huddle invitation that is ringing (the huddle key joins it)" "decline" "📵" ["shift+f3"]
-        Activity "activity" "mentions, reactions, threads" "activity" "🔔" ["f5"]
-        Threads "threads" "every thread you are in, unread first" "threads" "🧵" ["ctrl+t"]
+        Activity "activity" "mentions, reactions, threads" "activity" "🔔" ["f5", "<leader> f a"]
+        Threads "threads" "every thread you are in, unread first" "threads" "🧵" ["ctrl+t", "<leader> f t"]
         Preferences "preferences" "preferences" "preferences" "🔧" ["f6"]
         PrevConversation "previous_conversation" "previous conversation" "previous" "🔼" ["alt+up"]
         NextConversation "next_conversation" "next conversation" "next" "🔽" ["alt+down"]
@@ -434,15 +466,15 @@ actions! {
         ScrollDown "scroll_down" "scroll messages down" "scroll down" "⏬" ["pagedown"]
         FocusNext "focus_next" "next pane" "next pane" "⏩" ["tab"]
         FocusPrev "focus_previous" "previous pane" "previous pane" "⏪" ["shift+tab"]
-        Workspace1 "workspace_1" "workspace 1 of the profile" "workspace 1" "🏢" ["alt+1"]
-        Workspace2 "workspace_2" "workspace 2" "workspace 2" "🏢" ["alt+2"]
-        Workspace3 "workspace_3" "workspace 3" "workspace 3" "🏢" ["alt+3"]
-        Workspace4 "workspace_4" "workspace 4" "workspace 4" "🏢" ["alt+4"]
-        Workspace5 "workspace_5" "workspace 5" "workspace 5" "🏢" ["alt+5"]
-        Workspace6 "workspace_6" "workspace 6" "workspace 6" "🏢" ["alt+6"]
-        Workspace7 "workspace_7" "workspace 7" "workspace 7" "🏢" ["alt+7"]
-        Workspace8 "workspace_8" "workspace 8" "workspace 8" "🏢" ["alt+8"]
-        Workspace9 "workspace_9" "workspace 9" "workspace 9" "🏢" ["alt+9"]
+        Workspace1 "workspace_1" "workspace 1 of the profile" "workspace 1" "🏢" ["alt+1", "<leader> w 1"]
+        Workspace2 "workspace_2" "workspace 2" "workspace 2" "🏢" ["alt+2", "<leader> w 2"]
+        Workspace3 "workspace_3" "workspace 3" "workspace 3" "🏢" ["alt+3", "<leader> w 3"]
+        Workspace4 "workspace_4" "workspace 4" "workspace 4" "🏢" ["alt+4", "<leader> w 4"]
+        Workspace5 "workspace_5" "workspace 5" "workspace 5" "🏢" ["alt+5", "<leader> w 5"]
+        Workspace6 "workspace_6" "workspace 6" "workspace 6" "🏢" ["alt+6", "<leader> w 6"]
+        Workspace7 "workspace_7" "workspace 7" "workspace 7" "🏢" ["alt+7", "<leader> w 7"]
+        Workspace8 "workspace_8" "workspace 8" "workspace 8" "🏢" ["alt+8", "<leader> w 8"]
+        Workspace9 "workspace_9" "workspace 9" "workspace 9" "🏢" ["alt+9", "<leader> w 9"]
     }
     Sidebar {
         Up "up" "previous conversation" "up" "🔼" ["up", "k"]
@@ -451,10 +483,14 @@ actions! {
         Bottom "bottom" "last conversation" "bottom" "🔚" ["end", "G"]
         HalfPageUp "half_page_up" "half a page up" "half page up" "⏫" ["ctrl+u"]
         HalfPageDown "half_page_down" "half a page down" "half page down" "⏬" ["ctrl+d"]
-        Open "open" "type in the chosen conversation" "open" "📂" ["enter", "i"]
-        Star "star" "star / unstar" "star" "⭐" ["*"]
-        MoveToSection "move_to_section" "move to a section (or a new one)" "move" "📦" ["m"]
-        FoldSection "fold_section" "fold / unfold the section (folded: what is unread in it)" "fold" "📁" ["space", "z"]
+        Open "open" "type in the conversation; on a header: fold / unfold; Threads: open it" "open" "📂" ["enter"]
+        Type "type" "type in the conversation" "type" "💬" ["i"]
+        Star "star" "star / unstar" "star" "⭐" ["*", "<leader> s"]
+        MoveToSection "move_to_section" "move to a section (or a new one)" "move" "📦" ["m", "<leader> m"]
+        Details "details" "conversation details: about, members, pins" "details" "📇" ["<leader> d"]
+        NotificationLevel "notification_level" "what the conversation notifies about: the next level" "notifications" "🔔" ["<leader> b"]
+        LeaveConversation "leave" "leave the channel (y/n)" "leave" "👋" ["<leader> l"]
+        FoldSection "fold_section" "fold / unfold the section (folded: what is unread in it)" "fold" "📁" ["z"]
         Help "help" "this help" "help" "❓" ["?"]
     }
     Messages {
@@ -610,7 +646,7 @@ actions! {
         Down "down" "the tile below" "down" "🔽" ["down", "j"]
         PrevTab "left" "the tile to the left" "left" "👈" ["left", "h"]
         NextTab "right" "the tile to the right" "right" "👉" ["right", "l"]
-        Open "maximize" "maximize the tile, or all tiles again" "maximize" "🔲" ["enter", "space", "f"]
+        Open "maximize" "maximize the tile, or all tiles again" "maximize" "🔲" ["enter", "f"]
         Close "back" "all tiles again, or leave the tiles" "back" "🔙" ["esc"]
     }
     Preferences {
@@ -847,7 +883,6 @@ impl Keymap {
         // The actions whose keys the user chose (a bad entry keeps the default ones).
         let mut by_user = std::collections::HashSet::new();
         for info in ACTIONS {
-            let defaults = || info.defaults.iter().map(|s| s.to_string()).collect::<Vec<_>>();
             let wanted = overrides.get(&(info.context, info.name.to_string())).cloned();
             let parsed = match wanted.as_ref().map(|w| map.parse_sequences(info.context, w)) {
                 Some(Ok(seqs)) => {
@@ -856,9 +891,9 @@ impl Keymap {
                 }
                 Some(Err(e)) => {
                     warnings.push(format!("keys.toml: [{}] {}: {e} (keeping the default)", info.context.name(), info.name));
-                    map.parse_sequences(info.context, &defaults()).unwrap_or_default()
+                    map.defaults(info)
                 }
-                None => map.parse_sequences(info.context, &defaults()).unwrap_or_default(),
+                None => map.defaults(info),
             };
             map.keys.insert((info.context, info.name), parsed);
         }
@@ -892,7 +927,7 @@ impl Keymap {
         }
         // The user's [global] sequences that a pane or dialog binding hides where it applies (a
         // default written out again is still a default).
-        let default_of = |name: &str| ACTIONS.iter().find(|a| a.context == Context::Global && a.name == name).map(|a| map.parse_sequences(Context::Global, &a.defaults.iter().map(|s| s.to_string()).collect::<Vec<_>>()).unwrap_or_default()).unwrap_or_default();
+        let default_of = |name: &str| ACTIONS.iter().find(|a| a.context == Context::Global && a.name == name).map(|a| map.defaults(a)).unwrap_or_default();
         for (_, seq, name, _) in bound.iter().filter(|(c, s, name, user)| *c == Context::Global && *user && !default_of(name).contains(s)) {
             for (context, other, owner, _) in bound.iter().filter(|(c, ..)| *c != Context::Global) {
                 let applies = match context {
@@ -973,6 +1008,11 @@ impl Keymap {
             Some((name, icon)) => Some((name.clone(), icon.clone().or_else(|| default.map(|d| d.1)).unwrap_or_else(|| GROUP_ICON.into()))),
             None => default,
         }
+    }
+
+    /// An action's default sequences (those with `<leader>` left out when there is no leader).
+    fn defaults(&self, info: &ActionInfo) -> Vec<Vec<Key>> {
+        info.defaults.iter().filter_map(|s| self.parse_sequences(info.context, &[s.to_string()]).ok()).flatten().collect()
     }
 
     fn parse_sequences(&self, context: Context, keys: &[String]) -> Result<Vec<Vec<Key>>, String> {
@@ -1188,6 +1228,9 @@ impl Keymap {
     pub fn to_toml(&self, change: Option<(Context, &str, Vec<Vec<Key>>)>, leader: Option<Option<Key>>) -> String {
         let leader = leader.unwrap_or(self.leader);
         let defaults = Keymap::load("").0;
+        // Without any leader the defaults have no leader sequences, and that is no change.
+        let same = Keymap { leader: None, insert_leader: None, ..Default::default() };
+        let default_seqs = |info: &ActionInfo| if self.leader.is_none() && self.insert_leader.is_none() { same.defaults(info) } else { defaults.sequences(info.context, info.name) };
         let spec = |seq: &[Key]| seq.iter().map(Key::spec).collect::<Vec<_>>().join(" ");
         let mut out = String::new();
         // A leader set to none is written empty (left out, it would be the default again).
@@ -1203,7 +1246,7 @@ impl Keymap {
                     Some((c, n, s)) if *c == context && *n == info.name => s.clone(),
                     _ => self.sequences(context, info.name),
                 };
-                if seqs != defaults.sequences(context, info.name) {
+                if seqs != default_seqs(info) {
                     let list: Vec<String> = seqs.iter().map(|s| format!("\"{}\"", spec(s).replace('\\', "\\\\").replace('"', "\\\""))).collect();
                     entries.push(format!("{} = [{}]\n", info.name, list.join(", ")));
                 }
@@ -1412,10 +1455,10 @@ mod tests {
         assert_eq!(map.resolve(&[Composer, Global], Mode::Insert, &[], k("ctrl+space")), Resolved::Pending);
         assert_eq!(map.resolve(&[Search, Global], Mode::Dialog, &[], k("space")), Resolved::None, "Space belongs to the dialog");
         assert_eq!(map.resolve(&[Search, Global], Mode::Dialog, &[LEADER, k("h")], k("m")), Resolved::Action(Global, Action::Mute));
-        // The leader that starts no sequence here is its plain key (Space folds in the sidebar).
+        // Space in a dialog stays the dialog's (it pages the help).
         assert_eq!(map.resolve(&[Sidebar, Global], Mode::Normal, &[], k("space")), Resolved::Pending);
         let (plain, _) = Keymap::load("");
-        assert_eq!(plain.resolve(&[Sidebar, Global], Mode::Normal, &[], k("space")), Resolved::Action(Sidebar, Action::FoldSection));
+        assert_eq!(plain.resolve(&[Help, Global], Mode::Dialog, &[], k("space")), Resolved::Action(Help, Action::PageDown));
         // insert_leader = "" is none; a leader that never types works everywhere.
         let (none, warnings) = Keymap::load("leader = \"ctrl+b\"\ninsert_leader = \"\"\n[global]\nmute = \"<leader> h m\"\n");
         assert!(warnings.is_empty(), "{warnings:?}");
@@ -1497,7 +1540,7 @@ mod tests {
         assert_eq!(map.resolve(&[Messages, Global], Mode::Normal, &[], k("ctrl+d")), Resolved::Action(Messages, Action::HalfPageDown));
         assert_eq!(map.resolve(&[Messages, Global], Mode::Normal, &[], k("ctrl+u")), Resolved::Action(Messages, Action::HalfPageUp));
         assert_eq!(map.resolve(&[Sidebar, Global], Mode::Normal, &[], k("ctrl+d")), Resolved::Action(Sidebar, Action::HalfPageDown));
-        assert_eq!(map.resolve(&[Sidebar, Global], Mode::Normal, &[], k("i")), Resolved::Action(Sidebar, Action::Open));
+        assert_eq!(map.resolve(&[Sidebar, Global], Mode::Normal, &[], k("i")), Resolved::Action(Sidebar, Action::Type));
         assert_eq!(map.resolve(&[Messages, Global], Mode::Normal, &[], k("esc")), Resolved::Action(Messages, Action::Back));
     }
 
@@ -1509,9 +1552,9 @@ mod tests {
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(map.resolve(&[Messages, Global], Mode::Normal, &[], k("ctrl+b")), Resolved::Pending);
         assert_eq!(map.resolve(&[Messages, Global], Mode::Normal, &[LEADER], k("k")), Resolved::Action(Global, Action::Switcher));
-        // A leader alone stays the key itself.
+        // A leader alone stays the key itself (the leader, which starts the default tree, comes first).
         let (map, _) = Keymap::load("leader = \"ctrl+b\"\n[global]\njump_to = \"ctrl+b\"\n");
-        assert_eq!(map.resolve(&[Messages, Global], Mode::Normal, &[], k("ctrl+b")), Resolved::Action(Global, Action::Switcher));
+        assert_eq!(map.sequences(Global, "jump_to"), vec![vec![k("ctrl+b")]]);
     }
 
     #[test]
@@ -1529,9 +1572,10 @@ mod tests {
         assert!(warnings.is_empty(), "{warnings:?}");
         let short = |map: &Keymap, c: &[Child]| c.iter().map(|c| format!("{} {}{}", map.show(&[c.key]), if c.group { "group " } else { "" }, c.label)).collect::<Vec<_>>();
         let top = map.children(&[Messages, Global], Mode::Normal, &[LEADER]);
-        assert_eq!(short(&map, &top), ["r react", "h group huddle"]);
+        // The pane's actions, then global's, then the groups by key.
+        assert_eq!(short(&map, &top), ["r react", "␣ jump to", "a group availability", "c group conversation", "f group find", "h group huddle", "n group new", "w group workspace"]);
         assert_eq!((top[0].action, top[0].icon.as_str()), (Some((Messages, Action::React)), "😀"));
-        assert_eq!((top[1].action, top[1].icon.as_str()), (None, "🎧"), "from GROUPS");
+        assert_eq!((top[5].action, top[5].icon.as_str()), (None, "🎧"), "from GROUPS");
         let huddle = map.children(&[Messages, Global], Mode::Normal, &[LEADER, k("h")]);
         assert_eq!(short(&map, &huddle), ["m mute"]);
         assert_eq!(huddle[0].action, Some((Global, Action::Mute)));
@@ -1539,23 +1583,26 @@ mod tests {
         let (map, warnings) = Keymap::load(&format!("{text}[sidebar]\nstar = \"<leader> x s\"\n[groups]\n\"<leader> h\" = {{ name = \"calls\", icon = \"📞\" }}\n"));
         assert!(warnings.is_empty(), "{warnings:?}");
         let top = map.children(&[Messages, Global], Mode::Normal, &[LEADER]);
-        assert_eq!((top[1].label.as_str(), top[1].icon.as_str()), ("calls", "📞"));
-        assert_eq!(short(&map, &map.children(&[Sidebar, Global], Mode::Normal, &[LEADER])), ["h group calls", "x group +x"]);
+        assert_eq!((top[5].label.as_str(), top[5].icon.as_str()), ("calls", "📞"));
+        let groups = |c: Vec<Child>| short(&map, &c.into_iter().filter(|c| c.group).collect::<Vec<_>>());
+        assert_eq!(groups(map.children(&[Sidebar, Global], Mode::Normal, &[LEADER])), ["a group availability", "c group conversation", "f group find", "h group calls", "n group new", "w group workspace", "x group +x"]);
         // The pane wins a key both bind; [global] text keys do not count in INSERT.
         let (map, _) = Keymap::load("[messages]\nreact = \"<leader> r\"\n[global]\nsearch = \"<leader> r\"\nmute = \"x\"\n");
-        assert_eq!(short(&map, &map.children(&[Messages, Global], Mode::Normal, &[LEADER])), ["r react"]);
-        assert_eq!(short(&map, &map.children(&[Composer, Global], Mode::Insert, &[LEADER])), ["r search"]);
+        let r = |c: Vec<Child>| short(&map, &c.into_iter().filter(|c| c.key == k("r")).collect::<Vec<_>>());
+        assert_eq!(r(map.children(&[Messages, Global], Mode::Normal, &[LEADER])), ["r react"]);
+        assert_eq!(r(map.children(&[Composer, Global], Mode::Insert, &[LEADER])), ["r search"]);
         assert!(!map.children(&[Composer, Global], Mode::Insert, &[]).iter().any(|c| c.key == k("x")));
     }
 
     #[test]
     fn labels_and_groups_from_keys_toml() {
         use Context::*;
-        let text = "[global]\nmute = \"<leader> h m\"\nsearch = \"<leader> s\"\n[groups]\n\"<leader> h\" = \"calls\"\n[labels.global]\nmute = \"hush\"\nsearch = { label = \"find it\", icon = \"🧐\" }\n";
+        let text = "[global]\nmute = \"<leader> h m\"\nsearch = \"<leader> /\"\n[groups]\n\"<leader> h\" = \"calls\"\n[labels.global]\nmute = \"hush\"\nsearch = { label = \"find it\", icon = \"🧐\" }\n";
         let (map, warnings) = Keymap::load(text);
         assert!(warnings.is_empty(), "{warnings:?}");
         let top = map.children(&[Messages, Global], Mode::Normal, &[LEADER]);
-        assert_eq!(top.iter().map(|c| (c.label.as_str(), c.icon.as_str())).collect::<Vec<_>>(), [("find it", "🧐"), ("calls", "🎧")], "a name alone keeps the default icon");
+        let at = |key: &str| top.iter().find(|c| c.key == k(key)).map(|c| (c.label.as_str(), c.icon.as_str()));
+        assert_eq!((at("/"), at("h")), (Some(("find it", "🧐")), Some(("calls", "🎧"))), "a name alone keeps the default icon");
         assert_eq!(map.children(&[Messages, Global], Mode::Normal, &[LEADER, k("h")])[0].label, "hush");
         let (_, warnings) = Keymap::load("[labels.nowhere]\nx = \"y\"\n[labels.global]\nnothing = \"z\"\nmute = 3\n[groups]\n\"<leader> hyper+x\" = \"bad\"\n");
         assert_eq!(warnings.len(), 4, "{warnings:#?}");
@@ -1573,6 +1620,38 @@ mod tests {
             assert!(icon.chars().count() == 1 && icon.width() == 2 && !icon.contains('\u{FE0F}'), "{name}: {icon:?}");
         }
         assert!(ACTIONS.iter().all(|a| !a.label.is_empty() && a.label.split(' ').count() <= 3), "short labels");
+    }
+
+    #[test]
+    fn conversation_new_availability_find_groups() {
+        use Context::*;
+        let (map, warnings) = Keymap::load("");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let at = |pending: &[Key], key: &str| map.resolve(&[Messages, Global], Mode::Normal, pending, k(key));
+        assert_eq!(at(&[LEADER, k("c")], "b"), Resolved::Action(Global, Action::NotificationLevel));
+        assert_eq!(at(&[LEADER, k("n")], "f"), Resolved::Action(Global, Action::Upload));
+        assert_eq!(at(&[LEADER, k("a")], "a"), Resolved::Action(Global, Action::AwayActive));
+        assert_eq!(at(&[LEADER, k("f")], "#"), Resolved::Action(Global, Action::BrowseChannels));
+        assert_eq!(at(&[LEADER, k("w")], "3"), Resolved::Action(Global, Action::Workspace3));
+        assert_eq!(at(&[LEADER], "space"), Resolved::Action(Global, Action::Switcher), "␣␣ jumps");
+        assert_eq!(at(&[], "alt+3"), Resolved::Action(Global, Action::Workspace3), "beside Alt+n");
+        // The sidebar: the selected conversation's own keys come right after the leader.
+        assert_eq!(map.resolve(&[Sidebar, Global], Mode::Normal, &[LEADER], k("s")), Resolved::Action(Sidebar, Action::Star));
+        assert_eq!(map.resolve(&[Sidebar, Global], Mode::Normal, &[LEADER], k("b")), Resolved::Action(Sidebar, Action::NotificationLevel));
+        assert_eq!(map.resolve(&[Sidebar, Global], Mode::Normal, &[], k("z")), Resolved::Action(Sidebar, Action::FoldSection));
+        assert_eq!(map.resolve(&[Sidebar, Global], Mode::Normal, &[], k("space")), Resolved::Pending, "Space is the leader, not fold");
+        assert_eq!(map.resolve(&[Huddle, Global], Mode::Normal, &[], k("space")), Resolved::Pending, "nor maximize");
+        assert_eq!(map.resolve(&[Huddle, Global], Mode::Normal, &[], k("f")), Resolved::Action(Huddle, Action::Open));
+        // `i` always types; Enter opens (a header unfolds, Threads opens).
+        assert_eq!(map.resolve(&[Sidebar, Global], Mode::Normal, &[], k("i")), Resolved::Action(Sidebar, Action::Type));
+        assert_eq!(map.resolve(&[Sidebar, Global], Mode::Normal, &[], k("enter")), Resolved::Action(Sidebar, Action::Open));
+        // In INSERT and dialogs the insert leader reaches the groups.
+        assert_eq!(map.resolve(&[Composer, Global], Mode::Insert, &[LEADER, k("f")], k("s")), Resolved::Action(Global, Action::Search));
+        assert_eq!(map.resolve(&[Search, Global], Mode::Dialog, &[LEADER, k("c")], k("d")), Resolved::Action(Global, Action::Details));
+        // No leader at all: the other keys of those actions stay.
+        let (none, _) = Keymap::load("leader = \"\"\ninsert_leader = \"\"\n");
+        assert_eq!(none.resolve(&[Messages, Global], Mode::Normal, &[], k("ctrl+k")), Resolved::Action(Global, Action::Switcher));
+        assert_eq!(none.to_toml(None, None), "leader = \"\"\ninsert_leader = \"\"\n", "the leader sequences are not written out as removed");
     }
 
     #[test]

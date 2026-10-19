@@ -81,7 +81,12 @@ pub fn lines(keys: &Keymap) -> Vec<Line<'static>> {
             }
             let mut label = keys.keys_label(context, info.name);
             if info.name == "workspace_1" {
-                label = format!("{label} … {}", keys.keys_label(context, "workspace_9"));
+                // Each way of reaching them: "Alt+1 … Alt+9 / Space w 1 … Space w 9".
+                let (first, last) = (keys.sequences(context, "workspace_1"), keys.sequences(context, "workspace_9"));
+                label = first.iter().zip(&last).map(|(a, b)| format!("{} … {}", keys.label(a), keys.label(b))).collect::<Vec<_>>().join(" / ");
+                if label.is_empty() {
+                    label = keys.keys_label(context, "workspace_1");
+                }
             }
             let label = if label.is_empty() { "(unbound)".to_string() } else { label };
             let what = if info.name == "workspace_1" { "switch to the profile's workspace 1 … 9" } else { info.description };
