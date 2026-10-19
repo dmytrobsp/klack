@@ -2167,6 +2167,13 @@ impl App {
         mode_of(self.overlay(), self.focus)
     }
 
+    /// Forget the hovered row of the sidebar and the message panes.
+    fn clear_main_hover(&mut self) {
+        self.sidebar.hover = None;
+        self.messages.hover = None;
+        self.thread_pane.hover = None;
+    }
+
     /// Forget the row the pointer was over in every dialog's list.
     fn clear_dialog_hover(&mut self) {
         if let Some((p, _, _)) = self.picker.as_mut() {
@@ -2189,6 +2196,7 @@ impl App {
     /// The pointer moved with a dialog open: shade the row of the topmost list under it (the
     /// selection stays), none when it is off the list.
     fn hover_dialog(&mut self, column: u16, row: u16) {
+        self.clear_main_hover();
         self.clear_dialog_hover();
         if let Some(p) = self.prefs.as_mut() {
             match p.picker.as_mut() {
@@ -3296,9 +3304,7 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
     if let Event::FocusGained | Event::FocusLost = ev {
         app.terminal_focused = matches!(ev, Event::FocusGained);
         if !app.terminal_focused {
-            app.sidebar.hover = None;
-            app.messages.hover = None;
-            app.thread_pane.hover = None;
+            app.clear_main_hover();
             app.clear_dialog_hover();
         }
         tracing::debug!(focused = app.terminal_focused, "terminal focus");
@@ -3318,6 +3324,12 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
 /// Input while a dialog is open: the topmost dialog takes every key and click; nothing under
 /// it reacts.
 fn handle_dialog(app: &mut App, ev: &Event) -> bool {
+    // A key can change what is under the pointer (a move, a filter): its hover waits for the next mouse move.
+    if let Event::Key(k) = ev {
+        if k.kind != KeyEventKind::Release {
+            app.clear_dialog_hover();
+        }
+    }
     // The global leader sequences (Ctrl+Space h m mutes with a dialog open).
     if let Event::Key(k) = ev {
         if k.kind != KeyEventKind::Release && !app.capturing_key() {
@@ -4660,6 +4672,10 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     // A sequence started before a dialog opened (or closed) is over.
     let mode = app.mode();
     app.pending.sync(mode);
+    // Nothing behind a dialog is hovered (it opened with the pointer over a row).
+    if mode == Mode::Dialog {
+        app.clear_main_hover();
+    }
     app.sync_which_key(std::time::Instant::now());
     let messages = &app.ws.settings.messages;
     app.ws.emoji_pictures = app.media.graphics() && messages.custom_emoji_pictures && !messages.emoji_as_names;
