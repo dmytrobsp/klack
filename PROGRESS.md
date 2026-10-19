@@ -195,7 +195,16 @@ Tests: `cargo test` → slack-core 10, huddle 33, klack 190 (+1 ignored: the `bu
 
 ## Next (in order, each as a small, separately verified step)
 
-**v0.2.0 released** 2026-10-19 (https://github.com/dmytrobsp/klack/releases/tag/v0.2.0; CI green on the bump, four builds, the Linux download verified against SHA256SUMS and run). **NEXT UP: nothing queued** — queue J is done (J1 browser window, J2 import from Firefox / Chrome; J3 dropped: Slack's code email needs a reCAPTCHA). Next: whatever the user asks.
+**v0.2.0 released** 2026-10-19 (https://github.com/dmytrobsp/klack/releases/tag/v0.2.0; CI green on the bump, four builds, the Linux download verified against SHA256SUMS and run). **NEXT UP: K1** (queue K below). Queue J is done (J1 browser window, J2 import from Firefox / Chrome; J3 dropped: Slack's code email needs a reCAPTCHA).
+
+K. Sidebar like Slack's, plus picking the browser profile — asked by the user on 2026-10-19 (after J):
+  K1 (NEXT). Direct messages sorted by latest activity, newest first (channels stay alphabetical, as in Slack);
+      activity = the newest real message (`client.counts` `latest`, zeros = none; live messages move it).
+  K2. Hide channels and DMs without activity for 30 days (configurable in F6: never / 1 / 7 / 14 / 30 / 60 / 90
+      days); starred ones never hide, nor unread ones, the one shown, a previewed one; jumping to a hidden one
+      (Ctrl+K, search, notification) shows it until you move away.
+  K3. `--from-browser`: when several browser profiles sign in to the workspace, list them (profile name and the
+      account) and ask which; without a terminal to ask in, the freshest.
 
 J. Easier sign-in, asked by the user on 2026-10-19 ("streamline the login so it does not need copying the cookie
    via devtools"); they chose A as the main path with B and C as fallbacks; one verified commit per step:
