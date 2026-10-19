@@ -824,6 +824,9 @@ pub fn message_body(ws: &Workspace, m: &Message, width: usize, summary: bool, th
             out.extend(std::iter::repeat_n(Line::raw(""), size.1 as usize));
         }
     }
+    if let Some(app) = ws.sent_using(m) {
+        out.push(Line::styled(app, Style::default().fg(super::theme::p().dim)));
+    }
     if !m.reactions.is_empty() {
         let mut spans = Vec::new();
         for r in &m.reactions {
@@ -934,6 +937,27 @@ mod tests {
         assert_eq!(c(serde_json::json!({"color": "#fff"})), None, "short forms are not Slack's");
         assert_eq!(c(serde_json::json!({"color": "nope"})), None);
         assert_eq!(c(serde_json::json!({"title": "x"})), None);
+    }
+
+    #[test]
+    fn sent_using_an_app() {
+        let mut ws = Workspace::default();
+        // As in a real message sent through the Claude app, and its bot user (`users.list`).
+        let mut bot = slack_core::types::User { id: "U0AENR65H46".into(), name: "claude".into(), real_name: Some("Claude".into()), is_bot: true, ..Default::default() };
+        bot.profile.real_name = "Claude".into();
+        bot.profile.api_app_id = Some("A08SF47R6P4".into());
+        ws.users.insert(bot.id.clone(), bot);
+        ws.users.insert("U2".into(), slack_core::types::User { id: "U2".into(), name: "yuriy".into(), ..Default::default() });
+        let mut m: Message = serde_json::from_value(serde_json::json!({"app_id": "A08SF47R6P4", "team": "T1", "text": "a reply", "ts": "1.0", "type": "message", "user": "U2"})).unwrap();
+        let rows = plain(&message_body(&ws, &m, 40, false, &|_, _| None).0);
+        assert_eq!(rows, ["a reply", "Sent using @Claude"]);
+        m.app_id = Some("A0OTHER".into());
+        assert_eq!(ws.sent_using(&m).as_deref(), Some("Sent using an app"), "an app whose bot user is not known");
+        m.bot_id = Some("B1".into());
+        assert_eq!(ws.sent_using(&m), None, "an app's own (bot) message");
+        m.bot_id = None;
+        m.app_id = None;
+        assert_eq!(ws.sent_using(&m), None, "sent by the person themselves");
     }
 
     #[test]

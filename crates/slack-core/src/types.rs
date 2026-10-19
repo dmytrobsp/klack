@@ -112,6 +112,8 @@ pub struct UserProfile {
     pub email: Option<String>,
     pub title: String,
     pub pronouns: Option<String>,
+    /// A bot user's app (`A…`): messages people send through that app name it.
+    pub api_app_id: Option<String>,
     /// When the status clears (epoch seconds, 0 = never).
     pub status_expiration: Option<i64>,
 }
@@ -228,6 +230,8 @@ pub struct Message {
     pub ts: String,
     pub user: Option<String>,
     pub bot_id: Option<String>,
+    /// The app a person sent this through (Slack shows "Sent using @App").
+    pub app_id: Option<String>,
     pub username: Option<String>,
     pub text: String,
     pub thread_ts: Option<String>,

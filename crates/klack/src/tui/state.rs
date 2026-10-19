@@ -538,6 +538,19 @@ impl Workspace {
         self.apply_prefs(&boot["prefs"]);
     }
 
+    /// "Sent using @App" for a message a person sent through an app (`app_id` beside their own
+    /// `user`, no `bot_id`): the app's bot user by name, as Slack names it; "an app" when that
+    /// bot user is not known.
+    pub fn sent_using(&self, m: &Message) -> Option<String> {
+        let app = m.app_id.as_deref().filter(|_| m.bot_id.is_none())?;
+        let person = m.user.as_deref().and_then(|u| self.users.get(u));
+        if person.is_some_and(|u| u.is_bot) || m.user.is_none() {
+            return None;
+        }
+        let bot = self.users.values().find(|u| u.is_bot && !u.deleted && u.profile.api_app_id.as_deref() == Some(app));
+        Some(bot.map_or_else(|| "Sent using an app".to_string(), |b| format!("Sent using @{}", b.display())))
+    }
+
     /// Number custom emoji not numbered yet (after the list changed).
     pub fn number_emoji(&mut self) {
         for name in self.custom_emoji.keys() {
