@@ -265,6 +265,14 @@ U. Asked by the user on 2026-10-19 (after v0.5.0): a keymap rework borrowing fro
    keeps PgUp/PgDn/Home/End/g/G and gains Ctrl+U/Ctrl+D. Brainstorm in progress: the design draft in
    docs/superpowers/specs/2026-10-19-keymap-rework-design.md (decided / guesses / open questions).
 
+V. After U, asked by the user on 2026-10-19: features that have no UI yet — mute / unmute a conversation (`␣cM`),
+   mark unread (`␣cu`), next unread conversation, copy a conversation's link. Bugs and wishes the user found in the
+   v0.5.0 UI (2026-10-19): clicks in the Threads view went through to the messages (U1 stops the fall-through;
+   clicking a row should pick / open it — Threads, Activity, Ctrl+K, search); the reaction picker should list your
+   own reactions on the message first, clearly marked so they are easy to remove, then other people's, then the
+   rest; there is no way to see who added which reaction (e.g. the picker's top lists the message's reactions with
+   their people: `👍 2 · you, alice`). (The menu not running items on their shown key is fixed in U7.)
+
 T. Asked by the user on 2026-10-19 (roadmap): "1. app size. how big is it now and can we make it smaller? 2. app
    memory consumption. we have to measure it, stress-test it and see if we can lower the RAM usage 3. compose
    "up" arrow … if the newline was a result of a wrap - it doesnt do anything":
