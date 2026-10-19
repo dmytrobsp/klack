@@ -2406,6 +2406,7 @@ dependencies = [
  "slack-core",
  "syntect",
  "tokio",
+ "tokio-tungstenite",
  "toml",
  "tracing",
  "tracing-subscriber",

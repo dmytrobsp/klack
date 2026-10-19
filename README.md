@@ -74,10 +74,15 @@ unread); a click on a tile switches, like Alt+1…9.
 
 ## Signing in
 
-- **From a browser:** sign in to Slack in your browser, copy the value of the `d` cookie for
-  `slack.com` (devtools → Application → Cookies), then
-  `klack login --workspace acme.slack.com` and paste it at the prompt (or set
-  `KLACK_COOKIE_D`). klack fetches the token itself and checks it with `auth.test`.
+- **In a browser window (the easy way):** `klack login --workspace acme.slack.com` opens Chrome,
+  Chromium, Edge or Brave (an installed one or a flatpak; `KLACK_BROWSER` picks another) on the
+  workspace's sign-in page, with a temporary profile of its own. Sign in there however Slack offers
+  (password, Google / SSO, 2FA, an emailed code); klack notices, takes the session, closes the window
+  and deletes that profile. Your own browser profile is never read or changed. Ctrl+C cancels.
+- **By hand:** with `--no-browser`, or when no such browser is found, klack asks for the value of
+  the `d` cookie for `slack.com` (sign in in any browser, then devtools → Application → Cookies);
+  `KLACK_COOKIE_D` or `--cookie` give it directly. Either way klack fetches the token itself and
+  checks it with `auth.test`.
 
 Sessions are saved per profile in `~/.config/klack/<profile>/session.json` (owner-only
 permissions). Use `--profile NAME` to keep several accounts apart. Signing in to more workspaces
