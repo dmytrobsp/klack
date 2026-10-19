@@ -967,9 +967,9 @@ pub fn hints_for(context: Context) -> &'static [(Action, &'static str)] {
     use Action::*;
     match context {
         Context::Global => &[(Switcher, "jump"), (Search, "search"), (FocusNext, "focus")],
-        Context::Sidebar => &[(Open, "open"), (Star, "star"), (MoveToSection, "section"), (FoldSection, "fold")],
-        Context::Messages => &[(OpenThread, "thread"), (React, "react"), (Edit, "edit"), (Profile, "profile"), (Open, "open"), (Back, "back")],
-        Context::Composer => &[(Send, "send"), (Newline, "new line"), (Leave, "leave")],
+        Context::Sidebar => &[(Up, "move"), (Open, "open"), (Help, "help")],
+        Context::Messages => &[(Up, "move"), (OpenThread, "thread"), (Type, "type"), (Help, "help")],
+        Context::Composer => &[(Newline, "new line"), (Send, "send"), (Leave, "normal")],
         Context::Completion => &[(Accept, "insert"), (Dismiss, "close")],
         Context::Switcher | Context::Search => &[(Open, "go"), (Down, "next"), (Close, "close")],
         Context::Picker => &[(Open, "react"), (Close, "close")],
@@ -993,15 +993,33 @@ pub fn hints_for(context: Context) -> &'static [(Action, &'static str)] {
 /// Every word used in status-bar hints (for translation templates).
 pub fn hint_words() -> Vec<&'static str> {
     let mut out: Vec<&str> = Context::ALL.iter().flat_map(|c| hints_for(*c).iter().map(|(_, w)| *w)).collect();
-    out.push("help");
+    out.extend(["help", "actions"]);
     out
 }
 
 impl Keymap {
-    /// One context's own key hints ("y yes · n no"), for the status bar while a dialog is open;
-    /// actions without a key are left out.
-    pub fn context_hints(&self, context: Context) -> String {
-        hints_for(context).iter().filter_map(|(action, word)| self.first_key(context, *action).map(|k| format!("{k} {}", super::i18n::tr(word)))).collect::<Vec<_>>().join(" · ")
+    /// One context's own key hints as (key, word), least useful first, for the status line;
+    /// actions without a key are left out. "move" shows the Up and Down keys ("↑/↓"); in the
+    /// panes the leader's "actions" comes before "help".
+    pub fn context_hints(&self, context: Context) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        for (action, word) in hints_for(context) {
+            let key = if *action == Action::Up && *word == "move" {
+                match (self.first_key(context, Action::Up), self.first_key(context, Action::Down)) {
+                    (Some(up), Some(down)) => Some(format!("{up}/{down}")),
+                    (up, down) => up.or(down),
+                }
+            } else {
+                self.first_key(context, *action)
+            };
+            if *action == Action::Help && matches!(context, Context::Sidebar | Context::Messages) && self.leader_key().is_some() {
+                out.push((self.show(&[LEADER]), super::i18n::tr("actions").into_owned()));
+            }
+            if let Some(key) = key {
+                out.push((key, super::i18n::tr(word).into_owned()));
+            }
+        }
+        out
     }
 }
 
@@ -1175,11 +1193,15 @@ mod tests {
     #[test]
     fn hints_follow_context_and_bindings() {
         let (map, _) = Keymap::load("[messages]\nreact = \"R\"\nedit = []\n");
+        let words = |c| map.context_hints(c).into_iter().map(|(k, w)| format!("{k} {w}")).collect::<Vec<_>>().join(" · ");
+        assert_eq!(words(Context::Messages), "↑/↓ move · Enter thread · i type · ␣ actions · ? help");
+        assert_eq!(words(Context::Sidebar), "↑/↓ move · Enter open · ␣ actions · ? help");
+        assert_eq!(words(Context::Composer), "Alt+Enter new line · Enter send · Esc normal");
+        assert_eq!(words(Context::Confirm), "y yes");
+        let (map, _) = Keymap::load("[messages]\ntype = []\nopen_thread = \"R\"\n");
         let h = map.context_hints(Context::Messages);
-        assert!(h.starts_with("Enter thread · R react · u profile"), "{h}");
-        assert!(!h.contains("edit"), "unbound actions get no hint: {h}");
-        assert!(h.ends_with("Esc back"), "only the context's own keys: {h}");
-        assert_eq!(map.context_hints(Context::Confirm), "y yes");
+        assert_eq!(h[1], ("R".to_string(), "thread".to_string()));
+        assert!(!h.iter().any(|(_, w)| w == "type"), "unbound actions get no hint: {h:?}");
     }
 
     #[test]

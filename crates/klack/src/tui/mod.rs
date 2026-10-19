@@ -36,6 +36,7 @@ pub mod sidebar;
 pub mod snippet;
 pub mod sound;
 pub mod state;
+pub mod status;
 pub mod switcher;
 pub mod terminal;
 pub mod theme;

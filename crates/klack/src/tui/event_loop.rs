@@ -4039,25 +4039,6 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     if let Some(s) = app.snippet.as_mut() {
         s.draw(f, body);
     }
-    // Before the connection, at the right: a key chord under way, your availability.
-    let mut extras = String::new();
-    if !app.pending.keys().is_empty() {
-        extras.push_str(&format!("{} … · ", app.keys.show(app.pending.typed())));
-    }
-    let me = super::profile::availability(&app.ws, chrono::Utc::now().timestamp());
-    if !me.is_empty() {
-        extras.push_str(&format!("{me} · "));
-    }
-    let (unread, mentions) = app.ws.total_unread();
-    let others = super::others::label(&app.others.lock().unwrap_or_else(|e| e.into_inner()), app.workspace);
-    let info = if let Some(ring) = &app.ringing {
-        let key = |a| app.keys.first_key(Context::Global, a).unwrap_or_default();
-        format!("📞 {} invites you to a huddle · {} join · {} decline", app.ws.user_name(&ring.user), key(Action::Huddle), key(Action::DeclineHuddle))
-    } else if app.status.is_empty() {
-        format!("{unread} unread · {mentions} mentions{others}")
-    } else {
-        app.status.clone()
-    };
     if let Some(sw) = app.switcher.as_mut() {
         sw.draw(f, body, &app.ws);
     }
@@ -4088,31 +4069,37 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     if let Some(h) = app.help.as_mut() {
         h.draw(f, body, &app.keys);
     }
-    // The status bar (from slk): where keys go, the breadcrumb, what is going on, the way to
-    // the keys and the connection.
+    // The status line: the mode, what is going on, the keys under way and the hints.
     // The dialog's or the focused pane's context (not the suggestion list's).
     let top = app.active_contexts().into_iter().find(|c| *c != Context::Completion).unwrap_or(Context::Global);
     // The theme picker borrows the switcher's keys but is not the switcher.
     let picking = app.prefs.as_ref().is_some_and(|p| p.picker.is_some());
-    let (pill, typing) = if picking { ("THEME", true) } else { mode_label(top, app.focus) };
-    let mut crumb = app.current.as_deref().and_then(|c| app.ws.conversations.get(c)).map(|c| if c.is_dm() { app.ws.conversation_label(c) } else { format!("#{}", c.name) }).unwrap_or_default();
-    match app.focus {
-        Focus::Thread | Focus::ThreadComposer if app.thread.is_some() => crumb.push_str(" › Thread"),
-        Focus::Huddle => crumb.push_str(" › Huddle"),
-        _ => {}
-    }
-    let dialog = !matches!(top, Context::Global | Context::Sidebar | Context::Messages | Context::Composer | Context::Completion | Context::Huddle);
-    let key = |a| app.keys.first_key(Context::Switcher, a).unwrap_or_default();
-    let hints = if picking { format!("{} {} · {} {}", key(Action::Open), super::i18n::tr("keep"), key(Action::Close), super::i18n::tr("back")) } else { app.keys.context_hints(top) };
-    let middle = if dialog && app.status.is_empty() && app.ringing.is_none() { hints } else { info };
-    let help = app.keys.first_key(Context::Global, Action::Help).map(|k| format!("{k} keys · ")).unwrap_or_default();
-    let p = super::theme::p();
-    let dim = ratatui::style::Style::default().fg(p.dim);
-    let right = vec![
-        ratatui::text::Span::styled(format!("{help}{extras}"), dim),
-        ratatui::text::Span::styled(if app.connected { "● live " } else { "○ connecting " }, if app.connected { ratatui::style::Style::default().fg(p.good) } else { dim }),
-    ];
-    f.render_widget(Paragraph::new(status_line(pill, typing, &crumb, &middle, right, status.width)), status);
+    let pill = if picking { super::status::Pill::Dialog("THEME") } else { mode_label(top, app.focus) };
+    let hints = if picking {
+        let key = |a| app.keys.first_key(Context::Switcher, a).unwrap_or_default();
+        vec![(key(Action::Open), super::i18n::tr("keep").into_owned()), (key(Action::Close), super::i18n::tr("back").into_owned())]
+    } else {
+        app.keys.context_hints(top)
+    };
+    let (unread, mentions) = app.ws.total_unread();
+    let note = if let Some(ring) = &app.ringing {
+        let key = |a| app.keys.sequences(Context::Global, a).first().map(|s| app.keys.show(s)).unwrap_or_default();
+        Some(format!("📞 {} invites you to a huddle · {} join · {} decline", app.ws.user_name(&ring.user), key("huddle"), key("decline_huddle")))
+    } else if app.status.is_empty() {
+        None
+    } else {
+        Some(app.status.clone())
+    };
+    let info = super::status::Info {
+        unread,
+        mentions,
+        others: super::others::label(&app.others.lock().unwrap_or_else(|e| e.into_inner()), app.workspace),
+        availability: super::profile::availability(&app.ws, chrono::Utc::now().timestamp()),
+        live: app.connected,
+        note,
+    };
+    let showcmd = app.keys.show(app.pending.typed());
+    f.render_widget(Paragraph::new(super::status::line(pill, &info, &showcmd, &hints, status.width)), status);
 }
 
 /// The mode for the topmost dialog (`overlay`) and the focused pane: a dialog owns all input;
@@ -4133,66 +4120,32 @@ fn confirm_question(q: &str, keys: &Keymap) -> String {
     }
 }
 
-/// The status bar's pill — where keys go: the open dialog, or the focused pane — and whether
-/// that is typing.
-fn mode_label(top: Context, focus: Focus) -> (&'static str, bool) {
+/// The status line's pill — where keys go: the open dialog, or the focused pane.
+fn mode_label(top: Context, focus: Focus) -> super::status::Pill {
+    use super::status::Pill::{Dialog, Insert, Normal};
     match top {
-        Context::Menu => ("MENU", false),
-        Context::Save => ("SAVE", false),
-        Context::Help => ("KEYS", false),
-        Context::Preferences => ("PREFS", false),
-        Context::TextField => ("EDIT", true),
-        Context::Switcher => ("JUMP", true),
-        Context::Mover => ("SECTION", false),
-        Context::Activity => ("ACTIVITY", false),
-        Context::Threads => ("THREADS", false),
-        Context::Profile => ("PROFILE", false),
-        Context::Details => ("DETAILS", false),
-        Context::Search => ("SEARCH", true),
-        Context::Player => ("VIDEO", false),
-        Context::Snippet => ("SNIPPET", false),
-        Context::Viewer => ("IMAGE", false),
-        Context::Confirm => ("CONFIRM", false),
-        Context::Picker => ("REACT", true),
+        Context::Menu => Dialog("MENU"),
+        Context::Save => Dialog("SAVE"),
+        Context::Help => Dialog("KEYS"),
+        Context::Preferences => Dialog("PREFS"),
+        Context::TextField => Dialog("EDIT"),
+        Context::Switcher => Dialog("JUMP"),
+        Context::Mover => Dialog("SECTION"),
+        Context::Activity => Dialog("ACTIVITY"),
+        Context::Threads => Dialog("THREADS"),
+        Context::Profile => Dialog("PROFILE"),
+        Context::Details => Dialog("DETAILS"),
+        Context::Search => Dialog("SEARCH"),
+        Context::Player => Dialog("VIDEO"),
+        Context::Snippet => Dialog("SNIPPET"),
+        Context::Viewer => Dialog("IMAGE"),
+        Context::Confirm => Dialog("CONFIRM"),
+        Context::Picker => Dialog("REACT"),
         _ => match focus {
-            Focus::Sidebar | Focus::Huddle | Focus::Messages | Focus::Thread => ("NORMAL", false),
-            Focus::ThreadComposer | Focus::Composer => ("INSERT", true),
+            Focus::Sidebar | Focus::Huddle | Focus::Messages | Focus::Thread => Normal,
+            Focus::ThreadComposer | Focus::Composer => Insert,
         },
     }
-}
-
-/// The status bar in `width` columns: the pill, the breadcrumb, the middle text and the right
-/// part (kept whole, at the right edge); the middle is cut first, then the breadcrumb.
-fn status_line(pill: &str, typing: bool, crumb: &str, middle: &str, right: Vec<ratatui::text::Span<'static>>, width: u16) -> ratatui::text::Line<'static> {
-    use ratatui::style::{Modifier, Style};
-    use ratatui::text::Span;
-    use unicode_width::UnicodeWidthStr;
-    let p = super::theme::p();
-    let pill = format!(" {pill} ");
-    let pill_style = Style::default().bg(if typing { p.good } else { p.accent }).fg(ratatui::style::Color::Black).add_modifier(Modifier::BOLD);
-    let right_w: usize = right.iter().map(|s| s.content.width()).sum();
-    let width = width as usize;
-    let mut room = width.saturating_sub(pill.width() + right_w + 1);
-    let cut = |s: &str, room: usize| -> String {
-        if s.width() <= room {
-            return s.to_string();
-        }
-        let mut out = String::new();
-        for c in s.chars() {
-            if out.width() + unicode_width::UnicodeWidthChar::width(c).unwrap_or(0) + 1 > room {
-                break;
-            }
-            out.push(c);
-        }
-        if room > 0 { format!("{out}…") } else { out }
-    };
-    let crumb = cut(&format!(" {crumb}"), room);
-    room = room.saturating_sub(crumb.width());
-    let middle = if middle.is_empty() || room < 6 { String::new() } else { cut(&format!("  {middle}"), room) };
-    let used = pill.width() + crumb.width() + middle.width() + right_w;
-    let mut spans = vec![Span::styled(pill, pill_style), Span::styled(crumb, Style::default().add_modifier(Modifier::BOLD)), Span::raw(middle), Span::raw(" ".repeat(width.saturating_sub(used)))];
-    spans.extend(right);
-    ratatui::text::Line::from(spans)
 }
 
 /// The yes / no prompt, centred in `area`; returns where it was drawn.
@@ -4213,7 +4166,7 @@ fn draw_composer(f: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &App,
     use ratatui::style::Style;
     use ratatui::widgets::{Block, Borders};
     let composer = if thread { &app.thread_composer } else { &app.composer };
-    let focused = app.focus == if thread { Focus::ThreadComposer } else { Focus::Composer };
+    let focused = app.focus == (if thread { Focus::ThreadComposer } else { Focus::Composer }) && app.mode() == Mode::Insert;
     let border = if focused { Style::default().fg(super::theme::p().good) } else { Style::default().fg(super::theme::p().dim) };
     let target = app.current.as_deref().map(|c| app.ws.channel_label(c)).unwrap_or_default();
     let typing = if thread {
@@ -4361,23 +4314,11 @@ mod tests {
     }
 
     #[test]
-    fn status_bar_fits() {
-        use ratatui::text::Span;
-        let plain = |l: ratatui::text::Line| l.spans.iter().map(|s| s.content.to_string()).collect::<String>();
-        let right = || vec![Span::raw("F1 keys · "), Span::raw("● live ")];
-        let wide = plain(super::status_line("MESSAGES", false, "#social › Thread", "0 unread · 0 mentions", right(), 80));
-        assert!(wide.starts_with(" MESSAGES  #social › Thread  0 unread · 0 mentions"), "{wide:?}");
-        assert!(wide.ends_with("F1 keys · ● live "), "{wide:?}");
-        assert_eq!(unicode_width::UnicodeWidthStr::width(wide.as_str()), 80);
-        let narrow = plain(super::status_line("MESSAGES", false, "#a-rather-long-channel-name", "0 unread · 0 mentions", right(), 40));
-        assert_eq!(unicode_width::UnicodeWidthStr::width(narrow.as_str()), 40, "{narrow:?}");
-        assert!(narrow.contains('…') && narrow.ends_with("● live "), "the breadcrumb is cut, the right part stays: {narrow:?}");
-        assert!(!narrow.contains("unread"), "the middle goes first: {narrow:?}");
-        let tiny = plain(super::status_line("MESSAGES", false, "#social", "x", right(), 20));
-        assert!(tiny.starts_with(" MESSAGES "), "{tiny:?}");
-        assert_eq!(super::mode_label(crate::tui::keymap::Context::Confirm, super::Focus::Messages), ("CONFIRM", false));
-        assert_eq!(super::mode_label(crate::tui::keymap::Context::Composer, super::Focus::Composer), ("INSERT", true));
-        assert_eq!(super::mode_label(crate::tui::keymap::Context::Messages, super::Focus::Sidebar), ("NORMAL", false));
+    fn the_pill_follows_the_mode() {
+        use crate::tui::status::Pill;
+        assert_eq!(super::mode_label(crate::tui::keymap::Context::Confirm, super::Focus::Messages), Pill::Dialog("CONFIRM"));
+        assert_eq!(super::mode_label(crate::tui::keymap::Context::Composer, super::Focus::Composer), Pill::Insert);
+        assert_eq!(super::mode_label(crate::tui::keymap::Context::Messages, super::Focus::Sidebar), Pill::Normal);
     }
 
     #[test]
