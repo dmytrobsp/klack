@@ -28,11 +28,26 @@ pub struct Details {
     pub selected: usize,
     /// Last drawn area, for clicks.
     pub area: Rect,
+    /// Last drawn tab titles (start column, end column exclusive) and row, for clicks.
+    pub tab_spans: [(u16, u16); 3],
+    pub tab_row: u16,
+    /// Last drawn list body, the first row shown and how many, for clicks.
+    pub list: Rect,
+    pub first: usize,
+    pub shown: usize,
+    /// The row and tab under the pointer.
+    pub hover: Option<usize>,
+    pub hover_tab: Option<usize>,
 }
 
 impl Details {
     pub fn new(channel: String) -> Details {
-        Details { channel, tab: Tab::About, info: None, members: None, pins: None, selected: 0, area: Rect::default() }
+        Details { channel, tab: Tab::About, info: None, members: None, pins: None, selected: 0, area: Rect::default(), tab_spans: [(0, 0); 3], tab_row: 0, list: Rect::default(), first: 0, shown: 0, hover: None, hover_tab: None }
+    }
+
+    /// Which of the tabs is open.
+    pub fn tab_index(&self) -> usize {
+        TABS.iter().position(|t| *t == self.tab).unwrap_or(0)
     }
 
     pub fn switch_tab(&mut self, delta: isize) {
@@ -55,6 +70,26 @@ impl Details {
         self.selected = if len == 0 { 0 } else { (self.selected as isize + delta).clamp(0, len as isize - 1) as usize };
     }
 
+    /// The tab drawn at a terminal position.
+    pub fn tab_at(&self, column: u16, row: u16) -> Option<usize> {
+        if row != self.tab_row {
+            return None;
+        }
+        self.tab_spans.iter().position(|(a, b)| column >= *a && column < *b)
+    }
+
+    /// The row (an index into the list) drawn at a terminal position.
+    pub fn row_at(&self, column: u16, row: u16) -> Option<usize> {
+        let n = row.checked_sub(self.list.y)? as usize;
+        (self.list.contains((column, row).into()) && n < self.shown).then_some(self.first + n)
+    }
+
+    /// The pointer moved to a position: hover the row or tab there (none elsewhere).
+    pub fn hover_at(&mut self, column: u16, row: u16) {
+        self.hover = self.row_at(column, row);
+        self.hover_tab = self.tab_at(column, row);
+    }
+
     pub fn draw(&mut self, f: &mut Frame, area: Rect, ws: &Workspace) {
         let [popup] = Layout::horizontal([Constraint::Length(80.min(area.width))]).flex(Flex::Center).areas(area);
         let [popup] = Layout::vertical([Constraint::Length(26.min(area.height))]).flex(Flex::Center).areas(popup);
@@ -70,7 +105,21 @@ impl Details {
         f.render_widget(block, popup);
         let [tabs, body] = Layout::vertical([Constraint::Length(2), Constraint::Min(1)]).areas(inner);
         let titles = ["About".to_string(), format!("Members{}", self.members.as_ref().map(|m| format!(" ({})", m.len())).unwrap_or_default()), format!("Pins{}", self.pins.as_ref().map(|p| format!(" ({})", p.len())).unwrap_or_default())];
+        // Each title is drawn with a space either side and a one-column divider between.
+        let mut x = tabs.x;
+        for (span, t) in self.tab_spans.iter_mut().zip(&titles) {
+            *span = (x, x + t.chars().count() as u16 + 2);
+            x = span.1 + 1;
+        }
+        self.tab_row = tabs.y;
+        (self.list, self.first) = (body, self.selected.saturating_sub((body.height as usize).saturating_sub(1)));
+        self.shown = match self.tab {
+            Tab::About => 0,
+            _ => self.len().saturating_sub(self.first).min(body.height as usize),
+        };
         let index = TABS.iter().position(|t| *t == self.tab).unwrap_or(0);
+        let hover_tab = self.hover_tab;
+        let titles: Vec<Line> = titles.into_iter().enumerate().map(|(n, t)| if hover_tab == Some(n) && n != index { Line::styled(t, super::theme::hover_style()) } else { Line::from(t) }).collect();
         f.render_widget(Tabs::new(titles).select(index).highlight_style(Style::default().fg(super::theme::p().accent).add_modifier(Modifier::BOLD)), tabs);
         let lines = match self.tab {
             Tab::About => about(ws, conv),
@@ -95,7 +144,7 @@ impl Details {
             .enumerate()
             .skip(start)
             .take(height)
-            .map(|(n, l)| if n == self.selected { l.style(Style::default().bg(super::theme::p().selection)) } else { l })
+            .map(|(n, l)| if n == self.selected { l.style(Style::default().bg(super::theme::p().selection)) } else if self.hover == Some(n) { l.style(super::theme::hover_style()) } else { l })
             .collect()
     }
 }
@@ -179,5 +228,46 @@ mod tests {
         assert_eq!(d.tab, Tab::Pins);
         assert_eq!(d.selected, 0);
         assert_eq!(d.len(), 0);
+    }
+
+    /// A details dialog as drawn: tabs on row 5, the list from row 7.
+    fn drawn() -> Details {
+        let mut d = Details::new("C1".into());
+        d.members = Some((0..30).map(|n| format!("U{n}")).collect());
+        d.tab = Tab::Members;
+        d.tab_row = 5;
+        d.tab_spans = [(11, 18), (19, 33), (34, 42)];
+        d.list = Rect::new(11, 7, 78, 10);
+        d.shown = 10;
+        d
+    }
+
+    #[test]
+    fn tab_at_finds_the_title() {
+        let d = drawn();
+        assert_eq!((d.tab_at(11, 5), d.tab_at(17, 5), d.tab_at(20, 5), d.tab_at(40, 5)), (Some(0), Some(0), Some(1), Some(2)));
+        assert_eq!((d.tab_at(18, 5), d.tab_at(50, 5), d.tab_at(12, 4), d.tab_at(12, 6)), (None, None, None, None), "divider, past the last, border, body");
+    }
+
+    #[test]
+    fn row_at_follows_the_scroll() {
+        let mut d = drawn();
+        assert_eq!((d.row_at(12, 7), d.row_at(12, 16)), (Some(0), Some(9)));
+        assert_eq!((d.row_at(12, 17), d.row_at(12, 6), d.row_at(10, 8), d.row_at(89, 8)), (None, None, None, None), "below, tabs, border, side");
+        (d.selected, d.first) = (20, 11);
+        assert_eq!((d.row_at(12, 7), d.row_at(12, 16)), (Some(11), Some(20)));
+        d.shown = 3;
+        assert_eq!(d.row_at(12, 10), None, "past the rows there are");
+    }
+
+    #[test]
+    fn hover_follows_the_pointer_and_leaves_the_selection() {
+        let mut d = drawn();
+        d.hover_at(12, 9);
+        assert_eq!((d.hover, d.hover_tab, d.selected), (Some(2), None, 0));
+        d.hover_at(20, 5);
+        assert_eq!((d.hover, d.hover_tab), (None, Some(1)));
+        d.hover_at(10, 9);
+        assert_eq!((d.hover, d.hover_tab), (None, None), "on the border");
     }
 }

@@ -2191,6 +2191,9 @@ impl App {
         self.activity.iter_mut().for_each(|d| d.hover = None);
         self.threads.iter_mut().for_each(|d| d.hover = None);
         self.search.iter_mut().for_each(|d| d.hover = None);
+        if let Some(d) = self.details.as_mut() {
+            (d.hover, d.hover_tab) = (None, None);
+        }
     }
 
     /// The pointer moved with a dialog open: shade the row of the topmost list under it (the
@@ -2214,6 +2217,8 @@ impl App {
         } else if let Some(d) = self.threads.as_mut() {
             d.hover_at(column, row);
         } else if let Some(d) = self.search.as_mut() {
+            d.hover_at(column, row);
+        } else if let Some(d) = self.details.as_mut().filter(|_| self.profile.is_none()) {
             d.hover_at(column, row);
         } else if let Some((p, _, _)) = self.picker.as_mut() {
             let len = p.candidates(&self.ws.custom_emoji).len();
@@ -2556,6 +2561,24 @@ impl App {
             let pins = pins.map(|v| super::details::parse_pins(&v)).unwrap_or_default();
             let _ = tx.send(Net::DetailsPins { channel, pins });
         });
+    }
+
+    /// A left click in the open details (false: not on a tab or row). A tab switches to it; a
+    /// member or pin row is selected and acted on as Enter does.
+    fn click_details(&mut self, column: u16, row: u16) -> bool {
+        let Some(d) = self.details.as_mut() else { return false };
+        if let Some(n) = d.tab_at(column, row) {
+            d.switch_tab(n as isize - d.tab_index() as isize);
+            return true;
+        }
+        let Some(n) = d.row_at(column, row) else { return false };
+        d.selected = n;
+        let pin = d.tab == super::details::Tab::Pins;
+        self.details_enter();
+        if pin {
+            self.closing_click = Some((std::time::Instant::now(), column, row));
+        }
+        true
     }
 
     /// Enter in the details overlay: DM a member, or go to a pinned message.
@@ -3757,6 +3780,7 @@ fn handle_dialog(app: &mut App, ev: &Event) -> bool {
         // A click in the preferences, or on a row of jump to, activity, threads or search, as Enter does.
         Event::Mouse(m) if m.kind == MouseEventKind::Down(MouseButton::Left) && app.prefs.is_some() && app.click_prefs(m.column, m.row) => {}
         Event::Mouse(m) if m.kind == MouseEventKind::Down(MouseButton::Left) && app.prefs.is_none() && click_row(app, m.column, m.row) => {}
+        Event::Mouse(m) if m.kind == MouseEventKind::Down(MouseButton::Left) && app.profile.is_none() && app.click_details(m.column, m.row) => {}
         // A click outside the dialog closes it; one inside does nothing.
         Event::Mouse(m) if matches!(m.kind, MouseEventKind::Down(_)) => {
             if !app.dialog_area().is_some_and(|a| a.contains((m.column, m.row).into())) {
