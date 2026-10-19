@@ -825,7 +825,7 @@ pub fn message_body(ws: &Workspace, m: &Message, width: usize, summary: bool, th
         }
     }
     if let Some(app) = ws.sent_using(m) {
-        out.push(Line::styled(app, Style::default().fg(super::theme::p().dim)));
+        out.push(Line::styled(app, Style::default().fg(super::theme::p().dim).add_modifier(Modifier::ITALIC)));
     }
     if !m.reactions.is_empty() {
         let mut spans = Vec::new();
@@ -839,7 +839,7 @@ pub fn message_body(ws: &Workspace, m: &Message, width: usize, summary: bool, th
     if summary && m.reply_count > 0 {
         let last = m.latest_reply.as_deref().and_then(|t| t.parse::<f64>().ok()).map(|t| format!(" · last {}", time_label(ws, t))).unwrap_or_default();
         let s = if m.reply_count == 1 { "reply" } else { "replies" };
-        out.push(Line::styled(format!("💬 {} {s}{last}", m.reply_count), Style::default().fg(super::theme::p().mention)));
+        out.push(Line::styled(format!("💬 {} {s}{last}", m.reply_count), Style::default().fg(super::theme::p().mention).add_modifier(Modifier::ITALIC)));
     }
     // Custom emoji pictures over the cells kept for them (text, attachments, reactions).
     for (line, col, name) in text::emoji_cells(ws, &mut out) {
@@ -951,6 +951,8 @@ mod tests {
         let mut m: Message = serde_json::from_value(serde_json::json!({"app_id": "A08SF47R6P4", "team": "T1", "text": "a reply", "ts": "1.0", "type": "message", "user": "U2"})).unwrap();
         let rows = plain(&message_body(&ws, &m, 40, false, &|_, _| None).0);
         assert_eq!(rows, ["a reply", "Sent using @Claude"]);
+        let lines = message_body(&ws, &m, 40, false, &|_, _| None).0;
+        assert!(lines[1].style.add_modifier.contains(Modifier::ITALIC), "in italics");
         m.app_id = Some("A0OTHER".into());
         assert_eq!(ws.sent_using(&m).as_deref(), Some("Sent using an app"), "an app whose bot user is not known");
         m.bot_id = Some("B1".into());
@@ -1410,10 +1412,12 @@ mod tests {
         let mut reply = msg("1001.0", "U2", "reply");
         reply.thread_ts = Some("1000.0".into());
         let t = Timeline { messages: vec![parent, reply], loaded: true, ..Default::default() };
-        let p = plain(&build_lines(&ws, &t, 60));
+        let lines = build_lines(&ws, &t, 60);
+        let p = plain(&lines);
         assert!(!p.iter().any(|l| l == "reply"), "{p:?}");
         assert!(p.iter().any(|l| l.contains("👍\u{a0}1")), "the reaction (a pill)");
-        assert!(p.iter().any(|l| l.starts_with("💬 2 replies")));
+        let summary = p.iter().position(|l| l.starts_with("💬 2 replies")).expect("the summary");
+        assert!(lines[summary].style.add_modifier.contains(Modifier::ITALIC), "in italics");
     }
 
     #[test]
