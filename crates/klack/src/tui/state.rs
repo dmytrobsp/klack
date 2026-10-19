@@ -476,20 +476,24 @@ impl Workspace {
         self.conversation_lists(false)
     }
 
+    /// Whether conversation `c` is listed in the sidebar at `now` (with `hide_quiet`, quiet ones
+    /// are not): channels you are in (or preview) that are not archived, DMs with people who
+    /// are not deactivated.
+    fn is_listed(&self, c: &Conversation, now: f64, hide_quiet: bool) -> bool {
+        let previewed = self.preview.as_deref() == Some(c.id.as_str());
+        let kept = if c.is_dm() {
+            !c.is_archived && c.user.as_deref().is_none_or(|u| self.users.get(u).is_none_or(|u| !u.deleted))
+        } else {
+            (c.is_member || previewed) && (!c.is_archived || previewed)
+        };
+        kept && (!hide_quiet || self.lively(c, now))
+    }
+
     fn conversation_lists(&self, hide_quiet: bool) -> (Vec<String>, Vec<String>) {
-        let shown = |c: &Conversation| c.is_member || self.preview.as_deref() == Some(c.id.as_str());
-        let previewed = |c: &Conversation| self.preview.as_deref() == Some(c.id.as_str());
         let now = now_secs();
-        let lively = |c: &&Conversation| !hide_quiet || self.lively(c, now);
-        let mut channels: Vec<&Conversation> = self.conversations.values().filter(|c| !c.is_dm() && shown(c) && (!c.is_archived || previewed(c))).filter(lively).collect();
+        let mut channels: Vec<&Conversation> = self.conversations.values().filter(|c| !c.is_dm() && self.is_listed(c, now, hide_quiet)).collect();
         channels.sort_by_key(|c| c.name.to_lowercase());
-        let mut dms: Vec<&Conversation> = self
-            .conversations
-            .values()
-            .filter(|c| c.is_dm() && !c.is_archived)
-            .filter(|c| c.user.as_deref().is_none_or(|u| self.users.get(u).is_none_or(|u| !u.deleted)))
-            .filter(lively)
-            .collect();
+        let mut dms: Vec<&Conversation> = self.conversations.values().filter(|c| c.is_dm() && self.is_listed(c, now, hide_quiet)).collect();
         // The most recently active first, as Slack does; never-active ones by name at the end.
         dms.sort_by(|a, b| self.activity(&b.id).total_cmp(&self.activity(&a.id)).then_with(|| self.conversation_label(a).to_lowercase().cmp(&self.conversation_label(b).to_lowercase())));
         (channels.into_iter().map(|c| c.id.clone()).collect(), dms.into_iter().map(|c| c.id.clone()).collect())
@@ -623,8 +627,19 @@ impl Workspace {
     }
 
     pub fn total_unread(&self) -> (usize, u64) {
-        let n = self.unread.values().filter(|u| u.has_unreads).count();
-        let m = self.unread.values().map(|u| u.mentions).sum();
+        // As the sidebar shows them: listed conversations only (not archived ones, or ones Slack
+        // counts that are not in the list); a muted one is not unread, but its mentions count.
+        let now = now_secs();
+        let (mut n, mut m) = (0, 0);
+        for (id, u) in &self.unread {
+            if !self.conversations.get(id).is_some_and(|c| self.is_listed(c, now, true)) {
+                continue;
+            }
+            if u.has_unreads && !self.muted.contains(id) {
+                n += 1;
+            }
+            m += u.mentions;
+        }
         (n, m)
     }
 
@@ -640,6 +655,25 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_unread_count_is_what_the_sidebar_shows() {
+        let mut ws = Workspace::default();
+        for (id, archived) in [("C1", false), ("C2", false), ("C3", true)] {
+            ws.conversations.insert(id.into(), Conversation { id: id.into(), name: id.to_lowercase(), is_channel: true, is_member: true, is_archived: archived, ..Default::default() });
+        }
+        ws.conversations.insert("D1".into(), Conversation { id: "D1".into(), is_im: true, user: Some("U2".into()), ..Default::default() });
+        let unread = |mentions| Unread { has_unreads: true, mentions };
+        ws.unread.insert("C1".into(), unread(0));
+        ws.unread.insert("C2".into(), unread(1));
+        ws.unread.insert("C3".into(), unread(0));
+        ws.unread.insert("C9".into(), unread(0));
+        ws.unread.insert("D1".into(), unread(2));
+        ws.muted.insert("C2".into());
+        // C1 and D1 are bold in the sidebar; C2 is muted (dim, its mention badged), C3 archived
+        // and C9 unknown are not listed.
+        assert_eq!(ws.total_unread(), (2, 3));
+    }
 
     fn msg(ts: &str) -> Message {
         Message { ts: ts.into(), text: ts.into(), ..Default::default() }
