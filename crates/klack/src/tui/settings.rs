@@ -82,6 +82,9 @@ pub struct Messages {
     pub avatars: bool,
     /// Profile pictures two rows tall (beside the name and the first line), the text indented.
     pub large_avatars: bool,
+    /// A previewed channel (one you are not in gets no live events) is fetched again this
+    /// often, in seconds; 0 turns it off.
+    pub preview_refresh_secs: u32,
     /// Show emoji as `:name:` instead of the character.
     pub emoji_as_names: bool,
     /// How pictures are drawn: "auto" (asked from the terminal) or one of
@@ -91,7 +94,7 @@ pub struct Messages {
 
 impl Default for Messages {
     fn default() -> Self {
-        Messages { inline_images: true, avatars: true, large_avatars: false, emoji_as_names: false, graphics: "auto".into() }
+        Messages { inline_images: true, avatars: true, large_avatars: false, preview_refresh_secs: 15, emoji_as_names: false, graphics: "auto".into() }
     }
 }
 

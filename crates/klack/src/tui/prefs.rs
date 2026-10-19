@@ -26,6 +26,7 @@ pub enum Field {
     InlineImages,
     Avatars,
     LargeAvatars,
+    PreviewRefresh,
     Graphics,
     EmojiAsNames,
     Clock24,
@@ -76,6 +77,8 @@ pub const ALONE_VOLUME: u32 = 40;
 
 /// How long an invitation may ring, in seconds.
 const RING_TIMEOUTS: &[u32] = &[15, 30, 45, 60, 90, 120];
+/// Seconds between fetches of a previewed channel (0: off).
+const PREVIEW_REFRESH: &[u32] = &[0, 5, 10, 15, 30, 60, 120];
 
 /// Pause lengths offered, in minutes (0: not paused).
 pub const PAUSES: &[u64] = &[0, 30, 60, 120, 480];
@@ -83,7 +86,7 @@ pub const PAUSES: &[u64] = &[0, 30, 60, 120, 480];
 pub const CATEGORIES: &[(&str, &[Field])] = &[
     ("Availability", &[Field::Status, Field::Away, Field::Pause]),
     ("Appearance", &[Field::Theme, Field::WorkspaceTheme, Field::Compact]),
-    ("Messages & media", &[Field::InlineImages, Field::Avatars, Field::LargeAvatars, Field::Graphics, Field::EmojiAsNames]),
+    ("Messages & media", &[Field::InlineImages, Field::Avatars, Field::LargeAvatars, Field::PreviewRefresh, Field::Graphics, Field::EmojiAsNames]),
     ("Language & region", &[Field::Clock24, Field::DateFormat, Field::TimeZone, Field::Language]),
     ("Notifications", &[Field::Desktop, Field::Sound, Field::ConversationLevel, Field::ChannelDefault, Field::Keywords, Field::Vips]),
     ("Audio & video", &[Field::Input, Field::Output, Field::HuddleVolume, Field::SoundVolume, Field::MicGain, Field::SpeakingThreshold, Field::NoiseSuppression, Field::EchoCancellation, Field::Camera]),
@@ -126,6 +129,7 @@ impl Field {
             Field::InlineImages => "Show image thumbnails",
             Field::Avatars => "Show profile pictures",
             Field::LargeAvatars => "Two-row profile pictures",
+            Field::PreviewRefresh => "Refresh previewed channels",
             Field::Graphics => "Draw pictures with",
             Field::EmojiAsNames => "Show emoji as :names:",
             Field::Clock24 => "24-hour clock",
@@ -181,6 +185,10 @@ impl Field {
             Field::InlineImages => yes(s.messages.inline_images),
             Field::Avatars => yes(s.messages.avatars),
             Field::LargeAvatars => yes(s.messages.large_avatars),
+            Field::PreviewRefresh => match s.messages.preview_refresh_secs {
+                0 => "off".into(),
+                n => format!("every {n} s"),
+            },
             Field::Graphics => s.messages.graphics.clone(),
             Field::EmojiAsNames => yes(s.messages.emoji_as_names),
             Field::Clock24 => yes(s.region.clock_24h),
@@ -252,6 +260,7 @@ impl Field {
             Field::SoundVolume => a.sound_volume = step(VOLUMES, a.sound_volume, up, wrap),
             Field::RingTimeout => s.huddle.ring_timeout_secs = step(RING_TIMEOUTS, s.huddle.ring_timeout_secs, up, wrap),
             Field::AloneSecs => s.huddle.alone_secs = step(ALONE_SECS, s.huddle.alone_secs, up, wrap),
+            Field::PreviewRefresh => s.messages.preview_refresh_secs = step(PREVIEW_REFRESH, s.messages.preview_refresh_secs, up, wrap),
             Field::MicGain => a.mic_gain = step(GAINS, a.mic_gain, up, wrap),
             Field::SpeakingThreshold => a.speaking_threshold_db = step(THRESHOLDS, a.speaking_threshold_db, up, wrap),
             _ => return false,
@@ -279,6 +288,9 @@ impl Field {
             Field::InlineImages => s.messages.inline_images ^= true,
             Field::Avatars => s.messages.avatars ^= true,
             Field::LargeAvatars => s.messages.large_avatars ^= true,
+            Field::PreviewRefresh => {
+                self.adjust(s, true, true);
+            }
             Field::Graphics => {
                 let i = super::media::GRAPHICS.iter().position(|g| *g == s.messages.graphics).map_or(0, |i| (i + 1) % super::media::GRAPHICS.len());
                 s.messages.graphics = super::media::GRAPHICS[i].into();
@@ -375,7 +387,7 @@ const LEADER_LABEL: &str = "Leader key (for chords such as Leader k)";
 /// Category names and fixed labels, for translation templates.
 pub fn translatable() -> Vec<String> {
     let all = [
-        Field::Theme, Field::WorkspaceTheme, Field::Compact, Field::InlineImages, Field::Avatars, Field::LargeAvatars, Field::Graphics, Field::EmojiAsNames, Field::Clock24, Field::DateFormat, Field::TimeZone, Field::Language, Field::Desktop, Field::Sound,
+        Field::Theme, Field::WorkspaceTheme, Field::Compact, Field::InlineImages, Field::Avatars, Field::LargeAvatars, Field::PreviewRefresh, Field::Graphics, Field::EmojiAsNames, Field::Clock24, Field::DateFormat, Field::TimeZone, Field::Language, Field::Desktop, Field::Sound,
         Field::ConversationLevel, Field::ChannelDefault, Field::Keywords, Field::Vips, Field::Status, Field::Away, Field::Pause, Field::Input, Field::Output,
         Field::HuddleVolume, Field::SoundVolume, Field::MicGain, Field::SpeakingThreshold, Field::NoiseSuppression, Field::EchoCancellation, Field::Camera, Field::JoinSound, Field::SomeoneJoined, Field::SomeoneLeft, Field::RingSound, Field::RingTimeout, Field::AutoDecline, Field::AloneSound, Field::AloneSecs,
     ];

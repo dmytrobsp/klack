@@ -65,6 +65,8 @@ enum Net {
     Prefs(Value),
     /// The activity feed.
     ActivityFeed(Result<Value, String>),
+    /// The newest page of a previewed channel, fetched again.
+    PreviewPage { channel: String, page: slack_core::types::HistoryPage },
     /// Bytes of an upload sent so far.
     UploadProgress { name: String, sent: u64, total: u64 },
     /// A page of the Threads view (`more`: added to what is listed).
@@ -146,6 +148,8 @@ struct App {
     activity: Option<super::activity::Activity>,
     /// Open Threads view (Ctrl+T).
     threads: Option<super::threads::Threads>,
+    /// When the previewed channel was last fetched again.
+    preview_polled: Option<std::time::Instant>,
     /// Open "move to section" picker.
     mover: Option<super::sections::MovePicker>,
     /// Join the huddle of the DM with this person once it is open.
@@ -297,6 +301,37 @@ impl App {
         tokio::spawn(async move {
             if let Err(e) = client.mark(&channel, &latest).await {
                 tracing::warn!("mark read failed: {e}");
+            }
+        });
+    }
+
+    /// A channel being previewed gets no live events: fetch its newest page again every
+    /// `preview_refresh_secs` while it is shown.
+    fn refresh_preview(&mut self) {
+        let secs = self.ws.settings.messages.preview_refresh_secs;
+        let Some(channel) = self.ws.preview.clone().filter(|p| secs > 0 && self.current.as_ref() == Some(p)) else {
+            self.preview_polled = None;
+            return;
+        };
+        if !self.ws.timelines.get(&channel).is_some_and(|t| t.loaded && !t.loading) {
+            return;
+        }
+        match self.preview_polled {
+            Some(at) if at.elapsed() < Duration::from_secs(secs as u64) => return,
+            None => {
+                // Just loaded: the first refresh after a full interval.
+                self.preview_polled = Some(std::time::Instant::now());
+                return;
+            }
+            Some(_) => self.preview_polled = Some(std::time::Instant::now()),
+        }
+        let (client, tx) = (self.client.clone(), self.net.clone());
+        tokio::spawn(async move {
+            match client.history(&channel, None, 50).await {
+                Ok(page) => {
+                    let _ = tx.send(Net::PreviewPage { channel, page });
+                }
+                Err(e) => tracing::debug!("refreshing the previewed channel: {e}"),
             }
         });
     }
@@ -2202,6 +2237,7 @@ async fn run_workspace(
         profile: None,
         activity: None,
         threads: None,
+        preview_polled: None,
         prefs: None,
         huddle_view: None,
         call_bar_area: Default::default(),
@@ -2351,6 +2387,7 @@ async fn run_workspace(
             app.mark_current_read();
         }
         app.mark_thread_read();
+        app.refresh_preview();
     }
     app.save_drafts();
     let App { switch_to, media, clipboard, .. } = app;
@@ -3167,6 +3204,11 @@ fn handle_net(app: &mut App, msg: Net) {
                 app.status = format!("activity failed: {e}");
             }
         },
+        Net::PreviewPage { channel, page } => {
+            if let Some(tl) = app.ws.timelines.get_mut(&channel) {
+                tl.refresh_newest(page.messages);
+            }
+        }
         Net::UploadProgress { name, sent, total } => {
             app.status = upload_status(&name, sent, total);
         }

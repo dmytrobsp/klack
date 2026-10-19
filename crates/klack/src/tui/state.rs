@@ -43,6 +43,18 @@ impl Timeline {
         self.messages.retain(|m| m.ts != ts);
     }
 
+    /// The newest page fetched again (a previewed channel, which gets no live events): its
+    /// messages replace the copies held (edits, reactions, replies), and top-level messages in its
+    /// time span that it no longer has were deleted. Older pages stay as they are.
+    pub fn refresh_newest(&mut self, page: Vec<Message>) {
+        let oldest = page.iter().map(Message::time).fold(f64::INFINITY, f64::min);
+        let fresh: std::collections::HashSet<String> = page.iter().map(|m| m.ts.clone()).collect();
+        self.messages.retain(|m| m.time() < oldest || fresh.contains(&m.ts) || m.thread_ts.as_deref().is_some_and(|t| t != m.ts));
+        for m in page {
+            self.upsert(m);
+        }
+    }
+
     /// Prepend an older page (Slack returns newest first).
     pub fn prepend_page(&mut self, mut page: Vec<Message>, has_more: bool) {
         page.reverse();
@@ -710,5 +722,19 @@ mod tests {
         ws.apply_counts(&serde_json::json!({"ims": [{"id": "D1", "has_unreads": true, "mention_count": 0, "last_read": "1792357735.815229"}]}));
         assert!(ws.unread["D1"].has_unreads);
         assert_eq!(ws.conversations["D1"].last_read.as_deref(), Some("1792357735.815229"));
+    }
+
+    #[test]
+    fn a_refreshed_newest_page_brings_edits_and_deletions() {
+        let msg = |ts: &str, text: &str| Message { ts: ts.into(), text: text.into(), ..Default::default() };
+        let mut t = Timeline { loaded: true, has_more: false, ..Default::default() };
+        for (ts, text) in [("1.0", "old page"), ("5.0", "kept"), ("6.0", "to be edited"), ("7.0", "to be deleted")] {
+            t.upsert(msg(ts, text));
+        }
+        // Slack's newest page now: 5 unchanged, 6 edited, 7 gone, 8 new (newest first).
+        t.refresh_newest(vec![msg("8.0", "new"), msg("6.0", "edited"), msg("5.0", "kept")]);
+        let texts: Vec<&str> = t.messages.iter().map(|m| m.text.as_str()).collect();
+        assert_eq!(texts, ["old page", "kept", "edited", "new"], "older than the page: untouched");
+        assert!(!t.has_more, "paging state unchanged");
     }
 }
