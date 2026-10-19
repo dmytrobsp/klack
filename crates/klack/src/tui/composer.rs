@@ -259,16 +259,30 @@ impl Composer {
         self.chars[..self.cursor].iter().rposition(|&c| c == '\n').map(|i| i + 1).unwrap_or(0)
     }
 
-    fn line_end(&self) -> usize {
-        self.chars[self.cursor..].iter().position(|&c| c == '\n').map(|i| self.cursor + i).unwrap_or(self.chars.len())
-    }
-
+    /// To the start of the row the cursor is on, as the box draws it (wrapped rows count).
     pub fn home(&mut self) {
-        self.cursor = self.line_start();
+        let (rows, row) = self.drawn_rows();
+        if let Some(&(start, _)) = rows.get(row) {
+            self.cursor = start;
+        }
     }
 
+    /// To the end of the row the cursor is on; a wrapped row ends before its break.
     pub fn end(&mut self) {
-        self.cursor = self.line_end();
+        let (rows, row) = self.drawn_rows();
+        if let Some(&(start, end)) = rows.get(row) {
+            let wrapped = rows.get(row + 1).is_some_and(|next| next.0 == end);
+            self.cursor = if wrapped && end > start { end - 1 } else { end };
+        }
+    }
+
+    /// The rows at the last drawn width (by lines before the first draw) and the cursor's row.
+    fn drawn_rows(&self) -> (Vec<(usize, usize)>, usize) {
+        let width = match self.wrap_width.get() {
+            0 => usize::MAX,
+            w => w,
+        };
+        (self.wrap(width), self.cursor_position(width).0 as usize)
     }
 
     pub fn kill_line(&mut self) {
@@ -293,7 +307,7 @@ impl Composer {
             0 => usize::MAX,
             w => w,
         };
-        let rows = self.wrap(width);
+        let (rows, _) = self.drawn_rows();
         let (row, col) = self.cursor_position(width);
         let target = row as isize + delta;
         if target < 0 || target as usize >= rows.len() {
@@ -831,6 +845,20 @@ mod tests {
         assert!(c.down() && c.down() && c.down());
         assert_eq!(c.cursor_position(12), (3, 3), "the last row, as far as it goes");
         assert!(!c.down());
+        // Home / End: the drawn row's start and end.
+        c.cursor = 9;
+        c.home();
+        assert_eq!(c.cursor, 6, "\"wonderful\" starts its row (it did go to the line's start)");
+        c.end();
+        assert_eq!((c.cursor, c.cursor_position(12)), (15, (1, 9)), "the wrapped row's end, before the break");
+        c.cursor = 18;
+        c.home();
+        assert_eq!(c.cursor, 16);
+        c.end();
+        assert_eq!(c.cursor, 21, "the last row of the line: its end");
+        c.cursor = 23;
+        c.end();
+        assert_eq!(c.cursor, 25, "after the newline: \"end\"");
         // Not drawn yet: by lines.
         let mut fresh = Composer::default();
         fresh.insert_str("one two three four five six\nb");
