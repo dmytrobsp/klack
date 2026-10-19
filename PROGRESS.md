@@ -201,8 +201,12 @@ J. Easier sign-in, asked by the user on 2026-10-19 ("streamline the login so it 
       Slack's sign-in page, the user signs in any way Slack offers (password, SSO, 2FA, magic link), klack takes
       the `d` cookie over the DevTools protocol and closes the window; the manual paste stays as the last resort.
   J2 (NEXT). B — `klack login --from-browser firefox|chrome`: import the `d` cookie from a browser already signed in
-      (Firefox's cookies.sqlite; Chrome's encrypted store via the system keyring), read-only.
+      (Firefox's cookies.sqlite; Chrome's encrypted store via the system keyring), read-only. Decided by the user
+      2026-10-19: Firefox everywhere + Chrome/Chromium on Linux and macOS (Windows Chrome's app-bound encryption
+      cannot be read by other programs); tested only on throwaway profiles seeded with B's cookie, never the
+      user's real browser profiles; the user installs Firefox for the live test.
   J3. C — sign in by email code inside klack (Slack's internal email sign-in flow; not for SSO workspaces).
+      The user reads the emailed code for the live test (ask which test account's inbox they can read).
   Tests must not sign the test accounts out anywhere; temporary browser profiles are deleted afterwards.
 
 I. Known gaps, asked by the user on 2026-10-19 ("knock off known gaps"); run autonomously, one verified
