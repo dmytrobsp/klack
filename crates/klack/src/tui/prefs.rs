@@ -559,8 +559,7 @@ impl Prefs {
     }
 
     pub fn draw(&mut self, f: &mut Frame, area: Rect, ws: &Workspace, current: Option<&str>, keys: &Keymap) {
-        let [popup] = Layout::horizontal([Constraint::Length(84.min(area.width))]).flex(Flex::Center).areas(area);
-        let [popup] = Layout::vertical([Constraint::Length(22.min(area.height))]).flex(Flex::Center).areas(popup);
+        let popup = popup_area(area);
         super::media::clear_modal(f, popup);
         let saved = match &self.saved {
             Some(Ok(path)) => format!(" saved to {path} "),
@@ -638,6 +637,16 @@ impl Prefs {
             picker.draw(f, area, &ws.settings.appearance.theme);
         }
     }
+}
+
+/// The preferences window: four fifths of the terminal, at least 84×22 (or all of a smaller
+/// one) and at most 120 columns wide, where values are still read along with their labels.
+fn popup_area(area: Rect) -> Rect {
+    let width = (area.width * 4 / 5).clamp(84, 120).min(area.width);
+    let height = (area.height * 4 / 5).max(22).min(area.height);
+    let [popup] = Layout::horizontal([Constraint::Length(width)]).flex(Flex::Center).areas(area);
+    let [popup] = Layout::vertical([Constraint::Length(height)]).flex(Flex::Center).areas(popup);
+    popup
 }
 
 /// `text` cut to `room` cells with "…": its start kept, or with `tail` its end.
@@ -822,6 +831,20 @@ mod tests {
         p.switch_category(-1);
         p.move_by(10);
         assert_eq!(p.selected, p.fields().len() - 1);
+    }
+
+    #[test]
+    fn the_window_grows_with_the_terminal() {
+        let size = |w, h| {
+            let r = super::popup_area(Rect::new(0, 0, w, h));
+            (r.width, r.height)
+        };
+        assert_eq!(size(80, 20), (80, 20), "a small terminal: all of it");
+        assert_eq!(size(100, 30), (84, 24), "at least the old size");
+        assert_eq!(size(140, 50), (112, 40));
+        assert_eq!(size(300, 80), (120, 64), "not wider than 120 columns");
+        let r = super::popup_area(Rect::new(0, 0, 300, 80));
+        assert_eq!((r.x, r.y), (90, 8), "centred");
     }
 
     #[test]
