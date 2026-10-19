@@ -230,6 +230,10 @@ H. Added by the user on 2026-10-19 (after queue G), in this order:
       a work address — rewrite the authorship before the push?; the test
       workspace's name/ids (rslack-testbed, T0CA6QW46KB, A's and B's user ids) in fixtures, PROGRESS and
       history; whether PROGRESS.md (machine details: slack-rea, the macbook host, podman) is published.
+      Decided by the user: authorship rewritten to `dmytrobsp <292156826+dmytrobsp@users.noreply.github.com>`
+      (repo-local git identity set to it; a local backup branch keeps the old history until the push is done);
+      the test workspace's name/ids scrubbed from the current files (history keeps them); PROGRESS.md published
+      as is. gh is logged in as dmytrobsp (2026-10-19).
 
 F. Agreed with the user on 2026-10-19 after queue E ("proceed with proposed order"); run autonomously, one
    verified commit per step:
