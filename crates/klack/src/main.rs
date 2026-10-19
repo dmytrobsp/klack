@@ -2,6 +2,7 @@
 
 mod ctl;
 mod login_browser;
+mod login_import;
 mod tui;
 
 use anyhow::{Context, Result};
@@ -39,6 +40,12 @@ enum Command {
         /// Do not open a browser window; ask for the cookie.
         #[arg(long)]
         no_browser: bool,
+        /// Take the session from a browser you are signed in to Slack with (read-only).
+        #[arg(long, value_enum, value_name = "BROWSER")]
+        from_browser: Option<login_import::Source>,
+        /// With --from-browser: the browser profile folder to read (default: all of them).
+        #[arg(long, value_name = "DIR", requires = "from_browser")]
+        browser_profile: Option<std::path::PathBuf>,
     },
     /// Scriptable commands (used for automation and end-to-end tests).
     Ctl {
@@ -73,12 +80,31 @@ async fn main() -> Result<()> {
         tracing::info!("{line}");
     }
     match cli.command {
-        Some(Command::Login { workspace: url, cookie, no_browser }) => {
+        Some(Command::Login { workspace: url, cookie, no_browser, from_browser, browser_profile }) => {
             let url = if url.starts_with("https://") { url } else { format!("https://{url}") };
             let given = cookie.or_else(|| std::env::var("KLACK_COOKIE_D").ok());
-            // No cookie given: sign in in a browser window, else ask for it.
+            // No cookie given: take it from a browser (when asked), sign in in a browser window,
+            // or ask for it.
             let mut signed_in = None;
-            if given.is_none() && !no_browser {
+            if let Some(source) = from_browser {
+                let found = login_import::find(source, browser_profile.as_deref()).await.with_context(|| format!("reading {}'s cookies", login_import::label(source)))?;
+                if found.is_empty() {
+                    anyhow::bail!("no Slack session in {} — sign in to Slack there first", login_import::label(source));
+                }
+                for f in &found {
+                    match session::session_from_cookie(&url, &f.cookie).await {
+                        Ok(s) => {
+                            eprintln!("took the session from {} ({})", login_import::label(source), f.profile.display());
+                            signed_in = Some(s);
+                            break;
+                        }
+                        Err(e) => tracing::debug!("{}: {e:#}", f.profile.display()),
+                    }
+                }
+                if signed_in.is_none() {
+                    anyhow::bail!("{} has Slack cookies, but none signs in to {url} (signed out, or another workspace)", login_import::label(source));
+                }
+            } else if given.is_none() && !no_browser {
                 match login_browser::find() {
                     Some(browser) => {
                         eprintln!("Opening {} to sign in to {url} — sign in there; the window closes by itself (Ctrl+C cancels).", browser.label);

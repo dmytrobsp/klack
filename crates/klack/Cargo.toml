@@ -32,7 +32,16 @@ rustls = { version = "0.23.46", features = ["ring"] }
 syntect = { version = "5.3.0", default-features = false, features = ["default-fancy"] }
 toml = "1.1.8"
 chrono-tz = "0.10.4"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+aes = "0.8"
+hmac = "0.12"
+sha1 = "0.10"
+cbc = "0.1"
 
 [target.'cfg(unix)'.dependencies]
 # Reading the terminal's device attributes with a timeout (pictures in sixel terminals).
 rustix = { version = "1.1.5", features = ["event", "stdio"] }
+
+# The keyring holding Chrome's cookie key (Secret Service, for `login --from-browser chrome`).
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "5.19", default-features = false, features = ["tokio"] }

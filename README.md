@@ -79,6 +79,12 @@ unread); a click on a tile switches, like Alt+1…9.
   workspace's sign-in page, with a temporary profile of its own. Sign in there however Slack offers
   (password, Google / SSO, 2FA, an emailed code); klack notices, takes the session, closes the window
   and deletes that profile. Your own browser profile is never read or changed. Ctrl+C cancels.
+- **From the browser you already use:** `klack login --workspace acme.slack.com --from-browser
+  firefox` (or `chrome`) takes the session from a browser you are signed in to Slack with. Its cookie
+  database is copied and read, never changed; Chrome's (and Chromium's, Edge's, Brave's) cookies are
+  decrypted with its key from the system keyring (Linux) or the Keychain (macOS, which asks once).
+  `--browser-profile DIR` picks one profile; otherwise every profile is tried, freshest first. Chrome
+  on Windows cannot be read this way (app-bound encryption); Firefox can.
 - **By hand:** with `--no-browser`, or when no such browser is found, klack asks for the value of
   the `d` cookie for `slack.com` (sign in in any browser, then devtools → Application → Cookies);
   `KLACK_COOKIE_D` or `--cookie` give it directly. Either way klack fetches the token itself and
