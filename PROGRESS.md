@@ -179,7 +179,30 @@ Tests: `cargo test` → slack-core 10, huddle 33, klack 173 (+1 ignored: the `bu
 
 ## Next (in order, each as a small, separately verified step)
 
-**NEXT UP: H5** (queue H below) — pushed to the public github.com/dmytrobsp/klack on 2026-10-19 (H5d); the first CI run passed on Linux, macOS and the Windows cross-build; H5e release builds done; **v0.1.0 released** 2026-10-19 (https://github.com/dmytrobsp/klack/releases/tag/v0.1.0: four archives + SHA256SUMS; the Linux download verified against SHA256SUMS and run). H (and with it every queue so far) is done: open items are the Known gaps below (e.g. threads are never marked read) and whatever the user asks next. Queues A–G and H1–H4 are done (G2b too; B's test picture is deleted).
+**NEXT UP: I1** (queue I below) — the user asked on 2026-10-19 (after v0.1.0) to knock off the Known gaps; H5 is done (public at github.com/dmytrobsp/klack, v0.1.0 released). Routine pushes to master need no asking; release tags do.
+
+I. Known gaps, asked by the user on 2026-10-19 ("knock off known gaps"); run autonomously, one verified
+   commit per step, pushed after each:
+  I0 (NEXT). Refresh stale entries (builds rechecked by H5's CI/releases; sections fold since H4i; pictures
+      drawn in more terminals) — docs only.
+  I1. Threads marked read on Slack when opened (`subscriptions.thread.mark`).
+  I2. The unread line: the author's header again after it; scroll up to it when the unread part is longer
+      than a screen.
+  I3. The unread line at startup: check whether `client.counts` can arrive after the first conversation opens
+      (log it); fix if it can.
+  I4. Pictures for bots and apps (their icons).
+  I5. Profile pictures refreshed when someone changes theirs (`user_change`).
+  I6. Other `/commands` sent to Slack (`chat.command`) instead of as text.
+  I7. `/upload` streams the file and shows progress.
+  I8. The do-not-disturb window across a DST change.
+  I9. Ctrl+K beyond 50 entries (a scrolling list).
+  I10. A previewed channel kept up to date (polled while shown).
+  I11. Section emoji in the sidebar headers.
+  I12. Delete rollback verified live (deleting someone else's message fails on Slack).
+  I13. Seeking in videos.
+  Not taken (not fixable or not testable here): live microphone capture (the user's real microphone), many-person
+  huddle layouts (two test accounts), untested terminals (Konsole …), the clipboard with `kitty -e`, raising
+  the terminal on a notification click, per-workspace state across switches.
 
 Left on this machine by H3 (remove when the project wraps up, or keep for CI work): podman images
 debian:trixie, ubuntu:24.04, fedora:latest, archlinux:latest and the volume `klack-cargo-registry`.
