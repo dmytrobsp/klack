@@ -2077,6 +2077,9 @@ fn thread_mark_target(t: &super::state::Timeline, parent: &str) -> Option<String
     t.messages.last().map(|m| m.ts.clone()).filter(|ts| t.loaded && ts != parent)
 }
 
+/// How far ← / → jump in a video, in seconds.
+const SEEK_STEP: f64 = 10.0;
+
 /// Whether a message at `ts` lies before the oldest loaded one (`first`): Slack timestamps
 /// compare as numbers.
 fn seek_older(ts: &str, first: &str) -> bool {
@@ -2704,6 +2707,8 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
             match action {
                 Some(Action::Close) => app.player = None,
                 Some(Action::Pause) => p.toggle_pause(),
+                Some(Action::SeekBack) => p.seek(-SEEK_STEP),
+                Some(Action::SeekForward) => p.seek(SEEK_STEP),
                 _ => {}
             }
         }

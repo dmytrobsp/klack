@@ -368,6 +368,8 @@ pub enum Action {
     NextTab,
     Refresh,
     Pause,
+    SeekBack,
+    SeekForward,
     Yes,
 }
 
@@ -568,6 +570,8 @@ actions! {
     Player {
         Close "close" "stop" ["esc", "q"]
         Pause "pause" "pause / play" ["space", "p"]
+        SeekBack "seek_back" "10 seconds back" ["left", "h"]
+        SeekForward "seek_forward" "10 seconds forward" ["right", "l"]
     }
     Confirm {
         Yes "yes" "confirm (any other key: no)" ["y", "Y"]
@@ -783,7 +787,7 @@ pub fn hints_for(context: Context) -> &'static [(Action, &'static str)] {
         Context::TextField => &[(Open, "done"), (Close, "cancel")],
         Context::Snippet => &[(PageDown, "page"), (Copy, "copy"), (Close, "close")],
         Context::Viewer => &[(NextTab, "next"), (Close, "close")],
-        Context::Player => &[(Pause, "pause"), (Close, "stop")],
+        Context::Player => &[(Pause, "pause"), (SeekBack, "−10 s"), (SeekForward, "+10 s"), (Close, "stop")],
         Context::Confirm => &[(Yes, "yes")],
         Context::Help => &[(PageDown, "page"), (Close, "close")],
         Context::Preferences => &[(Open, "change"), (NextTab, "category"), (Close, "close")],

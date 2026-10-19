@@ -113,7 +113,7 @@ workspace account in `drafts/<team>-<user>.json` under the local data folder
 | F3 / F4 / F7 / F8 / F9 / F10 | join or leave the huddle / mute or unmute / open the huddle's thread / huddle view / camera on or off / share your screen or stop |
 | F6 | preferences (also `/prefs`): availability, appearance, messages, region, notifications, audio, keys |
 | Enter (on a message) | open its thread |
-| r · e · d · y · Y · o · s · P | react · edit · delete · copy text · copy link · open image/video/snippet · save files · pin |
+| r · e · d · y · Y · o · s · P | react · edit · delete · copy text · copy link · open image/video/snippet (in a video: Space pauses, ← / → jump 10 s) · save files · pin |
 | u | profile card of the author (←/→: people the message mentions); Enter messages them, h starts a huddle |
 | Enter · Alt+Enter | send · new line |
 | @ # : | mention, channel, emoji autocomplete |

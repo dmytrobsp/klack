@@ -77,6 +77,9 @@ pub struct Player {
     paused_total: Duration,
     duration: Option<f64>,
     audio: Option<SyncSender<AudioCmd>>,
+    has_audio: bool,
+    /// Seeked while paused: show the frame at the new place once.
+    show_one: bool,
     children: Vec<Child>,
     file: PathBuf,
     pub finished: bool,
@@ -89,30 +92,10 @@ impl Player {
         let probe = probe(&file)?;
         let (w, h) = fit_frame((probe.width, probe.height), max_px);
         let mut children = Vec::new();
-
-        let mut video = Command::new("ffmpeg")
-            .args(["-v", "error", "-nostdin", "-i"])
-            .arg(&file)
-            .args(["-an", "-vf", &format!("fps={FPS},scale={w}:{h}"), "-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()?;
-        let mut out = video.stdout.take().ok_or_else(|| anyhow::anyhow!("no ffmpeg stdout"))?;
+        let (video, frames) = start_video(&file, (w, h), 0.0)?;
         children.push(video);
-        let (tx, frames) = sync_channel::<Vec<u8>>(8);
-        let frame_len = (w * h * 3) as usize;
-        std::thread::spawn(move || {
-            loop {
-                let mut buf = vec![0u8; frame_len];
-                if out.read_exact(&mut buf).is_err() || tx.send(buf).is_err() {
-                    break;
-                }
-            }
-        });
-
         let audio = if probe.has_audio {
-            match start_audio(&file) {
+            match start_audio(&file, 0.0) {
                 Ok((child, ctl)) => {
                     children.push(child);
                     Some(ctl)
@@ -137,10 +120,54 @@ impl Player {
             paused_total: Duration::ZERO,
             duration: probe.duration,
             audio,
+            has_audio: probe.has_audio,
+            show_one: false,
             children,
             file,
             finished: false,
         })
+    }
+
+    /// Jump `delta` seconds (back when negative), staying inside the video: the decoders start
+    /// again at the new place; paused stays paused.
+    pub fn seek(&mut self, delta: f64) {
+        let to = seek_target(self.played(), delta, self.duration);
+        for c in &mut self.children {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+        self.children.clear();
+        self.audio = None;
+        match start_video(&self.file, self.frame_size, to) {
+            Ok((child, frames)) => {
+                self.children.push(child);
+                self.frames = frames;
+            }
+            Err(e) => {
+                tracing::warn!("seeking the video failed: {e}");
+                self.finished = true;
+                return;
+            }
+        }
+        if self.has_audio {
+            match start_audio(&self.file, to) {
+                Ok((child, ctl)) => {
+                    self.children.push(child);
+                    self.audio = Some(ctl);
+                }
+                Err(e) => tracing::warn!("no audio after seeking: {e}"),
+            }
+        }
+        let now = Instant::now();
+        self.started = now - Duration::from_secs_f64(to);
+        self.paused_total = Duration::ZERO;
+        if self.paused_at.is_some() {
+            self.paused_at = Some(now);
+            self.send_audio(AudioCmd::Pause);
+            self.show_one = true;
+        }
+        self.next_frame = frame_due(to, FPS);
+        self.finished = false;
     }
 
     fn played(&self) -> f64 {
@@ -173,7 +200,7 @@ impl Player {
 
     /// Take the frame due now (dropping late ones); true if the picture changed.
     pub fn advance(&mut self) -> bool {
-        if self.paused() || self.finished {
+        if (self.paused() && !self.show_one) || self.finished {
             return false;
         }
         let due = frame_due(self.played(), FPS);
@@ -186,6 +213,7 @@ impl Player {
                         if let Some(img) = RgbImage::from_raw(self.frame_size.0, self.frame_size.1, buf) {
                             self.current = Some(DynamicImage::ImageRgb8(img));
                             self.encoded = None;
+                            self.show_one = false;
                             changed = true;
                         }
                     }
@@ -253,13 +281,48 @@ fn probe(file: &Path) -> anyhow::Result<Probe> {
 
 /// Decode the audio track to f32 PCM at the output device's rate and play it on a
 /// dedicated thread (cpal streams are not `Send` on every backend).
-fn start_audio(file: &Path) -> anyhow::Result<(Child, SyncSender<AudioCmd>)> {
+/// Where a jump of `delta` seconds from `played` lands: not before the start, and (when the
+/// length is known) a moment before the end.
+pub fn seek_target(played: f64, delta: f64, duration: Option<f64>) -> f64 {
+    let to = (played + delta).max(0.0);
+    match duration {
+        Some(d) => to.min((d - 1.0).max(0.0)),
+        None => to,
+    }
+}
+
+/// Decode `file` from `from` seconds into RGB frames of `size` at [`FPS`].
+fn start_video(file: &Path, size: (u32, u32), from: f64) -> anyhow::Result<(Child, Receiver<Vec<u8>>)> {
+    let (w, h) = size;
+    let mut video = Command::new("ffmpeg")
+        .args(["-v", "error", "-nostdin", "-ss", &format!("{from:.3}"), "-i"])
+        .arg(file)
+        .args(["-an", "-vf", &format!("fps={FPS},scale={w}:{h}"), "-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let mut out = video.stdout.take().ok_or_else(|| anyhow::anyhow!("no ffmpeg stdout"))?;
+    let (tx, frames) = sync_channel::<Vec<u8>>(8);
+    let frame_len = (w * h * 3) as usize;
+    std::thread::spawn(move || {
+        loop {
+            let mut buf = vec![0u8; frame_len];
+            if out.read_exact(&mut buf).is_err() || tx.send(buf).is_err() {
+                break;
+            }
+        }
+    });
+    Ok((video, frames))
+}
+
+fn start_audio(file: &Path, from: f64) -> anyhow::Result<(Child, SyncSender<AudioCmd>)> {
     let device = cpal::default_host().default_output_device().ok_or_else(|| anyhow::anyhow!("no audio output device"))?;
     let supported = device.default_output_config()?;
     let config = supported.config();
     let (rate, channels) = (config.sample_rate, config.channels);
     let mut child = Command::new("ffmpeg")
-        .args(["-v", "error", "-nostdin", "-i"])
+        .args(["-v", "error", "-nostdin", "-ss", &format!("{from:.3}"), "-i"])
         .arg(file)
         .args(["-vn", "-f", "f32le", "-ac", &channels.to_string(), "-ar", &rate.to_string(), "-"])
         .stdin(Stdio::null())
@@ -343,6 +406,15 @@ mod tests {
         assert_eq!(fit_frame((640, 360), (2000, 2000)), (640, 360));
         assert_eq!(fit_frame((641, 361), (320, 1000)), (320, 180));
         assert_eq!(fit_frame((100, 1000), (500, 101)), (10, 100));
+    }
+
+    #[test]
+    fn seeking_stays_inside() {
+        assert_eq!(seek_target(25.0, 10.0, Some(30.0)), 29.0, "a moment before the end");
+        assert_eq!(seek_target(4.0, -10.0, Some(30.0)), 0.0, "not before the start");
+        assert_eq!(seek_target(12.5, 10.0, Some(60.0)), 22.5);
+        assert_eq!(seek_target(12.5, 10.0, None), 22.5, "unknown length: no upper bound");
+        assert_eq!(seek_target(0.0, 10.0, Some(0.5)), 0.0, "shorter than the margin");
     }
 
     #[test]
