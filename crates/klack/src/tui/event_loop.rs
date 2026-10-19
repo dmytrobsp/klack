@@ -65,6 +65,8 @@ enum Net {
     Prefs(Value),
     /// The activity feed.
     ActivityFeed(Result<Value, String>),
+    /// A page of the Threads view (`more`: added to what is listed).
+    ThreadView { result: Result<Value, String>, more: bool },
     /// A message an activity item is about.
     ActivityMessage { channel: String, ts: String, message: Option<slack_core::types::Message> },
     /// A snippet's full text for the snippet view.
@@ -140,6 +142,8 @@ struct App {
     call_bar_wanted: Option<(slack_core::types::File, (u16, u16))>,
     /// Open activity view (F5).
     activity: Option<super::activity::Activity>,
+    /// Open Threads view (Ctrl+T).
+    threads: Option<super::threads::Threads>,
     /// Open "move to section" picker.
     mover: Option<super::sections::MovePicker>,
     /// Join the huddle of the DM with this person once it is open.
@@ -1549,6 +1553,28 @@ impl App {
         });
     }
 
+    /// Ctrl+T: open the Threads view and load its first page (or, with `more`, the next).
+    fn load_threads(&mut self, more: bool) {
+        let before = match self.threads.as_mut() {
+            Some(t) if more => match t.next_page() {
+                Some(ts) => {
+                    t.loading = true;
+                    Some(ts)
+                }
+                None => return,
+            },
+            _ => {
+                self.threads = Some(super::threads::Threads { loading: true, ..Default::default() });
+                None
+            }
+        };
+        let (client, tx) = (self.client.clone(), self.net.clone());
+        tokio::spawn(async move {
+            let result = client.thread_view(before.as_deref(), 50).await.map_err(|e| e.to_string());
+            let _ = tx.send(Net::ThreadView { result, more });
+        });
+    }
+
     /// Fetch the messages of the activity items around the selection.
     fn request_activity_messages(&mut self) {
         let Some(a) = self.activity.as_mut() else { return };
@@ -1600,6 +1626,8 @@ impl App {
             Some(if m.naming.is_some() { Context::TextField } else { Context::Mover })
         } else if self.activity.is_some() {
             Some(Context::Activity)
+        } else if self.threads.is_some() {
+            Some(Context::Threads)
         } else if self.profile.is_some() {
             Some(Context::Profile)
         } else if self.details.is_some() {
@@ -2121,6 +2149,7 @@ async fn run_workspace(
         details: None,
         profile: None,
         activity: None,
+        threads: None,
         prefs: None,
         huddle_view: None,
         call_bar_area: Default::default(),
@@ -2455,6 +2484,30 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
             }
         }
         Event::Key(k) if k.kind != KeyEventKind::Release && app.global(&k) == Some(Action::Activity) => app.open_activity(),
+        Event::Key(k) if k.kind != KeyEventKind::Release && app.threads.is_some() => {
+            let action = app.action_in(Context::Threads, &k);
+            let Some(t) = app.threads.as_mut() else { return true };
+            match action {
+                Some(Action::Close) => app.threads = None,
+                Some(Action::Up) => t.move_by(-1),
+                Some(Action::Down) => t.move_by(1),
+                Some(Action::PageUp) => t.move_by(-(t.height.max(1) as isize)),
+                Some(Action::PageDown) => t.move_by(t.height.max(1) as isize),
+                Some(Action::Refresh) => app.load_threads(false),
+                Some(Action::Open) => {
+                    if let Some((channel, ts, thread_ts)) = t.target() {
+                        app.threads = None;
+                        app.open_hit(super::search::Hit { channel, ts, thread_ts, user: None, text: String::new() });
+                    }
+                }
+                _ => {}
+            }
+            // At the end of the list: the next page.
+            if app.threads.as_ref().is_some_and(|t| t.at_end()) {
+                app.load_threads(true);
+            }
+        }
+        Event::Key(k) if k.kind != KeyEventKind::Release && app.global(&k) == Some(Action::Threads) => app.load_threads(false),
         Event::Key(k) if k.kind != KeyEventKind::Release && app.profile.is_some() => {
             let action = app.action_in(Context::Profile, &k);
             let Some(card) = app.profile.as_mut() else { return true };
@@ -3059,6 +3112,21 @@ fn handle_net(app: &mut App, msg: Net) {
                 app.status = format!("activity failed: {e}");
             }
         },
+        Net::ThreadView { result, more } => match result {
+            Ok(v) => {
+                if let Some(t) = app.threads.as_mut() {
+                    let (page, has_more) = super::threads::parse(&v);
+                    if !more {
+                        t.entries = None;
+                    }
+                    t.add_page(page, has_more);
+                }
+            }
+            Err(e) => {
+                app.threads = None;
+                app.status = format!("threads failed: {e}");
+            }
+        },
         Net::ActivityMessage { channel, ts, message } => {
             if let Some(a) = app.activity.as_mut() {
                 a.messages.insert((channel, ts), message);
@@ -3238,6 +3306,9 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     if let Some(d) = &app.details {
         d.draw(f, body, &app.ws);
     }
+    if let Some(t) = app.threads.as_mut() {
+        t.draw(f, body, &app.ws);
+    }
     if let Some(a) = app.activity.as_mut() {
         a.draw(f, body, &app.ws);
     }
@@ -3294,6 +3365,7 @@ fn mode_label(top: Context, focus: Focus, editing: bool) -> (&'static str, bool)
         Context::Switcher => ("JUMP", true),
         Context::Mover => ("SECTION", false),
         Context::Activity => ("ACTIVITY", false),
+        Context::Threads => ("THREADS", false),
         Context::Profile => ("PROFILE", false),
         Context::Details => ("DETAILS", false),
         Context::Search => ("SEARCH", true),

@@ -88,6 +88,7 @@ workspace account in `drafts/<team>-<user>.json` under the local data folder
 | Ctrl+F | search messages (more results load as you move down the list) |
 | mouse | click to select, wheel to scroll, hover shading, right-click for a context menu (messages, sidebar entries); a thumb on a pane's right border shows where you are when it scrolls |
 | F5 | activity: mentions, reactions to your messages, thread replies |
+| Ctrl+T | threads: every thread you are in, unread ones first ("2 new"), each with its parent and its first unread (or newest) reply; Enter opens the thread at that reply, `r` loads again, more load at the end of the list |
 | `/status [:emoji:] [text] [for 30m\|2h\|today]` · `/status clear` | set or clear your status |
 | `/away` · `/active` · `/dnd 30m` · `/dnd off` | appear away / active · pause or resume notifications |
 | `*` · `m` (sidebar) | star / unstar · move to a section (or a new one); `/section rename <name>` · `/section delete` (each section's name heads a rule, with a blank row between sections — none in compact mode) |

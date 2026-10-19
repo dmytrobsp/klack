@@ -41,3 +41,4 @@ pub mod theme_picker;
 pub mod video;
 pub mod viewer;
 pub mod text;
+pub mod threads;

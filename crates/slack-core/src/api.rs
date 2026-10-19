@@ -227,6 +227,16 @@ impl Client {
         self.call_raw("activity.feed", &[("mode", "chrono_reads_and_unreads".into()), ("types", types.into()), ("limit", limit.to_string())]).await
     }
 
+    /// The threads you are in (the client's Threads view): unread ones first, then by latest
+    /// reply; with `before`, the page of threads active before that time.
+    pub async fn thread_view(&self, before: Option<&str>, limit: u32) -> Result<Value> {
+        let mut params: Params = vec![("limit", limit.to_string())];
+        if let Some(ts) = before {
+            params.push(("current_ts", ts.into()));
+        }
+        self.call_raw("subscriptions.thread.getView", &params).await
+    }
+
     /// One message by its ts, whether it is top level or a thread reply.
     pub async fn message_at(&self, channel: &str, ts: &str) -> Result<Option<Message>> {
         let params: Params = vec![("channel", channel.into()), ("ts", ts.into()), ("latest", ts.into()), ("oldest", ts.into()), ("inclusive", "true".into()), ("limit", "1".into())];

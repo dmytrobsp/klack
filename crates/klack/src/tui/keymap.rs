@@ -176,6 +176,7 @@ pub enum Context {
     Details,
     Profile,
     Activity,
+    Threads,
     Mover,
     TextField,
     Snippet,
@@ -189,7 +190,7 @@ pub enum Context {
 }
 
 impl Context {
-    pub const ALL: [Context; 21] = [
+    pub const ALL: [Context; 22] = [
         Context::Global,
         Context::Sidebar,
         Context::Messages,
@@ -201,6 +202,7 @@ impl Context {
         Context::Details,
         Context::Profile,
         Context::Activity,
+        Context::Threads,
         Context::Mover,
         Context::TextField,
         Context::Snippet,
@@ -227,6 +229,7 @@ impl Context {
             Context::Details => "details",
             Context::Profile => "profile",
             Context::Activity => "activity",
+            Context::Threads => "threads",
             Context::Mover => "move_to_section",
             Context::TextField => "text_field",
             Context::Snippet => "snippet",
@@ -254,6 +257,7 @@ impl Context {
             Context::Details => "Conversation details",
             Context::Profile => "Profile card",
             Context::Activity => "Activity",
+            Context::Threads => "Threads (Ctrl+T)",
             Context::Mover => "Move to section",
             Context::TextField => "Text fields (new section name, keywords)",
             Context::Snippet => "Snippet view",
@@ -289,6 +293,7 @@ pub enum Action {
     Huddle,
     Mute,
     Activity,
+    Threads,
     HuddleThread,
     HuddleView,
     Camera,
@@ -396,6 +401,7 @@ actions! {
         ShareScreen "share_screen" "share your screen in the huddle, or stop (the desktop asks what to share)" ["f10"]
         DeclineHuddle "decline_huddle" "decline the huddle invitation that is ringing (the huddle key joins it)" ["shift+f3"]
         Activity "activity" "mentions, reactions, threads" ["f5"]
+        Threads "threads" "every thread you are in, unread first" ["ctrl+t"]
         Preferences "preferences" "preferences" ["f6"]
         PrevConversation "previous_conversation" "previous conversation" ["alt+up"]
         NextConversation "next_conversation" "next conversation" ["alt+down"]
@@ -519,6 +525,15 @@ actions! {
         PageDown "page_down" "page down" ["pagedown"]
         Refresh "refresh" "load again" ["r"]
         Open "open" "go to the message" ["enter"]
+    }
+    Threads {
+        Close "close" "close" ["esc", "ctrl+t", "q"]
+        Up "up" "previous thread" ["up", "k"]
+        Down "down" "next thread" ["down", "j"]
+        PageUp "page_up" "page up" ["pageup"]
+        PageDown "page_down" "page down" ["pagedown"]
+        Refresh "refresh" "load again" ["r"]
+        Open "open" "open the thread at the reply shown" ["enter"]
     }
     Mover {
         Close "close" "close" ["esc", "q"]
@@ -761,7 +776,7 @@ pub fn hints_for(context: Context) -> &'static [(Action, &'static str)] {
         Context::Picker => &[(Open, "react"), (Close, "close")],
         Context::Details => &[(NextTab, "next tab"), (Open, "open"), (Close, "close")],
         Context::Profile => &[(Open, "message"), (Huddle, "huddle"), (Vip, "VIP"), (NextTab, "next person"), (Close, "close")],
-        Context::Activity => &[(Open, "open"), (Refresh, "refresh"), (Close, "close")],
+        Context::Activity | Context::Threads => &[(Open, "open"), (Refresh, "refresh"), (Close, "close")],
         Context::Mover => &[(Open, "move"), (Close, "close")],
         Context::TextField => &[(Open, "done"), (Close, "cancel")],
         Context::Snippet => &[(PageDown, "page"), (Copy, "copy"), (Close, "close")],

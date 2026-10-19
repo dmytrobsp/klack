@@ -59,7 +59,7 @@ pub fn translatable() -> Vec<String> {
 }
 
 /// Overlay titles that go through `tr`.
-pub const TITLES: &[&str] = &["Preferences", "Keys", "Jump to…", "Activity", "Profile", "Add reaction", "Search messages", "Commands (type in a composer)", "close", "rebind in keys.toml", "type to filter", "keep", "back"];
+pub const TITLES: &[&str] = &["Preferences", "Keys", "Jump to…", "Activity", "Threads", "Profile", "Add reaction", "Search messages", "Commands (type in a composer)", "close", "rebind in keys.toml", "type to filter", "keep", "back"];
 
 /// A locale file with every string untranslated (`"text" = ""`).
 pub fn template() -> String {
