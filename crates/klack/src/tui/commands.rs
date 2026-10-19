@@ -150,6 +150,26 @@ fn snippet_head(head: &str) -> Result<(String, String), String> {
     }
 }
 
+/// klack's own commands for suggestions: name, what it takes, what it does. They stand in for
+/// Slack's commands of the same name.
+pub const OWN: &[(&str, &str, &str)] = &[
+    ("/upload", "<path> [text]", "upload a file"),
+    ("/snippet", "[lang] [title]", "post the following lines (Alt+Enter) as a snippet"),
+    ("/join", "[#channel]", "join a channel (default: the one you are previewing)"),
+    ("/leave", "", "leave this channel"),
+    ("/create", "<name>", "create a channel"),
+    ("/create-private", "<name>", "create a private channel"),
+    ("/dm", "@a [@b…]", "open a DM, or a group DM with several people"),
+    ("/star", "", "star or unstar this conversation"),
+    ("/section", "rename <name> | delete", "rename or delete this conversation's section"),
+    ("/status", "[:emoji:] [text] [for 30m|today] | clear", "set or clear your status"),
+    ("/away", "", "appear away"),
+    ("/active", "", "appear active"),
+    ("/dnd", "30m|2h|1d | off", "pause notifications, or resume them"),
+    ("/workspace", "[name]", "list this profile's workspaces, or switch"),
+    ("/prefs", "", "preferences (also F6)"),
+];
+
 pub fn parse(text: &str, mrkdwn: &str) -> Option<Result<Command, String>> {
     if let Some(rest) = mrkdwn.trim().strip_prefix("/dm").filter(|r| r.is_empty() || r.starts_with(char::is_whitespace)) {
         let people: Vec<Recipient> = rest

@@ -1,4 +1,4 @@
-//! `@user`, `#channel` and `:emoji:` suggestions for the composer.
+//! `/command`, `@user`, `#channel` and `:emoji:` suggestions for the composer.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -59,6 +59,22 @@ pub fn rank(q: &str, fields: &[&str]) -> Option<u8> {
 /// Suggestions for `trigger` in a composer that posts to `conversation`.
 pub fn suggestions(ws: &Workspace, conversation: Option<&str>, trigger: &Trigger) -> Vec<Suggestion> {
     match trigger {
+        // All matching commands: the list scrolls.
+        Trigger::Command(q) => {
+            let q = q.to_lowercase();
+            let own = super::commands::OWN.iter().map(|&(name, usage, desc)| (name.to_string(), usage.to_string(), desc.to_string()));
+            let slack = ws.slack_commands.iter().filter(|c| !super::commands::OWN.iter().any(|(name, ..)| *name == c.name)).map(|c| (c.name.clone(), c.usage.clone(), c.desc.clone()));
+            let mut out: Vec<(u8, Suggestion)> = own
+                .chain(slack)
+                .filter_map(|(name, usage, desc)| {
+                    // By name only: its start, or a part after `-` (`pri` → /create-private).
+                    let r = name[1..].split('-').position(|part| part.starts_with(&q))?.min(1) as u8;
+                    Some((r, Suggestion { label: format!("{name} {usage}").trim_end().to_string(), detail: desc, replacement: name, id: None }))
+                })
+                .collect();
+            out.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.replacement.cmp(&b.1.replacement)));
+            out.into_iter().map(|(_, s)| s).collect()
+        }
         Trigger::User(q) => {
             let q = q.to_lowercase();
             let mut out: Vec<(u8, Suggestion)> = ws
@@ -110,32 +126,45 @@ pub fn suggestions(ws: &Workspace, conversation: Option<&str>, trigger: &Trigger
     }
 }
 
-/// Where the list of `items` suggestions goes: just above `anchor` (the composer box).
-fn popup_area(anchor: Rect, items: usize) -> Rect {
-    let height = items as u16 + 2;
-    let width = anchor.width.min(48);
+/// Where the list of `items` suggestions goes: just above `anchor` (the composer box). Commands
+/// get more room for what they take and do.
+fn popup_area(anchor: Rect, items: usize, wide: bool) -> Rect {
+    let height = items.min(MAX_ITEMS) as u16 + 2;
+    let width = anchor.width.min(if wide { 76 } else { 48 });
     let y = anchor.y.saturating_sub(height);
     Rect { x: anchor.x, y, width, height: height.min(anchor.y) }
 }
 
 impl Completion {
+    fn area(&self, anchor: Rect) -> Rect {
+        popup_area(anchor, self.items.len(), self.items.first().is_some_and(|s| s.replacement.starts_with('/')))
+    }
+
+    /// The first suggestion shown: the list scrolls to keep the highlighted one in view.
+    fn first(&self) -> usize {
+        (self.selected + 1).saturating_sub(MAX_ITEMS)
+    }
+
     /// The suggestion drawn at (`col`, `row`) by [`draw`] above `anchor`.
     pub fn row_at(&self, anchor: Rect, col: u16, row: u16) -> Option<usize> {
-        let area = popup_area(anchor, self.items.len());
+        let area = self.area(anchor);
         let inner = Rect { x: area.x + 1, y: area.y + 1, width: area.width.saturating_sub(2), height: area.height.saturating_sub(2) };
-        inner.contains((col, row).into()).then(|| (row - inner.y) as usize).filter(|n| *n < self.items.len())
+        inner.contains((col, row).into()).then(|| self.first() + (row - inner.y) as usize).filter(|n| *n < self.items.len())
     }
 }
 
 /// Draw the list just above `anchor` (the composer box).
 pub fn draw(f: &mut Frame, anchor: Rect, c: &Completion) {
-    let area = popup_area(anchor, c.items.len());
+    let area = c.area(anchor);
     super::media::clear_popup(f, area);
-    let block = Block::default().borders(Borders::ALL).border_style(Style::default().fg(super::theme::p().accent)).title(" Suggestions ");
+    let title = if c.items.len() > MAX_ITEMS { format!(" Suggestions {}/{} ", c.selected + 1, c.items.len()) } else { " Suggestions ".into() };
+    let block = Block::default().borders(Borders::ALL).border_style(Style::default().fg(super::theme::p().accent)).title(title);
     let lines: Vec<Line> = c
         .items
         .iter()
         .enumerate()
+        .skip(c.first())
+        .take(MAX_ITEMS)
         .map(|(n, s)| {
             let line = Line::from(vec![Span::raw(format!(" {}", s.label)), Span::styled(format!("  {}", s.detail), Style::default().fg(super::theme::p().dim))]);
             if n == c.selected { line.style(Style::default().bg(super::theme::p().selection).add_modifier(Modifier::BOLD)) } else { line }
@@ -170,6 +199,34 @@ mod tests {
         assert_eq!(labels, vec!["Anna Bee", "Hannah"]);
         assert_eq!(s[0].replacement, "@Anna Bee");
         assert_eq!(s[0].id.as_deref(), Some("U1"));
+    }
+
+    #[test]
+    fn commands_klack_s_own_and_slack_s() {
+        let mut w = ws();
+        let cmd = |name: &str, desc: &str| slack_core::types::SlashCommand { name: name.into(), usage: String::new(), desc: desc.into() };
+        w.slack_commands = vec![cmd("/remind", "Set a reminder"), cmd("/away", "Toggle your away status"), cmd("/shrug", "Appends a shrug")];
+        let names = |q: &str| suggestions(&w, Some("C1"), &Trigger::Command(q.into())).into_iter().map(|s| s.replacement).collect::<Vec<_>>();
+        let all = names("");
+        assert_eq!(all.len(), super::super::commands::OWN.len() + 2, "Slack's /away is klack's");
+        assert!(all.len() > MAX_ITEMS, "every command, not the first eight");
+        assert_eq!(names("re"), ["/remind"], "by name, not by what it does");
+        assert_eq!(names("pri"), ["/create-private"], "a part of the name");
+        assert_eq!(names("CR"), ["/create", "/create-private"], "any case");
+        let up = &suggestions(&w, Some("C1"), &Trigger::Command("up".into()))[0];
+        assert_eq!((up.label.as_str(), up.detail.as_str(), up.replacement.as_str()), ("/upload <path> [text]", "upload a file", "/upload"));
+    }
+
+    #[test]
+    fn long_lists_scroll() {
+        let items: Vec<Suggestion> = (0..20).map(|i| Suggestion { label: format!("/c{i}"), detail: String::new(), replacement: format!("/c{i}"), id: None }).collect();
+        let mut c = Completion { thread: false, start: 0, items, selected: 0 };
+        let anchor = Rect { x: 0, y: 30, width: 100, height: 3 };
+        assert_eq!(c.area(anchor), Rect { x: 0, y: 20, width: 76, height: 10 }, "eight rows, wide for commands");
+        assert_eq!(c.row_at(anchor, 5, 21), Some(0));
+        c.selected = 11;
+        assert_eq!(c.row_at(anchor, 5, 21), Some(4), "scrolled to keep the 12th in view");
+        assert_eq!(c.row_at(anchor, 5, 28), Some(11));
     }
 
     #[test]

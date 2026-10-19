@@ -25,6 +25,8 @@ pub enum KeyOutcome {
 /// What an autocomplete token looks like at the cursor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Trigger {
+    /// A command name at the start of the text (without its `/`).
+    Command(String),
     User(String),
     Channel(String),
     Emoji(String),
@@ -327,6 +329,13 @@ impl Composer {
 
     /// The autocomplete token immediately before the cursor, if any.
     pub fn trigger(&self) -> Option<(usize, Trigger)> {
+        // A command name: `/` at the very start, then letters, digits, `-` and `_` up to the cursor.
+        if self.chars.first() == Some(&'/') && self.cursor > 0 {
+            let word = &self.chars[1..self.cursor];
+            if word.iter().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_')) {
+                return Some((0, Trigger::Command(word.iter().collect())));
+            }
+        }
         let mut start = self.cursor;
         while start > 0 {
             let c = self.chars[start - 1];
@@ -349,6 +358,11 @@ impl Composer {
             }
         }
         None
+    }
+
+    /// The text from `start` up to the cursor.
+    pub fn token(&self, start: usize) -> String {
+        self.chars[start.min(self.cursor)..self.cursor].iter().collect()
     }
 
     /// Replace the token starting at `start` (up to the cursor) with `replacement`.
@@ -660,6 +674,18 @@ mod tests {
         let mut n = Composer::default();
         n.insert_str("email@x");
         assert_eq!(n.trigger(), None);
+        let mut cmd = Composer::default();
+        cmd.insert_str("/");
+        assert_eq!(cmd.trigger(), Some((0, Trigger::Command(String::new()))));
+        cmd.insert_str("up-load_2");
+        assert_eq!(cmd.trigger(), Some((0, Trigger::Command("up-load_2".into()))));
+        assert_eq!(cmd.token(0), "/up-load_2");
+        cmd.set("/usr/bin");
+        assert_eq!(cmd.trigger(), None, "a path is not a command");
+        cmd.set("/remind @an");
+        assert_eq!(cmd.trigger(), Some((8, Trigger::User("an".into()))), "arguments complete as before");
+        cmd.set(" /away");
+        assert_eq!(cmd.trigger(), None, "a leading space: text");
     }
 
     #[test]

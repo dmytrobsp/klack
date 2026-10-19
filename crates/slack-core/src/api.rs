@@ -376,6 +376,11 @@ impl Client {
         self.call_raw("search.messages", &[("query", query.into()), ("count", count.to_string()), ("page", page.to_string()), ("highlight", "false".into())]).await
     }
 
+    /// The workspace's slash commands — Slack's own and its apps' (`commands.list`).
+    pub async fn commands(&self) -> Result<Vec<crate::types::SlashCommand>> {
+        Ok(crate::types::SlashCommand::from_list(&self.call_raw("commands.list", &[]).await?))
+    }
+
     pub async fn emoji_list(&self) -> Result<std::collections::HashMap<String, String>> {
         self.call_field("emoji.list", "emoji", &[]).await
     }

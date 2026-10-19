@@ -97,6 +97,8 @@ pub struct Workspace {
     /// channel → (user, when) of typing notifications
     pub typing: HashMap<String, Vec<(String, std::time::Instant)>>,
     pub custom_emoji: HashMap<String, String>,
+    /// Slack's own and apps' slash commands (`commands.list`), for suggestions.
+    pub slack_commands: Vec<slack_core::types::SlashCommand>,
     pub muted: std::collections::HashSet<String>,
     pub dnd: Dnd,
     /// Active huddles by channel.

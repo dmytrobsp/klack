@@ -59,6 +59,8 @@ enum Net {
     VideoReady { title: String, result: Result<std::path::PathBuf, String> },
     /// Result of a file save or upload, shown in the status bar.
     FileDone(String),
+    /// The workspace's slash commands (`commands.list`).
+    Commands(Vec<slack_core::types::SlashCommand>),
     /// Sending a composer's attachments failed: its draft (keyed like `App::drafts`) goes back.
     SendFailed { thread: bool, key: String, draft: Box<super::composer::Draft>, error: String },
     /// A pasted picture, encoded for a composer (the reply box's when `thread`).
@@ -2975,10 +2977,21 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
         }
         Event::Key(k) if k.kind != KeyEventKind::Release && app.completion.is_some() && app.action_in(Context::Completion, &k).is_some() => {
             let action = app.action_in(Context::Completion, &k);
+            // A command typed out in full runs on the send key, as if the list were not there.
+            let typed_command = app.completion.as_ref().and_then(|c| {
+                let s = c.items.get(c.selected)?;
+                let composer = if c.thread { &app.thread_composer } else { &app.composer };
+                (s.replacement.starts_with('/') && s.replacement == composer.token(c.start)).then_some(c.thread)
+            });
+            let send_key = app.action_in(Context::Composer, &k) == Some(Action::Send);
             let Some(c) = app.completion.as_mut() else { return true };
             match action {
                 Some(Action::Up) => c.move_by(-1),
                 Some(Action::Down) => c.move_by(1),
+                Some(Action::Accept) if send_key && typed_command.is_some() => {
+                    app.completion = None;
+                    app.send(typed_command.unwrap_or_default());
+                }
                 Some(Action::Accept) => app.accept_completion(),
                 _ => {
                     app.completion_dismissed = Some((c.thread, c.start));
@@ -3281,9 +3294,16 @@ fn handle_net(app: &mut App, msg: Net) {
                     }
                     Err(e) => tracing::warn!("channel list failed: {e}"),
                 }
+                match client.commands().await {
+                    Ok(list) => {
+                        let _ = tx.send(Net::Commands(list));
+                    }
+                    Err(e) => tracing::warn!("slash command list failed: {e}"),
+                }
             });
         }
         Net::Channels(list) => app.ws.add_channels(list),
+        Net::Commands(list) => app.ws.slack_commands = list,
         Net::UserInfo(u) => {
             app.ws.users.insert(u.id.clone(), u);
             app.sidebar.rebuild(&app.ws);

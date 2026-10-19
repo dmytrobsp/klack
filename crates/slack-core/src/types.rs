@@ -52,8 +52,45 @@ pub fn channel_name(input: &str) -> String {
     out.trim_matches('-').chars().take(80).collect()
 }
 
+/// A slash command Slack knows in a workspace: its own and its apps'.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SlashCommand {
+    /// With its slash: `/remind`.
+    pub name: String,
+    /// What it takes, e.g. `[#channel] [what] [when]`.
+    pub usage: String,
+    pub desc: String,
+}
+
+impl SlashCommand {
+    /// The commands in a `commands.list` answer, by name.
+    pub fn from_list(v: &serde_json::Value) -> Vec<SlashCommand> {
+        let text = |c: &serde_json::Value, k: &str| c[k].as_str().unwrap_or_default().trim().to_string();
+        let mut out: Vec<SlashCommand> = v["commands"]
+            .as_object()
+            .map(|all| all.values().filter_map(|c| Some(SlashCommand { name: c["name"].as_str().filter(|n| n.starts_with('/'))?.to_string(), usage: text(c, "usage"), desc: text(c, "desc") })).collect())
+            .unwrap_or_default();
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn slash_commands_from_slack() {
+        use super::SlashCommand;
+        let v = serde_json::json!({"ok": true, "commands": {
+            "/remind": {"name": "/remind", "usage": "[#channel] [what] [when]", "desc": "Set a reminder", "type": "core"},
+            "/close": {"name": "/close", "usage": null, "desc": "", "type": "core"},
+            "/deploy": {"name": "/deploy", "usage": "app ", "desc": "Ship it", "type": "app"}}});
+        let list = SlashCommand::from_list(&v);
+        assert_eq!(list.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["/close", "/deploy", "/remind"]);
+        assert_eq!(list[1], SlashCommand { name: "/deploy".into(), usage: "app".into(), desc: "Ship it".into() });
+        assert_eq!(list[0].usage, "", "null usage");
+        assert!(SlashCommand::from_list(&serde_json::json!({"ok": false})).is_empty());
+    }
+
     #[test]
     fn channel_names() {
         assert_eq!(super::channel_name("#Team Updates!"), "team-updates");
