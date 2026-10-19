@@ -241,6 +241,12 @@ H. Added by the user on 2026-10-19 (after queue G), in this order:
       `backup/pre-author-rewrite` and `refs/original/` (remove both after the push). The audit's own note had
       quoted the old address: the 7 commits from it on were rewritten again to say "a work address" (local
       branch `backup/pre-email-rewrite`, also removed after the push) and their hashes remapped.
+      H5d (user's go-ahead 2026-10-19): the public repo github.com/dmytrobsp/klack is created (empty). Push
+      setup, repo-local only: remote `https://dmytrobsp@github.com/dmytrobsp/klack.git` (the user's global
+      `url.git@github.com:.insteadOf https://github.com/` would send it over SSH, whose key is another account),
+      credential helper `gh auth git-credential`. The first push was refused: gh's token lacks the `workflow`
+      scope (needed for `.github/workflows/ci.yml`) — waiting for the user's `gh auth refresh -h github.com -s
+      workflow`, then `git push -u origin master`.
 
 F. Agreed with the user on 2026-10-19 after queue E ("proceed with proposed order"); run autonomously, one
    verified commit per step:
