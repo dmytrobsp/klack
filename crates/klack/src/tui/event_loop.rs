@@ -1655,6 +1655,33 @@ impl App {
         });
     }
 
+    /// The mouse wheel over an open list (Ctrl+K, the section mover, F5, Ctrl+T, search) moves
+    /// its selection a step, like the keys; false when none is open.
+    fn wheel_in_popup(&mut self, down: bool) -> bool {
+        let step = if down { 1 } else { -1 };
+        if let Some(sw) = self.switcher.as_mut() {
+            let len = sw.entries(&self.ws).len();
+            sw.move_by(step, len);
+        } else if let Some(m) = self.mover.as_mut().filter(|m| m.naming.is_none()) {
+            m.move_by(step);
+        } else if let Some(a) = self.activity.as_mut() {
+            a.move_by(step);
+        } else if let Some(t) = self.threads.as_mut() {
+            t.move_by(step);
+            if t.at_end() {
+                self.load_threads(true);
+            }
+        } else if let Some(search) = self.search.as_mut() {
+            search.move_by(step);
+            if down {
+                self.search_more();
+            }
+        } else {
+            return false;
+        }
+        true
+    }
+
     /// Fetch the messages of the activity items around the selection.
     fn request_activity_messages(&mut self) {
         let Some(a) = self.activity.as_mut() else { return };
@@ -2898,6 +2925,7 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
         }
         Event::Paste(text) if app.focus == Focus::Composer => app.composer.insert_str(&text.replace("\r\n", "\n")),
         Event::Paste(text) if app.focus == Focus::ThreadComposer => app.thread_composer.insert_str(&text.replace("\r\n", "\n")),
+        Event::Mouse(m) if matches!(m.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown) && app.wheel_in_popup(m.kind == MouseEventKind::ScrollDown) => {}
         Event::Mouse(m) if m.kind == MouseEventKind::Moved => {
             let (c, r) = (m.column, m.row);
             app.sidebar.hover = app.sidebar.item_at(c, r);
