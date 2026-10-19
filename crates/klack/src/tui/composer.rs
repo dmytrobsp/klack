@@ -94,6 +94,8 @@ pub struct Composer {
     history_pos: Option<usize>,
     /// Sent with the message.
     pub attachments: Vec<Attachment>,
+    /// The width the text was last drawn at (↑/↓ go by its rows); 0 before the first draw.
+    pub wrap_width: std::cell::Cell<usize>,
 }
 
 impl Composer {
@@ -275,29 +277,41 @@ impl Composer {
         self.cursor = start;
     }
 
-    /// Move to the previous line; returns false if already on the first line.
+    /// Move to the row above as the box draws it (wrapped rows count); false on the first.
     pub fn up(&mut self) -> bool {
-        let start = self.line_start();
-        if start == 0 {
-            return false;
-        }
-        let col = self.cursor - start;
-        let prev_end = start - 1;
-        let prev_start = self.chars[..prev_end].iter().rposition(|&c| c == '\n').map(|i| i + 1).unwrap_or(0);
-        self.cursor = prev_start + col.min(prev_end - prev_start);
-        true
+        self.step_row(-1)
     }
 
-    /// Move to the next line; returns false if already on the last line.
+    /// Move to the row below as the box draws it; false on the last.
     pub fn down(&mut self) -> bool {
-        let end = self.line_end();
-        if end == self.chars.len() {
+        self.step_row(1)
+    }
+
+    /// Move `delta` rows at the last drawn width, keeping the column as far as the row allows.
+    fn step_row(&mut self, delta: isize) -> bool {
+        let width = match self.wrap_width.get() {
+            0 => usize::MAX,
+            w => w,
+        };
+        let rows = self.wrap(width);
+        let (row, col) = self.cursor_position(width);
+        let target = row as isize + delta;
+        if target < 0 || target as usize >= rows.len() {
             return false;
         }
-        let col = self.cursor - self.line_start();
-        let next_start = end + 1;
-        let next_end = self.chars[next_start..].iter().position(|&c| c == '\n').map(|i| next_start + i).unwrap_or(self.chars.len());
-        self.cursor = next_start + col.min(next_end - next_start);
+        let target = target as usize;
+        let (start, end) = rows[target];
+        let mut at = start;
+        let mut used = 0;
+        while at < end && used + self.chars[at].width().unwrap_or(0) <= col as usize {
+            used += self.chars[at].width().unwrap_or(0);
+            at += 1;
+        }
+        // The end of a wrapped row is the next row's start: stay on this one.
+        if at == end && at > start && rows.get(target + 1).is_some_and(|next| next.0 == end) {
+            at -= 1;
+        }
+        self.cursor = at;
         true
     }
 
@@ -793,6 +807,35 @@ mod tests {
         assert_eq!((lines.len(), shown, lines[3].as_str()), (4, 3, "📎 … and 3 more"));
         c.clear();
         assert!(c.attachments.is_empty(), "sent or cancelled with the text");
+    }
+
+    #[test]
+    fn up_and_down_go_by_drawn_rows() {
+        let mut c = Composer::default();
+        c.insert_str("hello wonderful world\nend");
+        c.wrap_width.set(12);
+        assert_eq!(c.wrapped(12), ["hello ", "wonderful ", "world", "end"]);
+        assert_eq!(c.cursor_position(12), (3, 3));
+        assert!(c.up());
+        assert_eq!(c.cursor_position(12), (2, 3), "over a newline, as before");
+        assert!(c.up());
+        assert_eq!(c.cursor_position(12), (1, 3), "and over a wrap (it did nothing)");
+        assert!(c.up());
+        assert_eq!(c.cursor_position(12), (0, 3));
+        assert!(!c.up(), "the first row");
+        // The end of a wrapped row stays on it.
+        c.cursor = 15;
+        assert_eq!(c.cursor_position(12), (1, 9), "after \"wonderful\"");
+        assert!(c.up());
+        assert_eq!((c.cursor, c.cursor_position(12)), (5, (0, 5)), "\"hello\" is shorter: its end, not the next row");
+        assert!(c.down() && c.down() && c.down());
+        assert_eq!(c.cursor_position(12), (3, 3), "the last row, as far as it goes");
+        assert!(!c.down());
+        // Not drawn yet: by lines.
+        let mut fresh = Composer::default();
+        fresh.insert_str("one two three four five six\nb");
+        assert!(fresh.up());
+        assert_eq!(fresh.cursor, 1);
     }
 
     #[test]

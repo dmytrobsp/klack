@@ -4045,6 +4045,7 @@ fn draw_composer(f: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &App,
     }
     let inner = block.inner(area);
     let width = inner.width as usize;
+    composer.wrap_width.set(width);
     // Attachments on top, each with a ✕ that removes it, then the text.
     let (attachments, closable) = composer.attachment_lines();
     let below = (attachments.len() as u16).min(inner.height);
