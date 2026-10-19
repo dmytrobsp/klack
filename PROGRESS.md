@@ -192,7 +192,7 @@ Tests: `cargo test` → slack-core 10, huddle 33, klack 185 (+1 ignored: the `bu
 
 ## Next (in order, each as a small, separately verified step)
 
-**NEXT UP: nothing queued** — queue I (the known gaps the user asked to knock off) is done; what is left in Known gaps is not fixable or not testable here (see queue I's "Not taken"). Next: whatever the user asks. — the user asked on 2026-10-19 (after v0.1.0) to knock off the Known gaps; H5 is done (public at github.com/dmytrobsp/klack, v0.1.0 released). Routine pushes to master need no asking; release tags do.
+**v0.2.0** (asked by the user 2026-10-19): version bumped (the workspace and klack's pin on slack-core); tagged once CI passes on the bump. **NEXT UP: nothing queued** — queue I (the known gaps the user asked to knock off) is done; what is left in Known gaps is not fixable or not testable here (see queue I's "Not taken"). Next: whatever the user asks. — the user asked on 2026-10-19 (after v0.1.0) to knock off the Known gaps; H5 is done (public at github.com/dmytrobsp/klack, v0.1.0 released). Routine pushes to master need no asking; release tags do.
 
 I. Known gaps, asked by the user on 2026-10-19 ("knock off known gaps"); run autonomously, one verified
    commit per step, pushed after each:
