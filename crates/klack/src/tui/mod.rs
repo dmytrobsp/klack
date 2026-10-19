@@ -36,6 +36,7 @@ pub mod state;
 pub mod switcher;
 pub mod terminal;
 pub mod theme;
+pub mod theme_picker;
 pub mod video;
 pub mod viewer;
 pub mod text;

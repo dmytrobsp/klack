@@ -1404,6 +1404,41 @@ impl App {
         }
     }
 
+    /// A key in the theme picker: typing filters, moving shows the theme at once, Enter keeps
+    /// it (saved), Esc goes back to the theme before.
+    fn theme_picker_key(&mut self, k: &crossterm::event::KeyEvent) {
+        use super::theme_picker::COLOUR_THEME;
+        let action = self.action_in(Context::Switcher, k);
+        let Some(p) = self.prefs.as_mut() else { return };
+        let Some(picker) = p.picker.as_mut() else { return };
+        let appearance = &mut self.ws.settings.appearance;
+        match action {
+            Some(Action::Close) => p.picker = None,
+            Some(Action::Up) => picker.move_by(-1),
+            Some(Action::Down) => picker.move_by(1),
+            Some(Action::Erase) => picker.erase(),
+            Some(Action::Open) => {
+                let Some(name) = picker.highlighted().filter(|_| picker.problem.is_none()).map(String::from) else { return };
+                match (picker.workspace, name.as_str()) {
+                    (true, COLOUR_THEME) => drop(appearance.workspace_themes.remove(&self.ws.team_id)),
+                    (true, _) => drop(appearance.workspace_themes.insert(self.ws.team_id.clone(), name)),
+                    (false, _) => appearance.theme = name,
+                }
+                p.picker = None;
+                p.saved = Some(super::settings::save(&self.ws.settings).map(|path| path.display().to_string()));
+            }
+            _ => match (k.code, Key::from_event(k).is_text()) {
+                (KeyCode::Char(c), true) => picker.type_char(c),
+                _ => return,
+            },
+        }
+        match self.prefs.as_mut().and_then(|p| p.picker.as_mut()) {
+            Some(picker) => picker.preview(&self.ws.settings.appearance.theme),
+            // Closed: the theme in force for this workspace.
+            None => drop(super::theme::set(self.ws.settings.appearance.theme_for(&self.ws.team_id))),
+        }
+    }
+
     /// Enter in the preferences: change a local setting (and save the file) or send a
     /// Slack-side one (applied here at once; on failure the prefs are fetched again).
     fn change_preference(&mut self) {
@@ -1416,7 +1451,7 @@ impl App {
         let change = p.change(&mut self.ws, current.as_deref());
         if !on_slack {
             // A refused value (e.g. an unknown time zone) keeps its message and is not saved.
-            if p.saved.is_none() && p.editing.is_none() {
+            if p.saved.is_none() && p.editing.is_none() && p.picker.is_none() {
                 p.saved = Some(super::settings::save(&self.ws.settings).map(|path| path.display().to_string()));
             }
             if field == Some(super::prefs::Field::Compact) {
@@ -1546,7 +1581,14 @@ impl App {
         } else if self.help.is_some() {
             Some(Context::Help)
         } else if let Some(p) = &self.prefs {
-            Some(if p.editing.is_some() { Context::TextField } else { Context::Preferences })
+            Some(if p.editing.is_some() {
+                Context::TextField
+            } else if p.picker.is_some() {
+                // A filterable list like the switcher.
+                Context::Switcher
+            } else {
+                Context::Preferences
+            })
         } else if self.switcher.is_some() {
             Some(Context::Switcher)
         } else if let Some(m) = &self.mover {
@@ -2280,6 +2322,7 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
             }
         }
         Event::Key(k) if k.kind != KeyEventKind::Release && app.prefs.as_ref().is_some_and(|p| p.capturing.is_some()) => app.capture_key(Key::from_event(&k)),
+        Event::Key(k) if k.kind != KeyEventKind::Release && app.prefs.as_ref().is_some_and(|p| p.picker.is_some()) => app.theme_picker_key(&k),
         Event::Key(k) if k.kind != KeyEventKind::Release && app.prefs.as_ref().is_some_and(|p| p.editing.is_some()) => {
             let action = app.action_in(Context::TextField, &k);
             let Some(p) = app.prefs.as_mut() else { return true };
@@ -3194,7 +3237,9 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     // the keys and the connection.
     let contexts = app.active_contexts();
     let top = contexts.last().copied().unwrap_or(Context::Global);
-    let (pill, typing) = mode_label(top, app.focus, app.composer.editing.is_some());
+    // The theme picker borrows the switcher's keys but is not the switcher.
+    let picking = app.prefs.as_ref().is_some_and(|p| p.picker.is_some());
+    let (pill, typing) = if picking { ("THEME", true) } else { mode_label(top, app.focus, app.composer.editing.is_some()) };
     let mut crumb = app.current.as_deref().and_then(|c| app.ws.conversations.get(c)).map(|c| if c.is_dm() { app.ws.conversation_label(c) } else { format!("#{}", c.name) }).unwrap_or_default();
     match app.focus {
         Focus::Thread | Focus::ThreadComposer if app.thread.is_some() => crumb.push_str(" › Thread"),
@@ -3202,7 +3247,9 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         _ => {}
     }
     let dialog = !matches!(top, Context::Global | Context::Sidebar | Context::Messages | Context::Composer | Context::Completion | Context::Huddle);
-    let middle = if dialog && app.status.is_empty() && app.ringing.is_none() { app.keys.context_hints(top) } else { info };
+    let key = |a| app.keys.first_key(Context::Switcher, a).unwrap_or_default();
+    let hints = if picking { format!("{} {} · {} {}", key(Action::Open), super::i18n::tr("keep"), key(Action::Close), super::i18n::tr("back")) } else { app.keys.context_hints(top) };
+    let middle = if dialog && app.status.is_empty() && app.ringing.is_none() { hints } else { info };
     let help = app.keys.first_key(Context::Global, Action::Help).map(|k| format!("{k} keys · ")).unwrap_or_default();
     let p = super::theme::p();
     let dim = ratatui::style::Style::default().fg(p.dim);

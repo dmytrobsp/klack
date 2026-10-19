@@ -273,11 +273,8 @@ impl Field {
         match self {
             // Needs the workspace: in `Prefs::change`.
             Field::TimeZone | Field::Language | Field::WorkspaceTheme => {}
-            // Custom theme files are checked in `Prefs::change`.
-            Field::Theme => {
-                s.appearance.theme = super::theme::next(&s.appearance.theme);
-                let _ = super::theme::set(&s.appearance.theme);
-            }
+            // Chosen in a picker (`Prefs::change`).
+            Field::Theme => {}
             Field::Compact => s.appearance.compact ^= true,
             Field::InlineImages => s.messages.inline_images ^= true,
             Field::Avatars => s.messages.avatars ^= true,
@@ -368,15 +365,6 @@ fn next_sound(current: &str) -> String {
     sounds[sounds.iter().position(|x| *x == current).map_or(0, |i| (i + 1) % sounds.len())].to_string()
 }
 
-/// A workspace's theme after `current` (None: the colour theme's) among `names`, ending with
-/// None again.
-fn theme_after(current: Option<&str>, names: &[String]) -> Option<String> {
-    match current {
-        None => names.first().cloned(),
-        Some(t) => names.iter().position(|n| n == t).and_then(|i| names.get(i + 1)).cloned(),
-    }
-}
-
 fn next_level(level: &str) -> String {
     let i = LEVELS.iter().position(|l| *l == level).map_or(0, |i| (i + 1) % LEVELS.len());
     LEVELS[i].to_string()
@@ -410,6 +398,8 @@ pub struct Prefs {
     pub cameras: Vec<String>,
     /// Where the settings were saved, or why not.
     pub saved: Option<Result<String, String>>,
+    /// Choosing a theme (the colour theme, or the workspace's own).
+    pub picker: Option<super::theme_picker::ThemePicker>,
 }
 
 impl Prefs {
@@ -466,42 +456,14 @@ impl Prefs {
                 None
             }
             // A text field: Enter starts editing, Enter again applies (the caller saves).
+            // The picker shows each theme as you go; the caller keeps the chosen one.
             Field::Theme => {
-                // Skip theme files that do not load, saying why.
-                let start = ws.settings.appearance.theme.clone();
-                let mut name = super::theme::next(&start);
-                while let Err(e) = super::theme::set(&name) {
-                    self.saved = Some(Err(e));
-                    name = super::theme::next(&name);
-                    if name == start {
-                        break;
-                    }
-                }
-                ws.settings.appearance.theme = name;
-                // This workspace may have a theme of its own.
-                let _ = super::theme::set(ws.settings.appearance.theme_for(&ws.team_id));
+                self.picker = Some(super::theme_picker::ThemePicker::new(false, super::theme::names(), Some(&ws.settings.appearance.theme)));
                 None
             }
             Field::WorkspaceTheme => {
-                // The colour theme's, then each theme (skipping files that do not load), then
-                // the colour theme's again.
-                let names = super::theme::names();
-                let mut next = theme_after(ws.settings.appearance.workspace_themes.get(&ws.team_id).map(String::as_str), &names);
-                while let Some(name) = &next {
-                    match super::theme::set(name) {
-                        Ok(()) => break,
-                        Err(e) => {
-                            self.saved = Some(Err(e));
-                            next = theme_after(Some(name), &names);
-                        }
-                    }
-                }
-                let themes = &mut ws.settings.appearance.workspace_themes;
-                match next {
-                    Some(name) => themes.insert(ws.team_id.clone(), name),
-                    None => themes.remove(&ws.team_id),
-                };
-                let _ = super::theme::set(ws.settings.appearance.theme_for(&ws.team_id));
+                let own = ws.settings.appearance.workspace_themes.get(&ws.team_id).map(String::as_str);
+                self.picker = Some(super::theme_picker::ThemePicker::new(true, super::theme::names(), own));
                 None
             }
             Field::Camera => {
@@ -649,6 +611,9 @@ impl Prefs {
         if !hints.is_empty() && below.height > 0 {
             let dim = Style::default().fg(super::theme::p().dim);
             f.render_widget(Paragraph::new(hints.iter().map(|h| Line::styled(*h, dim)).collect::<Vec<_>>()).wrap(Wrap { trim: true }), below);
+        }
+        if let Some(picker) = &self.picker {
+            picker.draw(f, area, &ws.settings.appearance.theme);
         }
     }
 }
@@ -839,18 +804,6 @@ mod tests {
 
     #[test]
     fn workspace_themes() {
-        let names: Vec<String> = ["dark", "light", "mine"].map(String::from).into();
-        let mut seen = vec![];
-        let mut t = None;
-        loop {
-            t = theme_after(t.as_deref(), &names);
-            seen.push(t.clone());
-            if t.is_none() {
-                break;
-            }
-        }
-        assert_eq!(seen, [Some("dark".into()), Some("light".into()), Some("mine".into()), None], "each theme, then the colour theme's again");
-        assert_eq!(theme_after(Some("gone"), &names), None, "a theme no longer there: back to the colour theme's");
         let mut ws = Workspace { team_id: "T1".into(), ..Default::default() };
         let p = Prefs { category: 1, selected: 1, ..Default::default() };
         assert_eq!(p.selected_field(), Some(Field::WorkspaceTheme));

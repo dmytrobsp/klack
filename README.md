@@ -202,15 +202,17 @@ on Windows only from an SSH session, where `gdigrab` cannot capture (no desktop)
 
 ### Themes
 
-F6 → Appearance → Colour theme cycles dark, light, terminal and your own themes. A theme is
+F6 → Appearance → Colour theme opens a picker of dark, light, terminal and your own themes,
+each with a few of its colours: type to filter, ↑/↓ show each one on the whole screen at once,
+Enter keeps it, Esc goes back (a theme file that does not load says why). A theme is
 a TOML file in `themes/` next to `settings.toml`: `base = "dark"` plus any colours to change
 (`"#ff8800"`, ANSI names such as `"light-red"`, or 0–255). Start from
 `klack ctl theme-template dark > sunset.toml`, edit it, and install it (checked first) with
 `klack ctl theme-import sunset.toml`; share themes by passing the file around.
 
 To tell workspaces apart at a glance, F6 → Appearance → Theme for this workspace gives the
-workspace you are in a theme of its own (it cycles through the themes and back to "(colour
-theme)"); `settings.toml` keeps it under `[appearance.workspace_themes]` by workspace id.
+workspace you are in a theme of its own (the same picker, with "(colour theme)" for none);
+`settings.toml` keeps it under `[appearance.workspace_themes]` by workspace id.
 
 ### Translations
 

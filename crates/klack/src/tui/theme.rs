@@ -128,12 +128,17 @@ pub fn p() -> Palette {
 /// Use the theme called `name`: a built-in one or `themes/<name>.toml`. On failure the
 /// current theme stays.
 pub fn set(name: &str) -> Result<(), String> {
-    let palette = match ALL.into_iter().find(|t| t.name == name) {
-        Some(p) => p,
-        None => load(name)?,
-    };
+    let palette = palette(name)?;
     *CURRENT.write().unwrap_or_else(|e| e.into_inner()) = palette;
     Ok(())
+}
+
+/// The theme called `name`, without using it.
+pub fn palette(name: &str) -> Result<Palette, String> {
+    match ALL.into_iter().find(|t| t.name == name) {
+        Some(p) => Ok(p),
+        None => load(name),
+    }
 }
 
 #[cfg(test)]
@@ -157,13 +162,6 @@ pub fn names() -> Vec<String> {
         .collect();
     custom.sort();
     ALL.iter().map(|t| t.name.to_string()).chain(custom).collect()
-}
-
-/// The theme after `name`, for cycling in the preferences.
-pub fn next(name: &str) -> String {
-    let names = names();
-    let i = names.iter().position(|t| t == name).map_or(0, |i| (i + 1) % names.len());
-    names[i].clone()
 }
 
 fn load(name: &str) -> Result<Palette, String> {
