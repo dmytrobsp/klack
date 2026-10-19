@@ -392,48 +392,58 @@ impl Composer {
         self.history_pos = None;
     }
 
-    /// Cursor (row, col) in display cells after wrapping at `width`.
-    pub fn cursor_position(&self, width: usize) -> (u16, u16) {
+    /// The text's rows at `width`, as char ranges without their `\n`: a word that doesn't
+    /// fit moves whole to the next row, a word longer than a row is split, and a space that
+    /// overflows hangs at the end of its row.
+    fn wrap(&self, width: usize) -> Vec<(usize, usize)> {
         let width = width.max(1);
-        let (mut row, mut col) = (0usize, 0usize);
-        for &c in &self.chars[..self.cursor] {
+        let mut rows = Vec::new();
+        let (mut start, mut col, mut brk) = (0, 0, None);
+        for (i, &c) in self.chars.iter().enumerate() {
             if c == '\n' {
-                row += 1;
-                col = 0;
+                rows.push((start, i));
+                (start, col, brk) = (i + 1, 0, None);
                 continue;
             }
             let w = c.width().unwrap_or(0);
-            if col + w > width {
-                row += 1;
-                col = 0;
+            if col > 0 && col + w > width {
+                if c == ' ' {
+                    rows.push((start, i + 1));
+                    (start, col, brk) = (i + 1, 0, None);
+                    continue;
+                }
+                let at = brk.unwrap_or(i);
+                rows.push((start, at));
+                start = at;
+                col = self.chars[at..i].iter().map(|c| c.width().unwrap_or(0)).sum();
+                brk = None;
             }
             col += w;
+            if c == ' ' {
+                brk = Some(i + 1);
+            }
         }
-        if col >= width {
-            row += 1;
-            col = 0;
-        }
-        (row as u16, col as u16)
+        rows.push((start, self.chars.len()));
+        rows
+    }
+
+    /// The text as drawn at `width`, one string per row.
+    pub fn wrapped(&self, width: usize) -> Vec<String> {
+        self.wrap(width).into_iter().map(|(s, e)| self.chars[s..e].iter().collect()).collect()
+    }
+
+    /// Cursor (row, col) in display cells after wrapping at `width`.
+    pub fn cursor_position(&self, width: usize) -> (u16, u16) {
+        let rows = self.wrap(width);
+        // At a soft break the cursor starts the next row.
+        let row = rows.iter().rposition(|&(s, _)| s <= self.cursor).unwrap_or(0);
+        let col: usize = self.chars[rows[row].0..self.cursor].iter().map(|c| c.width().unwrap_or(0)).sum();
+        if col >= width.max(1) { (row as u16 + 1, 0) } else { (row as u16, col as u16) }
     }
 
     /// Rows needed to show the text at `width`.
     pub fn rows(&self, width: usize) -> u16 {
-        let width = width.max(1);
-        let (mut rows, mut col) = (1usize, 0usize);
-        for &c in &self.chars {
-            if c == '\n' {
-                rows += 1;
-                col = 0;
-                continue;
-            }
-            let w = c.width().unwrap_or(0);
-            if col + w > width {
-                rows += 1;
-                col = 0;
-            }
-            col += w;
-        }
-        rows.max(self.cursor_position(width).0 as usize + 1) as u16
+        (self.wrap(width).len()).max(self.cursor_position(width).0 as usize + 1) as u16
     }
 }
 
@@ -612,5 +622,28 @@ mod tests {
         c.insert_str("abcdef");
         assert_eq!(c.cursor_position(4), (1, 2));
         assert_eq!(c.rows(4), 2);
+    }
+
+    #[test]
+    fn the_cursor_follows_wrapped_words() {
+        let mut c = Composer::default();
+        c.insert_str("hello wonderful world");
+        assert_eq!(c.wrapped(12), ["hello ", "wonderful ", "world"]);
+        assert_eq!(c.cursor_position(12), (2, 5), "after the last word");
+        c.set("hello wonderful");
+        c.cursor = 6;
+        assert_eq!(c.cursor_position(12), (1, 0), "at a soft break: the start of the next row");
+        c.set("abcd efgh");
+        assert_eq!(c.wrapped(4), ["abcd ", "efgh"], "a space that doesn't fit hangs");
+        c.cursor = 4;
+        assert_eq!(c.cursor_position(4), (1, 0), "a full row puts the cursor on the next one");
+        c.set("a\nlongerword x");
+        assert_eq!(c.wrapped(4), ["a", "long", "erwo", "rd x"], "long words are split");
+        assert_eq!(c.cursor_position(4), (4, 0), "the cursor wraps past a full last row");
+        assert_eq!(c.rows(4), 5);
+        c.set("ab\n");
+        assert_eq!((c.wrapped(4).len(), c.cursor_position(4)), (2, (1, 0)), "a trailing newline");
+        c.set("");
+        assert_eq!((c.wrapped(4), c.cursor_position(4), c.rows(4)), (vec![String::new()], (0, 0), 1));
     }
 }

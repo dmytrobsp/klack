@@ -3715,11 +3715,12 @@ fn draw_composer(f: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &App,
         } else {
             format!("Press {} or click a conversation to type", app.keys.first_key(Context::Global, Action::FocusNext).unwrap_or_default())
         };
-        ratatui::text::Text::styled(hint, Style::default().fg(super::theme::p().dim))
+        Paragraph::new(ratatui::text::Text::styled(hint, Style::default().fg(super::theme::p().dim))).wrap(ratatui::widgets::Wrap { trim: false })
     } else {
-        ratatui::text::Text::raw(composer.text())
+        // Wrapped by the composer itself, so the cursor lands where the text is.
+        Paragraph::new(composer.wrapped(width).into_iter().map(ratatui::text::Line::raw).collect::<Vec<_>>())
     };
-    f.render_widget(Paragraph::new(text).wrap(ratatui::widgets::Wrap { trim: false }).scroll((skip, 0)).block(block), area);
+    f.render_widget(text.scroll((skip, 0)).block(block), area);
     if focused {
         // A faint tint shows where typing goes (from slk).
         f.buffer_mut().set_style(inner, Style::default().bg(super::theme::p().hover));
