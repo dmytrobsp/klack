@@ -267,8 +267,8 @@ impl App {
     /// Follow the sidebar selection into the message pane.
     fn sync_current(&mut self) {
         let selected = self.sidebar.selected_id().map(String::from);
-        // On a folded section's header the conversation stays as it was.
-        if selected.is_none() && self.sidebar.selected_folded().is_some() {
+        // On a folded section's header (or the Threads row) the conversation stays as it was.
+        if selected.is_none() && (self.sidebar.selected_folded().is_some() || self.sidebar.on_threads()) {
             return;
         }
         if selected != self.current {
@@ -953,6 +953,7 @@ impl App {
             Action::Top => self.sidebar.move_by(isize::MIN / 2),
             Action::Bottom => self.sidebar.move_by(isize::MAX / 2),
             Action::Open if self.sidebar.selected_folded().is_some() => self.sidebar.toggle_selected_fold(&self.ws, self.current.as_deref()),
+            Action::Open if self.sidebar.on_threads() => self.load_threads(false),
             Action::Open => self.focus = Focus::Composer,
             Action::FoldSection => self.sidebar.toggle_selected_fold(&self.ws, self.current.as_deref()),
             Action::Star => {
@@ -3172,6 +3173,8 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
                     app.focus = Focus::Huddle;
                 } else if let Some(i) = app.rail.iter().position(|r| r.contains((m.column, m.row).into())) {
                     app.switch_workspace(i);
+                } else if app.sidebar.threads_at(m.column, m.row) {
+                    app.load_threads(false);
                 } else if let Some(name) = app.sidebar.header_at(m.column, m.row) {
                     app.sidebar.toggle_fold_keeping(&app.ws, &name, app.current.as_deref());
                 } else if app.sidebar.click(m.column, m.row) {

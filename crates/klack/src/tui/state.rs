@@ -11,6 +11,23 @@ pub struct Unread {
     pub mentions: u64,
 }
 
+/// Threads you follow, together: replies you have not read (and mentions among them).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ThreadUnread {
+    pub has_unreads: bool,
+    pub mentions: u64,
+    /// Unread replies, over all threads.
+    pub replies: u64,
+}
+
+impl ThreadUnread {
+    /// From `client.counts`' `threads`, or an `update_global_thread_state` event (same fields).
+    pub fn from_json(v: &Value) -> ThreadUnread {
+        let replies = v["unread_count_by_channel"].as_object().map_or(0, |by| by.values().filter_map(Value::as_u64).sum());
+        ThreadUnread { has_unreads: v["has_unreads"].as_bool().unwrap_or(false), mentions: v["mention_count"].as_u64().unwrap_or(0), replies }
+    }
+}
+
 /// Now in epoch seconds (debug builds: `KLACK_DAYS_LATER=N` pretends it is N days later, to try
 /// what hides after a quiet month).
 pub fn now_secs() -> f64 {
@@ -80,6 +97,8 @@ impl Timeline {
 
 #[derive(Debug, Default)]
 pub struct Workspace {
+    /// Replies in threads you follow not read yet (the sidebar's Threads row).
+    pub thread_unread: ThreadUnread,
     /// Custom emoji pictures are drawn in the message pane (set while drawing: the terminal
     /// draws pictures and the settings allow it).
     pub emoji_pictures: bool,
@@ -578,6 +597,9 @@ impl Workspace {
 
     /// Apply `client.counts` unread state.
     pub fn apply_counts(&mut self, counts: &Value) {
+        if counts["threads"].is_object() {
+            self.thread_unread = ThreadUnread::from_json(&counts["threads"]);
+        }
         for key in ["channels", "mpims", "ims"] {
             for c in counts[key].as_array().into_iter().flatten() {
                 let Some(id) = c["id"].as_str() else { continue };

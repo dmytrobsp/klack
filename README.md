@@ -59,9 +59,10 @@ runtime).
 
 ## The screen
 
-The sidebar on the left (sections, starred conversations, channels, direct messages — the most recently
-active first; channels and DMs without a message for 30 days are left out unless starred, unread or open,
-F6 → Appearance; Ctrl+K still finds them and shows them while open), the
+The sidebar on the left (Threads, sections, starred conversations, channels, direct messages — the most
+recently active first; channels and DMs without a message for 30 days are left out unless starred, unread
+or open, F6 → Appearance; Ctrl+K still finds them and shows them while open; what you have not read is
+bold with a bar in the first column, muted conversations are dimmed and not counted), the
 messages in the middle with a reply pane for threads on the right (in a narrow terminal the thread
 takes the messages' place until you close it), the composer below, and a status
 bar at the bottom: a pill saying where your keys go now (SIDEBAR, MESSAGES, COMPOSE, THREAD, REPLY,
@@ -124,7 +125,7 @@ workspace account in `drafts/<team>-<user>.json` under the local data folder
 | Ctrl+F | search messages (more results load as you move down the list) |
 | mouse | click to select, wheel to scroll (also the help and the preferences; in lists like Ctrl+K, Ctrl+T, F5 and search it moves the selection), hover shading, right-click for a context menu (messages, sidebar entries); a thumb on a pane's right border shows where you are when it scrolls |
 | F5 | activity: mentions, reactions to your messages, thread replies |
-| Ctrl+T | threads: every thread you are in, unread ones first ("2 new"), each with its parent and its first unread (or newest) reply; Enter opens the thread at that reply, `r` loads again, more load at the end of the list |
+| Ctrl+T | threads: every thread you are in, unread ones first (marked with a bar and "2 new"), each with its parent and its first unread (or newest) reply; Enter opens the thread at that reply, `r` loads again, more load at the end of the list. The **Threads** row atop the sidebar opens it too: it turns bold with a bar and the number of unread replies when threads you follow get new ones |
 | `/status [:emoji:] [text] [for 30m\|2h\|today]` · `/status clear` | set or clear your status |
 | `/away` · `/active` · `/dnd 30m` · `/dnd off` | appear away / active · pause or resume notifications |
 | any other `/command` | run by Slack, as its own clients do (`/remind`, `/giphy`, `/shrug`, apps' commands); an answer only you see is marked "only visible to you"; an unknown one says so; a leading space sends the line as text |

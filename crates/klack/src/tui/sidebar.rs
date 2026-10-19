@@ -10,6 +10,8 @@ use super::state::Workspace;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Item {
+    /// The row atop the list that opens Threads (Ctrl+T).
+    Threads,
     Header(String),
     Conversation(String),
     /// A blank row between sections.
@@ -68,6 +70,7 @@ impl Sidebar {
         let keep = self.items.get(self.selected).cloned();
         self.items.clear();
         self.hidden.clear();
+        self.items.push(Item::Threads);
         for (header, ids) in ws.sidebar_groups() {
             // Sections stand apart: a blank row before each (none in compact mode).
             if !self.items.is_empty() && !ws.settings.appearance.compact {
@@ -97,10 +100,21 @@ impl Sidebar {
     /// Where the selection can stop: a conversation, or a folded section's header.
     fn is_stop(&self, item: &Item) -> bool {
         match item {
-            Item::Conversation(_) => true,
+            Item::Conversation(_) | Item::Threads => true,
             Item::Header(h) => self.folded.contains(h),
             Item::Gap => false,
         }
+    }
+
+    /// The Threads row is selected.
+    pub fn on_threads(&self) -> bool {
+        self.items.get(self.selected) == Some(&Item::Threads)
+    }
+
+    /// The Threads row is drawn at a terminal position.
+    pub fn threads_at(&self, column: u16, row: u16) -> bool {
+        let inner = self.area.inner(ratatui::layout::Margin { horizontal: 1, vertical: 1 });
+        inner.contains((column, row).into()) && self.items.get(self.offset + (row - inner.y) as usize) == Some(&Item::Threads)
     }
 
     /// The folded section whose header is selected.
@@ -243,6 +257,7 @@ impl Sidebar {
             .skip(self.offset)
             .take(height)
             .map(|(n, item)| match item {
+                Item::Threads => threads_line(ws, n == self.selected),
                 Item::Header(h) => match self.hidden.get(h) {
                     Some(ids) => folded_line(ws, &shown_name(ws, h), ids, n == self.selected, width),
                     None => header_line(&shown_name(ws, h), width),
@@ -275,6 +290,23 @@ fn header_line(name: &str, width: usize) -> Line<'static> {
         Span::styled(label, Style::default().fg(super::theme::p().accent).add_modifier(Modifier::BOLD)),
         Span::styled("─".repeat(rule), Style::default().fg(super::theme::p().dim)),
     ])
+}
+
+/// "💬 Threads", with how many replies you have not read and the mentions among them.
+fn threads_line(ws: &Workspace, selected: bool) -> Line<'static> {
+    let p = super::theme::p();
+    let t = &ws.thread_unread;
+    let name = if t.has_unreads { Style::default().add_modifier(Modifier::BOLD).fg(p.strong) } else { Style::default().fg(p.read) };
+    let mut spans = vec![unread_mark(t.has_unreads), Span::raw("💬"), Span::styled(super::i18n::tr("Threads"), name)];
+    if t.has_unreads && t.replies > 0 {
+        spans.push(Span::styled(format!(" {}", t.replies), Style::default().fg(p.strong).add_modifier(Modifier::BOLD)));
+    }
+    if t.mentions > 0 {
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(format!(" {} ", t.mentions), Style::default().fg(p.badge_fg).bg(p.badge_bg).add_modifier(Modifier::BOLD)));
+    }
+    let line = Line::from(spans);
+    if selected { line.style(Style::default().bg(p.selection)) } else { line }
 }
 
 /// The first column of a row: a bar in the accent colour when it has something you have not
@@ -418,6 +450,8 @@ mod tests {
         s.move_by(5);
         assert_eq!(s.selected_id(), Some("D1"));
         s.move_by(-10);
+        assert!(s.on_threads(), "the Threads row on top");
+        s.move_by(1);
         assert_eq!(s.selected_id(), Some("C1"));
     }
 
@@ -427,11 +461,12 @@ mod tests {
         let mut w = ws();
         s.rebuild(&w);
         let kinds: Vec<String> = s.items.iter().map(|i| match i {
+            Item::Threads => "{Threads}".into(),
             Item::Header(h) => format!("[{h}]"),
             Item::Conversation(id) => id.clone(),
             Item::Gap => "".into(),
         }).collect();
-        assert_eq!(kinds, ["[Channels]", "C1", "C2", "", "[Direct messages]", "D1"], "a gap before every section but the first");
+        assert_eq!(kinds, ["{Threads}", "", "[Channels]", "C1", "C2", "", "[Direct messages]", "D1"], "the Threads row, then a gap before every section");
         w.settings.appearance.compact = true;
         s.rebuild(&w);
         assert!(!s.items.contains(&Item::Gap), "compact: no gaps");
@@ -441,11 +476,31 @@ mod tests {
         // Scrolling up to a section's first conversation shows its header and the gap above.
         s.rebuild(&ws());
         s.select_id(&ws(), "D1");
-        s.offset = 6;
+        s.offset = 8;
         let backend = ratatui::backend::TestBackend::new(30, 5);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal.draw(|f| s.draw(f, f.area(), &ws(), false)).unwrap();
-        assert_eq!(s.offset, 3);
+        assert_eq!(s.offset, 5);
+    }
+
+    #[test]
+    fn the_threads_row() {
+        let mut w = ws();
+        let text = |l: &Line| l.spans.iter().map(|s| s.content.to_string()).collect::<String>();
+        assert_eq!(text(&threads_line(&w, false)), " 💬Threads", "nothing unread: no bar, no count");
+        w.apply_counts(&serde_json::json!({"threads": {"has_unreads": true, "mention_count": 1, "unread_count_by_channel": {"C1": 2, "D1": 1}}}));
+        let line = threads_line(&w, false);
+        assert_eq!(text(&line), "▌💬Threads 3  1 ", "the bar, three unread replies, one mention");
+        assert!(line.spans[2].style.add_modifier.contains(Modifier::BOLD));
+        // Live: read elsewhere.
+        super::super::live::apply(&mut w, &serde_json::json!({"type": "update_global_thread_state", "has_unreads": false, "mention_count": 0, "unread_count_by_channel": {}}), None);
+        assert_eq!(text(&threads_line(&w, false)), " 💬Threads");
+        // It is a stop for the selection, and keeps the conversation shown.
+        let mut s = Sidebar::default();
+        s.rebuild(&w);
+        assert_eq!(s.selected_id(), Some("C1"), "the first conversation, not the Threads row");
+        s.move_by(-1);
+        assert!(s.on_threads() && s.selected_id().is_none());
     }
 
     #[test]
@@ -466,7 +521,7 @@ mod tests {
         s.rebuild(&w);
         s.select_id(&w, "C2");
         s.toggle_selected_fold(&w, Some("C2"));
-        assert_eq!(s.items, [Item::Header("Channels".into()), Item::Gap, Item::Header("Direct messages".into()), Item::Conversation("D1".into())]);
+        assert_eq!(s.items, [Item::Threads, Item::Gap, Item::Header("Channels".into()), Item::Gap, Item::Header("Direct messages".into()), Item::Conversation("D1".into())]);
         assert_eq!((s.selected_id(), s.selected_folded()), (None, Some("Channels")), "the selection moves onto the folded header");
         let text = |l: Line| l.spans.iter().map(|s| s.content.to_string()).collect::<String>();
         assert_eq!(text(folded_line(&w, "Channels", &["C1".into(), "C2".into()], false, 24)), "▌▸ Channels ──────── 1 2", "one unread conversation, two mentions");
@@ -484,7 +539,8 @@ mod tests {
         // Drawn: the header row is clickable.
         let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(30, 8)).unwrap();
         terminal.draw(|f| s.draw(f, f.area(), &w, false)).unwrap();
-        assert_eq!((s.header_at(3, 1), s.header_at(3, 3), s.header_at(3, 4)), (Some("Channels".into()), Some("Direct messages".into()), None));
+        assert_eq!((s.header_at(3, 3), s.header_at(3, 5), s.header_at(3, 6)), (Some("Channels".into()), Some("Direct messages".into()), None));
+        assert!(s.threads_at(3, 1) && !s.threads_at(3, 2), "and the Threads row");
         // Unfolding the selected section: back on the conversation still shown in it, else
         // on its first.
         s.move_by(-1);
