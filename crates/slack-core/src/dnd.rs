@@ -21,6 +21,8 @@ pub enum ScheduleDays {
     Weekdays,
     /// Each day its own hours (`Schedule::per_day`).
     Custom,
+    /// Slack's value is one klack doesn't know: shown, never written.
+    Unknown,
 }
 
 /// One day of a custom schedule: when notifications come through.
@@ -32,6 +34,18 @@ pub enum DayHours {
     AllDay,
     /// Never: paused all day (Slack's "all_day").
     Never,
+    /// A state klack doesn't know (Slack's value): shown, never written.
+    Unknown(String),
+}
+
+/// One change the user makes to the schedule.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScheduleEdit {
+    Days(ScheduleDays),
+    /// Every day / weekdays: notifications from the first time to the second.
+    Range(String, String),
+    /// Custom: one day (0 = Monday).
+    Day(usize, DayHours),
 }
 
 /// The notification schedule. `range` and `per_day` are both kept whatever `days` is, so
@@ -43,6 +57,9 @@ pub struct Schedule {
     pub range: (String, String),
     /// Custom: Monday … Sunday.
     pub per_day: [DayHours; 7],
+    /// Slack's `dnd_weekdays_off_allday`: with it on, Slack doesn't apply the weekday hours
+    /// (see the spec's research). Only read: klack never writes it.
+    pub weekdays_off_allday: bool,
 }
 
 /// `9:05` for "09:05" or "9:05"; None unless a time of day.
@@ -64,25 +81,62 @@ impl Schedule {
     /// From the `prefs` object of `users.prefs.get`.
     pub fn from_prefs(prefs: &Value) -> Schedule {
         let text = |k: &str, or: &str| prefs[k].as_str().unwrap_or(or).to_string();
-        let days = match (prefs["dnd_enabled"].as_bool().unwrap_or(false), prefs["dnd_days"].as_str()) {
-            (false, _) => ScheduleDays::Off,
-            (true, Some("weekdays")) => ScheduleDays::Weekdays,
-            (true, Some("custom")) => ScheduleDays::Custom,
-            (true, _) => ScheduleDays::EveryDay,
+        // A value Slack has that klack doesn't know is kept as unknown (missing ones get defaults).
+        let days = match (&prefs["dnd_enabled"], prefs["dnd_days"].as_str()) {
+            (Value::Bool(false) | Value::Null, _) => ScheduleDays::Off,
+            (Value::Bool(true), Some("weekdays")) => ScheduleDays::Weekdays,
+            (Value::Bool(true), Some("custom")) => ScheduleDays::Custom,
+            (Value::Bool(true), Some("every_day") | None) => ScheduleDays::EveryDay,
+            _ => ScheduleDays::Unknown,
         };
-        let per_day = std::array::from_fn(|i| match prefs[format!("dnd_enabled_{}", DAYS[i])].as_str() {
-            Some("disabled") => DayHours::AllDay,
-            Some("all_day") => DayHours::Never,
-            _ => DayHours::Between(text(&format!("dnd_before_{}", DAYS[i]), "8:00"), text(&format!("dnd_after_{}", DAYS[i]), "22:00")),
+        let per_day = std::array::from_fn(|i| match &prefs[format!("dnd_enabled_{}", DAYS[i])] {
+            Value::String(s) if s == "disabled" => DayHours::AllDay,
+            Value::String(s) if s == "all_day" => DayHours::Never,
+            Value::String(s) if s == "partial" => DayHours::Between(text(&format!("dnd_before_{}", DAYS[i]), "8:00"), text(&format!("dnd_after_{}", DAYS[i]), "22:00")),
+            Value::Null => DayHours::Between(text(&format!("dnd_before_{}", DAYS[i]), "8:00"), text(&format!("dnd_after_{}", DAYS[i]), "22:00")),
+            other => DayHours::Unknown(other.as_str().map_or_else(|| other.to_string(), String::from)),
         });
-        Schedule { days, range: (text("dnd_end_hour", "8:00"), text("dnd_start_hour", "22:00")), per_day }
+        let weekdays_off_allday = prefs["dnd_weekdays_off_allday"].as_bool().unwrap_or(false);
+        Schedule { days, range: (text("dnd_end_hour", "8:00"), text("dnd_start_hour", "22:00")), per_day, weekdays_off_allday }
+    }
+
+    /// This schedule with `edits` made, the rest as it is (times as Slack writes them); an error
+    /// for an edit klack can't write: on an unknown schedule or day, or with a bad time.
+    pub fn edited(&self, edits: &[ScheduleEdit]) -> Result<Schedule, String> {
+        const UNKNOWN: &str = "Slack has a schedule klack doesn't know: change it in Slack";
+        let time = |t: &str| slack_time(t).ok_or_else(|| format!("{t:?} is not a time of day (H:MM)"));
+        if self.days == ScheduleDays::Unknown {
+            return Err(UNKNOWN.into());
+        }
+        let mut out = self.clone();
+        for edit in edits {
+            match edit {
+                ScheduleEdit::Days(ScheduleDays::Unknown) => return Err("not a kind of schedule".into()),
+                ScheduleEdit::Days(days) => out.days = *days,
+                ScheduleEdit::Range(from, to) => out.range = (time(from)?, time(to)?),
+                ScheduleEdit::Day(i, hours) => {
+                    let day = out.per_day.get_mut(*i).ok_or("no such day")?;
+                    if let DayHours::Unknown(_) = day {
+                        return Err(format!("Slack has hours for {} klack doesn't know: change them in Slack", DAYS[*i]));
+                    }
+                    *day = match hours {
+                        DayHours::Between(from, to) => DayHours::Between(time(from)?, time(to)?),
+                        DayHours::Unknown(_) => return Err("not a day's hours".into()),
+                        other => other.clone(),
+                    };
+                }
+            }
+        }
+        Ok(out)
     }
 
     /// The `prefs` JSON for `users.prefs.set` writing this schedule: only the form `days`
     /// selects. Slack accepts "off" only together with "every day" (it ignores the whole
-    /// write otherwise), so off is written that way. None if a time isn't a time of day.
+    /// write otherwise), so off is written that way; a day klack doesn't know is left out. None
+    /// if a time isn't a time of day, or for a schedule klack doesn't know.
     pub fn to_prefs(&self) -> Option<Value> {
         let days = match self.days {
+            ScheduleDays::Unknown => return None,
             ScheduleDays::Off => return Some(json!({"dnd_enabled": false, "dnd_days": "every_day"})),
             ScheduleDays::EveryDay => "every_day",
             ScheduleDays::Weekdays => "weekdays",
@@ -105,6 +159,8 @@ impl Schedule {
                 }
                 DayHours::AllDay => "disabled",
                 DayHours::Never => "all_day",
+                // Left as Slack has it.
+                DayHours::Unknown(_) => continue,
             };
             out.insert(format!("dnd_enabled_{day}"), state.into());
         }
@@ -124,12 +180,12 @@ impl Schedule {
         };
         let (Some(start), Some(end)) = (minutes(&self.range.1), minutes(&self.range.0)) else { return false };
         match self.days {
-            ScheduleDays::Off => false,
+            ScheduleDays::Off | ScheduleDays::Unknown => false,
             ScheduleDays::EveryDay => span(start, end, true, true),
             ScheduleDays::Weekdays => span(start, end, weekday < 5, (weekday + 6) % 7 < 5),
             ScheduleDays::Custom => match &self.per_day[weekday % 7] {
                 DayHours::Never => true,
-                DayHours::AllDay => false,
+                DayHours::AllDay | DayHours::Unknown(_) => false,
                 // Notifications from `from` to `to`; an inverted range read as quiet from `to` to `from`.
                 DayHours::Between(from, to) => match (minutes(from), minutes(to)) {
                     (Some(from), Some(to)) if from <= to => minute < from || minute >= to,
@@ -144,7 +200,7 @@ impl Schedule {
     pub fn boundaries(&self) -> Vec<u32> {
         let mut out = vec![0];
         let times: Vec<&String> = match self.days {
-            ScheduleDays::Off => Vec::new(),
+            ScheduleDays::Off | ScheduleDays::Unknown => Vec::new(),
             ScheduleDays::EveryDay | ScheduleDays::Weekdays => vec![&self.range.0, &self.range.1],
             ScheduleDays::Custom => self.per_day.iter().flat_map(|d| match d {
                 DayHours::Between(from, to) => vec![from, to],
@@ -266,6 +322,61 @@ mod tests {
         let mut b = s.boundaries();
         b.sort();
         assert_eq!(b, vec![0, 30, 90, 8 * 60, 22 * 60]);
+    }
+
+    #[test]
+    fn unknown_values_are_shown_and_never_written() {
+        let mut p = recorded();
+        p["dnd_days"] = "weekends".into();
+        let s = Schedule::from_prefs(&p);
+        assert_eq!(s.days, ScheduleDays::Unknown, "not taken for every day");
+        assert_eq!(s.to_prefs(), None, "never written");
+        assert!(s.edited(&[ScheduleEdit::Range("10:00".into(), "18:00".into())]).is_err() && s.edited(&[ScheduleEdit::Days(ScheduleDays::Off)]).is_err());
+        assert!(!s.quiet_at(1, 3 * 60));
+        p["dnd_days"] = "custom".into();
+        p["dnd_enabled"] = "yes".into();
+        assert_eq!(Schedule::from_prefs(&p).days, ScheduleDays::Unknown, "dnd_enabled not a bool");
+        // A day's state klack doesn't know: kept as Slack has it (its keys are not written).
+        p["dnd_enabled"] = true.into();
+        p["dnd_enabled_tuesday"] = "sometimes".into();
+        let s = Schedule::from_prefs(&p);
+        assert_eq!(s.per_day[1], DayHours::Unknown("sometimes".into()));
+        let w = s.to_prefs().unwrap();
+        assert!(["dnd_enabled_tuesday", "dnd_before_tuesday", "dnd_after_tuesday"].iter().all(|k| w.get(k).is_none()), "{w}");
+        assert_eq!(w["dnd_enabled_monday"], "partial");
+        assert!(s.edited(&[ScheduleEdit::Day(1, DayHours::AllDay)]).is_err(), "that day is not edited");
+        assert!(s.edited(&[ScheduleEdit::Day(0, DayHours::AllDay)]).is_ok(), "the others are");
+        assert!(!s.quiet_at(1, 3 * 60));
+        // The weekdays "off all day" option is read, never written.
+        p["dnd_weekdays_off_allday"] = true.into();
+        let s = Schedule::from_prefs(&p);
+        assert!(s.weekdays_off_allday && !recorded_schedule().weekdays_off_allday);
+        assert!(s.to_prefs().unwrap().get("dnd_weekdays_off_allday").is_none());
+    }
+
+    fn recorded_schedule() -> Schedule {
+        Schedule::from_prefs(&recorded())
+    }
+
+    #[test]
+    fn edits_change_only_what_they_name() {
+        // Slack's copy as read just before the write: another client changed Tuesday.
+        let mut p = recorded();
+        p["dnd_before_tuesday"] = "7:30".into();
+        let fresh = Schedule::from_prefs(&p);
+        let s = fresh.edited(&[ScheduleEdit::Day(0, DayHours::Never)]).unwrap();
+        assert_eq!((&s.per_day[0], &s.per_day[1]), (&DayHours::Never, &between("7:30", "22:00")), "Tuesday as the other client left it");
+        assert_eq!((s.days, &s.range), (ScheduleDays::Weekdays, &fresh.range));
+        let s = fresh.edited(&[ScheduleEdit::Days(ScheduleDays::EveryDay), ScheduleEdit::Range("09:00".into(), "17:30".into())]).unwrap();
+        assert_eq!((s.days, s.range.0.as_str(), s.range.1.as_str()), (ScheduleDays::EveryDay, "9:00", "17:30"), "times as Slack writes them");
+        assert_eq!(s.per_day, fresh.per_day);
+        let off = fresh.edited(&[ScheduleEdit::Days(ScheduleDays::Off)]).unwrap();
+        assert_eq!(off.to_prefs(), Some(json!({"dnd_enabled": false, "dnd_days": "every_day"})));
+        let day = fresh.edited(&[ScheduleEdit::Day(6, DayHours::Between("9:5".into(), "17:00".into()))]);
+        assert!(day.is_err(), "a bad time is refused before anything is sent");
+        assert!(fresh.edited(&[ScheduleEdit::Range("8:00".into(), "25:00".into())]).is_err());
+        assert!(fresh.edited(&[ScheduleEdit::Days(ScheduleDays::Unknown)]).is_err(), "never set to unknown");
+        assert!(fresh.edited(&[ScheduleEdit::Day(7, DayHours::AllDay)]).is_err());
     }
 
     #[test]

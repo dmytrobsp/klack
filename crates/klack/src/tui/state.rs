@@ -884,7 +884,7 @@ mod tests {
             for (i, d) in days {
                 per_day[*i] = d.clone();
             }
-            Schedule { days: ScheduleDays::Custom, range: ("9:00".into(), "17:00".into()), per_day }
+            Schedule { days: ScheduleDays::Custom, range: ("9:00".into(), "17:00".into()), per_day, weekdays_off_allday: false }
         };
         let jerusalem: chrono_tz::Tz = "Asia/Jerusalem".parse().unwrap();
         let dnd = |info: serde_json::Value, schedule: Schedule| Dnd { schedule: Some(schedule), zone: Some(jerusalem), ..Dnd::from_json(&info) };
@@ -903,7 +903,7 @@ mod tests {
         assert_eq!(weekend.until(1792990800.0), Some(1792994400.0), "Monday 07:00");
         // Slack's daily report (00:00–09:00 seen at 15:20: start today, end tomorrow) stays daily
         // with the schedule known: the afternoon in between is not quiet.
-        let daily = Schedule { days: ScheduleDays::EveryDay, range: ("9:00".into(), "0:00".into()), per_day: std::array::from_fn(|_| between()) };
+        let daily = Schedule { days: ScheduleDays::EveryDay, range: ("9:00".into(), "0:00".into()), per_day: std::array::from_fn(|_| between()), weekdays_off_allday: false };
         let kyiv = Dnd { zone: Some("Europe/Kyiv".parse().unwrap()), ..dnd(serde_json::json!({"dnd_enabled":true,"next_dnd_start_ts":1792270800,"next_dnd_end_ts":1792389600}), daily) };
         assert_eq!(kyiv.until(1792326040.0), None, "15:20");
         assert_eq!(kyiv.until(1792270800.0 + 86_400.0 + 3.0 * 3600.0), Some(1792389600.0), "03:00 the next night");

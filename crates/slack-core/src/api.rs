@@ -6,7 +6,7 @@ use anyhow::{Context, Result, anyhow};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-use crate::dnd::Schedule;
+use crate::dnd::{Schedule, ScheduleDays, ScheduleEdit};
 use crate::session::{USER_AGENT, WorkspaceSession};
 use crate::types::*;
 
@@ -320,12 +320,30 @@ impl Client {
     /// Write the notification schedule in one `users.prefs.set`. Slack answers ok even when it
     /// ignores the write (a value it doesn't take), so the result is read back and compared.
     pub async fn set_dnd_schedule(&self, schedule: &Schedule) -> Result<()> {
-        let prefs = schedule.to_prefs().ok_or_else(|| anyhow!("not a time of day (H:MM)"))?;
+        self.write_dnd_schedule(schedule).await.map(|_| ())
+    }
+
+    /// Make `edits` to the schedule as Slack has it now (read just before, so what another client
+    /// changed meanwhile stays), write it and read it back. Returns the prefs read back (the
+    /// whole `prefs` object).
+    pub async fn edit_dnd_schedule(&self, edits: &[ScheduleEdit]) -> Result<Value> {
+        let schedule = Schedule::from_prefs(&self.user_prefs().await?).edited(edits).map_err(|e| anyhow!(e))?;
+        self.write_dnd_schedule(&schedule).await
+    }
+
+    /// `set_dnd_schedule`, returning the prefs read back.
+    async fn write_dnd_schedule(&self, schedule: &Schedule) -> Result<Value> {
+        let prefs = match schedule.to_prefs() {
+            Some(prefs) => prefs,
+            None if schedule.days == ScheduleDays::Unknown => return Err(anyhow!("a schedule klack doesn't know is not written")),
+            None => return Err(anyhow!("not a time of day (H:MM)")),
+        };
         self.call_raw("users.prefs.set", &[("prefs", prefs.to_string())]).await?;
-        if self.dnd_schedule().await?.to_prefs().as_ref() != Some(&prefs) {
+        let after = self.user_prefs().await?;
+        if Schedule::from_prefs(&after).to_prefs().as_ref() != Some(&prefs) {
             return Err(anyhow!("users.prefs.set: Slack did not take the schedule"));
         }
-        Ok(())
+        Ok(after)
     }
 
     /// `users.prefs.get` (the `prefs` object).

@@ -98,7 +98,10 @@ Two Slack concepts, kept separate in the code, merged for the user where Slack m
   `dnd_enabled` false (the `next_*` values are meaningless: 1, or some time).
 - Times: `H:MM`, any minute; Slack stores "09:00" as "9:00"; "25:00" ignored.
 - `dnd_weekdays_off_allday` is writable (bool); with it true dnd.info showed start = end = Wed 00:00 — meaning
-  unclear, klack leaves it alone.
+  unclear, klack leaves it alone. (V10, Tue 01:35 on B, weekdays mode, restored: with it true the current weekday
+  period disappears and dnd.info gives the same 0-length window at the next midnight whatever the weekday hours
+  are — 17:00/9:00 or 0:30/2:00 — so Slack doesn't apply the weekday hours; its weekend effect can't be seen from
+  a weekday. klack shows it on the weekdays row and never writes it.)
 - dnd.info with a snooze: `snooze_enabled`, `snooze_endtime`, `snooze_remaining`. When the snooze is the next quiet
   time (no schedule, or before the next period) Slack also reports it as `next_dnd_start_ts`/`next_dnd_end_ts`, and
   `dnd_enabled` true even with the schedule off; inside a scheduled period the `next_*` stay the period's.

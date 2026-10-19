@@ -132,14 +132,19 @@ pub fn suggestions(ws: &Workspace, conversation: Option<&str>, trigger: &Trigger
 
 /// Fixed choices for the word being typed after one of klack's commands (`before` holds the
 /// words between the command and it): `/workspace` names (from `workspaces`), `/section`'s
-/// actions, `/dnd` and `/status … for` durations, `/status clear`, `/snippet` languages.
+/// actions, `/dnd` and `/status … for` durations, `/dnd schedule`'s kinds, `/status clear`,
+/// `/snippet` languages.
 pub fn arguments(command: &str, before: &[String], partial: &str, workspaces: &[String]) -> Vec<Suggestion> {
     const DURATIONS: [(&str, &str); 6] = [("30m", "30 minutes"), ("1h", "an hour"), ("2h", "two hours"), ("4h", "four hours"), ("8h", "eight hours"), ("1d", "a day")];
     let pairs = |list: &[(&str, &str)]| list.iter().map(|&(v, d)| (v.to_string(), d.to_string())).collect::<Vec<_>>();
     let choices = match (command, before) {
         ("/workspace", []) => workspaces.iter().map(|w| (w.clone(), "switch to it".to_string())).collect(),
         ("/section", []) => pairs(&[("rename", "rename this conversation's section (then its new name)"), ("delete", "delete this conversation's section")]),
-        ("/dnd", []) => [pairs(&DURATIONS), pairs(&[("off", "resume notifications")])].concat(),
+        ("/dnd", []) => [pairs(&DURATIONS), pairs(&[("off", "resume notifications"), ("schedule", "say or change the notification schedule")])].concat(),
+        // `/dnd schedule <kind> <hours>`: the hours notifications come through.
+        ("/dnd", [s]) if s == "schedule" => pairs(&[("off", "no schedule: notifications at any time"), ("every day", "receive notifications every day from … to …"), ("weekdays", "receive notifications Monday to Friday from … to …")]),
+        ("/dnd", [s, e]) if s == "schedule" && e == "every" => pairs(&[("day", "receive notifications every day from … to …")]),
+        ("/dnd", [s, .., kind]) if s == "schedule" && (kind == "weekdays" || kind == "day") => pairs(&[("9:00-17:00", "receive from 9:00 to 17:00 (or type your hours, 24-hour)")]),
         ("/status", []) => pairs(&[("clear", "clear your status")]),
         ("/status", [.., last]) if last == "for" => [pairs(&DURATIONS[..5]), pairs(&[("today", "until midnight")])].concat(),
         ("/snippet", []) => super::commands::SNIPPET_LANGS.iter().map(|l| (l.to_string(), "language".to_string())).collect(),
@@ -318,7 +323,17 @@ mod tests {
         assert_eq!(got("/section", &[], ""), ["rename", "delete"]);
         assert_eq!(got("/section", &["rename"], ""), Vec::<String>::new(), "the new name is free text");
         assert_eq!(got("/dnd", &[], "o"), ["off"]);
-        assert_eq!(got("/dnd", &[], "").len(), 7);
+        assert_eq!(got("/dnd", &[], "").len(), 8);
+        assert_eq!(got("/dnd", &[], "sc"), ["schedule"]);
+        assert_eq!(got("/dnd", &["schedule"], ""), ["off", "every day", "weekdays"]);
+        assert_eq!(got("/dnd", &["schedule"], "ev"), ["every day"]);
+        assert_eq!(got("/dnd", &["schedule", "every"], ""), ["day"], "\"every \" typed out");
+        assert_eq!(got("/dnd", &["schedule", "every", "day"], ""), ["9:00-17:00"]);
+        assert_eq!(got("/dnd", &["schedule", "weekdays"], "9"), ["9:00-17:00"]);
+        assert_eq!(got("/dnd", &["schedule", "off"], ""), Vec::<String>::new());
+        for text in ["/dnd schedule", "/dnd schedule off", "/dnd schedule every day", "/dnd schedule every day 9:00-17:00", "/dnd schedule weekdays 9:00-17:00"] {
+            assert!(matches!(super::super::commands::parse(text, text), Some(Ok(_))), "{text} is understood");
+        }
         assert_eq!(got("/status", &[], ""), ["clear"]);
         assert_eq!(got("/status", &[":tada:", "party", "for"], "t"), ["today"]);
         assert_eq!(got("/status", &["lunch"], ""), Vec::<String>::new());

@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use super::keymap::{ACTIONS, Action, Key, Keymap};
 use super::settings::Settings;
 use super::state::{LEVELS, Workspace, level_label};
+use slack_core::dnd::{DayHours, ScheduleDays, ScheduleEdit};
 
 /// Day-separator formats offered (strftime).
 pub const DATE_FORMATS: &[&str] = &["%A, %B %-d", "%a %-d %b", "%d.%m.%Y", "%Y-%m-%d", "%m/%d/%Y"];
@@ -68,6 +69,12 @@ pub enum Field {
     Away,
     /// Slack: notifications on, or paused until …
     Notifications,
+    /// Slack: the notification schedule (off / every day / weekdays / custom).
+    Schedule,
+    /// Slack: every day / weekdays, the hours notifications come through.
+    ScheduleHours,
+    /// Slack: a custom schedule's day (0 = Monday): its hours, all day or none.
+    ScheduleDay(usize),
     Input,
     Output,
     HuddleVolume,
@@ -104,8 +111,14 @@ const HIDE_INACTIVE: &[u32] = &[0, 1, 7, 14, 30, 60, 90];
 /// Pause lengths + and - step through, in minutes.
 const PAUSES: &[u64] = &[30, 60, 120, 480];
 
+/// The schedule's kinds, in the order Enter goes through them (from off: every day).
+const KINDS: [ScheduleDays; 4] = [ScheduleDays::Off, ScheduleDays::EveryDay, ScheduleDays::Weekdays, ScheduleDays::Custom];
+
+/// Shown for a schedule (or a day) with a value klack doesn't know; it is never written.
+const UNKNOWN_SCHEDULE: &str = "unknown to klack — change it in Slack";
+
 pub const CATEGORIES: &[(&str, &[Field])] = &[
-    ("Availability", &[Field::Status, Field::Away, Field::Notifications]),
+    ("Availability", &[Field::Status, Field::Away, Field::Notifications, Field::Schedule]),
     ("Appearance", &[Field::Theme, Field::WorkspaceTheme, Field::Compact, Field::HideInactive]),
     ("Messages & media", &[Field::InlineImages, Field::Avatars, Field::LargeAvatars, Field::PreviewRefresh, Field::Graphics, Field::EmojiAsNames, Field::CustomEmojiPictures, Field::SaveDir]),
     ("Language & region", &[Field::Clock24, Field::DateFormat, Field::TimeZone, Field::Language]),
@@ -186,6 +199,9 @@ impl Field {
             Field::Status => "Status",
             Field::Away => "Appear away",
             Field::Notifications => "Notifications",
+            Field::Schedule => "Notification schedule",
+            Field::ScheduleHours => "Receive notifications",
+            Field::ScheduleDay(i) => ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"].get(i).copied().unwrap_or_default(),
             Field::Input => "Microphone",
             Field::Output => "Speaker",
             Field::HuddleVolume => "Huddle volume",
@@ -282,6 +298,26 @@ impl Field {
                     None => "on".into(),
                 }
             }
+            Field::Schedule => match ws.dnd.schedule.as_ref() {
+                None => "not known yet".into(),
+                Some(sch) => match sch.days {
+                    ScheduleDays::Off => "off".into(),
+                    ScheduleDays::EveryDay => "every day".into(),
+                    // Seen on the test account: with it on, Slack applies no weekday hours.
+                    ScheduleDays::Weekdays if sch.weekdays_off_allday => "weekdays (Slack's \"weekdays off all day\" is on, so these hours aren't applied — change it in Slack)".into(),
+                    ScheduleDays::Weekdays => "weekdays".into(),
+                    ScheduleDays::Custom => "custom".into(),
+                    ScheduleDays::Unknown => UNKNOWN_SCHEDULE.into(),
+                },
+            },
+            Field::ScheduleHours => ws.dnd.schedule.as_ref().map(|sch| format!("from {} to {}{}", clock(&sch.range.0, s.time_format()), clock(&sch.range.1, s.time_format()), schedule_zone(ws))).unwrap_or_default(),
+            Field::ScheduleDay(i) => match ws.dnd.schedule.as_ref().and_then(|sch| sch.per_day.get(i)) {
+                Some(DayHours::Between(from, to)) => format!("{} to {}{}", clock(from, s.time_format()), clock(to, s.time_format()), schedule_zone(ws)),
+                Some(DayHours::AllDay) => "all day".into(),
+                Some(DayHours::Never) => "none".into(),
+                Some(DayHours::Unknown(v)) => format!("{v:?}: {UNKNOWN_SCHEDULE}"),
+                None => String::new(),
+            },
             Field::Vips if ws.vip.is_empty() => "none".into(),
             Field::Vips => {
                 let mut names: Vec<String> = ws.vip.iter().map(|u| ws.user_name(u)).collect();
@@ -418,7 +454,7 @@ impl Field {
                 super::sound::play(sounds[i], Settings::device(huddle::devices::OUTPUT_ENV, &s.audio.output), s.audio.sound_volume);
             }
             // Slack-side: see `Prefs::change`.
-            Field::ConversationLevel | Field::ChannelDefault | Field::Keywords | Field::Vips | Field::Status | Field::Away | Field::Notifications | Field::Leader | Field::InsertLeader | Field::GroupHeader(_) | Field::Binding(_) => {}
+            Field::ConversationLevel | Field::ChannelDefault | Field::Keywords | Field::Vips | Field::Status | Field::Away | Field::Notifications | Field::Schedule | Field::ScheduleHours | Field::ScheduleDay(_) | Field::Leader | Field::InsertLeader | Field::GroupHeader(_) | Field::Binding(_) => {}
             Field::Input => s.audio.input = next(&s.audio.input, &devices.0),
             Field::Output => s.audio.output = next(&s.audio.output, &devices.1),
             Field::NoiseSuppression => s.audio.noise_suppression ^= true,
@@ -440,6 +476,8 @@ pub enum SlackChange {
     Keywords(String),
     /// Run this slash command (status, away, pause).
     Command(String),
+    /// Change the notification schedule.
+    Schedule(Vec<slack_core::dnd::ScheduleEdit>),
 }
 
 /// A conversation's own level cycles through the three and back to "default" (no override).
@@ -536,9 +574,10 @@ pub fn recorded(keys: &Keymap, seq: &[Key]) -> String {
 pub fn translatable() -> Vec<String> {
     let all = [
         Field::Theme, Field::WorkspaceTheme, Field::Compact, Field::HideInactive, Field::InlineImages, Field::Avatars, Field::LargeAvatars, Field::PreviewRefresh, Field::Graphics, Field::EmojiAsNames, Field::CustomEmojiPictures, Field::SaveDir, Field::Clock24, Field::DateFormat, Field::TimeZone, Field::Language, Field::Desktop, Field::Sound,
-        Field::ConversationLevel, Field::ChannelDefault, Field::Keywords, Field::Vips, Field::Status, Field::Away, Field::Notifications, Field::Input, Field::Output,
+        Field::ConversationLevel, Field::ChannelDefault, Field::Keywords, Field::Vips, Field::Status, Field::Away, Field::Notifications, Field::Schedule, Field::ScheduleHours, Field::Input, Field::Output,
         Field::HuddleVolume, Field::SoundVolume, Field::MicGain, Field::SpeakingThreshold, Field::NoiseSuppression, Field::EchoCancellation, Field::Camera, Field::JoinSound, Field::SomeoneJoined, Field::SomeoneLeft, Field::RingSound, Field::RingTimeout, Field::AutoDecline, Field::AloneSound, Field::AloneSecs,
     ];
+    let all = [&all[..], &(0..7).map(Field::ScheduleDay).collect::<Vec<_>>()].concat();
     CATEGORIES.iter().map(|c| c.0).chain(["Keys", LEADER_LABEL, INSERT_LEADER_LABEL, RECORD_START, RECORD_DONE, "filter", "to filter", "to change", "Enter keep · Esc clear"]).chain(all.iter().chain(KEYS_SETTINGS).map(|f| f.fixed_label())).map(String::from).collect()
 }
 
@@ -575,6 +614,8 @@ pub struct Prefs {
     pub cats: Rect,
     pub list: Rect,
     pub shown: usize,
+    /// The notification schedule's kind at the last `sync`: which of its rows Availability shows.
+    schedule: Option<slack_core::dnd::ScheduleDays>,
 }
 
 impl Prefs {
@@ -601,7 +642,92 @@ impl Prefs {
             }
             return out;
         };
-        fields.to_vec()
+        let mut out = fields.to_vec();
+        if self.availability_shown() {
+            out.extend(self.schedule_rows());
+        }
+        out
+    }
+
+    /// Whether Availability is shown (its rows follow the schedule).
+    fn availability_shown(&self) -> bool {
+        CATEGORIES.get(self.category).is_some_and(|c| c.0 == "Availability")
+    }
+
+    /// The schedule's rows under its kind: the hours for every day / weekdays, the days for custom.
+    fn schedule_rows(&self) -> Vec<Field> {
+        match self.schedule {
+            Some(ScheduleDays::EveryDay | ScheduleDays::Weekdays) => vec![Field::ScheduleHours],
+            Some(ScheduleDays::Custom) => (0..7).map(Field::ScheduleDay).collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Follow the workspace: the schedule's rows shown, the selection kept on one of them.
+    pub fn sync(&mut self, ws: &Workspace) {
+        self.schedule = ws.dnd.schedule.as_ref().map(|s| s.days);
+        if self.availability_shown() {
+            self.selected = self.selected.min(CATEGORIES[self.category].1.len() + self.schedule_rows().len() - 1);
+        }
+    }
+
+    /// Enter (`step` None) or + / - on a schedule row: the edits to send, or why not; None when
+    /// there is nothing to send (Enter opened the text field).
+    pub fn schedule_change(&mut self, ws: &Workspace, field: Field, step: Option<bool>) -> Option<Result<Vec<ScheduleEdit>, String>> {
+        let typed = self.editing.take();
+        let Some(schedule) = ws.dnd.schedule.as_ref() else { return Some(Err("the notification schedule isn't known yet".into())) };
+        if schedule.days == ScheduleDays::Unknown {
+            return Some(Err(format!("the notification schedule is {UNKNOWN_SCHEDULE}")));
+        }
+        let edit = match field {
+            Field::Schedule => {
+                let i = KINDS.iter().position(|k| *k == schedule.days).unwrap_or(0);
+                ScheduleEdit::Days(KINDS[if step == Some(false) { i + KINDS.len() - 1 } else { i + 1 } % KINDS.len()])
+            }
+            Field::ScheduleHours => match (step, typed) {
+                (Some(_), _) => return None,
+                (None, Some(text)) => match super::commands::receive_hours(&text) {
+                    Ok((from, to)) => ScheduleEdit::Range(from, to),
+                    Err(e) => return Some(Err(e)),
+                },
+                (None, None) => {
+                    self.editing = Some(format!("{}-{}", schedule.range.0, schedule.range.1));
+                    return None;
+                }
+            },
+            Field::ScheduleDay(i) => {
+                let day = schedule.per_day.get(i)?;
+                // Back to hours, a day gets the every-day hours.
+                let hours = || DayHours::Between(schedule.range.0.clone(), schedule.range.1.clone());
+                // Hours → all day → none → hours.
+                let (next, before) = match day {
+                    DayHours::Between(..) => (DayHours::AllDay, DayHours::Never),
+                    DayHours::AllDay => (DayHours::Never, hours()),
+                    DayHours::Never => (hours(), DayHours::AllDay),
+                    DayHours::Unknown(_) => return Some(Err(format!("{} on Slack is {UNKNOWN_SCHEDULE}", field.label()))),
+                };
+                let hours = match (step, typed, day) {
+                    (Some(true), ..) => next,
+                    (Some(false), ..) => before,
+                    (None, Some(text), _) => match text.trim().to_lowercase().as_str() {
+                        "all day" => DayHours::AllDay,
+                        "none" => DayHours::Never,
+                        text => match super::commands::receive_hours(text) {
+                            Ok((from, to)) => DayHours::Between(from, to),
+                            Err(e) => return Some(Err(format!("{e} (or all day, or none)"))),
+                        },
+                    },
+                    (None, None, DayHours::Between(from, to)) => {
+                        self.editing = Some(format!("{from}-{to}"));
+                        return None;
+                    }
+                    (None, None, _) => next,
+                };
+                ScheduleEdit::Day(i, hours)
+            }
+            _ => return None,
+        };
+        Some(Ok(vec![edit]))
     }
 
     pub fn category_name(&self) -> &'static str {
@@ -814,6 +940,14 @@ impl Prefs {
             Field::Away => Some(SlackChange::Command(if ws.presence.get(&ws.self_id) == Some(&false) { "/active" } else { "/away" }.into())),
             // Like ␣an: pause 30 minutes, or resume whatever pauses.
             Field::Notifications => Some(SlackChange::Command(if ws.dnd.active(super::clock::now().timestamp() as f64) { "/dnd off".into() } else { "/dnd 30m".into() })),
+            Field::Schedule | Field::ScheduleHours | Field::ScheduleDay(_) => match self.schedule_change(ws, field, None) {
+                Some(Ok(edits)) => Some(SlackChange::Schedule(edits)),
+                Some(Err(e)) => {
+                    self.saved = Some(Err(e));
+                    None
+                }
+                None => None,
+            },
             Field::Keywords => match self.editing.take() {
                 Some(text) => Some(SlackChange::Keywords(text.split(',').map(str::trim).filter(|k| !k.is_empty()).collect::<Vec<_>>().join(","))),
                 None => {
@@ -839,10 +973,11 @@ impl Prefs {
 
     /// Whether the selected field is kept on Slack or in keys.toml (nothing to save in settings.toml).
     pub fn on_slack(&self, keys: &Keymap) -> bool {
-        matches!(self.selected_field(keys), Some(Field::Leader | Field::InsertLeader | Field::GroupHeader(_) | Field::Binding(_) | Field::ConversationLevel | Field::ChannelDefault | Field::Keywords | Field::Vips | Field::Status | Field::Away | Field::Notifications))
+        matches!(self.selected_field(keys), Some(Field::Leader | Field::InsertLeader | Field::GroupHeader(_) | Field::Binding(_) | Field::ConversationLevel | Field::ChannelDefault | Field::Keywords | Field::Vips | Field::Status | Field::Away | Field::Notifications | Field::Schedule | Field::ScheduleHours | Field::ScheduleDay(_)))
     }
 
     pub fn draw(&mut self, f: &mut Frame, area: Rect, ws: &Workspace, current: Option<&str>, keys: &Keymap) {
+        self.sync(ws);
         let popup = popup_area(area);
         self.area = popup;
         super::media::clear_modal(f, popup);
@@ -951,12 +1086,15 @@ impl Prefs {
             };
             rows.push(if selected { line.style(highlight) } else { line });
         }
-        let hints: &[&str] = match self.category_name() {
+        let fixed: &[&str] = match self.category_name() {
             "Keys" => &[
                 "Enter records keys until a 1 s pause (any key counts, Enter and Esc too). Delete unbinds, r resets.",
                 "/ filters (Enter keeps the filter, Esc clears it). On a group: Enter renames it, i changes its icon.",
             ],
-            "Availability" => &["Status: \":emoji: text for 30m\" (or today); empty clears."],
+            "Availability" => &[
+                "Status: \":emoji: text for 30m\" (or today); empty clears.",
+                "Notification schedule: the hours you receive notifications, paused outside them; saved to Slack at once. Enter or + / - change the kind, hours are typed as 9:00-17:00 (24-hour).",
+            ],
             "Notifications" => &["All but the first are kept on Slack. Keywords: comma-separated."],
             "Audio & video" => &[
                 "+ / - (or Enter) change the levels; a huddle you are in follows at once.",
@@ -965,6 +1103,11 @@ impl Prefs {
             ],
             _ => &[],
         };
+        let mut hints: Vec<String> = fixed.iter().map(|h| h.to_string()).collect();
+        if let Some(sch) = ws.dnd.schedule.as_ref().filter(|s| self.availability_shown() && s.days == ScheduleDays::Custom) {
+            let range = format!("{}-{}", sch.range.0, sch.range.1);
+            hints.push(format!("A day: Enter edits its hours (or type all day / none); + / - go hours · all day (no quiet hours) · none (paused all day). Back to hours, a day gets the every-day ones ({range})."));
+        }
         let shown = rows.len() as u16;
         let rows_shown = rows.len();
         f.render_widget(Paragraph::new(rows), list_area);
@@ -974,12 +1117,50 @@ impl Prefs {
         // The hints under a blank row, wrapped at words and indented like the rows.
         let below = Rect { x: right.x + 1, y: list_area.y + shown + 1, width: right.width.saturating_sub(1), height: list_area.height.saturating_sub(shown + 1) };
         if !hints.is_empty() && below.height > 0 {
-            f.render_widget(Paragraph::new(hints.iter().map(|h| Line::styled(*h, dim)).collect::<Vec<_>>()).wrap(Wrap { trim: true }), below);
+            f.render_widget(Paragraph::new(hints.into_iter().map(|h| Line::styled(h, dim)).collect::<Vec<_>>()).wrap(Wrap { trim: true }), below);
         }
         if let Some(picker) = self.picker.as_mut() {
             picker.draw(f, area, &ws.settings.appearance.theme);
         }
     }
+}
+
+/// " (Asia/Jerusalem)" when the account's zone (the schedule's times are in it) is not klack's.
+pub fn zone_note(account: Option<chrono_tz::Tz>, klack: Option<chrono_tz::Tz>, now: i64) -> String {
+    let Some(account) = account else { return String::new() };
+    let differs = match klack {
+        Some(klack) => klack != account,
+        // The system's zone has no name here: compared by its offsets now and in half a year.
+        None => [now, now + 182 * 86_400].into_iter().any(|t| super::clock::in_zone(Some(account), t).map(|d| *d.offset()) != super::clock::in_zone(None, t).map(|d| *d.offset())),
+    };
+    if differs { format!(" ({})", account.name()) } else { String::new() }
+}
+
+/// `zone_note` for the workspace's account and klack's zone now.
+pub fn schedule_zone(ws: &Workspace) -> String {
+    zone_note(ws.dnd.zone, super::clock::zone(), super::clock::now().timestamp())
+}
+
+/// The schedule in words, its times in `time_format` followed by `zone` (see `zone_note`).
+pub fn describe_schedule(schedule: Option<&slack_core::dnd::Schedule>, time_format: &str, zone: &str) -> String {
+    let Some(sch) = schedule else { return "not known yet".into() };
+    let hours = || format!("receive {}–{}{zone}", clock(&sch.range.0, time_format), clock(&sch.range.1, time_format));
+    match sch.days {
+        ScheduleDays::Off => "off (notifications at any time)".into(),
+        ScheduleDays::EveryDay => format!("every day, {}", hours()),
+        ScheduleDays::Weekdays => format!("weekdays, {}", hours()),
+        ScheduleDays::Custom => "custom (hours per day, F6)".into(),
+        ScheduleDays::Unknown => UNKNOWN_SCHEDULE.into(),
+    }
+}
+
+/// A schedule time ("9:00") in the clock format.
+pub fn clock(t: &str, format: &str) -> String {
+    let time = slack_core::dnd::slack_time(t).and_then(|t| {
+        let (h, m) = t.split_once(':')?;
+        chrono::NaiveTime::from_hms_opt(h.parse().ok()?, m.parse().ok()?, 0)
+    });
+    time.map_or_else(|| t.to_string(), |time| time.format(format).to_string())
 }
 
 /// The preferences window: four fifths of the terminal, at least 84×22 (or all of a smaller
@@ -1161,6 +1342,101 @@ mod tests {
         p.editing = Some(" deploy ,, release notes ".into());
         assert_eq!(p.change(&mut ws, None, &Keymap::default()), Some(SlackChange::Keywords("deploy,release notes".into())));
         assert!(p.editing.is_none() && p.on_slack(&Keymap::default()));
+    }
+
+    #[test]
+    fn the_notification_schedule() {
+        use slack_core::dnd::{DayHours, Schedule, ScheduleDays::*, ScheduleEdit::*};
+        let keys = Keymap::default();
+        let mut ws = Workspace::default();
+        ws.settings.region.clock_24h = true;
+        let mut p = Prefs::default();
+        let rows = |p: &mut Prefs, ws: &Workspace| {
+            p.sync(ws);
+            p.fields(&Keymap::default())
+        };
+        let value = |f: Field, ws: &Workspace| f.value(ws, None, &Keymap::default());
+        let sent = |edits| Some(SlackChange::Schedule(edits));
+        // Not known yet (no prefs): said so, and nothing is sent.
+        assert_eq!(rows(&mut p, &ws), [Field::Status, Field::Away, Field::Notifications, Field::Schedule]);
+        assert_eq!(value(Field::Schedule, &ws), "not known yet");
+        p.selected = 3;
+        assert!(p.on_slack(&keys));
+        assert_eq!(p.change(&mut ws, None, &keys), None);
+        assert!(matches!(p.saved.take(), Some(Err(_))));
+        // Weekdays, notifications 9:00–17:00 (as on the test account).
+        let prefs = serde_json::json!({"dnd_enabled": true, "dnd_days": "weekdays", "dnd_end_hour": "9:00", "dnd_start_hour": "17:00", "dnd_enabled_monday": "partial", "dnd_before_monday": "8:00", "dnd_after_monday": "22:00", "dnd_enabled_saturday": "all_day", "dnd_enabled_sunday": "disabled"});
+        ws.dnd.schedule = Some(Schedule::from_prefs(&prefs));
+        assert_eq!(rows(&mut p, &ws), [Field::Status, Field::Away, Field::Notifications, Field::Schedule, Field::ScheduleHours]);
+        assert_eq!((value(Field::Schedule, &ws).as_str(), value(Field::ScheduleHours, &ws).as_str()), ("weekdays", "from 09:00 to 17:00"));
+        ws.settings.region.clock_24h = false;
+        assert_eq!(value(Field::ScheduleHours, &ws), "from 9:00 AM to 5:00 PM", "in the clock format");
+        ws.settings.region.clock_24h = true;
+        // The kind: Enter (and +) the next, - the one before.
+        assert_eq!(p.change(&mut ws, None, &keys), sent(vec![Days(Custom)]));
+        assert_eq!(p.schedule_change(&ws, Field::Schedule, Some(false)), Some(Ok(vec![Days(EveryDay)])));
+        // The hours: Enter edits them as typed (24-hour), Enter again sends them; bad ones are refused.
+        p.selected = 4;
+        assert!(p.on_slack(&keys));
+        assert_eq!((p.change(&mut ws, None, &keys), p.editing.as_deref()), (None, Some("9:00-17:00")));
+        p.editing = Some("10:00 - 18:00".into());
+        assert_eq!(p.change(&mut ws, None, &keys), sent(vec![Range("10:00".into(), "18:00".into())]));
+        p.editing = Some("10-18".into());
+        assert_eq!(p.change(&mut ws, None, &keys), None);
+        assert!(matches!(p.saved.take(), Some(Err(e)) if e.contains("time of day")));
+        assert_eq!(p.schedule_change(&ws, Field::ScheduleHours, Some(true)), None, "+ / - don't change hours");
+        // Off: turned on again as every day (Enter), or another kind with + / -.
+        ws.dnd.schedule.as_mut().unwrap().days = Off;
+        assert_eq!(rows(&mut p, &ws).len(), 4);
+        p.selected = 3;
+        assert_eq!(value(Field::Schedule, &ws), "off");
+        assert_eq!(p.change(&mut ws, None, &keys), sent(vec![Days(EveryDay)]));
+        assert_eq!(p.schedule_change(&ws, Field::Schedule, Some(false)), Some(Ok(vec![Days(Custom)])));
+        // Custom: a row per day, Monday first: hours, "all day" (no quiet hours) or "none" (paused all day).
+        ws.dnd.schedule.as_mut().unwrap().days = Custom;
+        assert_eq!(rows(&mut p, &ws)[4..], (0..7).map(Field::ScheduleDay).collect::<Vec<_>>());
+        assert_eq!(Field::ScheduleDay(0).label(), "Monday");
+        assert_eq!([0, 5, 6].map(|d| value(Field::ScheduleDay(d), &ws)), ["08:00 to 22:00", "none", "all day"]);
+        // Enter on a day with hours edits them; "all day" / "none" may be typed instead.
+        p.selected = 4;
+        assert_eq!((p.change(&mut ws, None, &keys), p.editing.as_deref()), (None, Some("8:00-22:00")));
+        p.editing = Some("None".into());
+        assert_eq!(p.change(&mut ws, None, &keys), sent(vec![Day(0, DayHours::Never)]));
+        p.editing = Some("all day".into());
+        assert_eq!(p.change(&mut ws, None, &keys), sent(vec![Day(0, DayHours::AllDay)]));
+        p.editing = Some("7:00-9:00".into());
+        assert_eq!(p.change(&mut ws, None, &keys), sent(vec![Day(0, DayHours::Between("7:00".into(), "9:00".into()))]));
+        // Enter on "none" / "all day" steps on (hours → all day → none → hours); back to hours, a
+        // day gets the every-day hours.
+        p.selected = 9;
+        assert_eq!(p.change(&mut ws, None, &keys), sent(vec![Day(5, DayHours::Between("9:00".into(), "17:00".into()))]));
+        p.selected = 10;
+        assert_eq!(p.change(&mut ws, None, &keys), sent(vec![Day(6, DayHours::Never)]));
+        assert_eq!(p.schedule_change(&ws, Field::ScheduleDay(0), Some(true)), Some(Ok(vec![Day(0, DayHours::AllDay)])));
+        assert_eq!(p.schedule_change(&ws, Field::ScheduleDay(0), Some(false)), Some(Ok(vec![Day(0, DayHours::Never)])));
+        assert_eq!(p.schedule_change(&ws, Field::ScheduleDay(6), Some(false)), Some(Ok(vec![Day(6, DayHours::Between("9:00".into(), "17:00".into()))])));
+        // A day klack doesn't know: shown, not changed.
+        ws.dnd.schedule.as_mut().unwrap().per_day[1] = DayHours::Unknown("sometimes".into());
+        assert!(value(Field::ScheduleDay(1), &ws).contains("change it in Slack"));
+        p.selected = 5;
+        assert_eq!(p.change(&mut ws, None, &keys), None);
+        assert!(matches!(p.saved.take(), Some(Err(_))) && p.editing.is_none());
+        assert!(matches!(p.schedule_change(&ws, Field::ScheduleDay(1), Some(true)), Some(Err(_))));
+        // A schedule klack doesn't know: shown, no rows to change, nothing sent.
+        ws.dnd.schedule = Some(Schedule::from_prefs(&serde_json::json!({"dnd_enabled": true, "dnd_days": "weekends"})));
+        assert_eq!(rows(&mut p, &ws).len(), 4);
+        assert_eq!(p.selected, 3, "the selection stays on a row shown");
+        assert!(value(Field::Schedule, &ws).contains("change it in Slack"));
+        assert_eq!(p.change(&mut ws, None, &keys), None);
+        assert!(matches!(p.saved.take(), Some(Err(_))));
+        // Slack's "weekdays off all day" option changes what weekdays means: said.
+        ws.dnd.schedule = Some(Schedule::from_prefs(&serde_json::json!({"dnd_enabled": true, "dnd_days": "weekdays", "dnd_weekdays_off_allday": true})));
+        assert!(value(Field::Schedule, &ws).starts_with("weekdays ("), "{}", value(Field::Schedule, &ws));
+        // The times are the account's zone: named when it isn't klack's.
+        let (jerusalem, kyiv): (chrono_tz::Tz, chrono_tz::Tz) = ("Asia/Jerusalem".parse().unwrap(), "Europe/Kyiv".parse().unwrap());
+        assert_eq!(zone_note(Some(jerusalem), Some(kyiv), 1_800_000_000), " (Asia/Jerusalem)");
+        assert_eq!(zone_note(Some(jerusalem), Some(jerusalem), 1_800_000_000), "");
+        assert_eq!(zone_note(None, Some(kyiv), 1_800_000_000), "", "the account's zone not known: klack's");
     }
 
     #[test]

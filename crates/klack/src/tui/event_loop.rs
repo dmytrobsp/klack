@@ -72,6 +72,9 @@ enum Net {
     Dnd(Value),
     /// `/dnd` paused or resumed notifications (or failed); `dnd.info` asked right after.
     DndSet { resumed: bool, error: Option<String>, info: Option<Value> },
+    /// The notification schedule was changed (the prefs read back) or not; `dnd.info` asked right
+    /// after, and the schedule shown before the change (put back on failure).
+    DndSchedule { result: Result<Value, String>, info: Option<Value>, before: Option<slack_core::dnd::Schedule> },
     /// User prefs fetched again.
     Prefs(Value),
     /// The activity feed.
@@ -661,6 +664,11 @@ impl App {
                     let error = done.err().map(|e| e.to_string());
                     let _ = tx.send(Net::DndSet { resumed: action == DndAction::Resume, error, info });
                 });
+            }
+            Command::DndSchedule(Some(edits)) => self.edit_schedule(edits),
+            Command::DndSchedule(None) => {
+                let zone = super::prefs::schedule_zone(&self.ws);
+                self.status = format!("notification schedule: {}", super::prefs::describe_schedule(self.ws.dnd.schedule.as_ref(), self.ws.settings.time_format(), &zone));
             }
             Command::SectionRename(name) => match self.ws.section_of(&channel).map(|s| s.id.clone()) {
                 Some(id) => self.rename_section(id, name),
@@ -1769,6 +1777,15 @@ impl App {
             }
             return;
         }
+        if matches!(field, super::prefs::Field::Schedule | super::prefs::Field::ScheduleHours | super::prefs::Field::ScheduleDay(_)) {
+            p.saved = None;
+            match p.schedule_change(&self.ws, field, Some(up)) {
+                Some(Ok(edits)) => self.edit_schedule(edits),
+                Some(Err(e)) => p.saved = Some(Err(e)),
+                None => {}
+            }
+            return;
+        }
         if field.adjust(&mut self.ws.settings, up, false) {
             p.saved = Some(super::settings::save(&self.ws.settings).map(|path| path.display().to_string()));
             self.audio_changed(Some(field));
@@ -1910,6 +1927,7 @@ impl App {
         let Some(change) = change else { return };
         match change {
             SlackChange::Command(text) => self.run_text(&text),
+            SlackChange::Schedule(edits) => self.edit_schedule(edits),
             SlackChange::ConversationLevel { channel, level } => self.set_conversation_level(channel, level),
             SlackChange::ChannelDefault(level) => {
                 self.ws.notify.global = level.clone();
@@ -1920,6 +1938,23 @@ impl App {
                 self.save_notification_pref("global_keywords", words, None, false);
             }
         }
+    }
+
+    /// Change the notification schedule: shown at once, then Slack's copy is edited (read just
+    /// before, so another client's change stays), read back and `dnd.info` asked again — any
+    /// schedule write brings back a quiet period that was ended early.
+    fn edit_schedule(&mut self, edits: Vec<slack_core::dnd::ScheduleEdit>) {
+        let before = self.ws.dnd.schedule.clone();
+        if let Some(s) = before.as_ref().and_then(|s| s.edited(&edits).ok()) {
+            self.ws.dnd.schedule = Some(s);
+        }
+        self.status = "changing the notification schedule…".into();
+        let (client, tx) = (self.client.clone(), self.net.clone());
+        tokio::spawn(async move {
+            let result = client.edit_dnd_schedule(&edits).await.map_err(|e| e.to_string());
+            let info = client.call_raw("dnd.info", &[]).await.inspect_err(|e| tracing::warn!("dnd.info failed: {e}")).ok();
+            let _ = tx.send(Net::DndSchedule { result, info, before });
+        });
     }
 
     /// Run a slash command typed out (`/status clear`) in the current conversation.
@@ -3809,6 +3844,15 @@ fn handle_main(app: &mut App, ev: Event) -> bool {
     true
 }
 
+/// The note after the schedule changed (or `/dnd schedule`): the schedule `described`, and
+/// `until` when notifications are paused now.
+fn schedule_note(described: String, until: Option<String>) -> String {
+    match until {
+        Some(t) => format!("notification schedule: {described} · paused now, until {t}"),
+        None => format!("notification schedule: {described}"),
+    }
+}
+
 /// The note after `/dnd`: what is in effect now, from `dnd.info` (`until`: when paused, till when).
 fn dnd_note(resumed: bool, until: Option<String>) -> String {
     match (resumed, until) {
@@ -4276,6 +4320,29 @@ fn handle_net(app: &mut App, msg: Net) {
             // An answer that is already out of date is not asked again.
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64();
             app.dnd_refreshing = app.ws.dnd.stale(now);
+        }
+        Net::DndSchedule { result, info, before } => {
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64();
+            if let Some(v) = &info {
+                app.ws.dnd.set_info(v);
+                app.dnd_refreshing = app.ws.dnd.stale(now);
+            }
+            match result {
+                Ok(prefs) => {
+                    let dnd: serde_json::Map<String, Value> = prefs.as_object().into_iter().flatten().filter(|(k, _)| k.starts_with("dnd_")).map(|(k, v)| (k.clone(), v.clone())).collect();
+                    app.ws.apply_prefs(&Value::Object(dnd));
+                    let format = app.ws.settings.time_format();
+                    let until = info.and_then(|_| app.ws.dnd.until(now)).and_then(|t| super::clock::until_label(t as i64, now as i64, format));
+                    app.status = schedule_note(super::prefs::describe_schedule(app.ws.dnd.schedule.as_ref(), format, &super::prefs::schedule_zone(&app.ws)), until);
+                }
+                Err(e) => {
+                    app.ws.dnd.schedule = before;
+                    app.status = format!("changing the notification schedule failed: {e}");
+                    if let Some(p) = app.prefs.as_mut() {
+                        p.saved = Some(Err(e));
+                    }
+                }
+            }
         }
         Net::DndSet { resumed, error, info } => {
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64();
@@ -4970,6 +5037,24 @@ mod tests {
         assert_eq!(super::dnd_note(true, Some("09:00".into())), "notifications are still paused until 09:00", "never a silent resume");
         assert_eq!(super::dnd_note(false, Some("14:30".into())), "notifications paused until 14:30");
         assert_eq!(super::dnd_note(false, None), "notifications paused");
+    }
+
+    #[test]
+    fn schedule_notes() {
+        use slack_core::dnd::{ScheduleDays, Schedule};
+        let weekdays = Schedule::from_prefs(&serde_json::json!({"dnd_enabled": true, "dnd_days": "weekdays", "dnd_end_hour": "10:00", "dnd_start_hour": "18:00"}));
+        let say = |s: Option<&Schedule>, zone: &str| crate::tui::prefs::describe_schedule(s, "%H:%M", zone);
+        assert_eq!(say(Some(&weekdays), ""), "weekdays, receive 10:00–18:00");
+        let every_day = Schedule { days: ScheduleDays::EveryDay, ..weekdays.clone() };
+        assert_eq!(say(Some(&every_day), " (Asia/Jerusalem)"), "every day, receive 10:00–18:00 (Asia/Jerusalem)");
+        assert_eq!(say(Some(&Schedule { days: ScheduleDays::Off, ..weekdays.clone() }), ""), "off (notifications at any time)");
+        assert!(say(Some(&Schedule { days: ScheduleDays::Custom, ..weekdays.clone() }), "").starts_with("custom"));
+        assert!(say(Some(&Schedule { days: ScheduleDays::Unknown, ..weekdays.clone() }), "").contains("change it in Slack"));
+        assert_eq!(say(None, ""), "not known yet");
+        // After a change: the schedule, and that notifications are paused now if they are (any
+        // schedule write brings back a quiet period that was ended early).
+        assert_eq!(super::schedule_note(say(Some(&weekdays), ""), None), "notification schedule: weekdays, receive 10:00–18:00");
+        assert_eq!(super::schedule_note(say(Some(&weekdays), ""), Some("Wed 10:00".into())), "notification schedule: weekdays, receive 10:00–18:00 · paused now, until Wed 10:00");
     }
 
     #[test]

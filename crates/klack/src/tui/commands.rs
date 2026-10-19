@@ -1,6 +1,8 @@
 //! Slash commands typed into a composer. Others of the form `/name …` go to Slack (its own and
 //! apps' commands); text with a leading space, or not shaped like a command, is sent as text.
 
+use slack_core::dnd::{ScheduleDays, ScheduleEdit};
+
 use super::files::{UploadCommand, parse_upload};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -24,6 +26,8 @@ pub enum Command {
     Away(bool),
     /// Pause or resume notifications.
     Dnd(DndAction),
+    /// Change the notification schedule (None: say what it is).
+    DndSchedule(Option<Vec<ScheduleEdit>>),
     /// Rename the section holding the current conversation.
     SectionRename(String),
     /// Delete the section holding the current conversation.
@@ -67,6 +71,41 @@ impl DndAction {
 /// What plain `/dnd` does now (its suggestion says so).
 pub fn dnd_doing(paused: bool) -> &'static str {
     if paused { "resume notifications" } else { "pause notifications for 30 minutes" }
+}
+
+/// `/dnd schedule`'s rest: `off`, `every day [9:00-17:00]` or `weekdays [9:00-17:00]` (the hours
+/// notifications come through); nothing says what it is.
+fn parse_schedule(rest: &str) -> Result<Command, String> {
+    let usage = "usage: /dnd schedule off | every day 9:00-17:00 | weekdays 9:00-17:00 (the hours you receive notifications)";
+    let rest = rest.trim().to_lowercase();
+    let after = |word: &str| rest.strip_prefix(word).filter(|r| r.is_empty() || r.starts_with(char::is_whitespace)).map(str::trim);
+    let (days, hours) = match (after("off"), after("every day"), after("weekdays")) {
+        (Some(""), ..) => return Ok(Command::DndSchedule(Some(vec![ScheduleEdit::Days(ScheduleDays::Off)]))),
+        (_, Some(hours), _) => (ScheduleDays::EveryDay, hours),
+        (_, _, Some(hours)) => (ScheduleDays::Weekdays, hours),
+        _ if rest.is_empty() => return Ok(Command::DndSchedule(None)),
+        _ if after("custom").is_some() => return Err("per-day hours are set in F6 → Availability".into()),
+        _ => return Err(usage.into()),
+    };
+    let mut edits = vec![ScheduleEdit::Days(days)];
+    if !hours.is_empty() {
+        let (from, to) = receive_hours(hours).map_err(|e| format!("{e} ({usage})"))?;
+        edits.push(ScheduleEdit::Range(from, to));
+    }
+    Ok(Command::DndSchedule(Some(edits)))
+}
+
+/// `9:00-17:00` (spaces or an en dash allowed): the hours notifications come through, as Slack
+/// writes them.
+pub fn receive_hours(text: &str) -> Result<(String, String), String> {
+    let text: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+    let (from, to) = text.split_once(['-', '–']).ok_or("the hours as from-to, e.g. 9:00-17:00")?;
+    let time = |t: &str| slack_core::dnd::slack_time(t).ok_or_else(|| format!("{t:?} is not a time of day (H:MM)"));
+    let (from, to) = (time(from)?, time(to)?);
+    if from == to {
+        return Err("from and to are the same time".into());
+    }
+    Ok((from, to))
 }
 
 /// When a status clears.
@@ -192,7 +231,7 @@ pub const OWN: &[(&str, &str, &str)] = &[
     ("/status", "[:emoji:] [text] [for 30m|today] | clear", "set or clear your status"),
     ("/away", "", "appear away"),
     ("/active", "", "appear active"),
-    ("/dnd", "[30m|2h|1d | off]", "pause notifications, or resume them"),
+    ("/dnd", "[30m|2h|1d | off | schedule …]", "pause notifications, or resume them"),
     ("/workspace", "[name]", "list this profile's workspaces, or switch"),
     ("/prefs", "", "preferences (also F6)"),
 ];
@@ -237,6 +276,7 @@ pub fn parse(text: &str, mrkdwn: &str) -> Option<Result<Command, String>> {
         "/active" | "/back" if rest.is_empty() => Ok(Command::Away(false)),
         "/dnd" if rest.is_empty() => Ok(Command::Dnd(DndAction::Toggle)),
         "/dnd" if rest == "off" => Ok(Command::Dnd(DndAction::Resume)),
+        "/dnd" if rest.split_whitespace().next() == Some("schedule") => parse_schedule(&rest["schedule".len()..]),
         "/dnd" => match minutes(rest) {
             Some(m) => Ok(Command::Dnd(DndAction::Pause(m))),
             None => Err("usage: /dnd (pause 30 min, or resume) · /dnd 30m|2h|1d · /dnd off".into()),
@@ -346,6 +386,30 @@ mod tests {
         assert_eq!((DndAction::Toggle.decided(false), DndAction::Toggle.decided(true)), (DndAction::Pause(30), DndAction::Resume));
         assert_eq!((DndAction::Pause(60).decided(true), DndAction::Resume.decided(false)), (DndAction::Pause(60), DndAction::Resume), "only a toggle decides");
         assert_eq!((dnd_doing(false), dnd_doing(true)), ("pause notifications for 30 minutes", "resume notifications"), "what plain /dnd does now");
+    }
+
+    #[test]
+    fn dnd_schedule() {
+        use slack_core::dnd::{ScheduleDays::*, ScheduleEdit::*};
+        let edits = |text: &str| match parse(text) {
+            Some(Ok(Command::DndSchedule(edits))) => Ok(edits),
+            Some(Err(e)) => Err(e),
+            other => panic!("{text}: {other:?}"),
+        };
+        assert_eq!(edits("/dnd schedule"), Ok(None), "says what it is");
+        assert_eq!(edits("/dnd schedule off"), Ok(Some(vec![Days(Off)])));
+        assert_eq!(edits("/dnd schedule every day 9:00-17:00"), Ok(Some(vec![Days(EveryDay), Range("9:00".into(), "17:00".into())])));
+        assert_eq!(edits("/dnd schedule weekdays 22:00 - 08:30"), Ok(Some(vec![Days(Weekdays), Range("22:00".into(), "8:30".into())])), "as Slack writes them");
+        assert_eq!(edits("/dnd schedule Weekdays 10:00–18:00"), Ok(Some(vec![Days(Weekdays), Range("10:00".into(), "18:00".into())])), "any case, an en dash");
+        assert_eq!(edits("/dnd schedule weekdays"), Ok(Some(vec![Days(Weekdays)])), "the hours as they are");
+        assert!(edits("/dnd schedule weekdays 25:00-8:00").unwrap_err().contains("time of day"));
+        assert!(edits("/dnd schedule every day 9:00").is_err());
+        assert!(edits("/dnd schedule every day 9:00-9:00").is_err(), "no hours at all");
+        assert!(edits("/dnd schedule weekdaysx").is_err());
+        assert!(edits("/dnd schedule custom").unwrap_err().contains("F6"), "per-day hours are set in F6");
+        assert!(edits("/dnd schedule sometimes").unwrap_err().starts_with("usage"));
+        assert_eq!(receive_hours(" 7:05-23:15 "), Ok(("7:05".into(), "23:15".into())));
+        assert_eq!(parse("/dnd 30m"), Some(Ok(Command::Dnd(DndAction::Pause(30)))), "durations as before");
     }
 
     #[test]
