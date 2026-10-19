@@ -607,7 +607,7 @@ pub fn build_lines_range(ws: &Workspace, t: &Timeline, from: usize, to: usize, w
                 let (label, size) = if large { (format!(" {} ", initials(&ws.author(m))), super::media::AVATAR_SIZE_LARGE) } else { (initials(&ws.author(m)), super::media::AVATAR_SIZE) };
                 header.insert(0, Span::raw(" "));
                 header.insert(0, Span::styled(label, Style::default().bg(color).fg(ratatui::style::Color::Black).add_modifier(Modifier::BOLD)));
-                if let Some(file) = m.user.as_deref().and_then(|u| ws.users.get(u)).and_then(|u| super::media::avatar_file_sized(u, large)).filter(|_| avatars == Avatars::Pictures) {
+                if let Some(file) = super::media::message_avatar(ws, m, large).filter(|_| avatars == Avatars::Pictures) {
                     slots.push(ImageSlot { line: out.len(), col: 0, file, size });
                 }
                 if large {

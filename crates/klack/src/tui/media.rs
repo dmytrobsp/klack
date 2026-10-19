@@ -51,7 +51,27 @@ pub fn avatar_file(user: &slack_core::types::User) -> Option<File> {
 /// under its own id, since cache entries are encoded for one size).
 pub fn avatar_file_sized(user: &slack_core::types::User, large: bool) -> Option<File> {
     let source = if large { user.profile.image_192.as_deref().or(user.profile.image_48.as_deref()) } else { user.profile.image_48.as_deref() };
-    let url = slack_core::reqwest::Url::parse(source?).ok()?;
+    let id = if large { format!("{AVATAR_PREFIX}{}@192", user.id) } else { format!("{AVATAR_PREFIX}{}", user.id) };
+    picture_file(id, source?)
+}
+
+/// The picture beside a message: its author's, else (bots, apps, webhooks) the icon it carries in
+/// `bot_profile.icons` or `icons`.
+pub fn message_avatar(ws: &super::state::Workspace, m: &slack_core::types::Message, large: bool) -> Option<File> {
+    if let Some(file) = m.user.as_deref().and_then(|u| ws.users.get(u)).and_then(|u| avatar_file_sized(u, large)) {
+        return Some(file);
+    }
+    let icons = m.bot_profile.as_ref().map(|b| &b["icons"]).filter(|i| i.is_object()).or(m.icons.as_ref())?;
+    let keys: &[&str] = if large { &["image_192", "image_132", "image_72", "image_64", "image_48"] } else { &["image_48", "image_64", "image_72", "image_36"] };
+    let source = keys.iter().find_map(|k| icons[*k].as_str())?;
+    let who = m.bot_id.as_deref().or(m.username.as_deref())?;
+    picture_file(format!("{AVATAR_PREFIX}bot:{who}{}", if large { "@large" } else { "" }), source)
+}
+
+/// A picture as a pseudo file for the thumbnail cache: only from Slack's CDN (a Gravatar URL's
+/// `d=` fallback is Slack's default picture), never an SVG (it cannot be decoded).
+fn picture_file(id: String, source: &str) -> Option<File> {
+    let url = slack_core::reqwest::Url::parse(source).ok()?;
     let slack_hosted = |u: &slack_core::reqwest::Url| u.scheme() == "https" && u.host_str().is_some_and(|h| h == "slack-edge.com" || h.ends_with(".slack-edge.com"));
     let url = if slack_hosted(&url) {
         url
@@ -59,7 +79,9 @@ pub fn avatar_file_sized(user: &slack_core::types::User, large: bool) -> Option<
         let fallback = url.query_pairs().find(|(k, _)| k == "d").and_then(|(_, v)| slack_core::reqwest::Url::parse(&v).ok())?;
         slack_hosted(&fallback).then_some(fallback)?
     };
-    let id = if large { format!("{AVATAR_PREFIX}{}@192", user.id) } else { format!("{AVATAR_PREFIX}{}", user.id) };
+    if url.path().ends_with(".svg") {
+        return None;
+    }
     Some(File { id, mimetype: "image/png".into(), thumb_360: Some(url.to_string()), ..Default::default() })
 }
 
@@ -470,6 +492,7 @@ mod tests {
         assert!(avatar_file(&user("https://secure.gravatar.com/avatar/x.jpg?s=48&d=identicon")).is_none());
         assert!(avatar_file(&user("https://evil.example/slack-edge.com/a.png")).is_none());
         assert!(avatar_file(&user("https://notslack-edge.com/a.png")).is_none());
+        assert!(avatar_file(&user("https://a.slack-edge.com/9cc0056/img/avatars/slack_system_user/slack_logo_mark.svg")).is_none(), "SVG (the Slack system user's): initials instead");
         // The large picture has its own cache id; without one the small picture is used.
         let mut u = user("https://avatars.slack-edge.com/2026-10-18/1_48.png");
         assert_eq!(avatar_file_sized(&u, true).unwrap().id, "avatar:U1@192");
@@ -489,5 +512,25 @@ mod tests {
         // Non-images get no box.
         let pdf = File { mimetype: "application/pdf".into(), ..Default::default() };
         assert_eq!(thumb_cells(&pdf, font, 36, 10), None);
+    }
+
+    #[test]
+    fn bots_and_apps_get_their_icons() {
+        let ws = super::super::state::Workspace::default();
+        let bot = |v: serde_json::Value| -> slack_core::types::Message { serde_json::from_value(v).unwrap() };
+        // An app's message (bot_profile, as Slack documents it) and a webhook post (icons).
+        let app = bot(serde_json::json!({"ts": "1.0", "subtype": "bot_message", "bot_id": "B1", "bot_profile": {"id": "B1", "name": "deploys", "icons": {"image_36": "https://avatars.slack-edge.com/b_36.png", "image_48": "https://avatars.slack-edge.com/b_48.png", "image_72": "https://avatars.slack-edge.com/b_72.png"}}}));
+        let small = message_avatar(&ws, &app, false).unwrap();
+        assert_eq!((small.id.as_str(), small.thumb_360.as_deref()), ("avatar:bot:B1", Some("https://avatars.slack-edge.com/b_48.png")));
+        assert_eq!(message_avatar(&ws, &app, true).unwrap().thumb_360.as_deref(), Some("https://avatars.slack-edge.com/b_72.png"), "the larger icon for two-row pictures");
+        let hook = bot(serde_json::json!({"ts": "2.0", "subtype": "bot_message", "bot_id": "B2", "username": "ci", "icons": {"image_48": "https://avatars.slack-edge.com/h_48.png"}}));
+        assert_eq!(message_avatar(&ws, &hook, false).unwrap().thumb_360.as_deref(), Some("https://avatars.slack-edge.com/h_48.png"));
+        let elsewhere = bot(serde_json::json!({"ts": "3.0", "bot_id": "B3", "icons": {"image_48": "https://example.com/i.png"}}));
+        assert!(message_avatar(&ws, &elsewhere, false).is_none(), "nothing fetched from third parties");
+        let emoji_only = bot(serde_json::json!({"ts": "4.0", "bot_id": "B4", "icons": {"emoji": ":robot_face:"}}));
+        assert!(message_avatar(&ws, &emoji_only, false).is_none());
+        // The real system message from the testbed: USLACK, bot B01, no icons.
+        let system = bot(serde_json::json!({"ts": "5.0", "user": "USLACK", "subtype": "bot_message", "bot_id": "B01"}));
+        assert!(message_avatar(&ws, &system, false).is_none());
     }
 }

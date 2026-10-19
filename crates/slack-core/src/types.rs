@@ -205,6 +205,8 @@ pub struct Message {
     pub channel: Option<String>,
     pub client_msg_id: Option<String>,
     pub bot_profile: Option<Value>,
+    /// A bot or webhook message's own icon (`image_48`, …), when it was posted with one.
+    pub icons: Option<Value>,
     pub hidden: bool,
     /// Conversations this message is pinned in.
     pub pinned_to: Vec<String>,
