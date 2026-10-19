@@ -918,7 +918,8 @@ impl App {
             Some(Action::OpenThread) => self.status = "already in the thread".into(),
             Some(Action::React) => {
                 if let (Some(channel), Some(ts)) = (self.current.clone(), self.selected_ts()) {
-                    self.picker = Some((EmojiPicker::default(), channel, ts));
+                    let picker = self.ws.find_message(&channel, &ts).map(|m| EmojiPicker::for_message(&m.reactions, &self.ws.self_id)).unwrap_or_default();
+                    self.picker = Some((picker, channel, ts));
                 }
             }
             Some(Action::Edit) => {

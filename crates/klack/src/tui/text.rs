@@ -116,6 +116,12 @@ pub fn emoji(ws: &Workspace, name: &str, unicode: Option<&str>) -> String {
     if let Some(s) = unicode.and_then(format::decode_unicode) {
         return s;
     }
+    glyph(&ws.custom_emoji, name).unwrap_or_else(|| format!(":{name}:"))
+}
+
+/// The emoji `name` (maybe with `::skin-tone-N`) shows: a standard one, or a workspace alias
+/// of one; None for a picture or an unknown name.
+pub fn glyph(custom: &std::collections::HashMap<String, String>, name: &str) -> Option<String> {
     let (base, tone) = match name.split_once("::") {
         Some((b, t)) => (b, Some(t)),
         None => (name, None),
@@ -129,13 +135,10 @@ pub fn emoji(ws: &Workspace, name: &str, unicode: Option<&str>) -> String {
             "skin-tone-6" => Some(emojis::SkinTone::Dark),
             _ => None,
         });
-        return tone.and_then(|t| e.with_skin_tone(t)).unwrap_or(e).as_str().to_string();
+        return Some(tone.and_then(|t| e.with_skin_tone(t)).unwrap_or(e).as_str().to_string());
     }
     // Workspace aliases (`alias:thumbsup`) resolve to standard emoji.
-    if let Some(glyph) = custom_glyph(&ws.custom_emoji, name) {
-        return glyph;
-    }
-    format!(":{name}:")
+    custom_glyph(custom, name)
 }
 
 fn text_style(s: format::Style) -> Style {
