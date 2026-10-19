@@ -138,7 +138,6 @@ pub fn line(pill: Pill, info: &Info, showcmd: &str, hints: &[(String, String)], 
         Shape { full_pill: true, info: 1, hints: n.min(3), key_only: false },
         Shape { full_pill: false, info: 1, hints: n.min(3), key_only: false },
         Shape { full_pill: false, info: 1, hints: n.min(2), key_only: false },
-        Shape { full_pill: false, info: 1, hints: n.min(1), key_only: false },
         Shape { full_pill: false, info: 2, hints: n.min(1), key_only: true },
     ];
     let build = |s: Shape, note_room: Option<usize>| {
@@ -243,7 +242,7 @@ mod tests {
     fn at_the_end_only_keys_and_dot_remain() {
         let s = at(24);
         assert!(s.contains('●') && s.contains('?') && s.contains('␣'), "{s:?}");
-        assert!(!s.contains("help") || s.ends_with("? help "), "{s:?}");
+        assert!(s.starts_with(" N ") && !s.contains("help") && !s.contains("@1") && !s.contains("unread") && s.ends_with("␣ ? "), "{s:?}");
         let t = at(18);
         assert!(t.contains('●') && t.ends_with("␣ ? ") && !t.contains("help"), "{t:?}");
         let tiny = at(10);
