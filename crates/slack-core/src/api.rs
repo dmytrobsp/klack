@@ -50,6 +50,12 @@ impl Client {
     /// Call `method` and return the raw JSON (after the `ok` check). Retries on HTTP 429
     /// honouring `Retry-After`.
     pub async fn call_raw(&self, method: &str, params: &[(&str, String)]) -> Result<Value> {
+        // Debug builds only: `KLACK_FAIL=chat.delete,chat.update` makes those calls fail, to
+        // test what the app does when Slack refuses.
+        #[cfg(debug_assertions)]
+        if std::env::var("KLACK_FAIL").is_ok_and(|v| v.split(',').any(|m| m.trim() == method)) {
+            return Err(anyhow!("{method}: injected_failure (KLACK_FAIL)"));
+        }
         let url = format!("{}{}", self.session.api_base(), method);
         let mut form: Vec<(&str, &str)> = params.iter().map(|(k, v)| (*k, v.as_str())).collect();
         form.push(("token", self.session.token.as_str()));

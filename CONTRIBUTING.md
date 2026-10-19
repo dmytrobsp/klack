@@ -25,7 +25,8 @@ workspace of your own for testing: `klack --profile <name>` keeps separate sessi
 tone or test video …) lets a second account play the other person in tests.
 
 Logs: `~/.cache/klack/<profile>/klack.log` (macOS `~/Library/Caches/klack/…`, Windows
-`%LOCALAPPDATA%\klack\cache\…`); more detail with `KLACK_LOG=klack=debug`. Tokens and cookies are
+`%LOCALAPPDATA%\klack\cache\…`); more detail with `KLACK_LOG=klack=debug`. Debug builds only: `KLACK_FAIL=chat.delete,chat.update` makes those
+Web API calls fail, to try what klack does when Slack refuses (release builds ignore it). Tokens and cookies are
 never logged — keep it that way.
 
 ## Layout

@@ -171,6 +171,7 @@ folders, as they were then.)
 | I9 — Ctrl+K beyond 50: the switcher's list was cut at 50 entries (so in a big workspace only a narrower query found the rest); it now keeps up to 2 000 (the list scrolls, ranking that many is cheap), PageUp / PageDown move a page (new `page_up` / `page_down` in the switcher's keys), and "N matches" shows on the border when they do not all fit | done | UNIT (300 matching channels all listed; paging to the end) + LIVE regression only (the switcher opens and lists; the test workspace has fewer than 50 conversations, so the cut and the count cannot be seen there) | cc2d9a0 |
 | I10 — a previewed channel kept up to date: a channel you are not in gets no RTM events, so while one is previewed klack fetches its newest page again every `preview_refresh_secs` (F6 → Messages & media → "Refresh previewed channels": off / 5 / 10 / 15 / 30 / 60 / 120 s, default 15; `[messages] preview_refresh_secs`, 0 = off). The page is merged with `Timeline::refresh_newest`: fresh copies replace the held ones (edits, reactions, reply counts), top-level messages in its time span that it lacks were deleted, older pages and the paging state stay | done | LIVE (A previewed #browse-test, which A is not in; B posted → shown after 12 s, edited → after 9 s, deleted → gone after 14 s; the F6 field reads "every 15 s") + UNIT (edits, a deletion and a new message from a refreshed page; older messages and `has_more` untouched) | 36f8007 |
 | I11 — section emoji: a custom section's emoji (Slack's `emoji` field, e.g. `rocket`) now stands before its name in the sidebar header, folded or not ("🚀 Projects", or ":rocket: Projects" with emoji shown as names); the fold state stays keyed by the plain name. Set through `users.channelSections.set … emoji=` (there is no `.update`, found by probing) | done | LIVE (Projects given 🚀 on Slack: shown on start; changed to ⭐ while klack ran → the header followed within 3 s through `channel_section_upserted`; the emoji removed again afterwards) + UNIT (the shown name, built-in sections without, emoji as names) | af49f60 |
+| I12 — the delete rollback, verified: klack only offers to delete your own messages and Slack let the owner delete even in an archived channel, so a refusal could not be provoked; debug builds now take `KLACK_FAIL=method,…` to make those Web API calls fail (`Client::call_raw`, compiled out of release builds; CONTRIBUTING documents it) | done | LIVE (with `KLACK_FAIL=chat.delete`: A's own message selected, d → "Delete this message? y / n", y → status "delete failed: chat.delete: injected_failure (KLACK_FAIL)", the message back on screen, still on Slack; deleted afterwards without the switch) | (this commit) |
 | Huddle invites: a desktop notification when someone else starts a huddle in a DM / group DM ("X started a huddle · Press F3 to join"); not for channels, muted conversations, DND, or a huddle you are in | done | LIVE (B started a huddle in the DM → D-Bus `Notify` "Dmytro started a huddle" captured; DM showed 🎧1) + UNIT (rules, start vs join) | e6f5ee6 |
 | Audio device selection: `SLACKTUI_AUDIO_INPUT` / `SLACKTUI_AUDIO_OUTPUT` match a device id or name (case-insensitive part); a named device that is missing is an error, never a fallback; `ctl audio-devices` lists `<id> — <name>` | done | LIVE (listing; `SLACKTUI_AUDIO_OUTPUT=nonexistent-device` → call bar "no sound: no output device matching…", no playback stream created) + UNIT (matching) | 4f91f03 |
 | Huddles in the TUI: F3 joins/starts the current conversation's huddle (`rooms.join`) or leaves; joins **muted** (the microphone is opened only while unmuted); F4 mute/unmute (AUDIO_CONTROL); call bar with participants, speaking 🔊 and muted 🔇; the meeting mix plays on the default output (cpal, resampled); sidebar shows `🎧N` on conversations with an active huddle (live `sh_room_join/leave/update`) | done | LIVE (B started a huddle in #social with a 440 Hz tone → `🎧1` appeared in A's sidebar; F3 joined: call bar listed B speaking and A muted; slacktui's own PipeWire playback stream carried the tone, −29.8 dB at 440 Hz vs −77.5 dB at 2 kHz; B's roster showed A `muted: true`; F3 left and B's roster dropped A) + UNIT (resampler, mixdown, roster rules, huddle tracking). **Microphone capture NOT verified live** (not recording the user's room); the send path itself is verified with `ctl huddle-media --tone`. | 885e712 |
@@ -190,7 +191,7 @@ Tests: `cargo test` → slack-core 10, huddle 33, klack 184 (+1 ignored: the `bu
 
 ## Next (in order, each as a small, separately verified step)
 
-**NEXT UP: I12** (queue I below; I0–I11 done) — the user asked on 2026-10-19 (after v0.1.0) to knock off the Known gaps; H5 is done (public at github.com/dmytrobsp/klack, v0.1.0 released). Routine pushes to master need no asking; release tags do.
+**NEXT UP: I13** (queue I below; I0–I12 done) — the user asked on 2026-10-19 (after v0.1.0) to knock off the Known gaps; H5 is done (public at github.com/dmytrobsp/klack, v0.1.0 released). Routine pushes to master need no asking; release tags do.
 
 I. Known gaps, asked by the user on 2026-10-19 ("knock off known gaps"); run autonomously, one verified
    commit per step, pushed after each:
@@ -206,8 +207,8 @@ I. Known gaps, asked by the user on 2026-10-19 ("knock off known gaps"); run aut
   ~~I9 Ctrl+K beyond 50 entries~~ — done.
   ~~I10 a previewed channel kept up to date~~ — done.
   ~~I11 section emoji in the sidebar headers~~ — done.
-  I12 (NEXT). Delete rollback verified live (deleting someone else's message fails on Slack).
-  I13. Seeking in videos.
+  ~~I12 delete rollback verified live~~ — done (with a debug-only failure switch).
+  I13 (NEXT). Seeking in videos.
   Not taken (not fixable or not testable here): live microphone capture (the user's real microphone), many-person
   huddle layouts (two test accounts), untested terminals (Konsole …), the clipboard with `kitty -e`, raising
   the terminal on a notification click, per-workspace state across switches.
@@ -390,7 +391,6 @@ Hard (huddles video; the user's real camera/screen must not be captured in tests
 ## Known gaps / not verified
 
 - A single long jump up (e.g. 56 000 lines at once) builds the whole distance once (~116 ms for 20 000 messages, release); paging and later frames are cheap.
-- Delete rollback has not been seen against a real API failure (Slack let the owner delete even in an archived channel; edit rollback, same `Net::Restore` path, is LIVE since A3).
 - The unread line (H4g): with more unread than the first history page (50), the line's message is not loaded and no line shows; without `client.counts` (a failed request) there is no unread state at all.
 - Drafts are saved 2 s after typing pauses (and on switches and leaving); a crash loses at most those last 2 s.
 - The clipboard hand-off needs the terminal to outlive klack: with `kitty -e klack` the whole kitty instance exits and the copy is lost.
