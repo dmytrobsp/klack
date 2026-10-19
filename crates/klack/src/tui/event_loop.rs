@@ -2088,6 +2088,25 @@ impl App {
         order
     }
 
+    /// A dialog or popup is open over the panes (the composer's cursor must not show through).
+    fn covered(&self) -> bool {
+        self.menu.is_some()
+            || self.help.is_some()
+            || self.prefs.is_some()
+            || self.switcher.is_some()
+            || self.mover.is_some()
+            || self.activity.is_some()
+            || self.threads.is_some()
+            || self.profile.is_some()
+            || self.details.is_some()
+            || self.search.is_some()
+            || self.player.is_some()
+            || self.viewer.is_some()
+            || self.snippet.is_some()
+            || self.confirm.is_some()
+            || self.picker.is_some()
+    }
+
     /// The selected message of the focused pane.
     fn selected_ts(&self) -> Option<String> {
         match self.focus {
@@ -3704,7 +3723,9 @@ fn draw_composer(f: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &App,
     if focused {
         // A faint tint shows where typing goes (from slk).
         f.buffer_mut().set_style(inner, Style::default().bg(super::theme::p().hover));
-        f.set_cursor_position((inner.x + col, inner.y + row - skip));
+        if !app.covered() {
+            f.set_cursor_position((inner.x + col, inner.y + row - skip));
+        }
     }
 }
 
