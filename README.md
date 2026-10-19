@@ -85,7 +85,10 @@ unread); a click on a tile switches, like Alt+1…9.
   firefox` (or `chrome`) takes the session from a browser you are signed in to Slack with. Its cookie
   database is copied and read, never changed; Chrome's (and Chromium's, Edge's, Brave's) cookies are
   decrypted with its key from the system keyring (Linux) or the Keychain (macOS, which asks once).
-  `--browser-profile DIR` picks one profile; otherwise every profile is tried, freshest first. Chrome
+  `--browser-profile DIR` picks one profile (or a browser's folder of profiles); otherwise every profile
+  is tried. When several sign in to the workspace as different people, klack lists them (the browser's
+  profile name and the account) and asks which; without a terminal to ask in it takes the one used
+  most recently. Chrome
   on Windows cannot be read this way (app-bound encryption); Firefox can.
 - **By hand:** with `--no-browser`, or when no such browser is found, klack asks for the value of
   the `d` cookie for `slack.com` (sign in in any browser, then devtools → Application → Cookies);

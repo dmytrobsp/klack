@@ -43,7 +43,8 @@ enum Command {
         /// Take the session from a browser you are signed in to Slack with (read-only).
         #[arg(long, value_enum, value_name = "BROWSER")]
         from_browser: Option<login_import::Source>,
-        /// With --from-browser: the browser profile folder to read (default: all of them).
+        /// With --from-browser: the browser profile folder to read, or a folder of profiles (default:
+        /// all of them). Several signing in as different people: you are asked which.
         #[arg(long, value_name = "DIR", requires = "from_browser")]
         browser_profile: Option<std::path::PathBuf>,
     },
@@ -91,19 +92,41 @@ async fn main() -> Result<()> {
                 if found.is_empty() {
                     anyhow::bail!("no Slack session in {} — sign in to Slack there first", login_import::label(source));
                 }
+                // Every profile that signs in to the workspace, one per account (freshest first).
+                let mut working: Vec<(std::path::PathBuf, session::WorkspaceSession)> = Vec::new();
                 for f in &found {
                     match session::session_from_cookie(&url, &f.cookie).await {
-                        Ok(s) => {
-                            eprintln!("took the session from {} ({})", login_import::label(source), f.profile.display());
-                            signed_in = Some(s);
-                            break;
-                        }
+                        Ok(s) if !working.iter().any(|(_, w)| w.user_id == s.user_id) => working.push((f.profile.clone(), s)),
+                        Ok(_) => {}
                         Err(e) => tracing::debug!("{}: {e:#}", f.profile.display()),
                     }
                 }
-                if signed_in.is_none() {
+                if working.is_empty() {
                     anyhow::bail!("{} has Slack cookies, but none signs in to {url} (signed out, or another workspace)", login_import::label(source));
                 }
+                let pick = if working.len() > 1 && std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+                    eprintln!("{} profiles sign in to {url}:", working.len());
+                    for (n, (p, s)) in working.iter().enumerate() {
+                        eprintln!("  {}) {} — {}", n + 1, login_import::profile_name(p), s.user_name);
+                    }
+                    loop {
+                        eprint!("which one? [1-{}] ", working.len());
+                        let mut line = String::new();
+                        if std::io::stdin().read_line(&mut line)? == 0 {
+                            anyhow::bail!("no profile chosen");
+                        }
+                        match line.trim().parse::<usize>() {
+                            Ok(n) if (1..=working.len()).contains(&n) => break n - 1,
+                            _ => eprintln!("a number from 1 to {}, please", working.len()),
+                        }
+                    }
+                } else {
+                    // Not asked: the freshest (the list starts with it).
+                    0
+                };
+                let (profile, s) = working.swap_remove(pick);
+                eprintln!("took the session from {} ({})", login_import::label(source), login_import::profile_name(&profile));
+                signed_in = Some(s);
             } else if given.is_none() && !no_browser {
                 match login_browser::find() {
                     Some(browser) => {

@@ -26,7 +26,9 @@ pub struct Found {
 /// Every Slack session cookie in `source`'s profiles (or just in `profile`), freshest first.
 pub async fn find(source: Source, profile: Option<&Path>) -> Result<Vec<Found>> {
     let profiles: Vec<PathBuf> = match profile {
-        Some(p) => vec![p.to_path_buf()],
+        // One profile, or a browser's folder of profiles.
+        Some(p) if is_profile(p) => vec![p.to_path_buf()],
+        Some(p) => profiles_with(&[p.to_path_buf()], &["cookies.sqlite", "Network/Cookies", "Cookies"]),
         None => match source {
             Source::Firefox => firefox_profiles(),
             Source::Chrome => chrome_profiles(),
@@ -54,6 +56,25 @@ pub async fn find(source: Source, profile: Option<&Path>) -> Result<Vec<Found>> 
     }
     found.sort_by(|a, b| b.last_used.cmp(&a.last_used));
     Ok(found)
+}
+
+fn is_profile(p: &Path) -> bool {
+    ["cookies.sqlite", "Network/Cookies", "Cookies"].iter().any(|d| p.join(d).is_file())
+}
+
+/// How the browser names `profile`: Chrome's display name from `Local State` ("Work"), else the
+/// folder's name.
+pub fn profile_name(profile: &Path) -> String {
+    let folder = profile.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let shown = profile
+        .parent()
+        .and_then(|root| std::fs::read_to_string(root.join("Local State")).ok())
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .and_then(|v| v["profile"]["info_cache"][&folder]["name"].as_str().map(String::from));
+    match shown {
+        Some(name) if name != folder => format!("{name} ({folder})"),
+        _ => folder,
+    }
 }
 
 pub fn label(source: Source) -> &'static str {
@@ -309,5 +330,18 @@ mod tests {
         found.sort_by(|a, b| b.last_used.cmp(&a.last_used));
         assert_eq!(found.iter().map(|f| f.cookie.as_str()).collect::<Vec<_>>(), ["xoxd-newer", "xoxd-older"]);
         std::fs::remove_dir_all(&profile).unwrap();
+    }
+
+    #[test]
+    fn chrome_profiles_go_by_their_display_names() {
+        let root = std::env::temp_dir().join(format!("klack-test-chrome-{}", rand_suffix()));
+        std::fs::create_dir_all(root.join("Profile 2")).unwrap();
+        std::fs::create_dir_all(root.join("Default")).unwrap();
+        std::fs::write(root.join("Local State"), r#"{"profile": {"info_cache": {"Profile 2": {"name": "Work"}, "Default": {"name": "Default"}}}}"#).unwrap();
+        assert_eq!(profile_name(&root.join("Profile 2")), "Work (Profile 2)");
+        assert_eq!(profile_name(&root.join("Default")), "Default", "no repetition");
+        std::fs::remove_file(root.join("Local State")).unwrap();
+        assert_eq!(profile_name(&root.join("Profile 2")), "Profile 2", "no Local State: the folder");
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }
