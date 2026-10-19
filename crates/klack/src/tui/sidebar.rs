@@ -244,8 +244,8 @@ impl Sidebar {
             .take(height)
             .map(|(n, item)| match item {
                 Item::Header(h) => match self.hidden.get(h) {
-                    Some(ids) => folded_line(ws, h, ids, n == self.selected, width),
-                    None => header_line(h, width),
+                    Some(ids) => folded_line(ws, &shown_name(ws, h), ids, n == self.selected, width),
+                    None => header_line(&shown_name(ws, h), width),
                 },
                 Item::Gap => Line::raw(""),
                 Item::Conversation(id) if n != self.selected && self.hover == Some(n) => conversation_line(ws, id, false, self.drafts.contains(id), width).style(Style::default().bg(super::theme::p().hover)),
@@ -256,6 +256,14 @@ impl Sidebar {
         let title = format!(" {} ", ws.team_name);
         f.render_widget(Paragraph::new(lines).block(Block::default().borders(Borders::ALL).border_style(border).title(title)), area);
         super::scroll::indicator(f, area, self.offset, height.min(self.items.len().saturating_sub(self.offset)), self.items.len(), border);
+    }
+}
+
+/// A section's name as shown: with its emoji, when it has one (custom sections).
+fn shown_name(ws: &Workspace, name: &str) -> String {
+    match ws.sections.iter().find(|s| s.kind == "standard" && s.name == name && !s.emoji.is_empty()) {
+        Some(s) => format!("{} {name}", super::text::emoji(ws, &s.emoji, None)),
+        None => name.to_string(),
     }
 }
 
@@ -470,5 +478,15 @@ mod tests {
         assert_eq!(s.selected_id(), Some("C1"), "folding another section keeps the selection");
         s.toggle_fold(&w, "Direct messages");
         assert!(s.items.contains(&Item::Conversation("D1".into())));
+    }
+
+    #[test]
+    fn section_emoji() {
+        let mut w = ws();
+        w.sections = vec![super::super::state::Section { id: "L1".into(), kind: "standard".into(), name: "Projects".into(), emoji: "rocket".into(), ..Default::default() }];
+        assert_eq!(shown_name(&w, "Projects"), "🚀 Projects");
+        assert_eq!(shown_name(&w, "Channels"), "Channels", "built-in sections have none");
+        w.settings.messages.emoji_as_names = true;
+        assert_eq!(shown_name(&w, "Projects"), ":rocket: Projects");
     }
 }
