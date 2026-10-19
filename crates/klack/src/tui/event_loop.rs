@@ -154,6 +154,8 @@ struct App {
     call_bar_wanted: Option<(slack_core::types::File, (u16, u16))>,
     /// Open activity view (F5).
     activity: Option<super::activity::Activity>,
+    /// The save dialog (`s`).
+    save: Option<super::save::SaveDialog>,
     /// Open Threads view (Ctrl+T).
     threads: Option<super::threads::Threads>,
     /// When the previewed channel was last fetched again.
@@ -1774,6 +1776,8 @@ impl App {
         if let Some((picker, _, _)) = self.picker.as_mut() {
             let len = picker.candidates(&self.ws.custom_emoji).len();
             picker.move_by(step, len);
+        } else if let Some(d) = self.save.as_mut() {
+            d.move_by(step);
         } else if let Some(help) = self.help.as_mut() {
             help.scroll_by(3 * step);
         } else if let Some(p) = self.prefs.as_mut() {
@@ -1855,6 +1859,8 @@ impl App {
             Some(Context::Switcher)
         } else if let Some(m) = &self.mover {
             Some(if m.naming.is_some() { Context::TextField } else { Context::Mover })
+        } else if let Some(d) = &self.save {
+            Some(if d.editing { Context::TextField } else { Context::Save })
         } else if self.activity.is_some() {
             Some(Context::Activity)
         } else if self.threads.is_some() {
@@ -2108,7 +2114,7 @@ impl App {
         }
     }
 
-    /// Save the attachments of message `ts` to the downloads folder.
+    /// `s` on message `ts`: the save dialog for its files.
     fn save_files(&mut self, ts: &str) {
         let Some(channel) = self.current.clone() else { return };
         let files = self.ws.find_message(&channel, ts).map(|m| m.files.clone()).unwrap_or_default();
@@ -2116,7 +2122,19 @@ impl App {
             self.status = "no files in this message".into();
             return;
         }
-        let dir = super::files::download_dir();
+        self.save = Some(super::save::SaveDialog::new(files, &super::files::download_dir()));
+    }
+
+    /// Enter in the save dialog: the ticked files into its folder (never over a file there).
+    fn save_ticked(&mut self) {
+        let Some(dialog) = self.save.as_ref() else { return };
+        let files = dialog.chosen();
+        if files.is_empty() {
+            self.status = "tick a file to save (Space)".into();
+            return;
+        }
+        let dir = dialog.folder_path();
+        self.save = None;
         self.status = format!("saving {} file(s) to {}…", files.len(), dir.display());
         for file in files {
             let (client, tx, dir) = (self.client.clone(), self.net.clone(), dir.clone());
@@ -2242,6 +2260,7 @@ impl App {
             || self.switcher.is_some()
             || self.mover.is_some()
             || self.activity.is_some()
+            || self.save.is_some()
             || self.threads.is_some()
             || self.profile.is_some()
             || self.details.is_some()
@@ -2516,6 +2535,7 @@ async fn run_workspace(
         details: None,
         profile: None,
         activity: None,
+        save: None,
         threads: None,
         preview_polled: None,
         prefs: None,
@@ -2852,6 +2872,49 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
                 (None, Some(Action::Bottom)) => m.move_by(isize::MAX / 2),
                 (None, Some(Action::Open)) if on_new => m.naming = Some(String::new()),
                 (None, Some(Action::Open)) => app.finish_move(),
+                _ => {}
+            }
+        }
+        Event::Key(k) if k.kind != KeyEventKind::Release && app.save.is_some() => {
+            let editing = app.save.as_ref().is_some_and(|d| d.editing);
+            let (field, save) = (app.action_in(Context::TextField, &k), app.action_in(Context::Save, &k));
+            let Some(d) = app.save.as_mut() else { return true };
+            if editing {
+                match field {
+                    _ if save == Some(Action::Folder) => d.complete(),
+                    Some(Action::Open) => app.save_ticked(),
+                    Some(Action::Close) => d.editing = false,
+                    Some(Action::Erase) => {
+                        d.folder.pop();
+                    }
+                    _ => {
+                        if let (KeyCode::Char(c), true) = (k.code, Key::from_event(&k).is_text()) {
+                            d.folder.push(c);
+                        }
+                    }
+                }
+            } else {
+                match save {
+                    Some(Action::Up) => d.move_by(-1),
+                    Some(Action::Down) => d.move_by(1),
+                    Some(Action::Tick) => d.tick(),
+                    Some(Action::TickAll) => d.tick_all(),
+                    Some(Action::Folder) => d.editing = true,
+                    Some(Action::Open) => app.save_ticked(),
+                    Some(Action::Close) => app.save = None,
+                    _ => {}
+                }
+            }
+        }
+        // The save dialog: a click on a file ticks it, one outside closes the dialog.
+        Event::Mouse(m) if app.save.is_some() && matches!(m.kind, MouseEventKind::Down(_)) => {
+            let Some(d) = app.save.as_mut() else { return true };
+            match d.row_at(m.column, m.row) {
+                Some(n) if m.kind == MouseEventKind::Down(MouseButton::Left) => {
+                    d.selected = n;
+                    d.tick();
+                }
+                None if !d.area.contains((m.column, m.row).into()) => app.save = None,
                 _ => {}
             }
         }
@@ -3774,6 +3837,9 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         Some(Confirm::DeleteSection { name, .. }) => draw_confirm(f, main, &format!("Delete the section {name}? y / n")),
         None => {}
     }
+    if let Some(d) = app.save.as_mut() {
+        d.draw(f, main);
+    }
     if let Some(v) = app.viewer.as_mut() {
         v.draw(f, body, &app.media.picker);
     }
@@ -3864,6 +3930,7 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
 fn mode_label(top: Context, focus: Focus, editing: bool) -> (&'static str, bool) {
     match top {
         Context::Menu => ("MENU", false),
+        Context::Save => ("SAVE", false),
         Context::Help => ("KEYS", false),
         Context::Preferences => ("PREFS", false),
         Context::TextField => ("EDIT", true),

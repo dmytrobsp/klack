@@ -187,11 +187,12 @@ pub enum Context {
     Help,
     Preferences,
     Menu,
+    Save,
     Huddle,
 }
 
 impl Context {
-    pub const ALL: [Context; 22] = [
+    pub const ALL: [Context; 23] = [
         Context::Global,
         Context::Sidebar,
         Context::Messages,
@@ -213,6 +214,7 @@ impl Context {
         Context::Help,
         Context::Preferences,
         Context::Menu,
+        Context::Save,
         Context::Huddle,
     ];
 
@@ -240,6 +242,7 @@ impl Context {
             Context::Help => "help",
             Context::Preferences => "preferences",
             Context::Menu => "menu",
+            Context::Save => "save",
             Context::Huddle => "huddle_view",
         }
     }
@@ -268,6 +271,7 @@ impl Context {
             Context::Help => "This help",
             Context::Preferences => "Preferences",
             Context::Menu => "Context menu (right-click)",
+            Context::Save => "Save files (s)",
             Context::Huddle => "Huddle view (F8)",
         }
     }
@@ -329,6 +333,9 @@ pub enum Action {
     Star,
     ContextMenu,
     Paste,
+    Tick,
+    TickAll,
+    Folder,
     MoveToSection,
     FoldSection,
     OpenThread,
@@ -607,6 +614,15 @@ actions! {
         Open "choose" "do it" ["enter", "space"]
         Close "close" "close" ["esc", "q"]
     }
+    Save {
+        Up "up" "previous file" ["up", "k"]
+        Down "down" "next file" ["down", "j"]
+        Tick "tick" "tick / untick the file" ["space"]
+        TickAll "tick_all" "tick all / none" ["a"]
+        Folder "folder" "edit the folder (Tab there completes it)" ["tab"]
+        Open "save" "save the ticked files" ["enter"]
+        Close "close" "close" ["esc", "q"]
+    }
     Help {
         Up "up" "scroll up" ["up", "k"]
         Down "down" "scroll down" ["down", "j"]
@@ -797,6 +813,7 @@ pub fn hints_for(context: Context) -> &'static [(Action, &'static str)] {
         Context::Help => &[(PageDown, "page"), (Close, "close")],
         Context::Preferences => &[(Open, "change"), (NextTab, "category"), (Close, "close")],
         Context::Menu => &[(Open, "choose"), (Close, "close")],
+        Context::Save => &[(Open, "save"), (Tick, "tick"), (TickAll, "all"), (Folder, "folder"), (Close, "close")],
         Context::Huddle => &[(Open, "maximize"), (NextTab, "next tile"), (Close, "back")],
     }
 }

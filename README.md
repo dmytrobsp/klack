@@ -136,7 +136,7 @@ workspace account in `drafts/<team>-<user>.json` under the local data folder
 | F6 | preferences (also `/prefs`): availability, appearance, messages, region, notifications, audio, keys |
 | Enter (on a message) | open its thread |
 | m · Menu key · Shift+F10 (on a message) | its context menu, as a right-click opens it |
-| r · e · d · y · Y · o · s · P | react · edit · delete · copy text · copy link · open what the message holds — a link in your browser, a picture, a video (Space pauses, ← / → jump 10 s), a snippet; with several, a list to pick from · save files · pin |
+| r · e · d · y · Y · o · s · P | react · edit · delete · copy text · copy link · open what the message holds — a link in your browser, a picture, a video (Space pauses, ← / → jump 10 s), a snippet; with several, a list to pick from · save files (a dialog: Space / `a` pick which, Tab changes the folder for this save, Enter saves) · pin |
 | u | profile card of the author (←/→: people the message mentions); Enter messages them, h starts a huddle |
 | Enter · Alt+Enter | send · new line |
 | Ctrl+V | paste from the clipboard: text is typed in; a picture (a screenshot) or files copied in a file manager are attached above the box (✕, or Backspace in an empty box, removes one) and Enter sends them with your text — or on their own — as one message. Your terminal's own paste (Ctrl+Shift+V) only carries text, and over SSH there is no clipboard to read |
