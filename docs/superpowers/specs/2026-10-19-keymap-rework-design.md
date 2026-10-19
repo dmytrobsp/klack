@@ -227,7 +227,9 @@ notification level (bell) · `l` leave (y/n). (`z` fold is direct.)
   at the top level **(shown, adjusted by Claude to avoid the `h` group clash)**. "Message them"
   stays on `Enter`.
 - Right-click menus stay as they are; their key column shows the new sequences (`␣r`) (Claude's
-  call).
+  call). **Inside an open menu, an item's key runs it** **(user: the menu "lists shortcuts, but
+  doesnt respect them")**: the last key of the item's sequence (`r` for `␣r`), since in the menu
+  Space already means "choose" (Claude's call on which key).
 
 ### which-key panel
 
