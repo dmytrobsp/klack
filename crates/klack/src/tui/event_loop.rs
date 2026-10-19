@@ -874,7 +874,7 @@ impl App {
             }
             Some(Action::Open) => {
                 if let Some(ts) = self.selected_ts() {
-                    self.open_viewer(&ts);
+                    self.open_things(&ts, in_thread);
                 }
             }
             Some(Action::CopyLink) => {
@@ -902,7 +902,8 @@ impl App {
             self.sidebar.selected = n;
             let id = self.sidebar.selected_id().unwrap_or_default().to_string();
             let channel = self.ws.conversations.get(&id).is_some_and(|c| !c.is_dm() && c.is_member);
-            self.menu = Some(Menu::new(Target::Conversation, at, &self.keys, false, channel, self.ws.starred.contains(&id)));
+            let none = super::menu::Offers { own: false, open: false, save: false, text: false };
+            self.menu = Some(Menu::new(Target::Conversation, at, &self.keys, none, channel, self.ws.starred.contains(&id)));
         }
     }
 
@@ -910,7 +911,7 @@ impl App {
     fn message_menu(&mut self, thread: bool, ts: String, at: (u16, u16)) {
         use super::menu::{Menu, Target};
         let channel = self.current.clone().unwrap_or_default();
-        let own = self.ws.find_message(&channel, &ts).is_some_and(|m| m.user.as_deref() == Some(self.ws.self_id.as_str()));
+        let Some(offers) = self.ws.find_message(&channel, &ts).map(|m| super::menu::Offers::of(m, &self.ws.self_id)) else { return };
         if thread {
             self.thread_pane.selected = Some(ts);
             self.focus = Focus::Thread;
@@ -918,7 +919,7 @@ impl App {
             self.messages.selected = Some(ts);
             self.focus = Focus::Messages;
         }
-        self.menu = Some(Menu::new(Target::Message { thread }, at, &self.keys, own, false, false));
+        self.menu = Some(Menu::new(Target::Message { thread }, at, &self.keys, offers, false, false));
     }
 
     /// Run the context menu's chosen item, like its key would.
@@ -936,6 +937,13 @@ impl App {
                 self.message_action(action, thread);
             }
             (Target::Conversation, Item::Do(action)) => self.sidebar_action(action),
+            (Target::Opener { thread, ts }, Item::Thing(n)) => {
+                self.focus = if thread { Focus::Thread } else { Focus::Messages };
+                if let Some(thing) = menu.things.get(n).cloned() {
+                    self.open_thing(&ts, thing);
+                }
+            }
+            (_, Item::Thing(_)) | (Target::Opener { .. }, _) => {}
             (_, Item::Details) => self.open_details(),
             (_, Item::Leave) => {
                 if let Some(id) = self.current.clone() {
@@ -2119,42 +2127,65 @@ impl App {
         }
     }
 
-    /// Open the viewer on the images of message `ts` in the current conversation, or play
-    /// its first video.
-    fn open_viewer(&mut self, ts: &str) {
-        let Some(channel) = self.current.clone() else { return };
-        let video = self.ws.find_message(&channel, ts).and_then(|m| m.files.iter().find(|f| f.is_video()).cloned());
-        if let Some(file) = video {
-            self.status = format!("loading {}…", file.name);
-            let (client, tx) = (self.client.clone(), self.net.clone());
-            tokio::spawn(async move {
-                let title = file.name.clone();
-                let result = super::video::download(client, file).await.map_err(|e| e.to_string());
-                let _ = tx.send(Net::VideoReady { title, result });
-            });
-            return;
+    /// `o` on message `ts`: open what it holds — at once when it is one thing, else from a
+    /// list of them beside the message.
+    fn open_things(&mut self, ts: &str, thread: bool) {
+        let Some(m) = self.current.as_deref().and_then(|c| self.ws.find_message(c, ts)) else { return };
+        let things = super::open::things(m);
+        match things.as_slice() {
+            [] => self.status = "nothing to open in this message".into(),
+            [one] => {
+                let one = one.clone();
+                self.open_thing(ts, one);
+            }
+            _ => {
+                let labels = things.iter().map(|t| super::open::label(t, m)).collect();
+                let at = if thread { self.thread_pane.spot(ts) } else { self.messages.spot(ts) };
+                self.menu = Some(super::menu::Menu::opener(thread, ts.to_string(), things, labels, at));
+            }
         }
-        let snippet = self.ws.find_message(&channel, ts).and_then(|m| m.files.iter().find(|f| f.is_snippet()).cloned());
-        if let Some(file) = snippet {
-            let (client, tx, id) = (self.client.clone(), self.net.clone(), file.id.clone());
-            let url = file.url_private_download.clone().or(file.url_private.clone());
-            self.snippet = Some(super::snippet::SnippetView::new(file));
-            tokio::spawn(async move {
-                let result = match url {
-                    Some(url) => client.download(&url).await.map(|b| String::from_utf8_lossy(&b).into_owned()).map_err(|e| e.to_string()),
-                    None => Err("no download URL".into()),
+    }
+
+    /// Open one thing of message `ts`: a link in the browser, a picture in the viewer (the
+    /// others a step away), a video in the player, a snippet in full.
+    fn open_thing(&mut self, ts: &str, thing: super::open::Thing) {
+        use super::open::Thing;
+        match thing {
+            Thing::Link { url, .. } => {
+                self.status = match super::open::open_url(&url) {
+                    Ok(()) => format!("opened {url}"),
+                    Err(e) => format!("could not open {url}: {e:#}"),
                 };
-                let _ = tx.send(Net::SnippetText { id, result });
-            });
-            return;
+            }
+            Thing::Picture(n) => {
+                let pictures: Vec<slack_core::types::File> = self.current.as_deref().and_then(|c| self.ws.find_message(c, ts)).map(|m| m.files.iter().filter(|f| f.is_image()).cloned().collect()).unwrap_or_default();
+                if n < pictures.len() {
+                    self.viewer = Some(super::viewer::Viewer::new(pictures, n));
+                    self.load_viewer_image();
+                }
+            }
+            Thing::Video(file) => {
+                self.status = format!("loading {}…", file.name);
+                let (client, tx) = (self.client.clone(), self.net.clone());
+                tokio::spawn(async move {
+                    let title = file.name.clone();
+                    let result = super::video::download(client, file).await.map_err(|e| e.to_string());
+                    let _ = tx.send(Net::VideoReady { title, result });
+                });
+            }
+            Thing::Snippet(file) => {
+                let (client, tx, id) = (self.client.clone(), self.net.clone(), file.id.clone());
+                let url = file.url_private_download.clone().or(file.url_private.clone());
+                self.snippet = Some(super::snippet::SnippetView::new(file));
+                tokio::spawn(async move {
+                    let result = match url {
+                        Some(url) => client.download(&url).await.map(|b| String::from_utf8_lossy(&b).into_owned()).map_err(|e| e.to_string()),
+                        None => Err("no download URL".into()),
+                    };
+                    let _ = tx.send(Net::SnippetText { id, result });
+                });
+            }
         }
-        let files: Vec<slack_core::types::File> = self.ws.find_message(&channel, ts).map(|m| m.files.iter().filter(|f| f.is_image()).cloned().collect()).unwrap_or_default();
-        if files.is_empty() {
-            self.status = "no image, video or snippet in this message".into();
-            return;
-        }
-        self.viewer = Some(super::viewer::Viewer::new(files, 0));
-        self.load_viewer_image();
     }
 
     /// Fetch the viewer's current image.

@@ -448,7 +448,7 @@ actions! {
         Delete "delete" "delete your message" ["d"]
         Copy "copy" "copy the text" ["y"]
         CopyLink "copy_link" "copy a link to the message" ["Y"]
-        Open "open" "open image, play video, or view a snippet" ["o"]
+        Open "open" "open a link, picture, video or snippet (a list when there are several)" ["o"]
         Save "save" "save attachments" ["s"]
         Pin "pin" "pin / unpin" ["P"]
         Profile "profile" "profile card: author, ←/→ people mentioned" ["u"]

@@ -21,6 +21,7 @@ pub mod media;
 pub mod menu;
 pub mod messages;
 pub mod notify;
+pub mod open;
 pub mod others;
 pub mod picker;
 pub mod prefs;
