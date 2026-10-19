@@ -184,11 +184,9 @@ Tests: `cargo test` → slack-core 10, huddle 33, klack 174 (+1 ignored: the `bu
 
 I. Known gaps, asked by the user on 2026-10-19 ("knock off known gaps"); run autonomously, one verified
    commit per step, pushed after each:
-  ~~I0 refresh stale entries~~ — done.
-  I0 was: refresh stale entries (builds rechecked by H5's CI/releases; sections fold since H4i; pictures
-      drawn in more terminals) — docs only.
+  ~~I0 refresh stale entries (builds rechecked by H5's CI/releases; sections fold since H4i)~~ — done.
   ~~I1 threads marked read on Slack when opened~~ — done.
-  I2. The unread line: the author's header again after it; scroll up to it when the unread part is longer
+  I2 (NEXT). The unread line: the author's header again after it; scroll up to it when the unread part is longer
       than a screen.
   I3. The unread line at startup: check whether `client.counts` can arrive after the first conversation opens
       (log it); fix if it can.
