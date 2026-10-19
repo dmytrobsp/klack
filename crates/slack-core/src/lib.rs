@@ -2,6 +2,7 @@
 //! data model. Contains no terminal code.
 
 pub mod api;
+pub mod dnd;
 pub mod format;
 pub mod rtm;
 pub mod session;

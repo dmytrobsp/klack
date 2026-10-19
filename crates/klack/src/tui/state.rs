@@ -278,15 +278,26 @@ impl Dnd {
         self.window.is_some_and(|(_, end)| now >= end)
     }
 
-    pub fn active(&self, now: f64) -> bool {
+    /// When notifications come back if they are paused now: the end of the snooze or of the
+    /// scheduled quiet period, whichever runs longer when one runs into the other.
+    pub fn until(&self, now: f64) -> Option<f64> {
         const DAY: f64 = 86_400.0;
         // The window ending at `end` starts at `start`'s time of day (local time, so not an hour
         // off across a DST change).
-        let scheduled = self.window.is_some_and(|(start, end)| {
+        let window = self.window.map(|(start, end)| {
             let begins = if end - start <= DAY { start } else { super::clock::window_start(start as i64, end as i64).map_or(end - (end - start).rem_euclid(DAY), |t| t as f64) };
-            begins <= now && now < end
+            (begins, end)
         });
-        self.snooze_until.is_some_and(|t| now < t) || scheduled
+        match (self.snooze_until.filter(|t| now < *t), window) {
+            (Some(snooze), Some((begins, end))) if begins <= snooze && now < end => Some(snooze.max(end)),
+            (Some(snooze), _) => Some(snooze),
+            (None, Some((begins, end))) if begins <= now && now < end => Some(end),
+            _ => None,
+        }
+    }
+
+    pub fn active(&self, now: f64) -> bool {
+        self.until(now).is_some()
     }
 }
 
@@ -762,6 +773,34 @@ mod tests {
         assert!(!weekdays.active(1792333440.0), "Sunday evening is not in a weekday schedule");
         assert!(weekdays.active(1792418400.0 + 3.0 * 3600.0), "Monday 20:00 is");
         assert!(!weekdays.active(1792476000.0 + 60.0), "after the known window: unknown until dnd.info is asked again");
+    }
+
+    #[test]
+    fn dnd_until() {
+        // Real dnd.info answers (test account, Tue 2026-10-20 00:58 Asia/Jerusalem, now = 1792447100).
+        let now = 1792447100.0;
+        let neither = Dnd::from_json(&serde_json::json!({"dnd_enabled":false,"next_dnd_end_ts":1,"next_dnd_start_ts":1,"ok":true,"snooze_enabled":false}));
+        assert_eq!(neither.until(now), None);
+        // Snoozed 30 min with no schedule: Slack reports the snooze as the next window too.
+        let snooze = Dnd::from_json(&serde_json::json!({"dnd_enabled":true,"next_dnd_end_ts":1792449014,"next_dnd_start_ts":1792447214,"ok":true,"snooze_enabled":true,"snooze_endtime":1792449014,"snooze_remaining":1799}));
+        assert_eq!(snooze.until(1792447220.0), Some(1792449014.0));
+        assert_eq!(snooze.until(1792449014.0), None);
+        // Weekdays 17:00–9:00, after midnight: today's part of the period, 00:00–09:00.
+        let scheduled = Dnd::from_json(&serde_json::json!({"dnd_enabled":true,"next_dnd_end_ts":1792476000,"next_dnd_start_ts":1792443600,"ok":true,"snooze_enabled":false}));
+        assert_eq!(scheduled.until(now), Some(1792476000.0));
+        assert_eq!(scheduled.until(1792476000.0), None);
+        // Snoozed 30 min inside a scheduled period ending 08:00: paused until 08:00.
+        let both = Dnd::from_json(&serde_json::json!({"dnd_enabled":true,"next_dnd_end_ts":1792472400,"next_dnd_start_ts":1792443600,"ok":true,"snooze_enabled":true,"snooze_endtime":1792448903,"snooze_remaining":1800}));
+        assert_eq!(both.until(now), Some(1792472400.0));
+        // A snooze running into the next period lasts to its end; one ending before it doesn't.
+        let ahead = |snooze: f64| Dnd { window: Some((now + 3600.0, now + 7200.0)), snooze_until: Some(snooze) };
+        assert_eq!(ahead(now + 3600.0).until(now), Some(now + 7200.0));
+        assert_eq!(ahead(now + 3000.0).until(now), Some(now + 3000.0));
+        // A snooze outlasting the period.
+        assert_eq!(Dnd { window: Some((now - 60.0, now + 60.0)), snooze_until: Some(now + 600.0) }.until(now), Some(now + 600.0));
+        for (d, t) in [(&neither, now), (&snooze, 1792447220.0), (&scheduled, now), (&both, now), (&scheduled, 1792476001.0)] {
+            assert_eq!(d.active(t), d.until(t).is_some());
+        }
     }
 
     #[test]

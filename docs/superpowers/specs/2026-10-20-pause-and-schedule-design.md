@@ -77,6 +77,32 @@ Two Slack concepts, kept separate in the code, merged for the user where Slack m
 `next_dnd_start_ts`, `next_dnd_end_ts` (here 09:00 — matching the legacy 17:00–9:00 weekday window while
 `dnd_days` = weekdays), `snooze_enabled`. The account's zone is Asia/Jerusalem (+3).
 
+**Confirmed by writing on B (V7, 2026-10-20 ~01:00, restored exactly — diff clean):**
+
+- `dnd.endDnd` ends the current scheduled quiet period (dnd.info moved from Tue 00:00–09:00 to Tue 17:00–Wed
+  09:00) and changes no pref. It also ends a running snooze. Outside quiet hours it answers ok and changes nothing.
+  Any later `users.prefs.set` of a schedule pref brings the ended period back (dnd.info recomputed).
+- `users.prefs.set` takes `prefs` = a JSON object of several prefs in one call (or `name`/`value`). Slack checks the
+  values and **ignores the whole write while still answering ok** when one is not taken (a bad time, an unknown
+  value) — so klack checks times first and reads the prefs back.
+- `dnd_days`: `every_day`, `weekdays`, `custom` (anything else ignored). **Slack applies the legacy pair for every
+  day and weekdays** (quiet `dnd_start_hour` → `dnd_end_hour`; dnd.info end 7:05 / 9:00 / 10:00 followed it) and the
+  **per-day form for custom** (dnd.info end 8:00 = `dnd_before_tuesday`). In weekdays, Saturday and Sunday have no
+  quiet hours.
+- Per day (custom): `dnd_enabled_<day>` is `partial` (notifications from `dnd_before_<day>` to `dnd_after_<day>`,
+  paused outside — Tue 0:30–1:30 gave quiet from Tue 01:30 to Wed 08:00), `all_day` (**paused all day**: Tue 00:00
+  → Wed 08:00) or `disabled` (**notifications all day**, no quiet hours: next start moved to Wed 00:00). Nothing else
+  is taken. An inverted range (before 22:00, after 8:00) is accepted.
+- Off: `dnd_enabled` false is taken **only together with `dnd_days` = `every_day`** (alone or with weekdays/custom it
+  is ignored); setting `dnd_days` weekdays/custom turns `dnd_enabled` back on. dnd.info then says
+  `dnd_enabled` false (the `next_*` values are meaningless: 1, or some time).
+- Times: `H:MM`, any minute; Slack stores "09:00" as "9:00"; "25:00" ignored.
+- `dnd_weekdays_off_allday` is writable (bool); with it true dnd.info showed start = end = Wed 00:00 — meaning
+  unclear, klack leaves it alone.
+- dnd.info with a snooze: `snooze_enabled`, `snooze_endtime`, `snooze_remaining`. When the snooze is the next quiet
+  time (no schedule, or before the next period) Slack also reports it as `next_dnd_start_ts`/`next_dnd_end_ts`, and
+  `dnd_enabled` true even with the schedule off; inside a scheduled period the `next_*` stay the period's.
+
 ## Decisions on the builder check's questions (Claude's calls)
 
 - **If per-day custom hours can't be written** with klack's session (users.prefs.set) or not without loss: custom is

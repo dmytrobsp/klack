@@ -6,6 +6,7 @@ use anyhow::{Context, Result, anyhow};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
+use crate::dnd::Schedule;
 use crate::session::{USER_AGENT, WorkspaceSession};
 use crate::types::*;
 
@@ -303,6 +304,28 @@ impl Client {
             Some(m) => self.call_raw("dnd.setSnooze", &[("num_minutes", m.to_string())]).await.map(|_| ()),
             None => self.call_raw("dnd.endSnooze", &[]).await.map(|_| ()),
         }
+    }
+
+    /// End the current scheduled quiet period early (and a snooze, if any); the schedule itself
+    /// stays as it is.
+    pub async fn end_dnd(&self) -> Result<()> {
+        self.call_raw("dnd.endDnd", &[]).await.map(|_| ())
+    }
+
+    /// The notification schedule (`users.prefs.get`).
+    pub async fn dnd_schedule(&self) -> Result<Schedule> {
+        Ok(Schedule::from_prefs(&self.user_prefs().await?))
+    }
+
+    /// Write the notification schedule in one `users.prefs.set`. Slack answers ok even when it
+    /// ignores the write (a value it doesn't take), so the result is read back and compared.
+    pub async fn set_dnd_schedule(&self, schedule: &Schedule) -> Result<()> {
+        let prefs = schedule.to_prefs().ok_or_else(|| anyhow!("not a time of day (H:MM)"))?;
+        self.call_raw("users.prefs.set", &[("prefs", prefs.to_string())]).await?;
+        if self.dnd_schedule().await?.to_prefs().as_ref() != Some(&prefs) {
+            return Err(anyhow!("users.prefs.set: Slack did not take the schedule"));
+        }
+        Ok(())
     }
 
     /// `users.prefs.get` (the `prefs` object).
