@@ -179,7 +179,7 @@ Tests: `cargo test` → slack-core 10, huddle 33, klack 173 (+1 ignored: the `bu
 
 ## Next (in order, each as a small, separately verified step)
 
-**NEXT UP: H5** (queue H below) — pushed to the public github.com/dmytrobsp/klack on 2026-10-19 (H5d); the first CI run passed on Linux, macOS and the Windows cross-build; H5e release builds done (dry runs); v0.1.0 being released (user's go-ahead 2026-10-19). Queues A–G and H1–H4 are done (G2b too; B's test picture is deleted).
+**NEXT UP: H5** (queue H below) — pushed to the public github.com/dmytrobsp/klack on 2026-10-19 (H5d); the first CI run passed on Linux, macOS and the Windows cross-build; H5e release builds done; **v0.1.0 released** 2026-10-19 (https://github.com/dmytrobsp/klack/releases/tag/v0.1.0: four archives + SHA256SUMS; the Linux download verified against SHA256SUMS and run). H (and with it every queue so far) is done: open items are the Known gaps below (e.g. threads are never marked read) and whatever the user asks next. Queues A–G and H1–H4 are done (G2b too; B's test picture is deleted).
 
 Left on this machine by H3 (remove when the project wraps up, or keep for CI work): podman images
 debian:trixie, ubuntu:24.04, fedora:latest, archlinux:latest and the volume `klack-cargo-registry`.
@@ -221,7 +221,7 @@ H. Added by the user on 2026-10-19 (after queue G), in this order:
       pictures as a setting~~ — done; ~~H4i collapsible sidebar sections with unread counts when folded~~ — done; ~~H4j a theme per
       workspace~~ — done; ~~H4k a filterable theme picker with live preview~~ — done; ~~H4l a workspace rail (2+ workspaces), with each workspace's logo where it has one and the
       terminal draws pictures (added by the user mid-step)~~ — done; ~~H4m a Threads view (every thread you are in)~~ — done. Not taken: vim-style modes, reading the desktop app's session.
-  H5 (NEXT). Distribution: push to GitHub, set up CI, and work out distribution for Linux, Windows and macOS (the
+  H5 (done; v0.1.0 released). Distribution: push to GitHub, set up CI, and work out distribution for Linux, Windows and macOS (the
       push and the repository's name/visibility need the user's go-ahead first). Decided by the user 2026-10-19:
       **public** repository **github.com/dmytrobsp/klack** (their personal account; gh is not logged in as
       dmytrobsp yet — they log in, e.g. `! gh auth login`, before the push), licence **MIT OR Apache-2.0**.
