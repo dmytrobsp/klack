@@ -11,7 +11,7 @@ use slack_core::format;
 use super::state::Workspace;
 use super::text;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Hit {
     pub channel: String,
     pub ts: String,
@@ -19,6 +19,24 @@ pub struct Hit {
     pub thread_ts: Option<String>,
     pub user: Option<String>,
     pub text: String,
+    /// Names of the files the message shares, and the first line of a snippet's preview.
+    pub files: Vec<String>,
+    pub preview: String,
+}
+
+impl Hit {
+    /// What the hit's second row says: `📎 names` first, then the message text, or a snippet's
+    /// first line when there is no text (`body` is the text rendered as plain text).
+    pub fn summary(&self, body: &str) -> String {
+        let body = body.trim();
+        let rest = if body.is_empty() { self.preview.as_str() } else { body };
+        let files = if self.files.is_empty() { String::new() } else { format!("📎 {}", self.files.join(", ")) };
+        match (files.is_empty(), rest.is_empty()) {
+            (true, _) => rest.to_string(),
+            (false, true) => files,
+            (false, false) => format!("{files} · {rest}"),
+        }
+    }
 }
 
 /// Matches of a `search.messages` response, newest first as Slack returns them.
@@ -35,6 +53,8 @@ pub fn parse_hits(v: &Value) -> Vec<Hit> {
                 thread_ts: thread_ts.filter(|t| Some(t.as_str()) != m["ts"].as_str()),
                 user: m["user"].as_str().map(String::from),
                 text: m["text"].as_str().unwrap_or_default().to_string(),
+                files: m["files"].as_array().into_iter().flatten().filter_map(|f| f["title"].as_str().filter(|t| !t.is_empty()).or(f["name"].as_str())).map(String::from).collect(),
+                preview: m["files"].as_array().into_iter().flatten().find_map(|f| f["preview"].as_str()).and_then(|p| p.lines().find(|l| !l.trim().is_empty())).unwrap_or_default().trim().to_string(),
             })
         })
         .collect()
@@ -149,6 +169,7 @@ impl Search {
             let place = if ws.conversations.get(&hit.channel).is_some_and(|c| c.is_dm()) { place } else { format!("#{place}") };
             let thread = if hit.thread_ts.is_some() { " · in thread" } else { "" };
             let body = format::plain_text(&format::message_blocks(&hit.text, &[]), &|i| text::inline_plain(ws, i)).replace('\n', " ");
+            let body = hit.summary(&body);
             let body: String = body.chars().take(width.saturating_sub(2)).collect();
             let style = if n == self.selected { Style::default().bg(super::theme::p().selection) } else if self.hover == Some(n) { super::theme::hover_style() } else { Style::default() };
             lines.push(Line::from(vec![Span::styled(format!(" {who}"), Style::default().fg(text::user_color(hit.user.as_deref().unwrap_or("")))), Span::styled(format!(" · {place} · {when}{thread}"), Style::default().fg(super::theme::p().dim))]).style(style));
@@ -181,6 +202,23 @@ mod tests {
         assert_eq!(hits[1].channel, "C1");
     }
 
+    /// File shares as `search.messages` returns them (trimmed from real responses): the file
+    /// is in the match's `files`, the message text is empty, a snippet has a `preview`.
+    #[test]
+    fn file_hits_name_the_file() {
+        let v = serde_json::json!({"messages":{"total":3,"matches":[
+            {"channel":{"id":"D1"},"ts":"3.0","user":"U1","text":"","files":[{"name":"zebraquux-notes.txt","title":"zebraquux-notes.txt","mode":"snippet","preview":"hello zebraquux notes\n"}],"permalink":"https://x.slack.com/archives/D1/p300"},
+            {"channel":{"id":"D1"},"ts":"2.0","user":"U1","text":"pic with comment","files":[{"name":"yakpicture.png","title":"A yak","mode":"hosted"}],"permalink":"https://x.slack.com/archives/D1/p200"},
+            {"channel":{"id":"D1"},"ts":"1.0","user":"U1","text":"plain","permalink":"https://x.slack.com/archives/D1/p100"}
+        ]}});
+        let hits = parse_hits(&v);
+        assert_eq!(hits[0].summary(&hits[0].text), "📎 zebraquux-notes.txt · hello zebraquux notes", "no text: the snippet's first line");
+        assert_eq!(hits[1].summary(&hits[1].text), "📎 A yak · pic with comment", "the title wins over the name");
+        assert_eq!(hits[2].summary(&hits[2].text), "plain");
+        let bare = Hit { files: vec!["a.png".into()], ..Default::default() };
+        assert_eq!(bare.summary(" "), "📎 a.png", "never an empty line");
+    }
+
     /// A page as `search.messages` returns it (fields trimmed; paging values from a real
     /// query with 130 matches in #history-paging).
     fn page(page: u32, texts: &[(&str, &str)]) -> Value {
@@ -204,7 +242,7 @@ mod tests {
         assert!(!s.loading_more);
         assert_eq!(s.page, 2);
         // Far from the end nothing more is loaded; after the last page never.
-        s.hits.extend((0..20).map(|i| Hit { channel: "C".into(), ts: format!("{i}.0"), thread_ts: None, user: None, text: String::new() }));
+        s.hits.extend((0..20).map(|i| Hit { channel: "C".into(), ts: format!("{i}.0"), thread_ts: None, user: None, text: String::new(), ..Default::default() }));
         assert_eq!(s.next_page(), None);
         s.selected = s.hits.len() - 1;
         assert_eq!(s.next_page(), Some(3));

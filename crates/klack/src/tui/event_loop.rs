@@ -1405,7 +1405,7 @@ impl App {
     fn open_thread_item(&mut self) {
         let Some((channel, ts, thread_ts)) = self.threads.as_ref().and_then(|t| t.target()) else { return };
         self.threads = None;
-        self.open_hit(super::search::Hit { channel, ts, thread_ts, user: None, text: String::new() });
+        self.open_hit(super::search::Hit { channel, ts, thread_ts, user: None, text: String::new(), ..Default::default() });
     }
 
     /// Mark the activity list's selected item seen, close the list and open the item (Enter, or a click on it).
@@ -1416,7 +1416,7 @@ impl App {
         }
         let Some((channel, ts, thread_ts)) = a.target() else { return };
         self.activity = None;
-        self.open_hit(super::search::Hit { channel, ts, thread_ts, user: None, text: String::new() });
+        self.open_hit(super::search::Hit { channel, ts, thread_ts, user: None, text: String::new(), ..Default::default() });
     }
 
     /// Run the search overlay's query, or open its highlighted hit if the query is unchanged.
@@ -1517,7 +1517,7 @@ impl App {
     fn open_target(&mut self, target: super::notify::Target) {
         tracing::debug!(?target, "notification clicked");
         match target.ts {
-            Some(ts) => self.open_hit(super::search::Hit { channel: target.channel, ts, thread_ts: target.thread_ts, user: None, text: String::new() }),
+            Some(ts) => self.open_hit(super::search::Hit { channel: target.channel, ts, thread_ts: target.thread_ts, user: None, text: String::new(), ..Default::default() }),
             None => self.jump_to(&target.channel),
         }
     }
@@ -2491,7 +2491,7 @@ impl App {
         let thread = self.call.as_ref().and_then(|c| c.thread.clone()).or_else(|| self.ws.huddles.get(&channel).and_then(|h| h.thread.clone()));
         match thread {
             Some(ts) => {
-                self.open_hit(super::search::Hit { channel, ts: ts.clone(), thread_ts: Some(ts), user: None, text: String::new() });
+                self.open_hit(super::search::Hit { channel, ts: ts.clone(), thread_ts: Some(ts), user: None, text: String::new(), ..Default::default() });
                 self.focus = Focus::ThreadComposer;
             }
             None => self.status = "the huddle has no thread yet".into(),
@@ -2602,7 +2602,7 @@ impl App {
             super::details::Tab::Pins => {
                 if let Some(m) = d.pins.as_ref().and_then(|p| p.get(d.selected)) {
                     let thread_ts = m.thread_ts.clone().filter(|_| m.is_reply());
-                    self.open_hit(super::search::Hit { channel: d.channel.clone(), ts: m.ts.clone(), thread_ts, user: m.user.clone(), text: m.text.clone() });
+                    self.open_hit(super::search::Hit { channel: d.channel.clone(), ts: m.ts.clone(), thread_ts, user: m.user.clone(), text: m.text.clone(), ..Default::default() });
                 }
             }
             super::details::Tab::About => self.details = Some(d),
