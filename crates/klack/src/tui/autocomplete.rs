@@ -1,4 +1,5 @@
-//! `/command`, `@user`, `#channel` and `:emoji:` suggestions for the composer.
+//! `/command`, `@user`, `#channel` and `:emoji:` suggestions for the composer, and file paths
+//! after `/upload`.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -59,6 +60,7 @@ pub fn rank(q: &str, fields: &[&str]) -> Option<u8> {
 /// Suggestions for `trigger` in a composer that posts to `conversation`.
 pub fn suggestions(ws: &Workspace, conversation: Option<&str>, trigger: &Trigger) -> Vec<Suggestion> {
     match trigger {
+        Trigger::Path { partial, quoted } => path_suggestions(partial, *quoted),
         // All matching commands: the list scrolls.
         Trigger::Command(q) => {
             let q = q.to_lowercase();
@@ -124,6 +126,60 @@ pub fn suggestions(ws: &Workspace, conversation: Option<&str>, trigger: &Trigger
                 .collect()
         }
     }
+}
+
+/// At most this many entries of a folder are looked at.
+const MAX_ENTRIES: usize = 5000;
+
+/// The entries of the folder in `partial` (a path being typed; relative to klack's working
+/// folder, `~` for home) whose names start with its last part, any case; hidden ones only when
+/// that part starts with `.`. A folder completes with its `/` (and no space after it, see
+/// `ends_open`) so its entries follow; a name with a space, or typed after a quote, is quoted.
+pub fn path_suggestions(partial: &str, quoted: bool) -> Vec<Suggestion> {
+    let partial = if partial == "~" { "~/" } else { partial };
+    let (dir, prefix) = partial.split_at(partial.rfind('/').map_or(0, |i| i + 1));
+    let listed = match dir.strip_prefix('~') {
+        Some(tail) => match directories::UserDirs::new() {
+            Some(d) => d.home_dir().join(tail.trim_start_matches('/')),
+            None => return Vec::new(),
+        },
+        None if dir.is_empty() => std::path::PathBuf::from("."),
+        None => std::path::PathBuf::from(dir),
+    };
+    let Ok(entries) = std::fs::read_dir(&listed) else { return Vec::new() };
+    let lower = prefix.to_lowercase();
+    let mut found: Vec<(String, Option<u64>)> = entries
+        .flatten()
+        .take(MAX_ENTRIES)
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            if (name.starts_with('.') && !prefix.starts_with('.')) || !name.to_lowercase().starts_with(&lower) {
+                return None;
+            }
+            // Through links: a link to a folder is a folder.
+            let meta = std::fs::metadata(e.path()).ok()?;
+            Some((name, (!meta.is_dir()).then(|| meta.len())))
+        })
+        .collect();
+    found.sort_by_key(|(name, _)| name.to_lowercase());
+    found
+        .into_iter()
+        .map(|(name, size)| {
+            let slash = if size.is_none() { "/" } else { "" };
+            let path = format!("{dir}{name}{slash}");
+            let replacement = match (quoted || path.contains(char::is_whitespace), size) {
+                (false, _) => path,
+                (true, None) => format!("\"{path}"),
+                (true, Some(_)) => format!("\"{path}\""),
+            };
+            Suggestion { label: format!("{name}{slash}"), detail: size.map_or_else(|| "folder".into(), super::text::human_size), replacement, id: None }
+        })
+        .collect()
+}
+
+/// A replacement that is inserted without a space after it: a folder, whose entries come next.
+pub fn ends_open(replacement: &str) -> bool {
+    replacement.ends_with('/')
 }
 
 /// Where the list of `items` suggestions goes: just above `anchor` (the composer box). Commands
@@ -215,6 +271,30 @@ mod tests {
         assert_eq!(names("CR"), ["/create", "/create-private"], "any case");
         let up = &suggestions(&w, Some("C1"), &Trigger::Command("up".into()))[0];
         assert_eq!((up.label.as_str(), up.detail.as_str(), up.replacement.as_str()), ("/upload <path> [text]", "upload a file", "/upload"));
+    }
+
+    #[test]
+    fn paths_after_upload() {
+        let dir = std::env::temp_dir().join(format!("klack-paths-{}", std::process::id()));
+        for d in ["Pictures", "Public", "My Docs"] {
+            std::fs::create_dir_all(dir.join(d)).unwrap();
+        }
+        for f in ["pic.png", ".hidden", "notes.txt"] {
+            std::fs::write(dir.join(f), "12345").unwrap();
+        }
+        let base = format!("{}/", dir.display());
+        let got = |partial: &str, quoted| path_suggestions(&format!("{base}{partial}"), quoted).into_iter().map(|s| (s.label, s.replacement.replace(&base, "…/"))).collect::<Vec<_>>();
+        let pair = |l: &str, r: &str| (l.to_string(), r.to_string());
+        assert_eq!(got("p", false), [pair("pic.png", "…/pic.png"), pair("Pictures/", "…/Pictures/"), pair("Public/", "…/Public/")], "any case, by name");
+        assert_eq!(got("", false).len(), 5, "no hidden files…");
+        assert_eq!(got(".h", false), [pair(".hidden", "…/.hidden")], "…unless asked for");
+        assert_eq!(got("My", false), [pair("My Docs/", "\"…/My Docs/")], "a space opens a quote, a folder leaves it open");
+        assert_eq!(got("no", true), [pair("notes.txt", "\"…/notes.txt\"")], "typed after a quote: closed after a file");
+        assert_eq!(path_suggestions(&format!("{base}nothing/x"), false), []);
+        let s = &path_suggestions(&format!("{base}notes"), false)[0];
+        assert_eq!(s.detail, "5 B");
+        assert!(ends_open(&got("Pict", false)[0].1) && !ends_open("…/pic.png"));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

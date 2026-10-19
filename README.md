@@ -140,7 +140,7 @@ workspace account in `drafts/<team>-<user>.json` under the local data folder
 | Enter · Alt+Enter | send · new line |
 | Ctrl+V | paste from the clipboard: text is typed in; a picture (a screenshot) or files copied in a file manager are attached above the box (✕, or Backspace in an empty box, removes one) and Enter sends them with your text — or on their own — as one message. Your terminal's own paste (Ctrl+Shift+V) only carries text, and over SSH there is no clipboard to read |
 | `/` (first in the box) · @ # : | command (klack's own and Slack's, with what they take; a command typed out in full runs on Enter), mention, channel, emoji autocomplete |
-| `/upload <path> [text]` | upload a file |
+| `/upload <path> [text]` | upload a file (the path completes as you type: Tab goes into a folder; `~` is your home; names with spaces are quoted for you) |
 | `/join [#channel]` · `/leave` | join (default: the channel you are previewing — Ctrl+K finds channels you are not in; a previewed one is fetched again every 15 s, F6 → Messages & media) · leave the current channel |
 | `/create <name>` · `/create-private <name>` | create a channel |
 | `/dm @a [@b …]` | open a DM, or a group DM with up to 8 people |

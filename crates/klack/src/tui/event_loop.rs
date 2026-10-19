@@ -193,6 +193,8 @@ struct App {
     completion: Option<super::autocomplete::Completion>,
     /// Suggestions closed with Esc for this (composer, token start) until the token changes.
     completion_dismissed: Option<(bool, usize)>,
+    /// The last `/upload` path looked up and what its folder offered (kept while it is typed).
+    path_suggestions: Option<(super::composer::Trigger, Vec<super::autocomplete::Suggestion>)>,
     /// Composer boxes on the last draw (to anchor the suggestion list).
     composer_area: ratatui::layout::Rect,
     thread_composer_area: ratatui::layout::Rect,
@@ -1173,6 +1175,7 @@ impl App {
             }
         };
         let Some((start, trigger)) = self.composer_for(thread).trigger() else {
+            self.path_suggestions = None;
             self.completion = None;
             self.completion_dismissed = None;
             return;
@@ -1182,7 +1185,12 @@ impl App {
             return;
         }
         let conversation = if thread { self.thread.as_ref().map(|(c, _)| c.clone()) } else { self.current.clone() };
-        let items = super::autocomplete::suggestions(&self.ws, conversation.as_deref(), &trigger);
+        // A folder is read once per path typed, not at every event (pointer moves included).
+        let items = match (&trigger, &self.path_suggestions) {
+            (super::composer::Trigger::Path { .. }, Some((seen, items))) if *seen == trigger => items.clone(),
+            _ => super::autocomplete::suggestions(&self.ws, conversation.as_deref(), &trigger),
+        };
+        self.path_suggestions = matches!(trigger, super::composer::Trigger::Path { .. }).then(|| (trigger, items.clone()));
         if items.is_empty() {
             self.completion = None;
             return;
@@ -1199,7 +1207,8 @@ impl App {
     fn accept_completion(&mut self) {
         let Some(c) = self.completion.take() else { return };
         let Some(s) = c.items.get(c.selected) else { return };
-        self.composer_for(c.thread).complete(c.start, &format!("{} ", s.replacement), s.id.as_deref());
+        let space = if super::autocomplete::ends_open(&s.replacement) { "" } else { " " };
+        self.composer_for(c.thread).complete(c.start, &format!("{}{space}", s.replacement), s.id.as_deref());
     }
 
     /// Run the search overlay's query, or open its highlighted hit if the query is unchanged.
@@ -2485,6 +2494,7 @@ async fn run_workspace(
         terminal_focused: true,
         completion: None,
         completion_dismissed: None,
+        path_suggestions: None,
         composer_area: Default::default(),
         thread_composer_area: Default::default(),
         thread: None,
@@ -2981,7 +2991,7 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
             let typed_command = app.completion.as_ref().and_then(|c| {
                 let s = c.items.get(c.selected)?;
                 let composer = if c.thread { &app.thread_composer } else { &app.composer };
-                (s.replacement.starts_with('/') && s.replacement == composer.token(c.start)).then_some(c.thread)
+                (c.start == 0 && s.replacement.starts_with('/') && s.replacement == composer.token(c.start)).then_some(c.thread)
             });
             let send_key = app.action_in(Context::Composer, &k) == Some(Action::Send);
             let Some(c) = app.completion.as_mut() else { return true };

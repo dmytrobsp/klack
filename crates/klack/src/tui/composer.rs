@@ -27,6 +27,8 @@ pub enum KeyOutcome {
 pub enum Trigger {
     /// A command name at the start of the text (without its `/`).
     Command(String),
+    /// The path typed so far after `/upload` (without its opening quote when `quoted`).
+    Path { partial: String, quoted: bool },
     User(String),
     Channel(String),
     Emoji(String),
@@ -336,6 +338,9 @@ impl Composer {
                 return Some((0, Trigger::Command(word.iter().collect())));
             }
         }
+        if let Some(path) = self.upload_path() {
+            return Some(path);
+        }
         let mut start = self.cursor;
         while start > 0 {
             let c = self.chars[start - 1];
@@ -358,6 +363,24 @@ impl Composer {
             }
         }
         None
+    }
+
+    /// The path being typed after `/upload`: from its start (with an opening quote) to the
+    /// cursor, while the cursor is still inside it.
+    fn upload_path(&self) -> Option<(usize, Trigger)> {
+        let before: String = self.chars[..self.cursor].iter().collect();
+        let rest = before.strip_prefix("/upload")?;
+        let arg = rest.trim_start();
+        if rest.len() == arg.len() {
+            return None;
+        }
+        let start = self.cursor - arg.chars().count();
+        match arg.strip_prefix('"') {
+            Some(partial) if !partial.contains('"') => Some((start, Trigger::Path { partial: partial.into(), quoted: true })),
+            Some(_) => None,
+            None if !arg.contains(char::is_whitespace) => Some((start, Trigger::Path { partial: arg.into(), quoted: false })),
+            None => None,
+        }
     }
 
     /// The text from `start` up to the cursor.
@@ -686,6 +709,19 @@ mod tests {
         assert_eq!(cmd.trigger(), Some((8, Trigger::User("an".into()))), "arguments complete as before");
         cmd.set(" /away");
         assert_eq!(cmd.trigger(), None, "a leading space: text");
+        let path = |partial: &str, quoted| Some((8, Trigger::Path { partial: partial.into(), quoted }));
+        cmd.set("/upload ");
+        assert_eq!(cmd.trigger(), path("", false));
+        cmd.set("/upload ~/Pic");
+        assert_eq!(cmd.trigger(), path("~/Pic", false));
+        cmd.set("/upload \"My Fi");
+        assert_eq!(cmd.trigger(), path("My Fi", true), "a quoted name may hold spaces");
+        cmd.set("/upload \"My File.png\" lo");
+        assert_eq!(cmd.trigger(), None, "past the path: the message");
+        cmd.set("/upload a.png @an");
+        assert_eq!(cmd.trigger(), Some((14, Trigger::User("an".into()))), "mentions in the message");
+        cmd.set("/uploads x");
+        assert_eq!(cmd.trigger(), None);
     }
 
     #[test]
