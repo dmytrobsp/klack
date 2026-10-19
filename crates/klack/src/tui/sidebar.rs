@@ -277,6 +277,12 @@ fn header_line(name: &str, width: usize) -> Line<'static> {
     ])
 }
 
+/// The first column of a row: a bar in the accent colour when it has something you have not
+/// seen (in the sidebar, Ctrl+T and the activity list alike).
+pub fn unread_mark(unread: bool) -> Span<'static> {
+    if unread { Span::styled("▌", Style::default().fg(super::theme::p().accent)) } else { Span::raw(" ") }
+}
+
 /// A folded section's header: "▸ name", the rule, then how many of its conversations have
 /// unread messages and the mentions among them.
 fn folded_line(ws: &Workspace, name: &str, ids: &[String], selected: bool, width: usize) -> Line<'static> {
@@ -285,9 +291,10 @@ fn folded_line(ws: &Workspace, name: &str, ids: &[String], selected: bool, width
     let mentions: u64 = unread.iter().map(|u| u.mentions).sum();
     let count = if unread.is_empty() { String::new() } else { format!(" {}", unread.len()) };
     let badge = if mentions > 0 { format!(" {mentions}") } else { String::new() };
-    let label = format!(" ▸ {name} ");
-    let used = unicode_width::UnicodeWidthStr::width(label.as_str()) + count.chars().count() + badge.chars().count();
+    let label = format!("▸ {name} ");
+    let used = 1 + unicode_width::UnicodeWidthStr::width(label.as_str()) + count.chars().count() + badge.chars().count();
     let mut spans = vec![
+        unread_mark(!unread.is_empty()),
         Span::styled(label, Style::default().fg(p.accent).add_modifier(Modifier::BOLD)),
         Span::styled("─".repeat(width.saturating_sub(used)), Style::default().fg(p.dim)),
         Span::styled(count, Style::default().fg(p.strong).add_modifier(Modifier::BOLD)),
@@ -313,12 +320,14 @@ fn conversation_line(ws: &Workspace, id: &str, selected: bool, draft: bool, widt
     } else {
         Span::styled("# ", Style::default().fg(super::theme::p().dim))
     };
-    let mut name_style = Style::default();
-    if unread.has_unreads && !muted {
-        name_style = name_style.add_modifier(Modifier::BOLD).fg(super::theme::p().strong);
+    let fresh = unread.has_unreads && !muted;
+    let name_style = if fresh {
+        Style::default().add_modifier(Modifier::BOLD).fg(super::theme::p().strong)
     } else if muted {
-        name_style = name_style.fg(super::theme::p().dim);
-    }
+        Style::default().fg(super::theme::p().dim)
+    } else {
+        Style::default().fg(super::theme::p().read)
+    };
     let badge = if unread.mentions > 0 { format!(" {}", unread.mentions) } else { String::new() };
     let huddle = ws.huddles.get(id).map(|h| format!(" 🎧{}", h.participants.len())).unwrap_or_default();
     let preview = if !c.is_dm() && !c.is_member {
@@ -332,7 +341,7 @@ fn conversation_line(ws: &Workspace, id: &str, selected: bool, draft: bool, widt
     let draft = if draft { " ✎" } else { "" };
     let room = width.saturating_sub(3 + badge.chars().count() + huddle.chars().count() + preview.chars().count() + draft.chars().count() + 1);
     let label: String = if label.chars().count() > room { label.chars().take(room.saturating_sub(1)).chain(['…']).collect() } else { label };
-    let mut spans = vec![Span::raw(" "), sigil, Span::styled(label, name_style)];
+    let mut spans = vec![unread_mark(fresh), sigil, Span::styled(label, name_style)];
     if !draft.is_empty() {
         spans.push(Span::styled(draft, Style::default().fg(super::theme::p().dim)));
     }
@@ -367,6 +376,23 @@ mod tests {
             );
         }
         ws
+    }
+
+    #[test]
+    fn unread_rows_stand_out() {
+        let mut w = ws();
+        let p = crate::tui::theme::p();
+        w.unread.insert("C1".into(), crate::tui::state::Unread { has_unreads: true, mentions: 0 });
+        w.unread.insert("C2".into(), crate::tui::state::Unread { has_unreads: true, mentions: 0 });
+        w.muted.insert("C2".into());
+        let row = |id| conversation_line(&w, id, false, false, 30);
+        let text = |l: &Line| l.spans.iter().map(|s| s.content.to_string()).collect::<String>();
+        let (unread, muted, read) = (row("C1"), row("C2"), row("D1"));
+        assert_eq!(text(&unread), "▌# general", "a bar in the first column");
+        assert_eq!((unread.spans[0].style.fg, unread.spans[2].style.fg), (Some(p.accent), Some(p.strong)));
+        assert!(unread.spans[2].style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!((text(&muted).as_str(), muted.spans[2].style.fg), (" # random", Some(p.dim)), "muted: dim, no bar");
+        assert_eq!((text(&read).chars().next(), read.spans[2].style.fg), (Some(' '), Some(p.read)), "read: a step back");
     }
 
     #[test]
@@ -443,7 +469,7 @@ mod tests {
         assert_eq!(s.items, [Item::Header("Channels".into()), Item::Gap, Item::Header("Direct messages".into()), Item::Conversation("D1".into())]);
         assert_eq!((s.selected_id(), s.selected_folded()), (None, Some("Channels")), "the selection moves onto the folded header");
         let text = |l: Line| l.spans.iter().map(|s| s.content.to_string()).collect::<String>();
-        assert_eq!(text(folded_line(&w, "Channels", &["C1".into(), "C2".into()], false, 24)), " ▸ Channels ──────── 1 2", "one unread conversation, two mentions");
+        assert_eq!(text(folded_line(&w, "Channels", &["C1".into(), "C2".into()], false, 24)), "▌▸ Channels ──────── 1 2", "one unread conversation, two mentions");
         assert_eq!(text(folded_line(&ws(), "Channels", &["C1".into()], false, 16)), " ▸ Channels ────");
         // A folded section is a stop of its own; Alt+↑/↓ go past it.
         s.move_by(1);

@@ -18,6 +18,9 @@ pub struct Palette {
     pub dim: Color,
     /// Unread conversations.
     pub strong: Color,
+    /// Read conversations, threads and activity: a step back from the text, so unread ones
+    /// stand out.
+    pub read: Color,
     /// Online dots, values in the preferences.
     pub good: Color,
     /// Errors, delete questions.
@@ -52,6 +55,7 @@ pub const DARK: Palette = Palette {
     hover: rgb(0x262a33),
     dim: rgb(0x8a8a8a),
     strong: Color::White,
+    read: rgb(0xa5a9b1),
     good: rgb(0x98c379),
     danger: rgb(0xe06c75),
     own: rgb(0x2bac76),
@@ -76,6 +80,7 @@ pub const LIGHT: Palette = Palette {
     hover: rgb(0xeef2f7),
     dim: rgb(0x6b6b6b),
     strong: Color::Black,
+    read: rgb(0x4f535a),
     good: rgb(0x2e7d32),
     danger: rgb(0xc62828),
     own: rgb(0x007a5a),
@@ -100,6 +105,7 @@ pub const TERMINAL: Palette = Palette {
     hover: Color::Reset,
     dim: Color::DarkGray,
     strong: Color::Reset,
+    read: Color::Reset,
     good: Color::Green,
     danger: Color::Red,
     own: Color::Green,
@@ -198,7 +204,7 @@ pub fn parse(name: &str, text: &str) -> Result<Palette, String> {
     Ok(p)
 }
 
-const FIELDS: [&str; 16] = ["accent", "selection", "hover", "dim", "strong", "good", "danger", "own", "mention", "link", "code_fg", "code_bg", "quote_bar", "badge_fg", "badge_bg", "pin"];
+const FIELDS: [&str; 17] = ["accent", "selection", "hover", "dim", "strong", "read", "good", "danger", "own", "mention", "link", "code_fg", "code_bg", "quote_bar", "badge_fg", "badge_bg", "pin"];
 
 fn field<'a>(p: &'a mut Palette, key: &str) -> Option<&'a mut Color> {
     Some(match key {
@@ -207,6 +213,7 @@ fn field<'a>(p: &'a mut Palette, key: &str) -> Option<&'a mut Color> {
         "hover" => &mut p.hover,
         "dim" => &mut p.dim,
         "strong" => &mut p.strong,
+        "read" => &mut p.read,
         "good" => &mut p.good,
         "danger" => &mut p.danger,
         "own" => &mut p.own,
