@@ -174,7 +174,7 @@ Tests: `cargo test` → slack-core 10, huddle 33, klack 173 (+1 ignored: the `bu
 
 ## Next (in order, each as a small, separately verified step)
 
-**NEXT UP: G2b** (queue G below) — waiting for the user to install foot and WezTerm (offered 2026-10-19); then H5 (H1–H4 done; H4 = the slk ideas below). B's test picture `g2-test.png` (F0CA1HJ6DSR) is still in #new-channel for G2b: delete it (file + message) afterwards.
+**NEXT UP: G2b** (queue G below) — waiting for the user to install foot and WezTerm (offered 2026-10-19); then H5 (H1–H4 done; H5 decided: public dmytrobsp/klack, MIT OR Apache-2.0 — see queue H). B's test picture `g2-test.png` (F0CA1HJ6DSR) is still in #new-channel for G2b: delete it (file + message) afterwards.
 
 Left on this machine by H3 (remove when the project wraps up, or keep for CI work): podman images
 debian:trixie, ubuntu:24.04, fedora:latest, archlinux:latest and the volume `klack-cargo-registry`.
@@ -217,7 +217,12 @@ H. Added by the user on 2026-10-19 (after queue G), in this order:
       workspace~~ — done; ~~H4k a filterable theme picker with live preview~~ — done; ~~H4l a workspace rail (2+ workspaces), with each workspace's logo where it has one and the
       terminal draws pictures (added by the user mid-step)~~ — done; ~~H4m a Threads view (every thread you are in)~~ — done. Not taken: vim-style modes, reading the desktop app's session.
   H5 (NEXT). Distribution: push to GitHub, set up CI, and work out distribution for Linux, Windows and macOS (the
-      push and the repository's name/visibility need the user's go-ahead first).
+      push and the repository's name/visibility need the user's go-ahead first). Decided by the user 2026-10-19:
+      **public** repository **github.com/dmytrobsp/klack** (their personal account; gh is not logged in as
+      dmytrobsp yet — they log in, e.g. `! gh auth login`, before the push), licence **MIT OR Apache-2.0**.
+      Steps: H5a licence files; H5b CI workflow (build + test on Linux, macOS, Windows); H5c audit of the whole
+      history for secrets and personal data before it goes public; H5d create the repo and push (after login,
+      confirming once more); H5e release builds per platform.
 
 F. Agreed with the user on 2026-10-19 after queue E ("proceed with proposed order"); run autonomously, one
    verified commit per step:
