@@ -209,6 +209,9 @@ J. Easier sign-in, asked by the user on 2026-10-19 ("streamline the login so it 
       user's real browser profiles; the user installs Firefox for the live test.
   J3 (NEXT). C — sign in by email code inside klack (Slack's internal email sign-in flow; not for SSO workspaces).
       The user reads the emailed code for the live test (ask which test account's inbox they can read).
+      Investigated 2026-10-19 (the user signed B in by code in a recorded throwaway browser; flow in
+      docs/protocol/auth.md): Slack sends the code only with a solved reCAPTCHA Enterprise
+      (`signup.confirmEmail` without it → `captcha_empty`), so no terminal-only email sign-in is possible.
   Tests must not sign the test accounts out anywhere; temporary browser profiles are deleted afterwards.
 
 I. Known gaps, asked by the user on 2026-10-19 ("knock off known gaps"); run autonomously, one verified

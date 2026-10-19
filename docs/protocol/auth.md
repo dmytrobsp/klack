@@ -24,3 +24,17 @@ cookie from a browser where you are signed in (`klack login --workspace <url>`).
 
 Sessions (token and cookie for each workspace of a profile) are saved owner-only in the
 profile's `session.json` and never logged (`WorkspaceSession`'s `Debug` redacts them).
+
+## Email-code sign-in (recorded 2026-10-19, J3)
+
+What Slack's sign-in page does to sign in by an emailed code (recorded from a throwaway browser over the
+DevTools protocol; values never logged):
+
+1. `signup.checkEmail email= get_info=1` → `{type ("gmail", …), auth_url, challenge_response: true}`.
+2. `auth.captcha` → `{sitekey}`; the page then solves a **reCAPTCHA Enterprise** challenge.
+3. `signup.confirmEmail email= domain= locale= entry_point= captcha_response=` → sends the code.
+   Without `captcha_response` it fails with `captcha_empty` (checked; no email is sent).
+4. `signin.confirmCode email= code= domain=` → then a magic-login link (`/z-app-…`, `/magic-login/…`)
+   sets the session cookie in the browser.
+
+So an emailed-code sign-in cannot be done without a browser (the captcha); `klack login` opens one (J1).
