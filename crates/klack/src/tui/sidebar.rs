@@ -39,6 +39,8 @@ pub struct Sidebar {
     fold_file: Option<std::path::PathBuf>,
     /// The conversation open last time (opened again at start), and where it is kept.
     pub remembered: Option<String>,
+    /// The thread (parent ts) that was open in it.
+    pub remembered_thread: Option<String>,
     open_file: Option<std::path::PathBuf>,
 }
 
@@ -53,8 +55,12 @@ impl Sidebar {
         let fold_file = dir.as_ref().map(|d| d.join(format!("{team}-{user}.json")));
         let open_file = dir.as_ref().map(|d| d.join(format!("{team}-{user}.open")));
         let folded = fold_file.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default();
-        let remembered = open_file.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).map(|id| id.trim().to_string()).filter(|id| !id.is_empty());
-        Sidebar { folded, fold_file, remembered, open_file, ..Default::default() }
+        // One line: the conversation; an optional second: the thread open in it.
+        let text = open_file.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).unwrap_or_default();
+        let mut lines = text.lines().map(str::trim).filter(|l| !l.is_empty());
+        let remembered = lines.next().map(String::from);
+        let remembered_thread = remembered.as_ref().and_then(|_| lines.next()).map(String::from);
+        Sidebar { folded, fold_file, remembered, remembered_thread, open_file, ..Default::default() }
     }
 
     /// Keep conversation `id` as the one to open next time.
@@ -63,8 +69,26 @@ impl Sidebar {
             return;
         }
         self.remembered = Some(id.to_string());
-        let Some(path) = &self.open_file else { return };
-        if let Err(e) = path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| std::fs::write(path, id)) {
+        self.remembered_thread = None;
+        self.save_open();
+    }
+
+    /// Keep `thread` (a parent ts) as the thread open in the remembered conversation, or none.
+    pub fn remember_thread(&mut self, thread: Option<&str>) {
+        if self.remembered.is_none() || self.remembered_thread.as_deref() == thread {
+            return;
+        }
+        self.remembered_thread = thread.map(String::from);
+        self.save_open();
+    }
+
+    fn save_open(&self) {
+        let (Some(path), Some(id)) = (&self.open_file, &self.remembered) else { return };
+        let text = match &self.remembered_thread {
+            Some(t) => format!("{id}\n{t}"),
+            None => id.clone(),
+        };
+        if let Err(e) = path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| std::fs::write(path, text)) {
             tracing::warn!("keeping the open conversation in {}: {e}", path.display());
         }
     }
@@ -458,6 +482,28 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.join("T1-U1.open")).unwrap(), "C2");
         assert_eq!(Sidebar::kept_in(Some(dir.clone()), "T1", "U1").remembered.as_deref(), Some("C2"), "the next start finds it");
         assert_eq!(Sidebar::kept_in(Some(dir.clone()), "T2", "U1").remembered, None, "per workspace account");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_open_thread_is_kept_with_it() {
+        let dir = std::env::temp_dir().join(format!("klack-thread-{}", std::process::id()));
+        let mut s = Sidebar::kept_in(Some(dir.clone()), "T1", "U1");
+        s.remember_thread(Some("1.5"));
+        assert_eq!(s.remembered_thread, None, "no conversation yet");
+        s.remember("C2");
+        s.remember_thread(Some("1.5"));
+        let again = Sidebar::kept_in(Some(dir.clone()), "T1", "U1");
+        assert_eq!((again.remembered.as_deref(), again.remembered_thread.as_deref()), (Some("C2"), Some("1.5")));
+        s.remember_thread(None);
+        assert_eq!(std::fs::read_to_string(dir.join("T1-U1.open")).unwrap(), "C2", "closing the thread forgets it");
+        s.remember_thread(Some("2.5"));
+        s.remember("C3");
+        assert_eq!(Sidebar::kept_in(Some(dir.clone()), "T1", "U1").remembered_thread, None, "another conversation: no thread");
+        // A file from before threads were kept still loads.
+        std::fs::write(dir.join("T1-U1.open"), "C9\n").unwrap();
+        let old = Sidebar::kept_in(Some(dir.clone()), "T1", "U1");
+        assert_eq!((old.remembered.as_deref(), old.remembered_thread), (Some("C9"), None));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

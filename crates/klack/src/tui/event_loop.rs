@@ -44,6 +44,8 @@ enum Net {
     Posted { channel: String, message: slack_core::types::Message },
     /// All replies of a thread (parent first).
     Replies { channel: String, ts: String, page: HistoryPage },
+    /// The thread left open last time, fetched at start (none: it could not be loaded).
+    ThreadBack { channel: String, ts: String, page: Option<HistoryPage> },
     /// Conversation details loaded for the details overlay.
     DetailsInfo(slack_core::types::Conversation),
     DetailsMembers { channel: String, members: Vec<String> },
@@ -143,6 +145,8 @@ struct App {
     rail_wanted: Vec<(slack_core::types::File, (u16, u16))>,
     /// A notification clicked in another workspace, opened once this one has booted.
     open_after: super::others::OpenAfter,
+    /// At start: the conversation to settle into once its history is in, and the thread to reopen there.
+    start: Option<(String, Option<String>)>,
     workspace: usize,
     /// Leave this workspace for another (index into `workspaces`).
     switch_to: Option<usize>,
@@ -1308,6 +1312,7 @@ impl App {
         self.focus = Focus::Thread;
         let tl = self.ws.threads.entry(super::state::thread_key(&channel, &parent)).or_default();
         self.thread = Some((channel.clone(), parent.clone()));
+        self.sidebar.remember_thread(Some(&parent));
         if tl.loaded || tl.loading {
             return;
         }
@@ -1323,6 +1328,7 @@ impl App {
     }
 
     fn close_thread(&mut self) {
+        self.sidebar.remember_thread(None);
         if let Some((c, t)) = self.thread.take() {
             stash(&mut self.drafts, &super::state::thread_key(&c, &t), &mut self.thread_composer);
             self.save_drafts();
@@ -3009,6 +3015,7 @@ async fn run_workspace(
         others: workspaces.2,
         rail: Vec::new(),
         open_after: workspaces.3,
+        start: None,
         logos: workspaces.4,
         rail_wanted: Vec::new(),
         switch_to: None,
@@ -3063,7 +3070,7 @@ async fn run_workspace(
         connected: false,
         last_typing_sent: None,
         marked: Default::default(),
-        focus: Focus::Composer,
+        focus: Focus::Messages,
         composer: Composer::default(),
         client: client.clone(),
         net: net_tx.clone(),
@@ -4182,8 +4189,10 @@ fn handle_net(app: &mut App, msg: Net) {
             if let Some((_, target)) = after {
                 app.open_target(target);
             } else if let Some(id) = app.sidebar.remembered.clone().filter(|id| app.ws.conversations.get(id).is_some_and(|c| !c.is_archived)) {
-                // Back where you were last time.
+                // Back where you were last time, in NORMAL on the messages (or the thread).
+                app.start = Some((id.clone(), app.sidebar.remembered_thread.clone()));
                 app.jump_to(&id);
+                app.focus = Focus::Messages;
             }
             for user in app.ws.unknown_dm_users() {
                 let (client, tx) = (app.client.clone(), app.net.clone());
@@ -4266,7 +4275,7 @@ fn handle_net(app: &mut App, msg: Net) {
             app.sidebar.rebuild(&app.ws);
         }
         Net::History { channel, page, older } => {
-            let tl = app.ws.timelines.entry(channel).or_default();
+            let tl = app.ws.timelines.entry(channel.clone()).or_default();
             if older {
                 tl.prepend_page(page.messages, page.has_more);
             } else {
@@ -4278,6 +4287,33 @@ fn handle_net(app: &mut App, msg: Net) {
                 }
             }
             app.continue_seek();
+            if !older && app.start.as_ref().is_some_and(|(c, _)| *c == channel) {
+                let thread = app.start.take().and_then(|(_, t)| t);
+                if app.focus == Focus::Messages {
+                    app.leave_composer(false);
+                }
+                if let Some(ts) = thread {
+                    let (client, tx) = (app.client.clone(), app.net.clone());
+                    tokio::spawn(async move {
+                        let page = client.replies(&channel, &ts).await.ok();
+                        let _ = tx.send(Net::ThreadBack { channel, ts, page });
+                    });
+                }
+            }
+        }
+        Net::ThreadBack { channel, ts, page } => {
+            // Dropped quietly when it cannot be loaded, or you moved on meanwhile.
+            let Some(page) = page.filter(|p| !p.messages.is_empty()) else { return };
+            if app.current.as_ref() != Some(&channel) || app.thread.is_some() {
+                return;
+            }
+            let tl = app.ws.threads.entry(super::state::thread_key(&channel, &ts)).or_default();
+            for m in page.messages {
+                tl.upsert(m);
+            }
+            tl.loaded = true;
+            app.open_thread_at(channel, ts);
+            app.leave_composer(true);
         }
         Net::Posted { channel, message } => {
             super::live::add_message(&mut app.ws, &channel, &message);
