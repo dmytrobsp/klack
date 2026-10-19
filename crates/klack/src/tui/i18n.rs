@@ -62,7 +62,7 @@ pub fn translatable() -> Vec<String> {
 }
 
 /// Overlay titles that go through `tr`.
-pub const TITLES: &[&str] = &["Preferences", "Keys", "Jump to…", "Activity", "Threads", "Profile", "Add reaction", "Search messages", "Commands (type in a composer)", "close", "rebind in keys.toml", "type to filter", "keep", "back"];
+pub const TITLES: &[&str] = &["Preferences", "Keys", "Jump to…", "Activity", "Threads", "Profile", "Add reaction", "Search messages", "Commands (type in a composer)", "close", "F6 → Keys · klack ctl keys-template", "Direct keys", "on a message", "on a conversation", "Typing (INSERT)", "Unbound", "workspace 1…9", "switch to the profile's workspace 1 … 9", "the leader while typing or in a dialog", "if your system takes it (macOS input source, IME), rebind it in F6 → Keys", "type to filter", "keep", "back"];
 
 /// A locale file with every string untranslated (`"text" = ""`).
 pub fn template() -> String {

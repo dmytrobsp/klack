@@ -103,8 +103,6 @@ pub type Click = (usize, super::notify::Target);
 /// Where a click from another workspace leads once that workspace has booted.
 pub type OpenAfter = Arc<Mutex<Option<Click>>>;
 
-/// Start a headless watcher for every workspace of a profile with several; each runs only
-/// while its workspace is not the shown one (that one notifies itself).
 /// How to join a huddle of workspace `index` from another one ("Alt+2, then Space h h,"), with
 /// the keys bound now.
 fn join_keys(keys: &super::keymap::Keymap, index: usize) -> String {
@@ -117,6 +115,8 @@ fn join_keys(keys: &super::keymap::Keymap, index: usize) -> String {
     }
 }
 
+/// Start a headless watcher for every workspace of a profile with several; each runs only
+/// while its workspace is not the shown one (that one notifies itself).
 pub fn spawn_watchers(sessions: Vec<WorkspaceSession>, labels: Vec<String>, shown: Arc<AtomicUsize>, clicks: tokio::sync::mpsc::UnboundedSender<Click>) {
     if sessions.len() < 2 {
         return;

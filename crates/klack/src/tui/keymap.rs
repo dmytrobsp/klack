@@ -1139,6 +1139,12 @@ impl Keymap {
         out
     }
 
+    /// An action's which-key label and icon: the user's, else the table's.
+    fn label_of(&self, info: &ActionInfo) -> (String, String) {
+        let (label, icon) = self.labels.get(&(info.context, info.name)).cloned().unwrap_or_default();
+        (label.unwrap_or_else(|| super::i18n::tr(info.label).into_owned()), icon.unwrap_or_else(|| info.icon.to_string()))
+    }
+
     /// The key `<leader>` is shown as: the leader, else the insert leader.
     pub fn leader_key(&self) -> Option<Key> {
         self.leader.or(self.insert_leader)
@@ -1151,6 +1157,20 @@ impl Keymap {
             Context::Global | Context::Sidebar | Context::Messages | Context::Huddle => self.leader_key(),
             _ => self.insert_leader.or(self.leader.filter(|k| !k.is_text())),
         }
+    }
+
+    /// The key `<leader>` is pressed as in `mode`: the leader in NORMAL, else the one that never types.
+    pub fn leader_for(&self, mode: Mode) -> Option<Key> {
+        match mode {
+            Mode::Normal => self.leader_key(),
+            Mode::Insert | Mode::Dialog => self.leader_in(Context::Composer),
+        }
+    }
+
+    /// The first sequence of an action in short form with the leader of `mode` (`␣hm` in
+    /// NORMAL, `^␣hm` while typing), for the huddle bar and the ringing note.
+    pub fn first_shown_in(&self, mode: Mode, context: Context, action: Action) -> Option<String> {
+        self.first_sequence(context, action).map(|s| self.show_with(self.leader_for(mode), s))
     }
 
     /// A sequence as help shows it, the leader as its key ("Space h m", "Ctrl+B k").
@@ -1166,6 +1186,11 @@ impl Keymap {
     /// `^X`, Ctrl+Space `^␣`, Alt+x `M-x`, others as in help; no separators (`␣h`, `^␣hm`).
     pub fn show(&self, seq: &[Key]) -> String {
         self.show_with(self.leader_key(), seq)
+    }
+
+    /// A sequence in short form with the leader of `mode`.
+    pub fn show_in(&self, mode: Mode, seq: &[Key]) -> String {
+        self.show_with(self.leader_for(mode), seq)
     }
 
     fn show_with(&self, leader: Option<Key>, seq: &[Key]) -> String {
@@ -1193,6 +1218,90 @@ impl Keymap {
     pub fn first_shown(&self, context: Context, action: Action) -> Option<String> {
         self.first_sequence(context, action).map(|s| self.show_with(self.leader_in(context), s))
     }
+}
+
+/// A group of rows in the shared tree (F1 help, F6 → Keys, `ctl keys-template`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Section {
+    pub title: String,
+    pub rows: Vec<TreeRow>,
+}
+
+/// One action in the tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeRow {
+    /// Index into [`ACTIONS`].
+    pub info: usize,
+    /// Its sequences in short form, joined by " / " (empty: unbound).
+    pub keys: String,
+    pub label: String,
+    pub icon: String,
+}
+
+/// Every action by where its first key sequence leads: the direct keys, the leader's keys on
+/// the selected message or conversation, one section per group, typing, each dialog, and
+/// the actions without a key. Empty sections are left out.
+pub fn tree(keys: &Keymap) -> Vec<Section> {
+    let (mut direct, mut message, mut conversation, mut typing, mut unbound) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let mut groups: Vec<(Vec<Key>, Vec<TreeRow>)> = Vec::new();
+    let mut dialogs: Vec<(Context, Vec<TreeRow>)> = Vec::new();
+    for (index, info) in ACTIONS.iter().enumerate() {
+        // Workspaces 2…9 are listed with the first.
+        if info.name.starts_with("workspace_") && info.name != "workspace_1" {
+            continue;
+        }
+        let seqs = keys.sequences(info.context, info.name);
+        let leader = keys.leader_in(info.context);
+        let (label, icon) = keys.label_of(info);
+        let mut shown: Vec<String> = seqs.iter().map(|s| keys.show_with(leader, s)).collect();
+        let mut label = label;
+        if info.name == "workspace_1" {
+            // "Alt+1 … Alt+9": each way of reaching them.
+            let last = keys.sequences(info.context, "workspace_9");
+            shown = seqs.iter().zip(&last).map(|(a, b)| format!("{} … {}", keys.show_with(leader, a), keys.show_with(leader, b))).collect();
+            label = super::i18n::tr("workspace 1…9").into_owned();
+        }
+        let row = TreeRow { info: index, keys: shown.join(" / "), label, icon };
+        let Some(first) = seqs.first() else {
+            unbound.push(row);
+            continue;
+        };
+        let normal = matches!(info.context, Context::Global | Context::Sidebar | Context::Messages | Context::Huddle);
+        match info.context {
+            Context::Composer | Context::Completion => typing.push(row),
+            _ if !normal => match dialogs.iter_mut().find(|(c, _)| *c == info.context) {
+                Some((_, rows)) => rows.push(row),
+                None => dialogs.push((info.context, vec![row])),
+            },
+            _ if first[0] != LEADER || first.len() < 2 => direct.push(row),
+            Context::Messages if first.len() == 2 => message.push(row),
+            Context::Sidebar if first.len() == 2 => conversation.push(row),
+            _ if first.len() == 2 => direct.push(row),
+            _ => match groups.iter_mut().find(|(p, _)| *p == first[..2]) {
+                Some((_, rows)) => rows.push(row),
+                None => groups.push((first[..2].to_vec(), vec![row])),
+            },
+        }
+    }
+    // The default groups in their order, then the user's by key.
+    let default_place = |prefix: &[Key]| GROUPS.iter().position(|(s, ..)| keys.parse_sequences(Context::Global, &[s.to_string()]).is_ok_and(|p| p[0] == prefix)).unwrap_or(usize::MAX);
+    groups.sort_by_key(|(prefix, _)| (default_place(prefix), prefix.iter().map(|k| k.spec()).collect::<Vec<_>>()));
+    let leader = keys.show(&[LEADER]);
+    let mut out = vec![
+        Section { title: super::i18n::tr("Direct keys").into_owned(), rows: direct },
+        Section { title: format!("{leader} {}", super::i18n::tr("on a message")), rows: message },
+        Section { title: format!("{leader} {}", super::i18n::tr("on a conversation")), rows: conversation },
+    ];
+    for (prefix, rows) in groups {
+        let name = keys.group(&prefix).map_or_else(|| format!("+{}", keys.show(&prefix[1..])), |g| g.0);
+        out.push(Section { title: format!("{} {name}", keys.show(&prefix)), rows });
+    }
+    out.push(Section { title: super::i18n::tr("Typing (INSERT)").into_owned(), rows: typing });
+    dialogs.sort_by_key(|(c, _)| Context::ALL.iter().position(|a| a == c));
+    out.extend(dialogs.into_iter().map(|(c, rows)| Section { title: super::i18n::tr(c.title()).into_owned(), rows }));
+    out.push(Section { title: super::i18n::tr("Unbound").into_owned(), rows: unbound });
+    out.retain(|s| !s.rows.is_empty());
+    out
 }
 
 /// The few actions worth a hint in the status bar for each context, with short words.
@@ -1800,5 +1909,18 @@ mod tests {
         assert_eq!(map.show(&[k("ctrl+x"), k("alt+x"), k("f5")]), "^XM-xF5");
         let (map, _) = Keymap::load("leader = \"ctrl+b\"\n");
         assert_eq!(map.show(&[LEADER, k("h")]), "^Bh");
+    }
+
+    #[test]
+    fn shown_with_the_leader_of_the_mode() {
+        let map = Keymap::load("").0;
+        assert_eq!(map.first_shown_in(Mode::Normal, Context::Global, Action::Mute).as_deref(), Some("␣hm"));
+        assert_eq!(map.first_shown_in(Mode::Insert, Context::Global, Action::Mute).as_deref(), Some("^␣hm"));
+        assert_eq!(map.first_shown_in(Mode::Dialog, Context::Global, Action::Mute).as_deref(), Some("^␣hm"));
+        // A key that is not a leader sequence is the same everywhere.
+        assert_eq!(map.first_shown_in(Mode::Insert, Context::Global, Action::Help).as_deref(), Some("F1"));
+        // A leader that never types is the leader everywhere.
+        let map = Keymap::load("leader = \"ctrl+b\"\ninsert_leader = \"\"\n").0;
+        assert_eq!(map.first_shown_in(Mode::Insert, Context::Global, Action::Mute).as_deref(), Some("^Bhm"));
     }
 }

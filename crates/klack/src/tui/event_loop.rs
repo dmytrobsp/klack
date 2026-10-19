@@ -4178,7 +4178,8 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     if app.huddle_view.is_none() && app.focus == Focus::Huddle {
         app.focus = Focus::Composer;
     }
-    let key = |a| app.keys.first_shown(Context::Global, a).unwrap_or_default();
+    let mode = app.mode();
+    let key = |a| app.keys.first_shown_in(mode, Context::Global, a).unwrap_or_default();
     let call_keys = (key(Action::Mute), key(Action::Huddle), key(Action::HuddleThread), key(Action::HuddleView), key(Action::Camera), key(Action::ShareScreen));
     let bar_keys = super::huddle_view::Keys { mute: &call_keys.0, leave: &call_keys.1, thread: &call_keys.2, view: &call_keys.3, camera: &call_keys.4, share: &call_keys.5 };
     let call_rows = app.call.as_ref().map_or(0, |call| call.bar_rows(&app.ws, &app.media, bar_keys, f.area().width));
@@ -4310,7 +4311,7 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         m.draw(f, body);
     }
     if let Some(h) = app.help.as_mut() {
-        h.draw(f, body, &app.keys);
+        h.draw(f, body, &app.keys, app.ws.settings.which_key.icons);
     }
     // which-key: the keys that can come next.
     if app.which_key.is_some() {
@@ -4342,7 +4343,7 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     };
     let (unread, mentions) = app.ws.total_unread();
     let note = if let Some(ring) = &app.ringing {
-        let key = |a| app.keys.sequences(Context::Global, a).first().map(|s| app.keys.show(s)).unwrap_or_default();
+        let key = |a| app.keys.sequences(Context::Global, a).first().map(|s| app.keys.show_in(app.mode(), s)).unwrap_or_default();
         Some(format!("📞 {} invites you to a huddle · {} join · {} decline", app.ws.user_name(&ring.user), key("huddle"), key("decline_huddle")))
     } else if app.status.is_empty() {
         None
