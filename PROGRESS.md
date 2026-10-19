@@ -205,7 +205,7 @@ Tests: `cargo test` → slack-core 10, huddle 33, klack 198 (+1 ignored: the `bu
 
 ## Next (in order, each as a small, separately verified step)
 
-**v0.2.0 released** 2026-10-19 (https://github.com/dmytrobsp/klack/releases/tag/v0.2.0; CI green on the bump, four builds, the Linux download verified against SHA256SUMS and run). **NEXT UP: the v0.3.0 release** (queue L is done). Queue K is done (DMs by activity, quiet conversations hidden, browser profile choice). Unreleased since v0.2.0: queues J, K and L.
+**v0.2.0 released** 2026-10-19 (https://github.com/dmytrobsp/klack/releases/tag/v0.2.0; CI green on the bump, four builds, the Linux download verified against SHA256SUMS and run). **v0.3.0** (asked by the user 2026-10-19 before going afk): version bumped (the workspace and klack's pin on slack-core); tagged once CI passes on the bump. **NEXT UP: nothing queued** — queue L is done; next: whatever the user asks. Queue K is done (DMs by activity, quiet conversations hidden, browser profile choice). Unreleased since v0.2.0: queues J, K and L.
 
 **Decided by the user 2026-10-19 (before going afk; run L autonomously to the end):** after queue L, release **v0.3.0** (bump the workspace Cargo.toml and klack's slack-core pin, tag `v0.3.0`, push; the user authorized this tag). L4: the preferences grow with the terminal (~80 %) but cap at a readable width (~120 columns). L5: `m` opens the menu, plus the Menu (Application) key and Shift+F10 where the terminal reports them; rebindable. L6: automatic — a thread replaces the messages when the two would each get under ~50 columns; no setting.
 
