@@ -4236,12 +4236,12 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     let key = |a| app.keys.first_shown_in(mode, Context::Global, a).unwrap_or_default();
     let call_keys = (key(Action::Mute), key(Action::Huddle), key(Action::HuddleThread), key(Action::HuddleView), key(Action::Camera), key(Action::ShareScreen));
     let bar_keys = super::huddle_view::Keys { mute: &call_keys.0, leave: &call_keys.1, thread: &call_keys.2, view: &call_keys.3, camera: &call_keys.4, share: &call_keys.5 };
-    let call_rows = app.call.as_ref().map_or(0, |call| call.bar_rows(&app.ws, &app.media, bar_keys, f.area().width));
+    let call_rows = app.call.as_ref().map_or(0, |call| call.bar_rows(&app.ws, &app.media, f.area().width));
     let [body, call_bar, status] = Layout::vertical([Constraint::Min(1), Constraint::Length(call_rows), Constraint::Length(1)]).areas(f.area());
     let above_status = body;
     app.call_bar_area = call_bar;
     if let Some(call) = &app.call {
-        if let Some(w) = call.draw(f, call_bar, &app.ws, &app.media, bar_keys) {
+        if let Some(w) = call.draw(f, call_bar, &app.ws, &app.media) {
             app.call_bar_wanted = Some(w);
         }
     }

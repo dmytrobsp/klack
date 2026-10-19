@@ -12,7 +12,6 @@ use ratatui::widgets::Paragraph;
 use ratatui_image::sliced::{SignedPosition, SlicedImage};
 use slack_core::types::File;
 
-use super::huddle_view::Keys;
 use super::media::{Media, Thumb};
 use super::state::Workspace;
 
@@ -410,9 +409,9 @@ impl Call {
     }
 
     /// The call bar's pieces: what is going on (the place, who is talking or talked last,
-    /// how many are here, our microphone, camera and share), then the keys. The avatar, if
+    /// how many are here, our microphone, camera and share); no key hints, which-key shows those. The avatar, if
     /// any, goes in the first two cells of its piece.
-    fn bar(&self, ws: &Workspace, media: &Media, keys: Keys) -> [Vec<Piece>; 2] {
+    fn bar(&self, ws: &Workspace, media: &Media) -> [Vec<Piece>; 1] {
         let p = super::theme::p();
         let (green, dim) = (Style::default().fg(p.own), Style::default().fg(p.dim));
         let piece = |text: String, style: Style| Piece { spans: vec![Span::styled(text, style)], avatar: None };
@@ -465,27 +464,18 @@ impl Call {
         if let Some(e) = &self.speaker_error {
             state.push(piece(format!("no sound: {e}"), Style::default().fg(p.danger)));
         }
-        let Keys { mute, leave, thread, view, camera, share } = keys;
-        let hints = [
-            format!("{mute} {}", if self.muted { "unmute" } else { "mute" }),
-            format!("{camera} {}", if self.camera_on() { "camera off" } else { "camera on" }),
-            format!("{share} {}", if self.is_sharing() { "stop sharing" } else { "share screen" }),
-            format!("{view} view"),
-            format!("{thread} thread"),
-            format!("{leave} leave"),
-        ];
-        [state, hints.into_iter().map(|h| piece(h, dim)).collect()]
+        [state]
     }
 
     /// Rows the call bar takes at `width` cells.
-    pub fn bar_rows(&self, ws: &Workspace, media: &Media, keys: Keys, width: u16) -> u16 {
-        let groups = self.bar(ws, media, keys);
+    pub fn bar_rows(&self, ws: &Workspace, media: &Media, width: u16) -> u16 {
+        let groups = self.bar(ws, media);
         flow(&widths(&groups), width as usize).1.min(BAR_ROWS)
     }
 
     /// Draw the call bar; returns a profile picture to load, if it is not cached yet.
-    pub fn draw(&self, f: &mut Frame, area: Rect, ws: &Workspace, media: &Media, keys: Keys) -> Option<(File, (u16, u16))> {
-        let groups = self.bar(ws, media, keys);
+    pub fn draw(&self, f: &mut Frame, area: Rect, ws: &Workspace, media: &Media) -> Option<(File, (u16, u16))> {
+        let groups = self.bar(ws, media);
         let (places, rows) = flow(&widths(&groups), area.width as usize);
         let mut lines: Vec<Vec<Span>> = vec![Vec::new(); rows as usize];
         let mut pictures = Vec::new();
@@ -635,7 +625,10 @@ mod tests {
 
     #[test]
     fn bar_flow() {
-        // Wide: everything on a row each for the state and the keys.
+        // Wide: the state on one row (the bar has no keys row).
+        let (places, rows) = super::flow(&[vec![10, 8, 9, 7]], 80);
+        assert_eq!((places, rows), (vec![vec![(0, 1), (0, 14), (0, 25), (0, 37)]], 1));
+        // Groups still start rows of their own.
         let (places, rows) = super::flow(&[vec![10, 8], vec![9, 7]], 80);
         assert_eq!((places, rows), (vec![vec![(0, 1), (0, 14)], vec![(1, 1), (1, 13)]], 2));
         // Narrow: a piece that does not fit goes to the next row, whole.
