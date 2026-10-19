@@ -418,6 +418,17 @@ impl App {
     fn run_command(&mut self, channel: String, cmd: super::commands::Command, thread_ts: Option<String>) {
         use super::commands::Command;
         match cmd {
+            Command::Slack { command, text } => {
+                let (client, tx) = (self.client.clone(), self.net.clone());
+                tokio::spawn(async move {
+                    let msg = match client.slash_command(&channel, &command, &text, thread_ts.as_deref()).await {
+                        Ok(()) => return,
+                        Err(e) if e.to_string().contains("unknown_command") => format!("{command} is not a command Slack knows (start with a space to send it as text)"),
+                        Err(e) => format!("{command} failed: {e}"),
+                    };
+                    let _ = tx.send(Net::Error(msg));
+                });
+            }
             Command::Upload(cmd) => self.upload(channel, cmd, thread_ts),
             Command::Join(None) => self.join_channel(channel),
             Command::Join(Some(name)) => match self.ws.conversations.values().find(|c| !c.is_dm() && c.name == name) {

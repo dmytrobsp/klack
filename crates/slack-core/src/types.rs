@@ -207,6 +207,8 @@ pub struct Message {
     pub bot_profile: Option<Value>,
     /// A bot or webhook message's own icon (`image_48`, …), when it was posted with one.
     pub icons: Option<Value>,
+    /// Shown to you alone (a command's answer); gone after a reload.
+    pub is_ephemeral: bool,
     pub hidden: bool,
     /// Conversations this message is pinned in.
     pub pinned_to: Vec<String>,

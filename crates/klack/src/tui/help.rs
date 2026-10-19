@@ -21,6 +21,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/away · /active · /dnd 30m|off", "appear away / active · pause notifications"),
     ("/workspace [name]", "list the profile's workspaces or switch"),
     ("/prefs", "preferences (also F6)"),
+    ("/remind, /giphy, … any other", "run by Slack (its answer only you see); a leading space sends it as text"),
 ];
 
 #[derive(Debug, Default)]

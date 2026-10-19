@@ -175,6 +175,16 @@ impl Client {
         self.call_raw("subscriptions.thread.mark", &params).await.map(|_| ())
     }
 
+    /// Run slash command `command` (with its `/`) in `channel` as Slack's clients do; Slack's
+    /// answer, if any, comes as an ephemeral message.
+    pub async fn slash_command(&self, channel: &str, command: &str, text: &str, thread_ts: Option<&str>) -> Result<()> {
+        let mut params: Params = vec![("channel", channel.into()), ("command", command.into()), ("text", text.into())];
+        if let Some(ts) = thread_ts {
+            params.push(("thread_ts", ts.into()));
+        }
+        self.call_raw("chat.command", &params).await.map(|_| ())
+    }
+
     pub async fn open_dm(&self, users: &[&str]) -> Result<Conversation> {
         self.call_field("conversations.open", "channel", &[("users", users.join(",")), ("return_im", "true".into())]).await
     }

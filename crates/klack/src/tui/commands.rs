@@ -1,4 +1,5 @@
-//! Slash commands typed into a composer. Anything not recognised is sent as text.
+//! Slash commands typed into a composer. Others of the form `/name …` go to Slack (its own and
+//! apps' commands); text with a leading space, or not shaped like a command, is sent as text.
 
 use super::files::{UploadCommand, parse_upload};
 
@@ -29,6 +30,8 @@ pub enum Command {
     SectionDelete,
     /// Post the lines after `/snippet [lang] [title]` as a text snippet.
     Snippet { lang: String, title: String, body: String },
+    /// A command klack does not know, run by Slack (`/remind`, `/giphy`, apps' commands).
+    Slack { command: String, text: String },
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -205,6 +208,12 @@ pub fn parse(text: &str, mrkdwn: &str) -> Option<Result<Command, String>> {
                 Ok(Command::Create { name, private: word == "/create-private" })
             }
         }
+        // Slack's own and apps' commands: one word of letters, digits, `-` and `_` (so a pasted
+        // `/usr/bin/x` stays text), typed without a leading space.
+        _ if !text.starts_with(char::is_whitespace) && word.starts_with('/') && word.len() > 1 && word[1..].chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') => {
+            let (_, rest) = mrkdwn.trim().split_once(char::is_whitespace).unwrap_or(("", ""));
+            Ok(Command::Slack { command: word.to_lowercase(), text: rest.trim().to_string() })
+        }
         _ => return None,
     })
 }
@@ -212,6 +221,19 @@ pub fn parse(text: &str, mrkdwn: &str) -> Option<Result<Command, String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn other_commands_go_to_slack() {
+        let slack = |command: &str, text: &str| Some(Ok(Command::Slack { command: command.into(), text: text.into() }));
+        assert_eq!(super::parse("/remind me in 10 minutes to stretch", "/remind me in 10 minutes to stretch"), slack("/remind", "me in 10 minutes to stretch"));
+        assert_eq!(super::parse("/giphy", "/giphy"), slack("/giphy", ""));
+        assert_eq!(super::parse("/remind @bob tomorrow", "/remind <@U2> tomorrow"), slack("/remind", "<@U2> tomorrow"), "mentions as Slack writes them");
+        assert_eq!(super::parse("/Deploy-App_2 now", "/Deploy-App_2 now"), slack("/deploy-app_2", "now"));
+        assert_eq!(super::parse("/usr/bin/env is where", "/usr/bin/env is where"), None, "a path is text");
+        assert_eq!(super::parse(" /remind me", " /remind me"), None, "a leading space sends it as text");
+        assert_eq!(super::parse("/", "/"), None);
+        assert_eq!(super::parse("/star", "/star"), Some(Ok(Command::Star)), "klack's own commands first");
+    }
 
     fn parse(text: &str) -> Option<Result<Command, String>> {
         super::parse(text, text)
@@ -226,7 +248,7 @@ mod tests {
         assert_eq!(parse("/dm bob,carol"), Some(Ok(Command::Dm(vec![Recipient::Name("bob".into()), Recipient::Name("carol".into())]))));
         assert!(matches!(parse("/dm"), Some(Err(_))));
         assert!(matches!(parse("/dm a b c d e f g h i"), Some(Err(_))));
-        assert_eq!(parse("/dmx"), None);
+        assert_eq!(parse("/dmx"), Some(Ok(Command::Slack { command: "/dmx".into(), text: "".into() })), "not /dm: Slack's to judge");
     }
 
     #[test]
@@ -250,7 +272,7 @@ mod tests {
         assert!(lang_title("klingon hello").unwrap_err().contains("unknown snippet language"), "refused before Slack refuses it");
         assert_eq!(snippet_lang("c++"), Some("cpp"));
         assert!(SNIPPET_LANGS.contains(&"rust") && SNIPPET_LANGS.len() == 143);
-        assert_eq!(parse("/snippets"), None);
+        assert_eq!(parse("/snippets"), Some(Ok(Command::Slack { command: "/snippets".into(), text: "".into() })), "not /snippet");
     }
 
     #[test]
@@ -291,8 +313,9 @@ mod tests {
         assert_eq!(parse("/section delete"), Some(Ok(Command::SectionDelete)));
         assert!(matches!(parse("/section rename"), Some(Err(_))));
         assert!(matches!(parse("/section"), Some(Err(_))));
-        assert_eq!(parse("/shrug"), None);
-        assert_eq!(parse("/joinx"), None);
+        // Not klack's: Slack runs them (it knows /shrug; /joinx gets "not a command" back).
+        assert_eq!(parse("/shrug"), Some(Ok(Command::Slack { command: "/shrug".into(), text: "".into() })));
+        assert_eq!(parse("/joinx"), Some(Ok(Command::Slack { command: "/joinx".into(), text: "".into() })));
         assert_eq!(parse("hello /join"), None);
     }
 }

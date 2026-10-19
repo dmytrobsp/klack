@@ -585,7 +585,7 @@ pub fn build_lines_range(ws: &Workspace, t: &Timeline, from: usize, to: usize, w
             prev = None;
             continue;
         }
-        let grouped = prev.is_some_and(|p| p.user == m.user && p.bot_id == m.bot_id && ts - p.time() < GROUP_WINDOW && !is_system(p)) && break_before != Some(m.ts.as_str());
+        let grouped = prev.is_some_and(|p| p.user == m.user && p.bot_id == m.bot_id && ts - p.time() < GROUP_WINDOW && !is_system(p)) && break_before != Some(m.ts.as_str()) && !m.is_ephemeral;
         // Two-row avatars stand beside the name and the first line; all text is indented past them.
         let large = avatars != Avatars::Off && ws.settings.messages.large_avatars;
         let indent = if large { super::media::AVATAR_SIZE_LARGE.0 as usize + 1 } else { 0 };
@@ -602,6 +602,9 @@ pub fn build_lines_range(ws: &Workspace, t: &Timeline, from: usize, to: usize, w
                 Span::styled(ws.author(m), Style::default().fg(color).add_modifier(Modifier::BOLD)),
                 Span::styled(format!("  {}", time_label(ws, ts)), Style::default().fg(super::theme::p().dim)),
             ];
+            if m.is_ephemeral {
+                header.push(Span::styled("  only visible to you", Style::default().fg(super::theme::p().dim).add_modifier(Modifier::ITALIC)));
+            }
             if avatars != Avatars::Off {
                 // The initials always; a picture, once loaded, is drawn over them.
                 let (label, size) = if large { (format!(" {} ", initials(&ws.author(m))), super::media::AVATAR_SIZE_LARGE) } else { (initials(&ws.author(m)), super::media::AVATAR_SIZE) };
@@ -665,8 +668,10 @@ pub fn message_body(ws: &Workspace, m: &Message, width: usize, summary: bool, th
     }
     out.extend(body);
     for att in &m.attachments {
-        let title = att["title"].as_str().or_else(|| att["fallback"].as_str()).unwrap_or("");
         let detail = att["text"].as_str().unwrap_or("");
+        // `fallback` is a plain-text copy for clients that cannot show the rest: only when there is
+        // nothing else (no title, no text).
+        let title = att["title"].as_str().or_else(|| att["fallback"].as_str().filter(|_| detail.is_empty())).unwrap_or("");
         let bar = Span::styled("▍ ", Style::default().fg(attachment_color(att).unwrap_or(super::theme::p().quote_bar)));
         if !title.is_empty() {
             out.extend(text::wrap(vec![Span::styled(format::unescape(title), Style::default().add_modifier(Modifier::BOLD))], width, vec![bar.clone()], vec![bar.clone()]));
@@ -1269,5 +1274,32 @@ mod tests {
         let mut pane = MessagePane { new_since: Some(ts(5)), ..Default::default() };
         terminal.draw(|f| pane.draw(f, f.area(), &ws, "t", Some(&t), false, &media)).unwrap();
         assert!(screen(&terminal)[12].contains("message 39"));
+    }
+
+    #[test]
+    fn ephemeral_answers_say_so() {
+        let mut ws = Workspace::default();
+        ws.users.insert("USLACKBOT".into(), slack_core::types::User { id: "USLACKBOT".into(), name: "slackbot".into(), ..Default::default() });
+        let mut t = Timeline { loaded: true, ..Default::default() };
+        t.upsert(msg("1.0", "USLACKBOT", "a reminder"));
+        t.upsert(Message { is_ephemeral: true, ..msg("2.0", "USLACKBOT", "Need some help with /remind?") });
+        let p = plain(&build_lines_owned(&ws, &t, 60, false, &|_, _| None, Avatars::Off).0);
+        let headers: Vec<&String> = p.iter().filter(|l| l.contains("slackbot")).collect();
+        assert_eq!(headers.len(), 2, "its own header even right after the same author: {p:?}");
+        assert!(headers[1].contains("only visible to you") && !headers[0].contains("only visible"));
+    }
+
+    #[test]
+    fn attachments_show_their_fallback_only_when_there_is_nothing_else() {
+        let ws = Workspace::default();
+        // Slackbot's answer to `/remind help` (shortened): text and an identical fallback.
+        let att = serde_json::json!({"callback_id": "x", "id": 1, "mrkdwn_in": ["text"], "text": "Use `/remind` to:\nSnooze a reminder", "fallback": "Use `/remind` to:\nSnooze a reminder"});
+        let m = Message { attachments: vec![att], ..msg("1.0", "USLACKBOT", "Need some help?") };
+        let p = plain(&message_body(&ws, &m, 60, false, &|_, _| None).0);
+        assert_eq!(p.iter().filter(|l| l.contains("Snooze a reminder")).count(), 1, "once, not again from the fallback: {p:?}");
+        assert!(!p.iter().any(|l| l.contains('`')), "rendered, not raw: {p:?}");
+        let only_fallback = serde_json::json!({"fallback": "[a link preview]"});
+        let m = Message { attachments: vec![only_fallback], ..msg("2.0", "U1", "") };
+        assert!(plain(&message_body(&ws, &m, 60, false, &|_, _| None).0).iter().any(|l| l.contains("[a link preview]")));
     }
 }

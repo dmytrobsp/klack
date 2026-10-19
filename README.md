@@ -106,6 +106,7 @@ workspace account in `drafts/<team>-<user>.json` under the local data folder
 | Ctrl+T | threads: every thread you are in, unread ones first ("2 new"), each with its parent and its first unread (or newest) reply; Enter opens the thread at that reply, `r` loads again, more load at the end of the list |
 | `/status [:emoji:] [text] [for 30m\|2h\|today]` · `/status clear` | set or clear your status |
 | `/away` · `/active` · `/dnd 30m` · `/dnd off` | appear away / active · pause or resume notifications |
+| any other `/command` | run by Slack, as its own clients do (`/remind`, `/giphy`, `/shrug`, apps' commands); an answer only you see is marked "only visible to you"; an unknown one says so; a leading space sends the line as text |
 | `*` · `m` (sidebar) | star / unstar · move to a section (or a new one); `/section rename <name>` · `/section delete` (each section's name heads a rule, with a blank row between sections — none in compact mode) |
 | `Space` / `z` (sidebar), click a header | fold / unfold the section: folded, only "▸ name" shows, with the number of its conversations with unread messages and a badge for mentions; Enter on it unfolds too, and going to a conversation inside (Ctrl+K, search, a notification) unfolds it. Kept per workspace account in `sidebar/<team>-<user>.json` under the local data folder |
 | F2 | conversation details: about, members, pins |
