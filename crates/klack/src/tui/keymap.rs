@@ -312,6 +312,7 @@ pub enum Action {
     DeclineHuddle,
     Unbind,
     Reset,
+    EditIcon,
     Increase,
     Decrease,
     Vip,
@@ -654,9 +655,10 @@ actions! {
         Down "down" "next setting" "down" "🔽" ["down", "j"]
         PrevTab "previous_category" "previous category" "previous category" "⏪" ["left", "h", "shift+tab"]
         NextTab "next_category" "next category" "next category" "⏩" ["right", "l", "tab"]
-        Open "change" "change the setting (Keys: press the new key next)" "change" "🔀" ["enter", "space"]
-        Unbind "unbind" "Keys: remove the action's keys" "unbind" "🚫" ["delete", "backspace"]
+        Open "change" "change the setting (Keys: record the new keys; on a group: rename it)" "change" "🔀" ["enter", "space"]
+        Unbind "unbind" "Keys: remove the action's keys (Backspace: erase the filter first)" "unbind" "🚫" ["delete", "backspace"]
         Reset "reset" "Keys: back to the default keys" "reset" "🔄" ["r"]
+        EditIcon "edit_icon" "Keys: change a group's icon" "edit icon" "🎨" ["i"]
         Increase "increase" "raise a level (volumes, gain, threshold)" "increase" "➕" ["+", "="]
         Decrease "decrease" "lower a level" "decrease" "➖" ["-"]
         Close "close" "close" "close" "❎" ["esc", "q", "f6"]
@@ -1013,6 +1015,11 @@ impl Keymap {
         }
     }
 
+    /// The user's own name and icon for a prefix (`[groups]`), if any.
+    pub fn own_group(&self, seq: &[Key]) -> Option<&(String, Option<String>)> {
+        self.groups.get(seq)
+    }
+
     /// An action's default sequences (those with `<leader>` left out when there is no leader).
     fn defaults(&self, info: &ActionInfo) -> Vec<Vec<Key>> {
         info.defaults.iter().filter_map(|s| self.parse_sequences(info.context, &[s.to_string()]).ok()).flatten().collect()
@@ -1216,6 +1223,8 @@ impl Keymap {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Section {
     pub title: String,
+    /// The prefix of a group's section (`<leader> h`); None for the others.
+    pub prefix: Option<Vec<Key>>,
     pub rows: Vec<TreeRow>,
 }
 
@@ -1287,19 +1296,19 @@ pub fn tree(keys: &Keymap) -> Vec<Section> {
     let default_place = |prefix: &[Key]| GROUPS.iter().position(|(s, ..)| keys.parse_sequences(Context::Global, &[s.to_string()]).is_ok_and(|p| p[0] == prefix)).unwrap_or(usize::MAX);
     groups.sort_by_key(|(prefix, _)| (default_place(prefix), prefix.iter().map(|k| k.spec()).collect::<Vec<_>>()));
     let leader = keys.show(&[LEADER]);
-    let mut out: Vec<Section> = direct.into_iter().zip(["everywhere", "sidebar", "messages and thread", "huddle view"]).map(|(rows, pane)| Section { title: format!("{} — {}", super::i18n::tr("Direct keys"), super::i18n::tr(pane)), rows }).collect();
+    let mut out: Vec<Section> = direct.into_iter().zip(["everywhere", "sidebar", "messages and thread", "huddle view"]).map(|(rows, pane)| Section { title: format!("{} — {}", super::i18n::tr("Direct keys"), super::i18n::tr(pane)), prefix: None, rows }).collect();
     out.extend([
-        Section { title: format!("{leader} {}", super::i18n::tr("on a message")), rows: message },
-        Section { title: format!("{leader} {}", super::i18n::tr("on a conversation")), rows: conversation },
+        Section { title: format!("{leader} {}", super::i18n::tr("on a message")), prefix: None, rows: message },
+        Section { title: format!("{leader} {}", super::i18n::tr("on a conversation")), prefix: None, rows: conversation },
     ]);
     for (prefix, rows) in groups {
         let name = keys.group(&prefix).map_or_else(|| format!("+{}", keys.show(&prefix[1..])), |g| g.0);
-        out.push(Section { title: format!("{} {name}", keys.show(&prefix)), rows });
+        out.push(Section { title: format!("{} {name}", keys.show(&prefix)), prefix: Some(prefix), rows });
     }
-    out.push(Section { title: super::i18n::tr("Typing (INSERT)").into_owned(), rows: typing });
+    out.push(Section { title: super::i18n::tr("Typing (INSERT)").into_owned(), prefix: None, rows: typing });
     dialogs.sort_by_key(|(c, _)| Context::ALL.iter().position(|a| a == c));
-    out.extend(dialogs.into_iter().map(|(c, rows)| Section { title: super::i18n::tr(c.title()).into_owned(), rows }));
-    out.push(Section { title: super::i18n::tr("Unbound").into_owned(), rows: unbound });
+    out.extend(dialogs.into_iter().map(|(c, rows)| Section { title: super::i18n::tr(c.title()).into_owned(), prefix: None, rows }));
+    out.push(Section { title: super::i18n::tr("Unbound").into_owned(), prefix: None, rows: unbound });
     out.retain(|s| !s.rows.is_empty());
     out
 }

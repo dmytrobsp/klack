@@ -1635,28 +1635,44 @@ impl App {
         });
     }
 
-    /// A key pressed while the preferences wait for a new binding: the leader waits for one
-    /// more key; then the sequence replaces the action's keys (or becomes the leader).
-    fn capture_key(&mut self, key: Key) {
-        let leaders = [self.keys.leader, self.keys.insert_leader];
+    /// A key pressed while F6 → Keys records: every key is part of the sequence until a pause;
+    /// then Enter writes it (the action's keys, or a leader of one key) and Esc drops it.
+    fn record_key(&mut self, key: Key) {
+        use super::prefs::Field;
         let Some(p) = self.prefs.as_mut() else { return };
-        let field = p.selected_field();
-        let Some(seq) = p.capturing.as_mut() else { return };
-        if matches!(field, Some(super::prefs::Field::Binding(_))) && seq.is_empty() && leaders.contains(&Some(key)) {
-            seq.push(LEADER);
-            return;
+        let Some(recording) = p.recording.as_mut() else { return };
+        match recording.press(key, std::time::Instant::now()) {
+            Some(true) => {}
+            Some(false) => p.recording = None,
+            None => return,
         }
-        seq.push(key);
-        let seq = p.capturing.take().unwrap_or_default();
-        let change = match field {
-            Some(super::prefs::Field::Binding(i)) => {
+        let Some(seq) = p.recording.take().map(|r| r.keys) else { return };
+        let change = match p.selected_field(&self.keys) {
+            Some(Field::Binding(i)) => {
                 let info = &super::keymap::ACTIONS[i];
-                Change::Binding { context: info.context, name: info.name, seqs: Some(vec![seq.iter().map(Key::spec).collect::<Vec<_>>().join(" ")]) }
+                Change::Binding { context: info.context, name: info.name, seqs: Some(vec![super::prefs::recorded(&self.keys, &seq)]) }
             }
-            Some(super::prefs::Field::Leader) => Change::Leader(Some(key.spec())),
+            Some(Field::Leader | Field::InsertLeader) if seq.len() != 1 => {
+                p.saved = Some(Err("a leader is one key".into()));
+                return;
+            }
+            Some(Field::Leader) => Change::Leader(Some(seq[0].spec())),
+            Some(Field::InsertLeader) => Change::InsertLeader(Some(seq[0].spec())),
             _ => return,
         };
         self.save_keys(&change);
+    }
+
+    /// End a recording once its pause is over (at the top of the loop).
+    fn sync_recording(&mut self, now: std::time::Instant) {
+        if let Some(r) = self.prefs.as_mut().and_then(|p| p.recording.as_mut()) {
+            r.tick(now);
+        }
+    }
+
+    /// When the recording's pause ends (None: no recording, or it is over).
+    fn recording_due(&self) -> Option<std::time::Instant> {
+        self.prefs.as_ref()?.recording.as_ref()?.due()
     }
 
     /// Change one entry of keys.toml (the rest of the file stays as the user wrote it) and use
@@ -1671,12 +1687,7 @@ impl App {
         let (map, warnings, written) = match edited {
             Ok(text) => {
                 let (map, warnings) = Keymap::load(&text);
-                let written = super::keymap::config_path().ok_or_else(|| "no config directory".to_string()).and_then(|path| {
-                    if let Some(dir) = path.parent() {
-                        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-                    }
-                    std::fs::write(&path, text).map_err(|e| e.to_string()).map(|_| path.display().to_string())
-                });
+                let written = super::keymap::config_path().ok_or_else(|| "no config directory".to_string()).and_then(|path| super::keys_file::write(&path, &text).map(|_| path.display().to_string()));
                 (map, warnings, written)
             }
             Err(e) => (Keymap::load("").0, Vec::new(), Err(e)),
@@ -1696,7 +1707,7 @@ impl App {
     /// +/- in the preferences: step a level up or down, save it and apply it.
     fn adjust_preference(&mut self, up: bool) {
         let Some(p) = self.prefs.as_mut() else { return };
-        let Some(field) = p.selected_field() else { return };
+        let Some(field) = p.selected_field(&self.keys) else { return };
         if field.adjust(&mut self.ws.settings, up, false) {
             p.saved = Some(super::settings::save(&self.ws.settings).map(|path| path.display().to_string()));
             self.audio_changed(Some(field));
@@ -1757,10 +1768,17 @@ impl App {
         use super::prefs::SlackChange;
         let current = self.current.clone();
         let Some(p) = self.prefs.as_mut() else { return };
-        let on_slack = p.on_slack();
         p.saved = None;
-        let field = p.selected_field();
-        let change = p.change(&mut self.ws, current.as_deref());
+        let field = p.selected_field(&self.keys);
+        // A group's name: written to keys.toml.
+        if let Some(super::prefs::Field::GroupHeader(_)) = field {
+            if let Some(change) = p.group_edit(&self.keys) {
+                self.save_keys(&change);
+            }
+            return;
+        }
+        let on_slack = p.on_slack(&self.keys);
+        let change = p.change(&mut self.ws, current.as_deref(), &self.keys);
         if !on_slack {
             // A refused value (e.g. an unknown time zone) keeps its message and is not saved.
             if p.saved.is_none() && p.editing.is_none() && p.picker.is_none() {
@@ -1913,8 +1931,8 @@ impl App {
             if let Some(picker) = p.picker.as_mut() {
                 picker.move_by(step);
                 picker.preview(&self.ws.settings.appearance.theme);
-            } else if p.editing.is_none() && p.capturing.is_none() {
-                p.move_by(3 * step);
+            } else if p.editing.is_none() && p.recording.is_none() {
+                p.move_by(3 * step, &self.keys);
             }
         } else if let Some(sw) = self.switcher.as_mut() {
             let len = sw.entries(&self.ws).len();
@@ -1958,9 +1976,9 @@ impl App {
         }
     }
 
-    /// The preferences wait for a key to bind: every key goes to them.
+    /// The preferences record keys to bind: every key goes to them.
     fn capturing_key(&self) -> bool {
-        self.prefs.as_ref().is_some_and(|p| p.capturing.is_some())
+        self.prefs.as_ref().is_some_and(|p| p.recording.is_some())
     }
 
     /// Where input goes now (see [`mode_of`]).
@@ -2013,8 +2031,8 @@ impl App {
         } else if self.help.is_some() {
             self.help = None;
         } else if let Some(p) = self.prefs.as_mut() {
-            if p.capturing.is_some() {
-                p.capturing = None;
+            if p.recording.is_some() {
+                p.recording = None;
             } else if p.picker.is_some() {
                 p.picker = None;
                 drop(super::theme::set(self.ws.settings.appearance.theme_for(&self.ws.team_id)));
@@ -2883,6 +2901,7 @@ async fn run_workspace(
         app.expire_status(std::time::Instant::now());
         app.ring_tick();
         app.sync_which_key(std::time::Instant::now());
+        app.sync_recording(std::time::Instant::now());
         // Alone in the huddle for a while: a quiet melody loops until someone joins.
         let s = &app.ws.settings;
         let wait = Duration::from_secs(s.huddle.alone_secs.max(1) as u64);
@@ -2900,6 +2919,7 @@ async fn run_workspace(
         app.request_activity_messages();
         app.refresh_dnd();
         let which_key_due = app.which_key_due();
+        let recording_due = app.recording_due();
         tokio::select! {
             ev = events.next() => {
                 let Some(ev) = ev else { break };
@@ -2959,6 +2979,8 @@ async fn run_workspace(
             _ = tick.tick() => {}
             // which-key opens (at the top of the loop).
             _ = tokio::time::sleep_until(which_key_due.unwrap_or_else(std::time::Instant::now).into()), if which_key_due.is_some() => {}
+            // A recording in F6 → Keys ends (at the top of the loop).
+            _ = tokio::time::sleep_until(recording_due.unwrap_or_else(std::time::Instant::now).into()), if recording_due.is_some() => {}
             _ = call_tick.tick(), if app.call.is_some() => {}
             _ = video_tick.tick(), if app.player.is_some() => {
                 if let Some(p) = app.player.as_mut() {
@@ -3096,13 +3118,13 @@ fn handle_dialog(app: &mut App, ev: &Event) -> bool {
                 _ => {}
             }
         }
-        Event::Key(k) if k.kind != KeyEventKind::Release && app.prefs.as_ref().is_some_and(|p| p.capturing.is_some()) => app.capture_key(Key::from_event(&k)),
+        Event::Key(k) if k.kind != KeyEventKind::Release && app.prefs.as_ref().is_some_and(|p| p.recording.is_some()) => app.record_key(Key::from_event(&k)),
         Event::Key(k) if k.kind != KeyEventKind::Release && app.prefs.as_ref().is_some_and(|p| p.picker.is_some()) => app.theme_picker_key(&k),
         Event::Key(k) if k.kind != KeyEventKind::Release && app.prefs.as_ref().is_some_and(|p| p.editing.is_some()) => {
             let action = app.action_in(Context::TextField, &k);
             let Some(p) = app.prefs.as_mut() else { return true };
             match (action, p.editing.as_mut()) {
-                (Some(Action::Close), _) => p.editing = None,
+                (Some(Action::Close), _) => (p.editing, p.editing_icon) = (None, false),
                 (Some(Action::Erase), Some(text)) => {
                     text.pop();
                 }
@@ -3116,31 +3138,52 @@ fn handle_dialog(app: &mut App, ev: &Event) -> bool {
             }
         }
         Event::Key(k) if k.kind != KeyEventKind::Release && app.prefs.is_some() => {
+            use super::prefs::Field;
             let action = app.action_in(Context::Preferences, &k);
             let Some(p) = app.prefs.as_mut() else { return true };
+            // The key list's filter: Backspace erases it before it unbinds, Esc clears it first.
+            let filtering = p.keys_shown() && !p.filter.is_empty();
+            if filtering && k.code == KeyCode::Backspace {
+                let mut filter = std::mem::take(&mut p.filter);
+                filter.pop();
+                p.set_filter(filter);
+                return true;
+            }
             match action {
+                Some(Action::Close) if filtering => p.set_filter(String::new()),
                 Some(Action::Close) => app.prefs = None,
-                Some(Action::Up) => p.move_by(-1),
-                Some(Action::Down) => p.move_by(1),
+                Some(Action::Up) => p.move_by(-1, &app.keys),
+                Some(Action::Down) => p.move_by(1, &app.keys),
                 Some(Action::PrevTab) => p.switch_category(-1),
                 Some(Action::NextTab) => p.switch_category(1),
                 Some(Action::Open) => app.change_preference(),
                 Some(Action::Increase) => app.adjust_preference(true),
                 Some(Action::Decrease) => app.adjust_preference(false),
-                Some(Action::Unbind) => match p.selected_field() {
-                    Some(super::prefs::Field::Binding(i)) => {
+                Some(Action::EditIcon) => p.edit_icon(&app.keys),
+                Some(Action::Unbind) => match p.selected_field(&app.keys) {
+                    Some(Field::Binding(i)) => {
                         let info = &super::keymap::ACTIONS[i];
                         app.save_keys(&Change::Binding { context: info.context, name: info.name, seqs: Some(vec![]) });
                     }
-                    Some(super::prefs::Field::Leader) => {
-                        app.save_keys(&Change::Leader(Some(String::new())));
-                    }
+                    Some(Field::Leader) => app.save_keys(&Change::Leader(Some(String::new()))),
+                    Some(Field::InsertLeader) => app.save_keys(&Change::InsertLeader(Some(String::new()))),
                     _ => {}
                 },
-                Some(Action::Reset) => {
-                    if let Some(super::prefs::Field::Binding(i)) = p.selected_field() {
+                Some(Action::Reset) => match p.selected_field(&app.keys) {
+                    Some(Field::Binding(i)) => {
                         let info = &super::keymap::ACTIONS[i];
                         app.save_keys(&Change::Binding { context: info.context, name: info.name, seqs: None });
+                    }
+                    Some(Field::Leader) => app.save_keys(&Change::Leader(None)),
+                    Some(Field::InsertLeader) => app.save_keys(&Change::InsertLeader(None)),
+                    _ => {}
+                },
+                // Other text goes to the key list's filter.
+                None if p.keys_shown() => {
+                    if let (KeyCode::Char(c), true) = (k.code, Key::from_event(&k).is_text()) {
+                        let mut filter = std::mem::take(&mut p.filter);
+                        filter.push(c);
+                        p.set_filter(filter);
                     }
                 }
                 _ => {}

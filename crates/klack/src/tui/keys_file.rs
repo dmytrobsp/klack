@@ -12,10 +12,9 @@ pub enum Change {
     Binding { context: Context, name: &'static str, seqs: Option<Vec<String>> },
     /// The leader key; `None` removes the entry (back to the default).
     Leader(Option<String>),
-    #[allow(dead_code)] // F6 → Keys
+    /// The leader while typing and in dialogs; `None` removes the entry (back to the default).
     InsertLeader(Option<String>),
     /// A prefix's name and icon in `[groups]`; both `None` removes the entry.
-    #[allow(dead_code)] // F6 → Keys
     Group { prefix: String, name: Option<String>, icon: Option<String> },
 }
 
@@ -43,6 +42,29 @@ pub fn apply(text: &str, change: &Change) -> Result<String, String> {
         }
     }
     Ok(doc.to_string())
+}
+
+/// Write `text` to `path` as a whole: into a file beside it, then renamed over it, so a crash
+/// never leaves half a file. The folder is made if needed; the file keeps its permissions.
+pub fn write(path: &std::path::Path, text: &str) -> Result<(), String> {
+    use std::io::Write;
+    let dir = path.parent().ok_or("no folder for keys.toml")?;
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let temp = dir.join(format!(".{name}.{}.tmp", std::process::id()));
+    let written = (|| {
+        let mut file = std::fs::File::create(&temp)?;
+        file.write_all(text.as_bytes())?;
+        if let Ok(meta) = std::fs::metadata(path) {
+            file.set_permissions(meta.permissions())?;
+        }
+        file.sync_all()?;
+        std::fs::rename(&temp, path)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    written.map_err(|e| e.to_string())
 }
 
 /// A top-level string (`leader`), or removed.
@@ -214,6 +236,52 @@ mod tests {
         assert!(out.contains("\"<leader> h\" = \"calls\""), "{out}");
         let out = apply(&out, &Change::Group { prefix: "<leader> h".into(), name: None, icon: None }).unwrap();
         assert!(!out.contains("<leader> h"), "{out}");
+    }
+
+    #[test]
+    fn inline_and_dotted_tables() {
+        let out = apply("messages = { react = \"r\" }\n", &bind(Context::Messages, "pin", Some(&["P"]))).unwrap();
+        let (map, warnings) = Keymap::load(&out);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!((map.sequences(Context::Messages, "react").len(), map.sequences(Context::Messages, "pin").len()), (1, 1), "{out}");
+        assert!(out.starts_with("messages = { react = \"r\""), "{out}");
+        let out = apply("messages.react = \"r\"\n", &bind(Context::Messages, "react", Some(&["R"]))).unwrap();
+        assert_eq!(Keymap::load(&out).0.sequences(Context::Messages, "react"), vec![vec![Key::parse("R").unwrap()]], "{out}");
+        assert!(out.starts_with("messages.react = "), "dotted stays dotted: {out}");
+    }
+
+    #[test]
+    fn quotes_and_backslashes_round_trip() {
+        let out = apply("", &bind(Context::Messages, "react", Some(&["\""]))).unwrap();
+        let out = apply(&out, &bind(Context::Messages, "pin", Some(&["\\"]))).unwrap();
+        let (map, warnings) = Keymap::load(&out);
+        assert!(warnings.is_empty(), "{warnings:?}\n{out}");
+        assert_eq!(map.sequences(Context::Messages, "react"), vec![vec![Key::parse("\"").unwrap()]], "{out}");
+        assert_eq!(map.sequences(Context::Messages, "pin"), vec![vec![Key::parse("\\").unwrap()]], "{out}");
+    }
+
+    #[test]
+    fn writing_replaces_the_file_whole() {
+        let dir = std::env::temp_dir().join(format!("klack-keys-write-{}", std::process::id()));
+        let path = dir.join("keys.toml");
+        write(&path, "leader = \"space\"\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "leader = \"space\"\n", "the folder is made");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        write(&path, "leader = \"ctrl+b\"\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "leader = \"ctrl+b\"\n");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600, "the file keeps its permissions");
+        }
+        let left: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(left, ["keys.toml"], "no temporary file is left");
+        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_dir(&dir).unwrap();
     }
 
     #[test]

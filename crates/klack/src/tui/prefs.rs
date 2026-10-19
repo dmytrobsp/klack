@@ -7,7 +7,9 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
-use super::keymap::{ACTIONS, Keymap};
+use std::time::{Duration, Instant};
+
+use super::keymap::{ACTIONS, Key, Keymap};
 use super::settings::Settings;
 use super::state::{LEVELS, Workspace, level_label};
 
@@ -19,8 +21,22 @@ pub enum Field {
     Theme,
     WorkspaceTheme,
     HideInactive,
+    /// which-key: on or off.
+    WhichKeyShow,
+    /// which-key: the corner of the screen it sits in.
+    WhichKeyCorner,
+    /// which-key: how long after the last key it opens.
+    WhichKeyDelay,
+    /// which-key: its tallest, in percent of the screen.
+    WhichKeyHeight,
+    /// Icons in which-key, help and the Keys list.
+    WhichKeyIcons,
     /// The leader key for chords.
     Leader,
+    /// The leader while typing and in dialogs.
+    InsertLeader,
+    /// A section of the key tree (index into `keymap::tree`); a group's can be renamed.
+    GroupHeader(usize),
     /// An action's keys (index into `keymap::ACTIONS`).
     Binding(usize),
     Compact,
@@ -98,6 +114,15 @@ pub const CATEGORIES: &[(&str, &[Field])] = &[
     ("Huddles", &[Field::JoinSound, Field::SomeoneJoined, Field::SomeoneLeft, Field::RingSound, Field::RingTimeout, Field::AutoDecline, Field::AloneSound, Field::AloneSecs]),
 ];
 
+/// The Keys category's settings above the bindings.
+const KEYS_SETTINGS: &[Field] = &[Field::WhichKeyShow, Field::WhichKeyCorner, Field::WhichKeyDelay, Field::WhichKeyHeight, Field::WhichKeyIcons, Field::Leader, Field::InsertLeader];
+
+/// which-key's corners, in the order Enter goes through them.
+const CORNERS: &[&str] = &["bottom-right", "bottom-left", "top-left", "top-right"];
+
+/// A recording of keys ends after this long without a key.
+pub const RECORD_PAUSE: Duration = Duration::from_secs(1);
+
 /// Volumes offered, in percent.
 pub const VOLUMES: &[u32] = &[0, 10, 25, 50, 75, 100, 125, 150, 200];
 /// Microphone gains offered, in percent.
@@ -120,6 +145,9 @@ impl Field {
     pub fn label(self) -> String {
         match self {
             Field::Leader => super::i18n::tr(LEADER_LABEL).into_owned(),
+            Field::InsertLeader => super::i18n::tr(INSERT_LEADER_LABEL).into_owned(),
+            // Drawn from the tree (see `Prefs::draw`).
+            Field::GroupHeader(_) => String::new(),
             Field::Binding(i) => format!("{} · {}", super::i18n::tr(ACTIONS[i].context.title()), super::i18n::tr(ACTIONS[i].description)),
             other => super::i18n::tr(other.fixed_label()).into_owned(),
         }
@@ -127,7 +155,12 @@ impl Field {
 
     fn fixed_label(self) -> &'static str {
         match self {
-            Field::Leader | Field::Binding(_) => "",
+            Field::Leader | Field::InsertLeader | Field::GroupHeader(_) | Field::Binding(_) => "",
+            Field::WhichKeyShow => "Show which-key",
+            Field::WhichKeyCorner => "which-key corner",
+            Field::WhichKeyDelay => "which-key opens after",
+            Field::WhichKeyHeight => "which-key max height",
+            Field::WhichKeyIcons => "Icons (which-key, help, here)",
             Field::Theme => "Colour theme",
             Field::WorkspaceTheme => "Theme for this workspace",
             Field::HideInactive => "Hide conversations quiet for",
@@ -177,6 +210,8 @@ impl Field {
         let s = &ws.settings;
         match self {
             Field::Leader => return keys.leader.map(|k| k.label()).unwrap_or_else(|| "none".into()),
+            Field::InsertLeader => return keys.insert_leader.map(|k| k.label()).unwrap_or_else(|| "none".into()),
+            Field::GroupHeader(_) => return String::new(),
             Field::Binding(i) => {
                 let label = keys.keys_label(ACTIONS[i].context, ACTIONS[i].name);
                 return if label.is_empty() { "(unbound)".into() } else { label };
@@ -186,7 +221,13 @@ impl Field {
         let yes = |b: bool| if b { "on" } else { "off" }.to_string();
         let device = |d: &Option<String>| d.clone().unwrap_or_else(|| "system default".into());
         match self {
-            Field::Leader | Field::Binding(_) => String::new(),
+            Field::Leader | Field::InsertLeader | Field::GroupHeader(_) | Field::Binding(_) => String::new(),
+            Field::WhichKeyShow => yes(s.which_key.show),
+            Field::WhichKeyCorner => s.which_key.corner.clone(),
+            Field::WhichKeyDelay if s.which_key.delay_secs <= 0.0 => "0 s (at once)".into(),
+            Field::WhichKeyDelay => format!("{:.1} s", s.which_key.delay_secs),
+            Field::WhichKeyHeight => format!("{}% of the screen", s.which_key.max_height_percent),
+            Field::WhichKeyIcons => yes(s.which_key.icons),
             Field::Theme => s.appearance.theme.clone(),
             Field::HideInactive => match s.appearance.hide_inactive_days {
                 0 => "never".into(),
@@ -280,6 +321,18 @@ impl Field {
             Field::HideInactive => s.appearance.hide_inactive_days = step(HIDE_INACTIVE, s.appearance.hide_inactive_days, up, wrap),
             Field::MicGain => a.mic_gain = step(GAINS, a.mic_gain, up, wrap),
             Field::SpeakingThreshold => a.speaking_threshold_db = step(THRESHOLDS, a.speaking_threshold_db, up, wrap),
+            // 0.1 s steps from 0 to 5 s.
+            Field::WhichKeyDelay => {
+                let w = &mut s.which_key;
+                let tenths = (w.delay_secs * 10.0).round() as i32 + if up { 1 } else { -1 };
+                w.delay_secs = (if wrap && tenths > 50 { 0 } else { tenths.clamp(0, 50) }) as f32 / 10.0;
+            }
+            // 10 % steps from 10 to 100 %.
+            Field::WhichKeyHeight => {
+                let w = &mut s.which_key;
+                let next = if up { w.max_height_percent.saturating_add(10) } else { w.max_height_percent.saturating_sub(10) };
+                w.max_height_percent = if wrap && next > 100 { 10 } else { next.clamp(10, 100) };
+            }
             _ => return false,
         }
         true
@@ -320,6 +373,15 @@ impl Field {
                 s.region.date_format = DATE_FORMATS[i].into();
             }
             Field::Desktop => s.notifications.desktop ^= true,
+            Field::WhichKeyShow => s.which_key.show ^= true,
+            Field::WhichKeyIcons => s.which_key.icons ^= true,
+            Field::WhichKeyCorner => {
+                let i = CORNERS.iter().position(|c| *c == s.which_key.corner).map_or(0, |i| (i + 1) % CORNERS.len());
+                s.which_key.corner = CORNERS[i].into();
+            }
+            Field::WhichKeyDelay | Field::WhichKeyHeight => {
+                self.adjust(s, true, true);
+            }
             Field::JoinSound | Field::SomeoneJoined | Field::SomeoneLeft => {
                 let h = &mut s.huddle;
                 let slot = match self {
@@ -356,7 +418,7 @@ impl Field {
                 super::sound::play(sounds[i], Settings::device(huddle::devices::OUTPUT_ENV, &s.audio.output), s.audio.sound_volume);
             }
             // Slack-side: see `Prefs::change`.
-            Field::ConversationLevel | Field::ChannelDefault | Field::Keywords | Field::Vips | Field::Status | Field::Away | Field::Pause | Field::Leader | Field::Binding(_) => {}
+            Field::ConversationLevel | Field::ChannelDefault | Field::Keywords | Field::Vips | Field::Status | Field::Away | Field::Pause | Field::Leader | Field::InsertLeader | Field::GroupHeader(_) | Field::Binding(_) => {}
             Field::Input => s.audio.input = next(&s.audio.input, &devices.0),
             Field::Output => s.audio.output = next(&s.audio.output, &devices.1),
             Field::NoiseSuppression => s.audio.noise_suppression ^= true,
@@ -401,6 +463,66 @@ fn next_level(level: &str) -> String {
 }
 
 const LEADER_LABEL: &str = "Leader key (for chords such as Leader k)";
+const INSERT_LEADER_LABEL: &str = "Leader while typing and in dialogs";
+/// Shown while a recording waits for its first key.
+const RECORD_START: &str = "press the keys… (a 1 s pause ends it)";
+/// Shown once a recording is over.
+const RECORD_DONE: &str = "Enter keep · Esc discard";
+
+/// Keys pressed for a binding in F6 → Keys: every key counts (Enter and Esc too) until a
+/// pause of [`RECORD_PAUSE`]; then Enter keeps them and Esc throws them away.
+#[derive(Debug, Clone)]
+pub struct Recording {
+    pub keys: Vec<Key>,
+    /// When the last key was pressed (or the recording started).
+    pub last: Instant,
+    /// The pause came: waiting for Enter or Esc.
+    pub done: bool,
+}
+
+impl Recording {
+    pub fn new(now: Instant) -> Recording {
+        Recording { keys: Vec::new(), last: now, done: false }
+    }
+
+    /// Over once keys were pressed and none came for [`RECORD_PAUSE`].
+    pub fn tick(&mut self, now: Instant) {
+        if self.due().is_some_and(|due| due <= now) {
+            self.done = true;
+        }
+    }
+
+    /// When the pause ends the recording (None before the first key or once it is over).
+    pub fn due(&self) -> Option<Instant> {
+        (!self.done && !self.keys.is_empty()).then(|| self.last + RECORD_PAUSE)
+    }
+
+    /// A key pressed: recorded until the pause; after it Enter keeps (`Some(true)`), Esc
+    /// discards (`Some(false)`), other keys do nothing.
+    pub fn press(&mut self, key: Key, now: Instant) -> Option<bool> {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        self.tick(now);
+        if !self.done {
+            if !matches!(key.code, KeyCode::Modifier(_)) {
+                self.keys.push(key);
+                self.last = now;
+            }
+            return None;
+        }
+        match (key.code, key.mods) {
+            (KeyCode::Enter, KeyModifiers::NONE) => Some(true),
+            (KeyCode::Esc, KeyModifiers::NONE) => Some(false),
+            _ => None,
+        }
+    }
+}
+
+/// Recorded keys in keys.toml notation: a leader that starts a longer sequence is
+/// `<leader>`; a leader alone (or later in it) is the key itself.
+pub fn recorded(keys: &Keymap, seq: &[Key]) -> String {
+    let leaders = [keys.leader, keys.insert_leader];
+    seq.iter().enumerate().map(|(n, k)| if n == 0 && seq.len() > 1 && leaders.contains(&Some(*k)) { "<leader>".to_string() } else { k.spec() }).collect::<Vec<_>>().join(" ")
+}
 
 /// Category names and fixed labels, for translation templates.
 pub fn translatable() -> Vec<String> {
@@ -409,15 +531,19 @@ pub fn translatable() -> Vec<String> {
         Field::ConversationLevel, Field::ChannelDefault, Field::Keywords, Field::Vips, Field::Status, Field::Away, Field::Pause, Field::Input, Field::Output,
         Field::HuddleVolume, Field::SoundVolume, Field::MicGain, Field::SpeakingThreshold, Field::NoiseSuppression, Field::EchoCancellation, Field::Camera, Field::JoinSound, Field::SomeoneJoined, Field::SomeoneLeft, Field::RingSound, Field::RingTimeout, Field::AutoDecline, Field::AloneSound, Field::AloneSecs,
     ];
-    CATEGORIES.iter().map(|c| c.0).chain(["Keys", LEADER_LABEL]).chain(all.iter().map(|f| f.fixed_label())).map(String::from).collect()
+    CATEGORIES.iter().map(|c| c.0).chain(["Keys", LEADER_LABEL, INSERT_LEADER_LABEL, RECORD_START, RECORD_DONE, "filter"]).chain(all.iter().chain(KEYS_SETTINGS).map(|f| f.fixed_label())).map(String::from).collect()
 }
 
 #[derive(Debug, Default)]
 pub struct Prefs {
-    /// Text being typed into a field (keywords).
+    /// Text being typed into a field (keywords, a group's name).
     pub editing: Option<String>,
-    /// Waiting for the key(s) to bind to the selected Keys entry.
-    pub capturing: Option<Vec<super::keymap::Key>>,
+    /// The text being typed is a group's icon, not its name.
+    pub editing_icon: bool,
+    /// Keys being recorded for the selected Keys entry.
+    pub recording: Option<Recording>,
+    /// Keys: only the rows that contain this (typed while the list is shown).
+    pub filter: String,
     /// First row shown in the settings list.
     scroll: usize,
     pub category: usize,
@@ -442,12 +568,23 @@ impl Prefs {
         Prefs { devices, cameras, ..Default::default() }
     }
 
-    pub fn fields(&self) -> Vec<Field> {
-        match CATEGORIES.get(self.category) {
-            Some((_, fields)) => fields.to_vec(),
-            // The last category: key bindings.
-            None => std::iter::once(Field::Leader).chain((0..ACTIONS.len()).map(Field::Binding)).collect(),
-        }
+    pub fn fields(&self, keys: &Keymap) -> Vec<Field> {
+        let Some((_, fields)) = CATEGORIES.get(self.category) else {
+            // The last category: the which-key settings, the leaders, then the bindings by the
+            // tree, each section under its header; the filter keeps the rows that contain it.
+            let filter = self.filter.to_lowercase();
+            let hit = |text: &str| text.to_lowercase().contains(&filter);
+            let mut out: Vec<Field> = KEYS_SETTINGS.iter().copied().filter(|f| hit(&f.label())).collect();
+            for (n, section) in super::keymap::tree(keys).iter().enumerate() {
+                let rows: Vec<Field> = section.rows.iter().filter(|r| hit(&r.label) || hit(&super::i18n::tr(ACTIONS[r.info].description)) || hit(&r.keys)).map(|r| Field::Binding(r.info)).collect();
+                if !rows.is_empty() {
+                    out.push(Field::GroupHeader(n));
+                    out.extend(rows);
+                }
+            }
+            return out;
+        };
+        fields.to_vec()
     }
 
     pub fn category_name(&self) -> &'static str {
@@ -460,23 +597,67 @@ impl Prefs {
         self.scroll = 0;
     }
 
-    pub fn selected_field(&self) -> Option<Field> {
-        self.fields().get(self.selected).copied()
+    pub fn selected_field(&self, keys: &Keymap) -> Option<Field> {
+        self.fields(keys).get(self.selected).copied()
     }
 
-    pub fn move_by(&mut self, delta: isize) {
-        self.selected = (self.selected as isize + delta).clamp(0, self.fields().len() as isize - 1) as usize;
+    pub fn move_by(&mut self, delta: isize, keys: &Keymap) {
+        self.selected = (self.selected as isize + delta).clamp(0, (self.fields(keys).len() as isize - 1).max(0)) as usize;
+    }
+
+    /// Whether the key list is shown (typing goes to its filter).
+    pub fn keys_shown(&self) -> bool {
+        self.category == CATEGORIES.len()
+    }
+
+    /// A new filter for the key list: the selection goes to its top.
+    pub fn set_filter(&mut self, filter: String) {
+        self.filter = filter;
+        self.selected = 0;
+        self.scroll = 0;
+    }
+
+    /// The prefix of the group whose header is selected (None elsewhere).
+    fn selected_group(&self, keys: &Keymap) -> Option<Vec<Key>> {
+        let Some(Field::GroupHeader(n)) = self.selected_field(keys) else { return None };
+        super::keymap::tree(keys).into_iter().nth(n)?.prefix
+    }
+
+    /// Enter on a group's header: start editing its name; Enter again gives the change for
+    /// keys.toml (the name or the icon typed; empty: back to the default).
+    pub fn group_edit(&mut self, keys: &Keymap) -> Option<super::keys_file::Change> {
+        let prefix = self.selected_group(keys)?;
+        let Some(text) = self.editing.take() else {
+            self.editing = Some(keys.group(&prefix).map(|g| g.0).unwrap_or_default());
+            self.editing_icon = false;
+            return None;
+        };
+        let text = Some(text.trim().to_string()).filter(|t| !t.is_empty());
+        let own = keys.own_group(&prefix);
+        let (name, icon) = if self.editing_icon { (own.map(|o| o.0.clone()), text) } else { (text, own.and_then(|o| o.1.clone())) };
+        let prefix = prefix.iter().map(Key::spec).collect::<Vec<_>>().join(" ");
+        Some(super::keys_file::Change::Group { prefix, name, icon })
+    }
+
+    /// `i` on a group's header: start editing its icon.
+    pub fn edit_icon(&mut self, keys: &Keymap) {
+        if let Some(prefix) = self.selected_group(keys) {
+            self.editing = Some(keys.group(&prefix).map(|g| g.1).unwrap_or_default());
+            self.editing_icon = true;
+        }
     }
 
     /// Change the selected setting: local ones in `ws.settings` (the caller saves them),
     /// Slack-side ones returned for the caller to send. A text field starts editing first.
-    pub fn change(&mut self, ws: &mut Workspace, current: Option<&str>) -> Option<SlackChange> {
-        let field = self.selected_field()?;
+    pub fn change(&mut self, ws: &mut Workspace, current: Option<&str>, keys: &Keymap) -> Option<SlackChange> {
+        let field = self.selected_field(keys)?;
         match field {
-            Field::Leader | Field::Binding(_) => {
-                self.capturing = Some(Vec::new());
+            Field::Leader | Field::InsertLeader | Field::Binding(_) => {
+                self.recording = Some(Recording::new(Instant::now()));
                 None
             }
+            // See `group_edit`.
+            Field::GroupHeader(_) => None,
             Field::Language => {
                 match self.editing.take() {
                     Some(text) => match super::i18n::set(&text) {
@@ -571,9 +752,9 @@ impl Prefs {
         }
     }
 
-    /// Whether the selected field is kept on Slack (nothing to save locally).
-    pub fn on_slack(&self) -> bool {
-        matches!(self.selected_field(), Some(Field::Leader | Field::Binding(_) | Field::ConversationLevel | Field::ChannelDefault | Field::Keywords | Field::Vips | Field::Status | Field::Away | Field::Pause))
+    /// Whether the selected field is kept on Slack or in keys.toml (nothing to save in settings.toml).
+    pub fn on_slack(&self, keys: &Keymap) -> bool {
+        matches!(self.selected_field(keys), Some(Field::Leader | Field::InsertLeader | Field::GroupHeader(_) | Field::Binding(_) | Field::ConversationLevel | Field::ChannelDefault | Field::Keywords | Field::Vips | Field::Status | Field::Away | Field::Pause))
     }
 
     pub fn draw(&mut self, f: &mut Frame, area: Rect, ws: &Workspace, current: Option<&str>, keys: &Keymap) {
@@ -605,34 +786,86 @@ impl Prefs {
             })
             .collect();
         f.render_widget(Paragraph::new(cats), left);
+        use unicode_width::UnicodeWidthStr;
+        let tr = super::i18n::tr;
+        let (good, dim) = (Style::default().fg(super::theme::p().good), Style::default().fg(super::theme::p().dim));
+        let bold = Style::default().add_modifier(Modifier::BOLD);
         let mut rows: Vec<Line> = Vec::new();
-        let fields = self.fields();
-        let label_w = (fields.iter().map(|f| f.label().chars().count()).max().unwrap_or(0) + 2).min(right.width as usize / 2 + 8);
+        let fields = self.fields(keys);
+        // Keys: the bindings by the tree, under the category's line with the filter.
+        let keys_shown = self.keys_shown();
+        let sections = if keys_shown { super::keymap::tree(keys) } else { Vec::new() };
+        let tree_row = |i: usize| sections.iter().flat_map(|s| &s.rows).find(|r| r.info == i);
+        let icons = ws.settings.which_key.icons;
+        let label_of = |field: &Field| match field {
+            Field::Binding(i) if keys_shown => tree_row(*i).map_or_else(String::new, |r| if icons { format!("  {} {}", r.icon, r.label) } else { format!("  {}", r.label) }),
+            f => f.label(),
+        };
+        let list_area = if keys_shown {
+            let line = if self.filter.is_empty() {
+                Line::from(vec![Span::styled(format!(" {}  ", tr("Keys")), bold), Span::styled(tr("type to filter").into_owned(), dim)])
+            } else {
+                Line::from(vec![Span::styled(format!(" {}  ", tr("Keys")), bold), Span::raw(format!("{}: ", tr("filter"))), Span::styled(format!("{}▏", self.filter), good)])
+            };
+            f.render_widget(Paragraph::new(line), Rect { height: right.height.min(1), ..right });
+            Rect { y: right.y + 1, height: right.height.saturating_sub(1), ..right }
+        } else {
+            right
+        };
+        // The bindings' keys line up after their (short) labels, the settings' values after theirs.
+        let width_of = |bindings: bool| (fields.iter().filter(|f| matches!(f, Field::Binding(_)) == bindings && !matches!(f, Field::GroupHeader(_))).map(|f| label_of(f).width()).max().unwrap_or(0) + 2).min(right.width as usize / 2 + 8);
+        let (settings_w, bindings_w) = (width_of(false), width_of(true));
         // Keep the selection in view (the Keys list is long).
-        let room = right.height.saturating_sub(5).max(1) as usize;
+        let room = list_area.height.saturating_sub(5).max(1) as usize;
         if self.selected < self.scroll {
             self.scroll = self.selected;
         } else if self.selected >= self.scroll + room {
             self.scroll = self.selected + 1 - room;
         }
-        // Each setting keeps to one row: a long value is cut (from the left while typing, so the
-        // cursor stays in view).
-        let value_w = (right.width as usize).saturating_sub(label_w + 1);
         for (n, field) in fields.iter().enumerate().skip(self.scroll).take(room) {
-            let typing = self.editing.is_some() && n == self.selected;
-            let value = match (&self.editing, &self.capturing, n == self.selected) {
+            let selected = n == self.selected;
+            let label_w = if matches!(field, Field::Binding(_)) && keys_shown { bindings_w } else { settings_w };
+            // Each setting keeps to one row: a long value is cut (from the left while typing, so
+            // the cursor stays in view).
+            let value_w = (right.width as usize).saturating_sub(label_w + 1);
+            let typing = self.editing.is_some() && selected;
+            let value = match (&self.editing, &self.recording, selected) {
                 (Some(text), _, true) => format!("{text}▏"),
-                (_, Some(seq), true) if seq.is_empty() => "press the new key…".into(),
-                (_, Some(seq), true) => format!("{} …", keys.label(seq)),
-                _ => field.value(ws, current, keys),
+                (_, Some(r), true) if r.keys.is_empty() => tr(RECORD_START).into_owned(),
+                (_, Some(r), true) if r.done => format!("{} · {}", keys.label(&r.keys), tr(RECORD_DONE)),
+                (_, Some(r), true) => format!("{} …", keys.label(&r.keys)),
+                _ => match field {
+                    // A group's icon (`i` changes it).
+                    Field::GroupHeader(s) => sections.get(*s).and_then(|s| keys.group(s.prefix.as_ref()?)).map(|g| g.1).unwrap_or_default(),
+                    Field::Binding(i) if keys_shown => tree_row(*i).map(|r| r.keys.clone()).filter(|k| !k.is_empty()).unwrap_or_else(|| "(unbound)".into()),
+                    _ => field.value(ws, current, keys),
+                },
             };
-            let value = fit(&value, value_w, typing);
-            let label = fit(&field.label(), label_w.saturating_sub(1), false);
-            let line = Line::from(vec![Span::raw(format!(" {label:<label_w$}")), Span::styled(value, Style::default().fg(super::theme::p().good))]);
-            rows.push(if n == self.selected { line.style(highlight) } else { line });
+            let line = match field {
+                Field::GroupHeader(s) => {
+                    let title = fit(sections.get(*s).map_or("", |s| s.title.as_str()), (right.width as usize).saturating_sub(2), false);
+                    let room = (right.width as usize).saturating_sub(title.width() + 3);
+                    Line::from(vec![Span::styled(format!(" {title}  "), bold), Span::styled(fit(&value, room, typing), good)])
+                }
+                _ => {
+                    let value = fit(&value, value_w, typing);
+                    let label = fit(&label_of(field), label_w.saturating_sub(1), false);
+                    let left = value_w.saturating_sub(value.width() + 2);
+                    let mut spans = vec![Span::raw(format!(" {label}{}", " ".repeat(label_w.saturating_sub(label.width())))), Span::styled(value, good)];
+                    // A binding's description, dim, where there is room.
+                    if let (Field::Binding(i), true, true) = (field, keys_shown, left > 4) {
+                        spans.push(Span::styled(format!("  {}", fit(&tr(ACTIONS[*i].description), left, false)), dim));
+                    }
+                    Line::from(spans)
+                }
+            };
+            rows.push(if selected { line.style(highlight) } else { line });
         }
         let hints: &[&str] = match self.category_name() {
-            "Keys" => &["Enter, then press the key (Leader first for a chord). Delete unbinds, r resets."],
+            "Keys" => &[
+                "Enter records keys until a 1 s pause (any key counts, Enter and Esc too). Delete unbinds, r resets.",
+                "Type to filter (Backspace erases, Esc clears). On a group: Enter renames it, i changes its icon.",
+            ],
             "Availability" => &["Status: \":emoji: text for 30m\" (or today); empty clears."],
             "Notifications" => &["All but the first are kept on Slack. Keywords: comma-separated."],
             "Audio & video" => &[
@@ -643,13 +876,12 @@ impl Prefs {
             _ => &[],
         };
         let shown = rows.len() as u16;
-        f.render_widget(Paragraph::new(rows), right);
-        let list = Rect { height: (room as u16).min(right.height), ..right };
+        f.render_widget(Paragraph::new(rows), list_area);
+        let list = Rect { height: (room as u16).min(list_area.height), ..list_area };
         super::scroll::indicator_beside(f, popup, list, self.scroll, room, fields.len(), Style::default().fg(super::theme::p().accent));
         // The hints under a blank row, wrapped at words and indented like the rows.
-        let below = Rect { x: right.x + 1, y: right.y + shown + 1, width: right.width.saturating_sub(1), height: right.height.saturating_sub(shown + 1) };
+        let below = Rect { x: right.x + 1, y: list_area.y + shown + 1, width: right.width.saturating_sub(1), height: list_area.height.saturating_sub(shown + 1) };
         if !hints.is_empty() && below.height > 0 {
-            let dim = Style::default().fg(super::theme::p().dim);
             f.render_widget(Paragraph::new(hints.iter().map(|h| Line::styled(*h, dim)).collect::<Vec<_>>()).wrap(Wrap { trim: true }), below);
         }
         if let Some(picker) = self.picker.as_mut() {
@@ -704,11 +936,11 @@ mod tests {
         p.selected = CATEGORIES[p.category].1.iter().position(|f| *f == Field::SaveDir).unwrap();
         let keys = Keymap::load("").0;
         assert!(Field::SaveDir.value(&ws, None, &keys).ends_with("(your downloads folder)"));
-        assert_eq!(p.change(&mut ws, None), None, "Enter starts editing");
+        assert_eq!(p.change(&mut ws, None, &Keymap::default()), None, "Enter starts editing");
         assert_eq!(p.editing.as_deref(), Some(""));
         p.editing = Some("  ~/Work/slack  ".into());
-        p.change(&mut ws, None);
-        assert_eq!((ws.settings.messages.save_dir.as_str(), p.on_slack()), ("~/Work/slack", false), "kept locally, trimmed");
+        p.change(&mut ws, None, &Keymap::default());
+        assert_eq!((ws.settings.messages.save_dir.as_str(), p.on_slack(&Keymap::default())), ("~/Work/slack", false), "kept locally, trimmed");
         assert_eq!(Field::SaveDir.value(&ws, None, &keys), "~/Work/slack");
         if std::env::var_os("KLACK_DOWNLOAD_DIR").is_none() {
             let home = directories::UserDirs::new().unwrap().home_dir().to_path_buf();
@@ -803,15 +1035,15 @@ mod tests {
         let mut ws = Workspace::default();
         let mut p = Prefs { category: 5, cameras: vec!["cam A".into(), "cam B".into()], ..Default::default() };
         assert_eq!(p.category_name(), "Audio & video");
-        p.selected = p.fields().iter().position(|f| *f == Field::Camera).unwrap();
+        p.selected = p.fields(&Keymap::default()).iter().position(|f| *f == Field::Camera).unwrap();
         let steps: Vec<Option<String>> = (0..3)
             .map(|_| {
-                p.change(&mut ws, None);
+                p.change(&mut ws, None, &Keymap::default());
                 ws.settings.video.camera.clone()
             })
             .collect();
         assert_eq!(steps, vec![Some("cam A".into()), Some("cam B".into()), None], "none → each camera → none");
-        assert!(!p.on_slack());
+        assert!(!p.on_slack(&Keymap::default()));
     }
 
     #[test]
@@ -819,24 +1051,24 @@ mod tests {
         let mut ws = Workspace::default();
         let mut p = Prefs { category: 4, ..Default::default() };
         p.selected = 2;
-        assert_eq!(p.change(&mut ws, Some("C1")), Some(SlackChange::ConversationLevel { channel: "C1".into(), level: "everything".into() }), "default → everything");
+        assert_eq!(p.change(&mut ws, Some("C1"), &Keymap::default()), Some(SlackChange::ConversationLevel { channel: "C1".into(), level: "everything".into() }), "default → everything");
         let mut cycle = Vec::new();
         for _ in 0..4 {
-            let Some(SlackChange::ConversationLevel { level, .. }) = p.change(&mut ws, Some("C1")) else { panic!() };
+            let Some(SlackChange::ConversationLevel { level, .. }) = p.change(&mut ws, Some("C1"), &Keymap::default()) else { panic!() };
             if level == "default" { ws.notify.channels.remove("C1") } else { ws.notify.channels.insert("C1".into(), level.clone()) };
             cycle.push(level);
         }
         assert_eq!(cycle, ["everything", "mentions_dms", "nothing", "default"], "back to the default after nothing");
-        assert_eq!(p.change(&mut ws, None), None, "no conversation, no change");
+        assert_eq!(p.change(&mut ws, None, &Keymap::default()), None, "no conversation, no change");
         p.selected = 3;
-        assert_eq!(p.change(&mut ws, None), Some(SlackChange::ChannelDefault("nothing".into())));
+        assert_eq!(p.change(&mut ws, None, &Keymap::default()), Some(SlackChange::ChannelDefault("nothing".into())));
         p.selected = 4;
         ws.notify.keywords = vec!["a".into()];
-        assert_eq!(p.change(&mut ws, None), None, "Enter starts editing");
+        assert_eq!(p.change(&mut ws, None, &Keymap::default()), None, "Enter starts editing");
         assert_eq!(p.editing.as_deref(), Some("a"));
         p.editing = Some(" deploy ,, release notes ".into());
-        assert_eq!(p.change(&mut ws, None), Some(SlackChange::Keywords("deploy,release notes".into())));
-        assert!(p.editing.is_none() && p.on_slack());
+        assert_eq!(p.change(&mut ws, None, &Keymap::default()), Some(SlackChange::Keywords("deploy,release notes".into())));
+        assert!(p.editing.is_none() && p.on_slack(&Keymap::default()));
     }
 
     #[test]
@@ -845,21 +1077,21 @@ mod tests {
         let mut p = Prefs::default();
         assert_eq!(CATEGORIES[0].0, "Availability");
         p.selected = 1;
-        assert_eq!(p.change(&mut ws, None), Some(SlackChange::Command("/away".into())));
+        assert_eq!(p.change(&mut ws, None, &Keymap::default()), Some(SlackChange::Command("/away".into())));
         ws.presence.insert("UME".into(), false);
-        assert_eq!(p.change(&mut ws, None), Some(SlackChange::Command("/active".into())));
+        assert_eq!(p.change(&mut ws, None, &Keymap::default()), Some(SlackChange::Command("/active".into())));
         p.selected = 2;
-        assert_eq!(p.change(&mut ws, None), Some(SlackChange::Command("/dnd 30m".into())), "not paused → 30 minutes");
+        assert_eq!(p.change(&mut ws, None, &Keymap::default()), Some(SlackChange::Command("/dnd 30m".into())), "not paused → 30 minutes");
         ws.dnd.snooze_until = Some(crate::tui::clock::now().timestamp() as f64 + 29.6 * 60.0);
-        assert_eq!(p.change(&mut ws, None), Some(SlackChange::Command("/dnd 60m".into())), "30 min left → an hour");
+        assert_eq!(p.change(&mut ws, None, &Keymap::default()), Some(SlackChange::Command("/dnd 60m".into())), "30 min left → an hour");
         ws.dnd.snooze_until = Some(crate::tui::clock::now().timestamp() as f64 + 470.0 * 60.0);
-        assert_eq!(p.change(&mut ws, None), Some(SlackChange::Command("/dnd off".into())), "the longest → off");
+        assert_eq!(p.change(&mut ws, None, &Keymap::default()), Some(SlackChange::Command("/dnd off".into())), "the longest → off");
         p.selected = 0;
-        assert_eq!(p.change(&mut ws, None), None, "Enter edits the status");
+        assert_eq!(p.change(&mut ws, None, &Keymap::default()), None, "Enter edits the status");
         p.editing = Some(":coffee: break for 30m".into());
-        assert_eq!(p.change(&mut ws, None), Some(SlackChange::Command("/status :coffee: break for 30m".into())));
+        assert_eq!(p.change(&mut ws, None, &Keymap::default()), Some(SlackChange::Command("/status :coffee: break for 30m".into())));
         p.editing = Some("  ".into());
-        assert_eq!(p.change(&mut ws, None), Some(SlackChange::Command("/status clear".into())));
+        assert_eq!(p.change(&mut ws, None, &Keymap::default()), Some(SlackChange::Command("/status clear".into())));
     }
 
     #[test]
@@ -867,10 +1099,165 @@ mod tests {
         let mut p = Prefs::default();
         p.switch_category(-1);
         assert_eq!((p.category, p.category_name()), (CATEGORIES.len(), "Keys"));
-        assert_eq!(p.fields().len(), ACTIONS.len() + 1);
+        let keys = Keymap::load("").0;
+        assert!(p.keys_shown() && p.fields(&keys).len() > ACTIONS.len() / 2);
         p.switch_category(-1);
-        p.move_by(10);
-        assert_eq!(p.selected, p.fields().len() - 1);
+        p.move_by(10, &keys);
+        assert_eq!(p.selected, p.fields(&keys).len() - 1);
+    }
+
+    fn keys_prefs() -> Prefs {
+        Prefs { category: CATEGORIES.len(), ..Default::default() }
+    }
+
+    #[test]
+    fn keys_category_follows_the_tree() {
+        let keys = Keymap::load("").0;
+        let p = keys_prefs();
+        assert_eq!(p.category_name(), "Keys");
+        let mut want = vec![Field::WhichKeyShow, Field::WhichKeyCorner, Field::WhichKeyDelay, Field::WhichKeyHeight, Field::WhichKeyIcons, Field::Leader, Field::InsertLeader];
+        for (n, section) in super::super::keymap::tree(&keys).iter().enumerate() {
+            want.push(Field::GroupHeader(n));
+            want.extend(section.rows.iter().map(|r| Field::Binding(r.info)));
+        }
+        assert_eq!(p.fields(&keys), want);
+    }
+
+    #[test]
+    fn filter_narrows_bindings() {
+        let keys = Keymap::load("").0;
+        let sections = super::super::keymap::tree(&keys);
+        let index = |context: super::super::keymap::Context, name: &str| ACTIONS.iter().position(|a| a.context == context && a.name == name).unwrap();
+        let mut p = keys_prefs();
+        p.filter = "huddle".into();
+        let fields = p.fields(&keys);
+        assert!(fields.contains(&Field::Binding(index(super::super::keymap::Context::Global, "mute"))), "{fields:?}");
+        assert!(!fields.contains(&Field::Binding(index(super::super::keymap::Context::Global, "quit"))));
+        for (n, field) in fields.iter().enumerate() {
+            match field {
+                Field::Binding(i) => {
+                    let row = sections.iter().flat_map(|s| &s.rows).find(|r| r.info == *i).unwrap();
+                    let text = format!("{} {} {}", row.label, ACTIONS[*i].description, row.keys).to_lowercase();
+                    assert!(text.contains("huddle"), "{text}");
+                }
+                Field::GroupHeader(_) => assert!(matches!(fields.get(n + 1), Some(Field::Binding(_))), "an empty section's header is hidden: {fields:?}"),
+                other => panic!("{other:?} does not mention huddle"),
+            }
+        }
+        p.filter = "CTRL+Q".into();
+        assert!(p.fields(&keys).contains(&Field::Binding(index(super::super::keymap::Context::Global, "quit"))), "keys match, in any case");
+        p.filter = "leader".into();
+        assert!(p.fields(&keys).starts_with(&[Field::Leader, Field::InsertLeader]), "settings match their labels");
+        p.filter = "nothing matches this".into();
+        assert!(p.fields(&keys).is_empty());
+        p.move_by(1, &keys);
+        assert_eq!((p.selected, p.selected_field(&keys)), (0, None), "an empty list does not panic");
+    }
+
+    #[test]
+    fn recording_ends_after_a_pause() {
+        use std::time::{Duration, Instant};
+        let k = |s: &str| super::super::keymap::Key::parse(s).unwrap();
+        let now = Instant::now();
+        let mut r = Recording { keys: vec![k("space"), k("h"), k("m")], last: now - Duration::from_millis(1100), done: false };
+        r.tick(now);
+        assert!(r.done, "a pause of {RECORD_PAUSE:?} ends it");
+        let mut r = Recording::new(now);
+        r.tick(now + Duration::from_secs(5));
+        assert!(!r.done && r.due().is_none(), "nothing pressed yet: it waits");
+        assert_eq!(r.press(k("esc"), now), None, "Esc is recorded");
+        assert_eq!(r.press(k("enter"), now + Duration::from_millis(500)), None, "Enter is recorded");
+        assert_eq!(r.keys, [k("esc"), k("enter")]);
+        assert_eq!(r.due(), Some(now + Duration::from_millis(500) + RECORD_PAUSE));
+        r.tick(now + Duration::from_millis(1400));
+        assert!(!r.done, "not a second since the last key");
+        assert_eq!(r.press(k("x"), now + Duration::from_millis(1600)), None, "after the pause a key only decides");
+        assert!(r.done);
+        assert_eq!(r.keys, [k("esc"), k("enter")]);
+        assert_eq!(r.press(k("enter"), now + Duration::from_secs(2)), Some(true), "Enter keeps");
+        let mut r = Recording { keys: vec![k("a")], last: now, done: true };
+        assert_eq!(r.press(k("esc"), now), Some(false), "Esc discards");
+    }
+
+    #[test]
+    fn a_lone_leader_is_the_key_itself() {
+        let keys = Keymap::load("").0;
+        let k = |s: &str| super::super::keymap::Key::parse(s).unwrap();
+        assert_eq!(recorded(&keys, &[k("space")]), "space");
+        assert_eq!(recorded(&keys, &[k("space"), k("h"), k("m")]), "<leader> h m");
+        assert_eq!(recorded(&keys, &[k("ctrl+space"), k("x")]), "<leader> x", "either leader");
+        assert_eq!(recorded(&keys, &[k("g"), k("space"), k("enter"), k("esc")]), "g space enter esc", "only at the start");
+        let (map, warnings) = Keymap::load(&format!("[messages]\nreact = \"{}\"\n", recorded(&keys, &[k("space"), k("x")])));
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(map.sequences(super::super::keymap::Context::Messages, "react"), vec![vec![super::super::keymap::LEADER, k("x")]]);
+    }
+
+    #[test]
+    fn renaming_a_group() {
+        use super::super::keys_file::Change;
+        let keys = Keymap::load("").0;
+        let sections = super::super::keymap::tree(&keys);
+        let huddle = sections.iter().position(|s| s.title.ends_with("huddle")).unwrap();
+        let mut p = keys_prefs();
+        p.selected = p.fields(&keys).iter().position(|f| *f == Field::GroupHeader(huddle)).unwrap();
+        assert!(p.on_slack(&keys), "kept in keys.toml, not settings.toml");
+        assert_eq!(p.group_edit(&keys), None, "Enter starts editing the name");
+        assert_eq!(p.editing.as_deref(), Some("huddle"));
+        p.editing = Some(" calls ".into());
+        assert_eq!(p.group_edit(&keys), Some(Change::Group { prefix: "<leader> h".into(), name: Some("calls".into()), icon: None }));
+        assert!(p.editing.is_none());
+        p.edit_icon(&keys);
+        assert_eq!(p.editing.as_deref(), Some("🎧"));
+        p.editing = Some("📞".into());
+        assert_eq!(p.group_edit(&keys), Some(Change::Group { prefix: "<leader> h".into(), name: None, icon: Some("📞".into()) }));
+        let own = Keymap::load("[groups]\n\"<leader> h\" = { name = \"calls\", icon = \"📞\" }\n").0;
+        p.edit_icon(&own);
+        p.editing = Some(String::new());
+        assert_eq!(p.group_edit(&own), Some(Change::Group { prefix: "<leader> h".into(), name: Some("calls".into()), icon: None }), "an empty icon is the default again; the name stays");
+        p.selected = 7;
+        assert!(matches!(p.selected_field(&keys), Some(Field::GroupHeader(0))));
+        assert_eq!((p.group_edit(&keys), p.editing.as_ref()), (None, None), "Direct keys is not a group: nothing to rename");
+        p.edit_icon(&keys);
+        assert!(p.editing.is_none());
+    }
+
+    #[test]
+    fn which_key_settings() {
+        let mut s = Settings::default();
+        let corners: Vec<String> = (0..4)
+            .map(|_| {
+                Field::WhichKeyCorner.change(&mut s, &Default::default());
+                s.which_key.corner.clone()
+            })
+            .collect();
+        assert_eq!(corners, ["bottom-left", "top-left", "top-right", "bottom-right"]);
+        Field::WhichKeyShow.change(&mut s, &Default::default());
+        Field::WhichKeyIcons.change(&mut s, &Default::default());
+        assert!(!s.which_key.show && !s.which_key.icons);
+        assert!(Field::WhichKeyDelay.adjust(&mut s, true, false));
+        assert_eq!(s.which_key.delay_secs, 0.5);
+        for _ in 0..10 {
+            Field::WhichKeyDelay.adjust(&mut s, false, false);
+        }
+        assert_eq!(s.which_key.delay_secs, 0.0, "stops at 0 (at once)");
+        let ws = Workspace::default();
+        assert_eq!(Field::WhichKeyDelay.value(&ws, None, &Keymap::default()), "0.4 s");
+        s.which_key.delay_secs = 5.0;
+        Field::WhichKeyDelay.adjust(&mut s, true, false);
+        assert_eq!(s.which_key.delay_secs, 5.0, "stops at 5 s");
+        Field::WhichKeyDelay.change(&mut s, &Default::default());
+        assert_eq!(s.which_key.delay_secs, 0.0, "Enter wraps around");
+        Field::WhichKeyHeight.adjust(&mut s, true, false);
+        assert_eq!(s.which_key.max_height_percent, 60);
+        s.which_key.max_height_percent = 100;
+        Field::WhichKeyHeight.adjust(&mut s, true, false);
+        assert_eq!(s.which_key.max_height_percent, 100);
+        Field::WhichKeyHeight.change(&mut s, &Default::default());
+        assert_eq!(s.which_key.max_height_percent, 10, "Enter wraps to the lowest");
+        Field::WhichKeyHeight.adjust(&mut s, false, false);
+        assert_eq!(s.which_key.max_height_percent, 10);
+        assert_eq!(Field::WhichKeyHeight.value(&ws, None, &Keymap::default()), "50% of the screen");
+        assert!(translatable().iter().any(|t| t == Field::WhichKeyCorner.fixed_label()));
     }
 
     #[test]
@@ -891,7 +1278,7 @@ mod tests {
     fn workspace_themes() {
         let mut ws = Workspace { team_id: "T1".into(), ..Default::default() };
         let p = Prefs { category: 1, selected: 1, ..Default::default() };
-        assert_eq!(p.selected_field(), Some(Field::WorkspaceTheme));
+        assert_eq!(p.selected_field(&Keymap::default()), Some(Field::WorkspaceTheme));
         assert_eq!(Field::WorkspaceTheme.value(&ws, None, &Keymap::default()), "(colour theme)");
         ws.settings.appearance.workspace_themes.insert("T1".into(), "light".into());
         assert_eq!(Field::WorkspaceTheme.value(&ws, None, &Keymap::default()), "light");
