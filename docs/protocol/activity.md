@@ -18,3 +18,16 @@ snake_case) and live probes with `klack ctl api`.
   which returns exactly that message whether it is top level or a reply.
 - Not used yet: `activity.markRead/markUnread` (custom fetcher, args from an `activityItem`),
   `activity.markAllRead`, `activity.views.*`, `activity.archive`.
+
+## Threads view: `subscriptions.thread.getView`
+
+What the Threads view (Ctrl+T, H4m) uses — Slack's own "Threads" list, found by probing (2026-10-19):
+
+- Arguments: `limit` (page size); `current_ts` = only threads active before that time (the answer echoes it
+  as `max_ts`). `max_ts`, `ts` and `cursor` as arguments change nothing.
+- Answer: `threads[]`, unread threads first, then by latest reply; `has_more`, `max_ts`,
+  `total_unread_replies`, `new_threads_count`.
+- Each thread: `root_msg` (a message plus `channel`, `reply_count`, `latest_reply`, `last_read`,
+  `subscribed`) and `unread_replies[]` (when some are unread) and/or `latest_replies[]` (the newest, when
+  read) — full message objects.
+- Not used yet: `subscriptions.thread.mark` (marking a thread read).
