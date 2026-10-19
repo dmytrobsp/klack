@@ -192,7 +192,17 @@ Tests: `cargo test` → slack-core 10, huddle 33, klack 185 (+1 ignored: the `bu
 
 ## Next (in order, each as a small, separately verified step)
 
-**v0.2.0** (asked by the user 2026-10-19): version bumped (the workspace and klack's pin on slack-core); tagged once CI passes on the bump. **NEXT UP: nothing queued** — queue I (the known gaps the user asked to knock off) is done; what is left in Known gaps is not fixable or not testable here (see queue I's "Not taken"). Next: whatever the user asks. — the user asked on 2026-10-19 (after v0.1.0) to knock off the Known gaps; H5 is done (public at github.com/dmytrobsp/klack, v0.1.0 released). Routine pushes to master need no asking; release tags do.
+**v0.2.0 released** 2026-10-19 (https://github.com/dmytrobsp/klack/releases/tag/v0.2.0; CI green on the bump, four builds, the Linux download verified against SHA256SUMS and run). **NEXT UP: J1** (queue J below).
+
+J. Easier sign-in, asked by the user on 2026-10-19 ("streamline the login so it does not need copying the cookie
+   via devtools"); they chose A as the main path with B and C as fallbacks; one verified commit per step:
+  J1 (NEXT). A — `klack login` opens a throwaway Chrome/Chromium/Edge window (its own temporary profile) on
+      Slack's sign-in page, the user signs in any way Slack offers (password, SSO, 2FA, magic link), klack takes
+      the `d` cookie over the DevTools protocol and closes the window; the manual paste stays as the last resort.
+  J2. B — `klack login --from-browser firefox|chrome`: import the `d` cookie from a browser already signed in
+      (Firefox's cookies.sqlite; Chrome's encrypted store via the system keyring), read-only.
+  J3. C — sign in by email code inside klack (Slack's internal email sign-in flow; not for SSO workspaces).
+  Tests must not sign the test accounts out anywhere; temporary browser profiles are deleted afterwards.
 
 I. Known gaps, asked by the user on 2026-10-19 ("knock off known gaps"); run autonomously, one verified
    commit per step, pushed after each:
