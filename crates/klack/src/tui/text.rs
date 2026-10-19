@@ -175,6 +175,25 @@ pub fn inline_spans(ws: &Workspace, i: &Inline) -> Vec<Span<'static>> {
     }
 }
 
+/// The links of a document in the order [`render_blocks`] draws them: (address, the text shown).
+pub fn links_shown(blocks: &[Block]) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for b in blocks {
+        let items: Vec<&Inline> = match b {
+            Block::Paragraph(items) | Block::Quote(items) => items.iter().collect(),
+            Block::List { items, .. } => items.iter().flatten().collect(),
+            Block::Code(_) => continue,
+        };
+        for i in items {
+            if let Inline::Link { url, label, .. } = i {
+                let shown = label.clone().filter(|l| !l.is_empty()).unwrap_or_else(|| url.trim_start_matches("mailto:").to_string());
+                out.push((url.clone(), shown));
+            }
+        }
+    }
+    out
+}
+
 /// Plain text of an inline element (notifications, previews).
 pub fn inline_plain(ws: &Workspace, i: &Inline) -> String {
     match i {

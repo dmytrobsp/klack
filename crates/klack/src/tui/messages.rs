@@ -369,6 +369,15 @@ impl MessagePane {
             n => block.title_bottom(Line::styled(format!(" ↓ {n} newer "), Style::default().fg(super::theme::p().accent)).right_aligned()),
         };
         f.render_widget(Paragraph::new(visible).block(block), area);
+        // Links the terminal can open on its own click.
+        if let Some(t) = timeline {
+            for spot in link_spots(&t.messages, &lines, &owners).into_iter().filter(|s| (start..end).contains(&s.line)) {
+                let y = inner.y + (pad + spot.line - start) as u16;
+                let x = inner.x + spot.col;
+                let width = spot.width.min(inner.right().saturating_sub(x));
+                hyperlink(f.buffer_mut(), x, y, width, &spot.url);
+            }
+        }
         if let (Some(top), Some(bottom)) = (on_screen.first().and_then(index), on_screen.last().and_then(index)) {
             super::scroll::indicator(f, area, top, bottom + 1 - top, order.len(), border);
         }
@@ -555,6 +564,78 @@ fn reaction_pill(emoji: &str, count: u64, mine: bool) -> Span<'static> {
     }
     let style = if mine { Style::default().bg(p.selection).fg(p.mention).add_modifier(Modifier::BOLD) } else { Style::default().bg(p.code_bg) };
     Span::styled(format!("\u{a0}{emoji}\u{a0}{count}\u{a0}"), style)
+}
+
+/// A piece of a link in built message lines: `width` cells at `col` of `line`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LinkSpot {
+    pub line: usize,
+    pub col: u16,
+    pub width: u16,
+    pub url: String,
+}
+
+/// Where the links of the messages in `lines` (`owners`: whose each line is) are: the
+/// underlined link pieces of each message, matched in order to the links its text and its
+/// attachments' text hold (a wrapped link is several pieces).
+pub fn link_spots(messages: &[Message], lines: &[Line], owners: &[Option<String>]) -> Vec<LinkSpot> {
+    let link_fg = Some(super::theme::p().link);
+    let letters = |s: &str| s.chars().filter(|c| !c.is_whitespace()).count();
+    let mut out = Vec::new();
+    let mut n = 0;
+    while n < lines.len() {
+        let Some(ts) = owners[n].as_deref() else {
+            n += 1;
+            continue;
+        };
+        let end = owners[n..].iter().position(|o| o.as_deref() != Some(ts)).map_or(lines.len(), |k| n + k);
+        if let Some(m) = messages.iter().find(|m| m.ts == ts) {
+            let mut links = text::links_shown(&format::message_blocks(&m.text, &m.blocks));
+            for att in &m.attachments {
+                if let Some(detail) = att["text"].as_str().filter(|d| !d.is_empty()) {
+                    links.extend(text::links_shown(&format::from_mrkdwn(detail)));
+                }
+            }
+            let mut links = links.into_iter().map(|(url, shown)| (url, letters(&shown))).peekable();
+            'lines: for (k, line) in lines[n..end].iter().enumerate() {
+                let mut col = 0u16;
+                for span in &line.spans {
+                    let width = unicode_width::UnicodeWidthStr::width(span.content.as_ref()) as u16;
+                    if span.style.fg == link_fg && span.style.add_modifier.contains(Modifier::UNDERLINED) {
+                        let Some((url, left)) = links.peek_mut() else { break 'lines };
+                        out.push(LinkSpot { line: n + k, col, width, url: url.clone() });
+                        *left = left.saturating_sub(letters(&span.content));
+                        if *left == 0 {
+                            links.next();
+                        }
+                    }
+                    col += width;
+                }
+            }
+        }
+        n = end;
+    }
+    out
+}
+
+/// Make `width` cells at (`x`, `y`) a hyperlink to `url` (OSC 8, which terminals that know it
+/// open on their own click — kitty: Ctrl+Shift+click); each cell carries the codes and keeps
+/// its width. Only web and mail links without control characters.
+pub fn hyperlink(buf: &mut ratatui::buffer::Buffer, x: u16, y: u16, width: u16, url: &str) {
+    if !super::open::openable(url) || url.chars().any(char::is_control) {
+        return;
+    }
+    let mut cx = x;
+    while cx < x + width {
+        let Some(cell) = buf.cell_mut((cx, y)) else { return };
+        let symbol = cell.symbol().to_string();
+        let w = unicode_width::UnicodeWidthStr::width(symbol.as_str()).max(1) as u16;
+        if !symbol.contains('\x1b') {
+            cell.set_symbol(&format!("\x1b]8;;{url}\x1b\\{symbol}\x1b]8;;\x1b\\"));
+            cell.diff_option = ratatui::buffer::CellDiffOption::ForcedWidth(std::num::NonZeroU16::new(w).unwrap_or(std::num::NonZeroU16::MIN));
+        }
+        cx += w;
+    }
 }
 
 /// What stands in the rows of a picture that could not be loaded.
@@ -853,6 +934,32 @@ mod tests {
         assert_eq!(c(serde_json::json!({"color": "#fff"})), None, "short forms are not Slack's");
         assert_eq!(c(serde_json::json!({"color": "nope"})), None);
         assert_eq!(c(serde_json::json!({"title": "x"})), None);
+    }
+
+    #[test]
+    fn links_are_found_where_they_are_drawn() {
+        let ws = Workspace::default();
+        let mut m = msg("1.0", "U2", "see <https://github.com/acme/api/pull/482|the retry fix PR> and <https://x.y/z>");
+        m.attachments = vec![serde_json::json!({"text": "via <https://docs.acme.dev|the docs>"})];
+        let (lines, _) = message_body(&ws, &m, 16, false, &|_, _| None);
+        let owners = vec![Some("1.0".to_string()); lines.len()];
+        let spots = link_spots(&[m], &lines, &owners);
+        let pieces: Vec<(usize, u16, &str)> = spots.iter().map(|s| (s.line, s.col, s.url.as_str())).collect();
+        assert_eq!(plain(&lines)[..3], ["see the retry ", "fix PR and ", "https://x.y/z"]);
+        assert_eq!(
+            pieces,
+            [(0, 4, "https://github.com/acme/api/pull/482"), (0, 8, "https://github.com/acme/api/pull/482"), (1, 0, "https://github.com/acme/api/pull/482"), (1, 4, "https://github.com/acme/api/pull/482"), (2, 0, "https://x.y/z"), (3, 6, "https://docs.acme.dev"), (3, 10, "https://docs.acme.dev")],
+            "a wrapped label is several pieces of one link; an attachment's links too"
+        );
+        // Each cell of a piece becomes a hyperlink that keeps its width.
+        let mut buf = ratatui::buffer::Buffer::with_lines(["ab😀c"]);
+        hyperlink(&mut buf, 0, 0, 5, "https://x.y/z");
+        assert_eq!(buf[(0, 0)].symbol(), "\x1b]8;;https://x.y/z\x1b\\a\x1b]8;;\x1b\\");
+        assert_eq!(buf[(2, 0)].diff_option, ratatui::buffer::CellDiffOption::ForcedWidth(std::num::NonZeroU16::new(2).unwrap()), "the wide one");
+        assert!(buf[(4, 0)].symbol().contains('c'));
+        let mut other = ratatui::buffer::Buffer::with_lines(["ab"]);
+        hyperlink(&mut other, 0, 0, 2, "javascript:alert(1)");
+        assert_eq!(other[(0, 0)].symbol(), "a", "only web and mail links");
     }
 
     #[test]
