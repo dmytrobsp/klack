@@ -146,7 +146,7 @@ pub fn draw(f: &mut Frame, screen: Rect, title: &str, children: &[Child], panel:
     let x = if settings.corner.ends_with("left") { screen.x } else { screen.right() - width };
     let y = if settings.corner.starts_with("top") { screen.y } else { screen.bottom() - height };
     let area = Rect::new(x, y, width, height);
-    super::media::clear_modal(f, area);
+    super::media::clear_popup(f, area);
     let p = super::theme::p();
     let block = Block::default().borders(Borders::ALL).border_style(Style::default().fg(p.accent)).title(Span::styled(title, Style::default().add_modifier(Modifier::BOLD)));
     let inner = block.inner(area);
