@@ -392,9 +392,10 @@ pub enum Action {
 }
 
 macro_rules! actions {
-    ($( $ctx:ident { $( $variant:ident $name:literal $desc:literal [$($key:literal),*] )* } )*) => {
-        /// Every (context, action) pair with its name in `keys.toml`, help text and defaults.
-        pub const ACTIONS: &[ActionInfo] = &[ $($( ActionInfo { context: Context::$ctx, action: Action::$variant, name: $name, description: $desc, defaults: &[$($key),*] }, )*)* ];
+    ($( $ctx:ident { $( $variant:ident $name:literal $desc:literal $label:literal $icon:literal [$($key:literal),*] )* } )*) => {
+        /// Every (context, action) pair with its name in `keys.toml`, help text, which-key
+        /// label and icon, and defaults.
+        pub const ACTIONS: &[ActionInfo] = &[ $($( ActionInfo { context: Context::$ctx, action: Action::$variant, name: $name, description: $desc, label: $label, icon: $icon, defaults: &[$($key),*] }, )*)* ];
     };
 }
 
@@ -403,244 +404,248 @@ pub struct ActionInfo {
     pub action: Action,
     pub name: &'static str,
     pub description: &'static str,
+    /// A few words for which-key ("copy link").
+    pub label: &'static str,
+    /// An emoji that is wide by default (Emoji_Presentation, no VS16), for which-key.
+    pub icon: &'static str,
     pub defaults: &'static [&'static str],
 }
 
 actions! {
     Global {
-        Quit "quit" "quit" ["ctrl+q"]
-        Help "help" "this help" ["f1"]
-        Switcher "jump_to" "jump to a conversation or person (# alone: every channel)" ["ctrl+k"]
-        Search "search" "search messages" ["ctrl+f"]
-        Details "details" "conversation details: about, members, pins" ["f2"]
-        Huddle "huddle" "join or leave the huddle" ["f3"]
-        Mute "mute" "mute or unmute in the huddle" ["f4"]
-        HuddleThread "huddle_thread" "open the huddle's thread (yours, or this conversation's)" ["f7"]
-        HuddleView "huddle_view" "show or hide the huddle view (in place of the messages)" ["f8"]
-        Camera "camera" "switch your camera on or off in the huddle (chosen in F6)" ["f9"]
-        ShareScreen "share_screen" "share your screen in the huddle, or stop (the desktop asks what to share)" ["f10"]
-        DeclineHuddle "decline_huddle" "decline the huddle invitation that is ringing (the huddle key joins it)" ["shift+f3"]
-        Activity "activity" "mentions, reactions, threads" ["f5"]
-        Threads "threads" "every thread you are in, unread first" ["ctrl+t"]
-        Preferences "preferences" "preferences" ["f6"]
-        PrevConversation "previous_conversation" "previous conversation" ["alt+up"]
-        NextConversation "next_conversation" "next conversation" ["alt+down"]
-        ScrollUp "scroll_up" "scroll messages up" ["pageup"]
-        ScrollDown "scroll_down" "scroll messages down" ["pagedown"]
-        FocusNext "focus_next" "next pane" ["tab"]
-        FocusPrev "focus_previous" "previous pane" ["shift+tab"]
-        Workspace1 "workspace_1" "workspace 1 of the profile" ["alt+1"]
-        Workspace2 "workspace_2" "workspace 2" ["alt+2"]
-        Workspace3 "workspace_3" "workspace 3" ["alt+3"]
-        Workspace4 "workspace_4" "workspace 4" ["alt+4"]
-        Workspace5 "workspace_5" "workspace 5" ["alt+5"]
-        Workspace6 "workspace_6" "workspace 6" ["alt+6"]
-        Workspace7 "workspace_7" "workspace 7" ["alt+7"]
-        Workspace8 "workspace_8" "workspace 8" ["alt+8"]
-        Workspace9 "workspace_9" "workspace 9" ["alt+9"]
+        Quit "quit" "quit" "quit" "🚪" ["ctrl+q"]
+        Help "help" "this help" "help" "❓" ["f1"]
+        Switcher "jump_to" "jump to a conversation or person (# alone: every channel)" "jump to" "🧭" ["ctrl+k"]
+        Search "search" "search messages" "search" "🔍" ["ctrl+f"]
+        Details "details" "conversation details: about, members, pins" "details" "📇" ["f2"]
+        Huddle "huddle" "join or leave the huddle" "join / leave" "🎧" ["f3"]
+        Mute "mute" "mute or unmute in the huddle" "mute" "🔇" ["f4"]
+        HuddleThread "huddle_thread" "open the huddle's thread (yours, or this conversation's)" "huddle thread" "🧵" ["f7"]
+        HuddleView "huddle_view" "show or hide the huddle view (in place of the messages)" "huddle view" "📺" ["f8"]
+        Camera "camera" "switch your camera on or off in the huddle (chosen in F6)" "camera" "📷" ["f9"]
+        ShareScreen "share_screen" "share your screen in the huddle, or stop (the desktop asks what to share)" "share screen" "💻" ["f10"]
+        DeclineHuddle "decline_huddle" "decline the huddle invitation that is ringing (the huddle key joins it)" "decline" "📵" ["shift+f3"]
+        Activity "activity" "mentions, reactions, threads" "activity" "🔔" ["f5"]
+        Threads "threads" "every thread you are in, unread first" "threads" "🧵" ["ctrl+t"]
+        Preferences "preferences" "preferences" "preferences" "🔧" ["f6"]
+        PrevConversation "previous_conversation" "previous conversation" "previous" "🔼" ["alt+up"]
+        NextConversation "next_conversation" "next conversation" "next" "🔽" ["alt+down"]
+        ScrollUp "scroll_up" "scroll messages up" "scroll up" "⏫" ["pageup"]
+        ScrollDown "scroll_down" "scroll messages down" "scroll down" "⏬" ["pagedown"]
+        FocusNext "focus_next" "next pane" "next pane" "⏩" ["tab"]
+        FocusPrev "focus_previous" "previous pane" "previous pane" "⏪" ["shift+tab"]
+        Workspace1 "workspace_1" "workspace 1 of the profile" "workspace 1" "🏢" ["alt+1"]
+        Workspace2 "workspace_2" "workspace 2" "workspace 2" "🏢" ["alt+2"]
+        Workspace3 "workspace_3" "workspace 3" "workspace 3" "🏢" ["alt+3"]
+        Workspace4 "workspace_4" "workspace 4" "workspace 4" "🏢" ["alt+4"]
+        Workspace5 "workspace_5" "workspace 5" "workspace 5" "🏢" ["alt+5"]
+        Workspace6 "workspace_6" "workspace 6" "workspace 6" "🏢" ["alt+6"]
+        Workspace7 "workspace_7" "workspace 7" "workspace 7" "🏢" ["alt+7"]
+        Workspace8 "workspace_8" "workspace 8" "workspace 8" "🏢" ["alt+8"]
+        Workspace9 "workspace_9" "workspace 9" "workspace 9" "🏢" ["alt+9"]
     }
     Sidebar {
-        Up "up" "previous conversation" ["up", "k"]
-        Down "down" "next conversation" ["down", "j"]
-        Top "top" "first conversation" ["home", "g"]
-        Bottom "bottom" "last conversation" ["end", "G"]
-        HalfPageUp "half_page_up" "half a page up" ["ctrl+u"]
-        HalfPageDown "half_page_down" "half a page down" ["ctrl+d"]
-        Open "open" "type in the chosen conversation" ["enter", "i"]
-        Star "star" "star / unstar" ["*"]
-        MoveToSection "move_to_section" "move to a section (or a new one)" ["m"]
-        FoldSection "fold_section" "fold / unfold the section (folded: what is unread in it)" ["space", "z"]
-        Help "help" "this help" ["?"]
+        Up "up" "previous conversation" "up" "🔼" ["up", "k"]
+        Down "down" "next conversation" "down" "🔽" ["down", "j"]
+        Top "top" "first conversation" "top" "🔝" ["home", "g"]
+        Bottom "bottom" "last conversation" "bottom" "🔚" ["end", "G"]
+        HalfPageUp "half_page_up" "half a page up" "half page up" "⏫" ["ctrl+u"]
+        HalfPageDown "half_page_down" "half a page down" "half page down" "⏬" ["ctrl+d"]
+        Open "open" "type in the chosen conversation" "open" "📂" ["enter", "i"]
+        Star "star" "star / unstar" "star" "⭐" ["*"]
+        MoveToSection "move_to_section" "move to a section (or a new one)" "move" "📦" ["m"]
+        FoldSection "fold_section" "fold / unfold the section (folded: what is unread in it)" "fold" "📁" ["space", "z"]
+        Help "help" "this help" "help" "❓" ["?"]
     }
     Messages {
-        Up "up" "previous message" ["up", "k"]
-        Down "down" "next message" ["down", "j"]
-        Top "top" "first message" ["home", "g"]
-        Bottom "bottom" "last message" ["end", "G"]
-        HalfPageUp "half_page_up" "half a page up" ["ctrl+u"]
-        HalfPageDown "half_page_down" "half a page down" ["ctrl+d"]
-        OpenThread "open_thread" "open the message's thread" ["enter"]
-        Back "back" "close the thread (in the messages pane: nothing)" ["esc"]
-        Type "type" "type (in a thread: reply)" ["i"]
-        React "react" "add a reaction" ["r"]
-        Edit "edit" "edit your message" ["e"]
-        Delete "delete" "delete your message" ["d"]
-        Copy "copy" "copy the text" ["y"]
-        CopyLink "copy_link" "copy a link to the message" ["Y"]
-        Open "open" "open a link, picture, video or snippet (a list when there are several)" ["o"]
-        Save "save" "save attachments" ["s"]
-        Pin "pin" "pin / unpin" ["P"]
-        Profile "profile" "profile card: author, ←/→ people mentioned" ["u"]
-        ThreadHuddle "thread_huddle" "start or join a huddle in the message's thread" ["H"]
-        ContextMenu "menu" "the message's menu (as a right-click does)" ["m", "menu", "shift+f10"]
-        Help "help" "this help" ["?"]
+        Up "up" "previous message" "up" "🔼" ["up", "k"]
+        Down "down" "next message" "down" "🔽" ["down", "j"]
+        Top "top" "first message" "top" "🔝" ["home", "g"]
+        Bottom "bottom" "last message" "bottom" "🔚" ["end", "G"]
+        HalfPageUp "half_page_up" "half a page up" "half page up" "⏫" ["ctrl+u"]
+        HalfPageDown "half_page_down" "half a page down" "half page down" "⏬" ["ctrl+d"]
+        OpenThread "open_thread" "open the message's thread" "thread" "🧵" ["enter"]
+        Back "back" "close the thread (in the messages pane: nothing)" "back" "🔙" ["esc"]
+        Type "type" "type (in a thread: reply)" "type" "💬" ["i"]
+        React "react" "add a reaction" "react" "😀" ["r"]
+        Edit "edit" "edit your message" "edit" "📝" ["e"]
+        Delete "delete" "delete your message" "delete" "❌" ["d"]
+        Copy "copy" "copy the text" "copy" "📄" ["y"]
+        CopyLink "copy_link" "copy a link to the message" "copy link" "🔗" ["Y"]
+        Open "open" "open a link, picture, video or snippet (a list when there are several)" "open" "📂" ["o"]
+        Save "save" "save attachments" "save" "💾" ["s"]
+        Pin "pin" "pin / unpin" "pin / unpin" "📌" ["P"]
+        Profile "profile" "profile card: author, ←/→ people mentioned" "profile" "👤" ["u"]
+        ThreadHuddle "thread_huddle" "start or join a huddle in the message's thread" "thread huddle" "🎧" ["H"]
+        ContextMenu "menu" "the message's menu (as a right-click does)" "menu" "📜" ["m", "menu", "shift+f10"]
+        Help "help" "this help" "help" "❓" ["?"]
     }
     Composer {
-        Send "send" "send" ["enter"]
-        Newline "newline" "new line" ["alt+enter", "shift+enter", "ctrl+j"]
-        Leave "leave" "cancel an edit, else leave the composer" ["esc"]
-        Bold "bold" "bold" ["alt+b"]
-        Italic "italic" "italic" ["alt+i"]
-        Strike "strike" "strikethrough" ["alt+s"]
-        Code "code" "code" ["alt+c"]
-        DeleteWord "delete_word" "delete the word before the cursor" ["ctrl+w", "ctrl+backspace", "alt+backspace"]
-        DeleteLine "delete_line" "delete to the line start" ["ctrl+u"]
-        LineStart "line_start" "line start" ["ctrl+a", "home"]
-        LineEnd "line_end" "line end" ["ctrl+e", "end"]
-        WordLeft "word_left" "word left" ["ctrl+left"]
-        WordRight "word_right" "word right" ["ctrl+right"]
-        Left "left" "cursor left" ["left"]
-        Right "right" "cursor right" ["right"]
-        Up "up" "line up; in an empty composer: edit your last message" ["up"]
-        Down "down" "line down / newer sent text" ["down"]
-        Backspace "backspace" "delete before the cursor" ["backspace"]
-        DeleteForward "delete_forward" "delete at the cursor" ["delete"]
-        AlsoToChannel "also_to_channel" "reply box: also send to the channel" ["alt+a"]
-        Paste "paste" "paste from the clipboard: text, a picture, copied files" ["ctrl+v"]
+        Send "send" "send" "send" "📨" ["enter"]
+        Newline "newline" "new line" "new line" "📃" ["alt+enter", "shift+enter", "ctrl+j"]
+        Leave "leave" "cancel an edit, else leave the composer" "leave" "🔙" ["esc"]
+        Bold "bold" "bold" "bold" "🔠" ["alt+b"]
+        Italic "italic" "italic" "italic" "🔤" ["alt+i"]
+        Strike "strike" "strikethrough" "strike" "➖" ["alt+s"]
+        Code "code" "code" "code" "🔣" ["alt+c"]
+        DeleteWord "delete_word" "delete the word before the cursor" "delete word" "🧹" ["ctrl+w", "ctrl+backspace", "alt+backspace"]
+        DeleteLine "delete_line" "delete to the line start" "delete line" "💥" ["ctrl+u"]
+        LineStart "line_start" "line start" "line start" "⏪" ["ctrl+a", "home"]
+        LineEnd "line_end" "line end" "line end" "⏩" ["ctrl+e", "end"]
+        WordLeft "word_left" "word left" "word left" "⏪" ["ctrl+left"]
+        WordRight "word_right" "word right" "word right" "⏩" ["ctrl+right"]
+        Left "left" "cursor left" "left" "👈" ["left"]
+        Right "right" "cursor right" "right" "👉" ["right"]
+        Up "up" "line up; in an empty composer: edit your last message" "up" "🔼" ["up"]
+        Down "down" "line down / newer sent text" "down" "🔽" ["down"]
+        Backspace "backspace" "delete before the cursor" "backspace" "🧽" ["backspace"]
+        DeleteForward "delete_forward" "delete at the cursor" "delete forward" "🧽" ["delete"]
+        AlsoToChannel "also_to_channel" "reply box: also send to the channel" "also to channel" "📣" ["alt+a"]
+        Paste "paste" "paste from the clipboard: text, a picture, copied files" "paste" "📋" ["ctrl+v"]
     }
     Completion {
-        Up "up" "previous suggestion" ["up", "shift+tab"]
-        Down "down" "next suggestion" ["down"]
-        Accept "accept" "insert the suggestion" ["tab", "enter"]
-        Dismiss "dismiss" "close the suggestions" ["esc"]
+        Up "up" "previous suggestion" "up" "🔼" ["up", "shift+tab"]
+        Down "down" "next suggestion" "down" "🔽" ["down"]
+        Accept "accept" "insert the suggestion" "insert" "✅" ["tab", "enter"]
+        Dismiss "dismiss" "close the suggestions" "close" "❎" ["esc"]
     }
     Switcher {
-        Up "up" "previous entry" ["up"]
-        Down "down" "next entry" ["down", "tab"]
-        PageUp "page_up" "a page up" ["pageup"]
-        PageDown "page_down" "a page down" ["pagedown"]
-        Open "open" "go there" ["enter"]
-        Close "close" "close" ["esc"]
-        Erase "erase" "delete a character" ["backspace"]
+        Up "up" "previous entry" "up" "🔼" ["up"]
+        Down "down" "next entry" "down" "🔽" ["down", "tab"]
+        PageUp "page_up" "a page up" "page up" "⏫" ["pageup"]
+        PageDown "page_down" "a page down" "page down" "⏬" ["pagedown"]
+        Open "open" "go there" "go" "🚀" ["enter"]
+        Close "close" "close" "close" "❎" ["esc"]
+        Erase "erase" "delete a character" "erase" "🧽" ["backspace"]
     }
     Search {
-        Up "up" "previous result" ["up"]
-        Down "down" "next result" ["down", "tab"]
-        Open "open" "search, or go to the result" ["enter"]
-        Close "close" "close" ["esc"]
-        Erase "erase" "delete a character" ["backspace"]
+        Up "up" "previous result" "up" "🔼" ["up"]
+        Down "down" "next result" "down" "🔽" ["down", "tab"]
+        Open "open" "search, or go to the result" "search / go" "🚀" ["enter"]
+        Close "close" "close" "close" "❎" ["esc"]
+        Erase "erase" "delete a character" "erase" "🧽" ["backspace"]
     }
     Picker {
-        Up "up" "previous emoji" ["up"]
-        Down "down" "next emoji" ["down"]
-        PageUp "page_up" "ten up" ["pageup"]
-        PageDown "page_down" "ten down" ["pagedown"]
-        Open "choose" "react with it" ["enter"]
-        Close "close" "close" ["esc"]
-        Erase "erase" "delete a character" ["backspace"]
+        Up "up" "previous emoji" "up" "🔼" ["up"]
+        Down "down" "next emoji" "down" "🔽" ["down"]
+        PageUp "page_up" "ten up" "page up" "⏫" ["pageup"]
+        PageDown "page_down" "ten down" "page down" "⏬" ["pagedown"]
+        Open "choose" "react with it" "react" "😀" ["enter"]
+        Close "close" "close" "close" "❎" ["esc"]
+        Erase "erase" "delete a character" "erase" "🧽" ["backspace"]
     }
     Details {
-        Close "close" "close" ["esc", "f2", "q"]
-        PrevTab "previous_tab" "previous tab" ["left", "h", "shift+tab"]
-        NextTab "next_tab" "next tab" ["right", "l", "tab"]
-        Up "up" "previous row" ["up", "k"]
-        Down "down" "next row" ["down", "j"]
-        Open "open" "member: profile · pin: go to the message" ["enter"]
+        Close "close" "close" "close" "❎" ["esc", "f2", "q"]
+        PrevTab "previous_tab" "previous tab" "previous tab" "⏪" ["left", "h", "shift+tab"]
+        NextTab "next_tab" "next tab" "next tab" "⏩" ["right", "l", "tab"]
+        Up "up" "previous row" "up" "🔼" ["up", "k"]
+        Down "down" "next row" "down" "🔽" ["down", "j"]
+        Open "open" "member: profile · pin: go to the message" "open" "📂" ["enter"]
     }
     Profile {
-        Close "close" "close" ["esc", "q"]
-        PrevTab "previous_person" "previous person in the message" ["left", "shift+tab"]
-        NextTab "next_person" "next person in the message" ["right", "tab"]
-        Open "message" "message them" ["enter", "m"]
-        Huddle "huddle" "start a huddle with them" ["h"]
-        Vip "vip" "add to / remove from your VIPs" ["v"]
+        Close "close" "close" "close" "❎" ["esc", "q"]
+        PrevTab "previous_person" "previous person in the message" "previous person" "⏪" ["left", "shift+tab"]
+        NextTab "next_person" "next person in the message" "next person" "⏩" ["right", "tab"]
+        Open "message" "message them" "message" "💬" ["enter", "m"]
+        Huddle "huddle" "start a huddle with them" "huddle" "🎧" ["h"]
+        Vip "vip" "add to / remove from your VIPs" "VIP" "💎" ["v"]
     }
     Activity {
-        Close "close" "close" ["esc", "f5", "q"]
-        Up "up" "previous item" ["up", "k"]
-        Down "down" "next item" ["down", "j"]
-        PageUp "page_up" "page up" ["pageup"]
-        PageDown "page_down" "page down" ["pagedown"]
-        Refresh "refresh" "load again" ["r"]
-        Open "open" "go to the message" ["enter"]
+        Close "close" "close" "close" "❎" ["esc", "f5", "q"]
+        Up "up" "previous item" "up" "🔼" ["up", "k"]
+        Down "down" "next item" "down" "🔽" ["down", "j"]
+        PageUp "page_up" "page up" "page up" "⏫" ["pageup"]
+        PageDown "page_down" "page down" "page down" "⏬" ["pagedown"]
+        Refresh "refresh" "load again" "refresh" "🔄" ["r"]
+        Open "open" "go to the message" "go" "🚀" ["enter"]
     }
     Threads {
-        Close "close" "close" ["esc", "ctrl+t", "q"]
-        Up "up" "previous thread" ["up", "k"]
-        Down "down" "next thread" ["down", "j"]
-        PageUp "page_up" "page up" ["pageup"]
-        PageDown "page_down" "page down" ["pagedown"]
-        Refresh "refresh" "load again" ["r"]
-        Open "open" "open the thread at the reply shown" ["enter"]
+        Close "close" "close" "close" "❎" ["esc", "ctrl+t", "q"]
+        Up "up" "previous thread" "up" "🔼" ["up", "k"]
+        Down "down" "next thread" "down" "🔽" ["down", "j"]
+        PageUp "page_up" "page up" "page up" "⏫" ["pageup"]
+        PageDown "page_down" "page down" "page down" "⏬" ["pagedown"]
+        Refresh "refresh" "load again" "refresh" "🔄" ["r"]
+        Open "open" "open the thread at the reply shown" "open" "🧵" ["enter"]
     }
     Mover {
-        Close "close" "close" ["esc", "q"]
-        Up "up" "previous choice" ["up", "k"]
-        Down "down" "next choice" ["down", "j"]
-        Top "top" "first choice" ["home", "g"]
-        Bottom "bottom" "last choice" ["end", "G"]
-        Open "choose" "move there (New section…: name it)" ["enter"]
+        Close "close" "close" "close" "❎" ["esc", "q"]
+        Up "up" "previous choice" "up" "🔼" ["up", "k"]
+        Down "down" "next choice" "down" "🔽" ["down", "j"]
+        Top "top" "first choice" "top" "🔝" ["home", "g"]
+        Bottom "bottom" "last choice" "bottom" "🔚" ["end", "G"]
+        Open "choose" "move there (New section…: name it)" "move" "📦" ["enter"]
     }
     TextField {
-        Open "done" "done (create the section / save)" ["enter"]
-        Close "cancel" "cancel" ["esc"]
-        Erase "erase" "delete a character" ["backspace"]
+        Open "done" "done (create the section / save)" "done" "✅" ["enter"]
+        Close "cancel" "cancel" "cancel" "❎" ["esc"]
+        Erase "erase" "delete a character" "erase" "🧽" ["backspace"]
     }
     Snippet {
-        Close "close" "close" ["esc", "q"]
-        Up "up" "line up" ["up", "k"]
-        Down "down" "line down" ["down", "j"]
-        PageUp "page_up" "page up" ["pageup"]
-        PageDown "page_down" "page down" ["pagedown", "space"]
-        Top "top" "start" ["home", "g"]
-        Bottom "bottom" "end" ["end", "G"]
-        Copy "copy" "copy the whole snippet" ["y"]
+        Close "close" "close" "close" "❎" ["esc", "q"]
+        Up "up" "line up" "up" "🔼" ["up", "k"]
+        Down "down" "line down" "down" "🔽" ["down", "j"]
+        PageUp "page_up" "page up" "page up" "⏫" ["pageup"]
+        PageDown "page_down" "page down" "page down" "⏬" ["pagedown", "space"]
+        Top "top" "start" "top" "🔝" ["home", "g"]
+        Bottom "bottom" "end" "bottom" "🔚" ["end", "G"]
+        Copy "copy" "copy the whole snippet" "copy" "📄" ["y"]
     }
     Viewer {
-        Close "close" "close" ["esc", "q"]
-        PrevTab "previous" "previous image" ["left", "h"]
-        NextTab "next" "next image" ["right", "l"]
+        Close "close" "close" "close" "❎" ["esc", "q"]
+        PrevTab "previous" "previous image" "previous" "⏪" ["left", "h"]
+        NextTab "next" "next image" "next" "⏩" ["right", "l"]
     }
     Player {
-        Close "close" "stop" ["esc", "q"]
-        Pause "pause" "pause / play" ["space", "p"]
-        SeekBack "seek_back" "10 seconds back" ["left", "h"]
-        SeekForward "seek_forward" "10 seconds forward" ["right", "l"]
+        Close "close" "stop" "stop" "🛑" ["esc", "q"]
+        Pause "pause" "pause / play" "pause / play" "🎬" ["space", "p"]
+        SeekBack "seek_back" "10 seconds back" "10 s back" "⏪" ["left", "h"]
+        SeekForward "seek_forward" "10 seconds forward" "10 s forward" "⏩" ["right", "l"]
     }
     Confirm {
-        Yes "yes" "confirm (any other key: no)" ["y", "Y"]
+        Yes "yes" "confirm (any other key: no)" "yes" "✅" ["y", "Y"]
     }
     Huddle {
-        Up "up" "the tile above" ["up", "k"]
-        Down "down" "the tile below" ["down", "j"]
-        PrevTab "left" "the tile to the left" ["left", "h"]
-        NextTab "right" "the tile to the right" ["right", "l"]
-        Open "maximize" "maximize the tile, or all tiles again" ["enter", "space", "f"]
-        Close "back" "all tiles again, or leave the tiles" ["esc"]
+        Up "up" "the tile above" "up" "🔼" ["up", "k"]
+        Down "down" "the tile below" "down" "🔽" ["down", "j"]
+        PrevTab "left" "the tile to the left" "left" "👈" ["left", "h"]
+        NextTab "right" "the tile to the right" "right" "👉" ["right", "l"]
+        Open "maximize" "maximize the tile, or all tiles again" "maximize" "🔲" ["enter", "space", "f"]
+        Close "back" "all tiles again, or leave the tiles" "back" "🔙" ["esc"]
     }
     Preferences {
-        Up "up" "previous setting" ["up", "k"]
-        Down "down" "next setting" ["down", "j"]
-        PrevTab "previous_category" "previous category" ["left", "h", "shift+tab"]
-        NextTab "next_category" "next category" ["right", "l", "tab"]
-        Open "change" "change the setting (Keys: press the new key next)" ["enter", "space"]
-        Unbind "unbind" "Keys: remove the action's keys" ["delete", "backspace"]
-        Reset "reset" "Keys: back to the default keys" ["r"]
-        Increase "increase" "raise a level (volumes, gain, threshold)" ["+", "="]
-        Decrease "decrease" "lower a level" ["-"]
-        Close "close" "close" ["esc", "q", "f6"]
+        Up "up" "previous setting" "up" "🔼" ["up", "k"]
+        Down "down" "next setting" "down" "🔽" ["down", "j"]
+        PrevTab "previous_category" "previous category" "previous category" "⏪" ["left", "h", "shift+tab"]
+        NextTab "next_category" "next category" "next category" "⏩" ["right", "l", "tab"]
+        Open "change" "change the setting (Keys: press the new key next)" "change" "🔀" ["enter", "space"]
+        Unbind "unbind" "Keys: remove the action's keys" "unbind" "🚫" ["delete", "backspace"]
+        Reset "reset" "Keys: back to the default keys" "reset" "🔄" ["r"]
+        Increase "increase" "raise a level (volumes, gain, threshold)" "increase" "➕" ["+", "="]
+        Decrease "decrease" "lower a level" "decrease" "➖" ["-"]
+        Close "close" "close" "close" "❎" ["esc", "q", "f6"]
     }
     Menu {
-        Up "up" "previous item" ["up", "k"]
-        Down "down" "next item" ["down", "j"]
-        Open "choose" "do it" ["enter", "space"]
-        Close "close" "close" ["esc", "q"]
+        Up "up" "previous item" "up" "🔼" ["up", "k"]
+        Down "down" "next item" "down" "🔽" ["down", "j"]
+        Open "choose" "do it" "do it" "✅" ["enter", "space"]
+        Close "close" "close" "close" "❎" ["esc", "q"]
     }
     Save {
-        Up "up" "previous file" ["up", "k"]
-        Down "down" "next file" ["down", "j"]
-        Tick "tick" "tick / untick the file" ["space"]
-        TickAll "tick_all" "tick all / none" ["a"]
-        Folder "folder" "edit the folder (Tab there completes it)" ["tab"]
-        Open "save" "save the ticked files" ["enter"]
-        Close "close" "close" ["esc", "q"]
+        Up "up" "previous file" "up" "🔼" ["up", "k"]
+        Down "down" "next file" "down" "🔽" ["down", "j"]
+        Tick "tick" "tick / untick the file" "tick" "✅" ["space"]
+        TickAll "tick_all" "tick all / none" "tick all" "💯" ["a"]
+        Folder "folder" "edit the folder (Tab there completes it)" "folder" "📁" ["tab"]
+        Open "save" "save the ticked files" "save" "💾" ["enter"]
+        Close "close" "close" "close" "❎" ["esc", "q"]
     }
     Help {
-        Up "up" "scroll up" ["up", "k"]
-        Down "down" "scroll down" ["down", "j"]
-        PageUp "page_up" "page up" ["pageup"]
-        PageDown "page_down" "page down" ["pagedown", "space"]
-        Close "close" "close" ["esc", "q", "f1", "?"]
+        Up "up" "scroll up" "up" "🔼" ["up", "k"]
+        Down "down" "scroll down" "down" "🔽" ["down", "j"]
+        PageUp "page_up" "page up" "page up" "⏫" ["pageup"]
+        PageDown "page_down" "page down" "page down" "⏬" ["pagedown", "space"]
+        Close "close" "close" "close" "❎" ["esc", "q", "f1", "?"]
     }
 }
 
@@ -661,6 +666,21 @@ pub enum Resolved {
     /// The start of a longer sequence (e.g. the leader): wait for the next key.
     Pending,
     None,
+}
+
+/// The named prefixes: (sequence, name, icon). `[groups]` in keys.toml renames them.
+pub const GROUPS: &[(&str, &str, &str)] = &[("<leader> c", "conversation", "💬"), ("<leader> h", "huddle", "🎧"), ("<leader> n", "new", "✨"), ("<leader> a", "availability", "🟢"), ("<leader> f", "find", "🔎"), ("<leader> w", "workspace", "🏢")];
+
+/// One next key after a prefix, as which-key, help and the preferences list it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Child {
+    pub key: Key,
+    pub label: String,
+    pub icon: String,
+    /// A prefix of longer sequences, not an action.
+    pub group: bool,
+    /// The action and the context it is bound in (None for a group).
+    pub action: Option<(Context, Action)>,
 }
 
 /// The keys of a sequence typed so far, and the mode it was started in.
@@ -690,7 +710,6 @@ impl Pending {
     }
 
     /// One key back (which-key's Backspace).
-    #[allow(dead_code)]
     pub fn pop(&mut self) {
         self.keys.pop();
         self.typed.pop();
@@ -731,7 +750,32 @@ pub struct Keymap {
     bindings: HashMap<(Context, Vec<Key>), Action>,
     /// (context, action name) → its sequences, in the order given (for help).
     keys: HashMap<(Context, &'static str), Vec<Vec<Key>>>,
+    /// The user's names (and icons) for prefixes, from `[groups]`.
+    groups: HashMap<Vec<Key>, (String, Option<String>)>,
+    /// The user's which-key labels and icons, from `[labels.<context>]`.
+    labels: HashMap<(Context, &'static str), (Option<String>, Option<String>)>,
+    /// `[groups]` and `[labels]` as read, written back by [`Keymap::to_toml`].
+    extra: toml::Table,
 }
+
+/// One key in [`Keymap::show`]'s short form (`␣`, `^X`, `M-x`, `F5`).
+pub fn short(k: Key) -> String {
+    let KeyCode::Char(c) = k.code else { return k.label() };
+    let c = if c == ' ' { '␣' } else { c };
+    let ctrl = k.mods.contains(KeyModifiers::CONTROL);
+    let alt = if k.mods.contains(KeyModifiers::ALT) { "M-" } else { "" };
+    if ctrl { format!("^{alt}{}", c.to_uppercase()) } else { format!("{alt}{c}") }
+}
+
+/// Whether a binding of `context` counts in `mode`: in INSERT and dialogs a `[global]`
+/// sequence that starts with text is left out; in a dialog only `[global]` leader sequences
+/// and quit count.
+fn counts(context: Context, mode: Mode, seq: &[Key], action: Action) -> bool {
+    context != Context::Global || mode == Mode::Normal || !seq[0].is_text() && (mode == Mode::Insert || seq[0] == LEADER || action == Action::Quit)
+}
+
+/// The icon of a group that has none of its own.
+const GROUP_ICON: &str = "📁";
 
 /// The leaders when keys.toml does not set them: Space and Ctrl+Space.
 fn default_leaders() -> (Key, Key) {
@@ -768,6 +812,10 @@ impl Keymap {
         let mut overrides: HashMap<(Context, String), Vec<String>> = HashMap::new();
         for (name, value) in &table {
             if name == "leader" || name == "insert_leader" {
+                continue;
+            }
+            if name == "groups" || name == "labels" {
+                map.read_names(name, value, &mut warnings);
                 continue;
             }
             let Some(context) = Context::from_name(name) else {
@@ -861,6 +909,72 @@ impl Keymap {
         (map, warnings)
     }
 
+    /// `[groups] "<seq>" = "name" | { name, icon }` and `[labels.<context>] action = "label" |
+    /// { label, icon }`; bad entries are reported and left out.
+    fn read_names(&mut self, section: &str, value: &toml::Value, warnings: &mut Vec<String>) {
+        let Some(table) = value.as_table() else {
+            warnings.push(format!("keys.toml: [{section}] must be a table"));
+            return;
+        };
+        // A name alone, or a table with the name under `field` and maybe an icon.
+        let names = |v: &toml::Value, field: &str| match v {
+            toml::Value::String(s) => Some((Some(s.clone()), None)),
+            toml::Value::Table(t) if t.keys().all(|k| k == field || k == "icon") && t.values().all(|v| v.is_str()) => Some((t.get(field).and_then(|v| v.as_str()).map(String::from), t.get("icon").and_then(|v| v.as_str()).map(String::from))),
+            _ => None,
+        };
+        let mut kept = toml::Table::new();
+        if section == "groups" {
+            for (seq, v) in table {
+                let parsed = self.parse_sequences(Context::Global, &[seq.clone()]).map(|mut s| s.remove(0));
+                match (parsed, names(v, "name")) {
+                    (Err(e), _) => warnings.push(format!("keys.toml: [groups] \"{seq}\": {e}")),
+                    (Ok(_), None) => warnings.push(format!("keys.toml: [groups] \"{seq}\" must be a name or {{ name, icon }}")),
+                    (Ok(keys), Some((name, icon))) => {
+                        let name = name.unwrap_or_else(|| self.group(&keys).map(|(n, _)| n).unwrap_or_default());
+                        self.groups.insert(keys, (name, icon));
+                        kept.insert(seq.clone(), v.clone());
+                    }
+                }
+            }
+        } else {
+            for (context_name, entries) in table {
+                let Some(context) = Context::from_name(context_name) else {
+                    warnings.push(format!("keys.toml: unknown section [labels.{context_name}]"));
+                    continue;
+                };
+                let Some(entries) = entries.as_table() else {
+                    warnings.push(format!("keys.toml: [labels.{context_name}] must be a table"));
+                    continue;
+                };
+                let mut kept_here = toml::Table::new();
+                for (action, v) in entries {
+                    let Some(info) = ACTIONS.iter().find(|a| a.context == context && a.name == action) else {
+                        warnings.push(format!("keys.toml: [labels.{context_name}] has no action '{action}'"));
+                        continue;
+                    };
+                    match names(v, "label") {
+                        Some(names) => {
+                            self.labels.insert((context, info.name), names);
+                            kept_here.insert(action.clone(), v.clone());
+                        }
+                        None => warnings.push(format!("keys.toml: [labels.{context_name}] {action} must be a label or {{ label, icon }}")),
+                    }
+                }
+                kept.insert(context_name.clone(), toml::Value::Table(kept_here));
+            }
+        }
+        self.extra.insert(section.to_string(), toml::Value::Table(kept));
+    }
+
+    /// A prefix's name and icon: the user's (`[groups]`), else [`GROUPS`]'.
+    pub fn group(&self, seq: &[Key]) -> Option<(String, String)> {
+        let default = GROUPS.iter().find(|(s, ..)| self.parse_sequences(Context::Global, &[s.to_string()]).is_ok_and(|p| p[0] == seq)).map(|(_, name, icon)| (super::i18n::tr(name).into_owned(), icon.to_string()));
+        match self.groups.get(seq) {
+            Some((name, icon)) => Some((name.clone(), icon.clone().or_else(|| default.map(|d| d.1)).unwrap_or_else(|| GROUP_ICON.into()))),
+            None => default,
+        }
+    }
+
     fn parse_sequences(&self, context: Context, keys: &[String]) -> Result<Vec<Vec<Key>>, String> {
         keys.iter()
             .map(|k| {
@@ -916,19 +1030,66 @@ impl Keymap {
     /// out; in a dialog only `[global]` leader sequences and quit count.
     fn lookup(&self, contexts: &[Context], mode: Mode, seq: &[Key]) -> Resolved {
         for &context in contexts {
-            let counts = |s: &[Key], action: Action| context != Context::Global || mode == Mode::Normal || !s[0].is_text() && (mode == Mode::Insert || s[0] == LEADER || action == Action::Quit);
-            if let Some(a) = self.bindings.get(&(context, seq.to_vec())).filter(|a| counts(seq, **a)) {
+            if let Some(a) = self.bindings.get(&(context, seq.to_vec())).filter(|a| counts(context, mode, seq, **a)) {
                 return Resolved::Action(context, *a);
             }
-            if self.bindings.iter().any(|((c, s), a)| *c == context && s.len() > seq.len() && s.starts_with(seq) && counts(s, *a)) {
+            if self.bindings.iter().any(|((c, s), a)| *c == context && s.len() > seq.len() && s.starts_with(seq) && counts(context, mode, s, *a)) {
                 return Resolved::Pending;
             }
         }
         Resolved::None
     }
 
+    /// The next keys after `prefix` in `contexts` (most specific first): the actions in table
+    /// order, then the groups by key; a key two contexts bind goes to the more specific one.
+    pub fn children(&self, contexts: &[Context], mode: Mode, prefix: &[Key]) -> Vec<Child> {
+        // (context's place, table row, key) of the actions; the groups' keys.
+        let mut actions: Vec<(usize, usize, Key, Context, Action)> = Vec::new();
+        let mut groups: Vec<Key> = Vec::new();
+        let mut taken: Vec<Key> = Vec::new();
+        for (place, &context) in contexts.iter().enumerate() {
+            let mut here: Vec<Key> = Vec::new();
+            for ((c, seq), action) in &self.bindings {
+                if *c != context || seq.len() <= prefix.len() || !seq.starts_with(prefix) || !counts(context, mode, seq, *action) {
+                    continue;
+                }
+                let key = seq[prefix.len()];
+                if taken.contains(&key) {
+                    continue;
+                }
+                here.push(key);
+                if seq.len() == prefix.len() + 1 {
+                    let row = ACTIONS.iter().position(|a| a.context == context && a.action == *action).unwrap_or(usize::MAX);
+                    actions.push((place, row, key, context, *action));
+                } else if !groups.contains(&key) {
+                    groups.push(key);
+                }
+            }
+            taken.extend(here);
+        }
+        actions.sort_by_key(|(place, row, key, ..)| (*place, *row, key.spec()));
+        groups.sort_by_key(|k| k.spec());
+        let mut out: Vec<Child> = actions
+            .into_iter()
+            .map(|(_, row, key, context, action)| {
+                let info = ACTIONS.get(row);
+                let (label, icon) = self.labels.get(&(context, info.map_or("", |i| i.name))).cloned().unwrap_or_default();
+                let label = label.unwrap_or_else(|| info.map(|i| super::i18n::tr(i.label).into_owned()).unwrap_or_default());
+                let icon = icon.unwrap_or_else(|| info.map(|i| i.icon.to_string()).unwrap_or_default());
+                Child { key, label, icon, group: false, action: Some((context, action)) }
+            })
+            .collect();
+        for key in groups {
+            let mut seq = prefix.to_vec();
+            seq.push(key);
+            let (label, icon) = self.group(&seq).unwrap_or_else(|| (format!("+{}", self.show(&[key])), GROUP_ICON.into()));
+            out.push(Child { key, label, icon, group: true, action: None });
+        }
+        out
+    }
+
     /// The key `<leader>` is shown as: the leader, else the insert leader.
-    fn leader_key(&self) -> Option<Key> {
+    pub fn leader_key(&self) -> Option<Key> {
         self.leader.or(self.insert_leader)
     }
 
@@ -940,13 +1101,6 @@ impl Keymap {
     /// A sequence in short form, for the status bar, which-key and menus: Space `␣`, Ctrl+X
     /// `^X`, Ctrl+Space `^␣`, Alt+x `M-x`, others as in help; no separators (`␣h`, `^␣hm`).
     pub fn show(&self, seq: &[Key]) -> String {
-        let short = |k: Key| {
-            let KeyCode::Char(c) = k.code else { return k.label() };
-            let c = if c == ' ' { '␣' } else { c };
-            let ctrl = k.mods.contains(KeyModifiers::CONTROL);
-            let alt = if k.mods.contains(KeyModifiers::ALT) { "M-" } else { "" };
-            if ctrl { format!("^{alt}{}", c.to_uppercase()) } else { format!("{alt}{c}") }
-        };
         seq.iter().map(|k| if *k == LEADER { self.leader_key().map_or_else(|| LEADER.label(), short) } else { short(*k) }).collect()
     }
 
@@ -1057,6 +1211,11 @@ impl Keymap {
             if !entries.is_empty() {
                 out += &format!("\n[{}]\n{}", context.name(), entries.concat());
             }
+        }
+        // The group names and labels, as they were read.
+        let extra: toml::Table = self.extra.iter().filter(|(_, v)| v.as_table().is_some_and(|t| !t.is_empty())).map(|(k, v)| (k.clone(), v.clone())).collect();
+        if !extra.is_empty() {
+            out += &format!("\n{}", toml::to_string(&extra).unwrap_or_default());
         }
         out
     }
@@ -1360,6 +1519,60 @@ mod tests {
         let (map, warnings) = Keymap::load("insert_leader = \"x\"\n");
         assert_eq!(warnings, vec!["keys.toml: insert_leader 'x' would be typed as text; use a key with Ctrl/Alt".to_string()]);
         assert_eq!(map.insert_leader, Some(k("ctrl+space")));
+    }
+
+    #[test]
+    fn children_lists_actions_then_groups() {
+        use Context::*;
+        let text = "[messages]\nreact = \"<leader> r\"\n[global]\nmute = \"<leader> h m\"\n";
+        let (map, warnings) = Keymap::load(text);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let short = |map: &Keymap, c: &[Child]| c.iter().map(|c| format!("{} {}{}", map.show(&[c.key]), if c.group { "group " } else { "" }, c.label)).collect::<Vec<_>>();
+        let top = map.children(&[Messages, Global], Mode::Normal, &[LEADER]);
+        assert_eq!(short(&map, &top), ["r react", "h group huddle"]);
+        assert_eq!((top[0].action, top[0].icon.as_str()), (Some((Messages, Action::React)), "😀"));
+        assert_eq!((top[1].action, top[1].icon.as_str()), (None, "🎧"), "from GROUPS");
+        let huddle = map.children(&[Messages, Global], Mode::Normal, &[LEADER, k("h")]);
+        assert_eq!(short(&map, &huddle), ["m mute"]);
+        assert_eq!(huddle[0].action, Some((Global, Action::Mute)));
+        // [groups] renames a prefix; a prefix nobody named is +<key>.
+        let (map, warnings) = Keymap::load(&format!("{text}[sidebar]\nstar = \"<leader> x s\"\n[groups]\n\"<leader> h\" = {{ name = \"calls\", icon = \"📞\" }}\n"));
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let top = map.children(&[Messages, Global], Mode::Normal, &[LEADER]);
+        assert_eq!((top[1].label.as_str(), top[1].icon.as_str()), ("calls", "📞"));
+        assert_eq!(short(&map, &map.children(&[Sidebar, Global], Mode::Normal, &[LEADER])), ["h group calls", "x group +x"]);
+        // The pane wins a key both bind; [global] text keys do not count in INSERT.
+        let (map, _) = Keymap::load("[messages]\nreact = \"<leader> r\"\n[global]\nsearch = \"<leader> r\"\nmute = \"x\"\n");
+        assert_eq!(short(&map, &map.children(&[Messages, Global], Mode::Normal, &[LEADER])), ["r react"]);
+        assert_eq!(short(&map, &map.children(&[Composer, Global], Mode::Insert, &[LEADER])), ["r search"]);
+        assert!(!map.children(&[Composer, Global], Mode::Insert, &[]).iter().any(|c| c.key == k("x")));
+    }
+
+    #[test]
+    fn labels_and_groups_from_keys_toml() {
+        use Context::*;
+        let text = "[global]\nmute = \"<leader> h m\"\nsearch = \"<leader> s\"\n[groups]\n\"<leader> h\" = \"calls\"\n[labels.global]\nmute = \"hush\"\nsearch = { label = \"find it\", icon = \"🧐\" }\n";
+        let (map, warnings) = Keymap::load(text);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let top = map.children(&[Messages, Global], Mode::Normal, &[LEADER]);
+        assert_eq!(top.iter().map(|c| (c.label.as_str(), c.icon.as_str())).collect::<Vec<_>>(), [("find it", "🧐"), ("calls", "🎧")], "a name alone keeps the default icon");
+        assert_eq!(map.children(&[Messages, Global], Mode::Normal, &[LEADER, k("h")])[0].label, "hush");
+        let (_, warnings) = Keymap::load("[labels.nowhere]\nx = \"y\"\n[labels.global]\nnothing = \"z\"\nmute = 3\n[groups]\n\"<leader> hyper+x\" = \"bad\"\n");
+        assert_eq!(warnings.len(), 4, "{warnings:#?}");
+        // Written back with the bindings.
+        let (again, warnings) = Keymap::load(&map.to_toml(None, None));
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(again.children(&[Messages, Global], Mode::Normal, &[LEADER]), top);
+    }
+
+    #[test]
+    fn default_icons_are_wide_emoji() {
+        use unicode_width::UnicodeWidthStr;
+        let icons = ACTIONS.iter().map(|a| (a.name, a.icon)).chain(GROUPS.iter().map(|(_, name, icon)| (*name, *icon)));
+        for (name, icon) in icons {
+            assert!(icon.chars().count() == 1 && icon.width() == 2 && !icon.contains('\u{FE0F}'), "{name}: {icon:?}");
+        }
+        assert!(ACTIONS.iter().all(|a| !a.label.is_empty() && a.label.split(' ').count() <= 3), "short labels");
     }
 
     #[test]

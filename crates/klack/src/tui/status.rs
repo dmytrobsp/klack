@@ -39,7 +39,7 @@ fn pill_colour(pill: Pill) -> Color {
 }
 
 /// `s` in at most `room` columns, with `…` where it was cut.
-fn cut(s: &str, room: usize) -> String {
+pub fn cut(s: &str, room: usize) -> String {
     if s.width() <= room {
         return s.to_string();
     }

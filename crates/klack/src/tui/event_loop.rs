@@ -116,6 +116,10 @@ struct App {
     keys: Keymap,
     /// Keys of a sequence typed so far (e.g. the leader).
     pending: Pending,
+    /// When the last key of the pending sequence was pressed (which-key opens a while after).
+    pending_since: Option<std::time::Instant>,
+    /// The which-key panel, once it is shown for the pending sequence.
+    which_key: Option<super::which_key::Panel>,
     /// Problems found in keys.toml, shown once the workspace has loaded.
     key_warnings: Vec<String>,
     /// The profile's workspaces (labels) and which one this is.
@@ -2046,11 +2050,16 @@ impl App {
         let mode = self.mode();
         self.pending.sync(mode);
         let typed = Key::from_event(k);
+        if super::which_key::handle_key(&mut self.pending, self.which_key.as_mut(), typed) {
+            self.pending_since = Some(std::time::Instant::now());
+            return true;
+        }
         let (resolved, key) = self.keys.press(&self.active_contexts(), mode, self.pending.keys(), typed);
         match resolved {
             Resolved::Action(..) => false,
             Resolved::Pending => {
                 self.pending.push_typed(key, typed, mode);
+                self.pending_since = Some(std::time::Instant::now());
                 true
             }
             Resolved::None if !self.pending.keys().is_empty() => {
@@ -2061,6 +2070,23 @@ impl App {
                 true
             }
             Resolved::None => false,
+        }
+    }
+
+    /// When which-key is to open for the pending sequence (None: no sequence, shown already,
+    /// or turned off).
+    fn which_key_due(&self) -> Option<std::time::Instant> {
+        let settings = &self.ws.settings.which_key;
+        let since = self.pending_since.filter(|_| settings.show && self.which_key.is_none() && !self.pending.keys().is_empty())?;
+        Some(since + Duration::try_from_secs_f32(settings.delay_secs.max(0.0)).unwrap_or_default())
+    }
+
+    /// Open which-key once the sequence has waited long enough; close it once it is over.
+    fn sync_which_key(&mut self, now: std::time::Instant) {
+        if self.pending.keys().is_empty() {
+            (self.which_key, self.pending_since) = (None, None);
+        } else if self.which_key_due().is_some_and(|due| due <= now) {
+            self.which_key = Some(super::which_key::Panel::default());
         }
     }
 
@@ -2656,6 +2682,8 @@ async fn run_workspace(
         keys: keymap.0.clone(),
         key_warnings: keymap.1.clone(),
         pending: Pending::default(),
+        pending_since: None,
+        which_key: None,
         workspaces: workspaces.0,
         workspace: workspaces.1,
         others: workspaces.2,
@@ -2740,6 +2768,7 @@ async fn run_workspace(
     loop {
         app.expire_status(std::time::Instant::now());
         app.ring_tick();
+        app.sync_which_key(std::time::Instant::now());
         // Alone in the huddle for a while: a quiet melody loops until someone joins.
         let s = &app.ws.settings;
         let wait = Duration::from_secs(s.huddle.alone_secs.max(1) as u64);
@@ -2756,6 +2785,7 @@ async fn run_workspace(
         app.request_thumbs();
         app.request_activity_messages();
         app.refresh_dnd();
+        let which_key_due = app.which_key_due();
         tokio::select! {
             ev = events.next() => {
                 let Some(ev) = ev else { break };
@@ -2813,6 +2843,8 @@ async fn run_workspace(
                 }
             }
             _ = tick.tick() => {}
+            // which-key opens (at the top of the loop).
+            _ = tokio::time::sleep_until(which_key_due.unwrap_or_else(std::time::Instant::now).into()), if which_key_due.is_some() => {}
             _ = call_tick.tick(), if app.call.is_some() => {}
             _ = video_tick.tick(), if app.player.is_some() => {
                 if let Some(p) = app.player.as_mut() {
@@ -3926,6 +3958,7 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     // A sequence started before a dialog opened (or closed) is over.
     let mode = app.mode();
     app.pending.sync(mode);
+    app.sync_which_key(std::time::Instant::now());
     let messages = &app.ws.settings.messages;
     app.ws.emoji_pictures = app.media.graphics() && messages.custom_emoji_pictures && !messages.emoji_as_names;
     // The huddle view goes with the call, and gives way once the messages or the composer
@@ -3941,6 +3974,7 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     let bar_keys = super::huddle_view::Keys { mute: &call_keys.0, leave: &call_keys.1, thread: &call_keys.2, view: &call_keys.3, camera: &call_keys.4, share: &call_keys.5 };
     let call_rows = app.call.as_ref().map_or(0, |call| call.bar_rows(&app.ws, &app.media, bar_keys, f.area().width));
     let [body, call_bar, status] = Layout::vertical([Constraint::Min(1), Constraint::Length(call_rows), Constraint::Length(1)]).areas(f.area());
+    let above_status = body;
     app.call_bar_area = call_bar;
     if let Some(call) = &app.call {
         if let Some(w) = call.draw(f, call_bar, &app.ws, &app.media, bar_keys) {
@@ -4068,6 +4102,22 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     }
     if let Some(h) = app.help.as_mut() {
         h.draw(f, body, &app.keys);
+    }
+    // which-key: the keys that can come next.
+    if app.which_key.is_some() {
+        let contexts = app.active_contexts();
+        let mut children = app.keys.children(&contexts, mode, app.pending.keys());
+        // A leader as a next key shows as the leader's key.
+        for c in children.iter_mut().filter(|c| c.key == LEADER) {
+            c.key = app.keys.leader_key().unwrap_or(LEADER);
+        }
+        let settings = &app.ws.settings.which_key;
+        let pages = super::which_key::layout(&children, above_status, settings.max_height_percent, settings.icons).pages;
+        let title = super::which_key::title(&app.keys, &contexts, &app.pending);
+        if let Some(panel) = app.which_key.as_mut() {
+            panel.page = panel.page.min(pages.saturating_sub(1));
+            super::which_key::draw(f, above_status, &title, &children, panel, settings);
+        }
     }
     // The status line: the mode, what is going on, the keys under way and the hints.
     // The dialog's or the focused pane's context (not the suggestion list's).

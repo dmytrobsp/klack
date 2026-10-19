@@ -50,6 +50,9 @@ pub fn translatable() -> Vec<String> {
     }
     out.extend(super::keymap::ACTIONS.iter().map(|a| a.description.to_string()));
     out.extend(super::keymap::hint_words().into_iter().map(String::from));
+    out.extend(super::keymap::ACTIONS.iter().map(|a| a.label.to_string()));
+    out.extend(super::keymap::GROUPS.iter().map(|(_, name, _)| name.to_string()));
+    out.extend(super::which_key::WORDS.iter().map(|w| w.to_string()));
     out.extend(super::prefs::translatable());
     out.extend(super::help::COMMANDS.iter().map(|(_, what)| what.to_string()));
     out.extend(TITLES.iter().map(|t| t.to_string()));

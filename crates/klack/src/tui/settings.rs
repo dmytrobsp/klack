@@ -13,6 +13,28 @@ pub struct Settings {
     pub audio: Audio,
     pub video: Video,
     pub huddle: Huddle,
+    pub which_key: WhichKey,
+}
+
+/// The panel of next keys while a key sequence is under way.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WhichKey {
+    pub show: bool,
+    /// "bottom-right", "bottom-left", "top-right" or "top-left" of the screen above the status line.
+    pub corner: String,
+    /// It opens this long after the last key, in seconds (0: at once).
+    pub delay_secs: f32,
+    /// At most this much of the screen's height, in percent; then it pages.
+    pub max_height_percent: u16,
+    /// An icon before each label.
+    pub icons: bool,
+}
+
+impl Default for WhichKey {
+    fn default() -> Self {
+        WhichKey { show: true, corner: "bottom-right".into(), delay_secs: 0.4, max_height_percent: 50, icons: true }
+    }
 }
 
 /// Sounds for huddle events: a name from `sound::HUDDLE_SOUNDS`, "off" for none.
@@ -232,6 +254,8 @@ mod tests {
         assert!(s.messages.inline_images && s.notifications.desktop && s.region.date_format == "%A, %B %-d");
         assert_eq!(s.time_format(), "%-I:%M %p");
         assert_eq!(Settings::parse("").unwrap(), Settings::default());
+        let s = Settings::parse("[which_key]\ndelay_secs = 0\n").unwrap();
+        assert_eq!((s.which_key.show, s.which_key.corner.as_str(), s.which_key.delay_secs, s.which_key.max_height_percent, s.which_key.icons), (true, "bottom-right", 0.0, 50, true));
         assert!(Settings::parse("[region]\nclock_24h = \"yes\"").is_err());
     }
 
