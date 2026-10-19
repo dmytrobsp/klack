@@ -79,14 +79,16 @@ fn pad(text: &str, width: usize) -> String {
 /// then the Ctrl+Space note and the slash commands.
 pub fn lines(keys: &Keymap, icons: bool) -> Vec<Line<'static>> {
     let mut out = Vec::new();
-    for section in tree(keys) {
+    let sections = tree(keys);
+    let width = sections.iter().flat_map(|s| &s.rows).map(|r| UnicodeWidthStr::width(r.keys.as_str())).max().unwrap_or(0).clamp(8, 26);
+    for section in sections {
         out.push(Line::styled(section.title, Style::default().add_modifier(Modifier::BOLD)));
         for r in section.rows {
             let info = &ACTIONS[r.info];
             let what = if info.name == "workspace_1" { "switch to the profile's workspace 1 … 9" } else { info.description };
             let icon = if icons { pad(&r.icon, 3) } else { String::new() };
             out.push(Line::from(vec![
-                Span::styled(format!("  {} ", pad(&r.keys, 22)), Style::default().fg(super::theme::p().accent)),
+                Span::styled(format!("  {} ", pad(&r.keys, width)), Style::default().fg(super::theme::p().accent)),
                 Span::raw(format!("{icon}{} ", pad(&r.label, 16))),
                 Span::styled(tr(what).into_owned(), Style::default().fg(super::theme::p().dim)),
             ]));
@@ -118,13 +120,13 @@ mod tests {
         let react = rows.iter().find(|r| r.contains("add a reaction")).unwrap();
         assert!(react.trim_start().starts_with("R "), "{react}");
         assert!(rows.iter().any(|r| r.contains("pin / unpin")));
-        assert!(rows.iter().any(|r| r.contains("M-1 … M-9")));
+        assert!(rows.iter().any(|r| r.contains("Alt+1 … Alt+9")));
         assert!(!rows.iter().any(|r| r.contains("workspace 2")), "one row for all workspaces");
         // The defaults: the message's actions behind the leader, the card's behind Ctrl+Space.
         let rows = text(&lines(&Keymap::load("").0, true));
-        assert!(rows.iter().any(|r| r.trim_start().starts_with("␣r ") && r.contains("add a reaction")), "{rows:#?}");
-        assert!(rows.iter().any(|r| r.trim_start().starts_with("^␣hp ") && r.contains("start a huddle with them")));
-        assert!(rows.iter().any(|r| r.trim_start().starts_with("␣hh ") && r.contains("join or leave the huddle")));
+        assert!(rows.iter().any(|r| r.trim_start().starts_with("Space r ") && r.contains("add a reaction")), "{rows:#?}");
+        assert!(rows.iter().any(|r| r.trim_start().starts_with("Ctrl+Space h p ") && r.contains("start a huddle with them")));
+        assert!(rows.iter().any(|r| r.trim_start().starts_with("Space h h ") && r.contains("join or leave the huddle")));
     }
 
     fn titles_of(map: &Keymap) -> Vec<String> {
@@ -139,19 +141,19 @@ mod tests {
     fn help_follows_the_tree() {
         let map = Keymap::load("").0;
         let titles = titles_of(&map);
-        let want = ["Direct keys", "␣ on a message", "␣ on a conversation", "␣c conversation", "␣h huddle", "␣n new", "␣a availability", "␣f find", "Typing (INSERT)"];
+        let want = ["Direct keys — everywhere", "Direct keys — sidebar", "Direct keys — messages and thread", "Direct keys — huddle view", "␣ on a message", "␣ on a conversation", "␣c conversation", "␣h huddle", "␣n new", "␣a availability", "␣f find", "Typing (INSERT)"];
         assert_eq!(titles[..want.len()], want, "{titles:?}");
         assert_eq!(titles.last().map(String::as_str), Some("Save files"), "{titles:?}");
         assert!(titles.contains(&"Profile card".to_string()) && !titles.contains(&"Unbound".to_string()));
-        assert_eq!(keys_of(&map, "␣ on a message", "react").as_deref(), Some("␣r"));
-        assert_eq!(keys_of(&map, "␣h huddle", "mute").as_deref(), Some("␣hm"));
+        assert_eq!(keys_of(&map, "␣ on a message", "react").as_deref(), Some("Space r"));
+        assert_eq!(keys_of(&map, "␣h huddle", "mute").as_deref(), Some("Space h m"));
         // Workspaces are one row, with the direct keys (their first keys are Alt+digits).
         let workspaces: Vec<_> = tree(&map).into_iter().flat_map(|s| s.rows).filter(|r| r.label.starts_with("workspace")).collect();
         assert_eq!(workspaces.len(), 1, "{workspaces:?}");
-        assert_eq!(keys_of(&map, "Direct keys", "workspace 1…9").as_deref(), Some("M-1 … M-9 / ␣w1 … ␣w9"));
+        assert_eq!(keys_of(&map, "Direct keys — everywhere", "workspace 1…9").as_deref(), Some("Alt+1 … Alt+9 / Space w 1 … Space w 9"));
         // A plain key moves the action to the direct keys.
         let map = Keymap::load("[messages]\nreact = \"r\"\n").0;
-        assert_eq!(keys_of(&map, "Direct keys", "react").as_deref(), Some("r"));
+        assert_eq!(keys_of(&map, "Direct keys — messages and thread", "react").as_deref(), Some("r"));
         assert_eq!(keys_of(&map, "␣ on a message", "react"), None);
         // No keys: under Unbound, last.
         let map = Keymap::load("[messages]\npin = []\n").0;
@@ -168,9 +170,9 @@ mod tests {
     #[test]
     fn help_draws_the_tree() {
         let rows = text(&lines(&Keymap::load("").0, true));
-        assert!(rows.iter().any(|r| r == "Direct keys"), "{rows:#?}");
+        assert!(rows.iter().any(|r| r == "Direct keys — everywhere"), "{rows:#?}");
         let react = rows.iter().find(|r| r.contains("add a reaction")).unwrap();
-        assert!(react.trim_start().starts_with("␣r ") && react.contains("😀 react"), "{react}");
+        assert!(react.trim_start().starts_with("Space r ") && react.contains("😀 react"), "{react}");
         let plain = text(&lines(&Keymap::load("").0, false));
         assert!(!plain.iter().any(|r| r.contains("😀")));
         assert!(rows.iter().any(|r| r.contains("Ctrl+Space") && r.contains("leader")));

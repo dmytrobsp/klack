@@ -1232,7 +1232,7 @@ pub struct Section {
 pub struct TreeRow {
     /// Index into [`ACTIONS`].
     pub info: usize,
-    /// Its sequences in short form, joined by " / " (empty: unbound).
+    /// Its sequences spelled out (`Ctrl+Q`, `Space r`), joined by " / " (empty: unbound).
     pub keys: String,
     pub label: String,
     pub icon: String,
@@ -1242,7 +1242,9 @@ pub struct TreeRow {
 /// the selected message or conversation, one section per group, typing, each dialog, and
 /// the actions without a key. Empty sections are left out.
 pub fn tree(keys: &Keymap) -> Vec<Section> {
-    let (mut direct, mut message, mut conversation, mut typing, mut unbound) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let (mut message, mut conversation, mut typing, mut unbound) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    // Direct keys by pane: everywhere, sidebar, messages and thread, huddle view.
+    let mut direct: [Vec<TreeRow>; 4] = Default::default();
     let mut groups: Vec<(Vec<Key>, Vec<TreeRow>)> = Vec::new();
     let mut dialogs: Vec<(Context, Vec<TreeRow>)> = Vec::new();
     for (index, info) in ACTIONS.iter().enumerate() {
@@ -1253,12 +1255,12 @@ pub fn tree(keys: &Keymap) -> Vec<Section> {
         let seqs = keys.sequences(info.context, info.name);
         let leader = keys.leader_in(info.context);
         let (label, icon) = keys.label_of(info);
-        let mut shown: Vec<String> = seqs.iter().map(|s| keys.show_with(leader, s)).collect();
+        let mut shown: Vec<String> = seqs.iter().map(|s| keys.label_with(leader, s)).collect();
         let mut label = label;
         if info.name == "workspace_1" {
             // "Alt+1 … Alt+9": each way of reaching them.
             let last = keys.sequences(info.context, "workspace_9");
-            shown = seqs.iter().zip(&last).map(|(a, b)| format!("{} … {}", keys.show_with(leader, a), keys.show_with(leader, b))).collect();
+            shown = seqs.iter().zip(&last).map(|(a, b)| format!("{} … {}", keys.label_with(leader, a), keys.label_with(leader, b))).collect();
             label = super::i18n::tr("workspace 1…9").into_owned();
         }
         let row = TreeRow { info: index, keys: shown.join(" / "), label, icon };
@@ -1267,16 +1269,22 @@ pub fn tree(keys: &Keymap) -> Vec<Section> {
             continue;
         };
         let normal = matches!(info.context, Context::Global | Context::Sidebar | Context::Messages | Context::Huddle);
+        let pane = match info.context {
+            Context::Sidebar => 1,
+            Context::Messages => 2,
+            Context::Huddle => 3,
+            _ => 0,
+        };
         match info.context {
             Context::Composer | Context::Completion => typing.push(row),
             _ if !normal => match dialogs.iter_mut().find(|(c, _)| *c == info.context) {
                 Some((_, rows)) => rows.push(row),
                 None => dialogs.push((info.context, vec![row])),
             },
-            _ if first[0] != LEADER || first.len() < 2 => direct.push(row),
+            _ if first[0] != LEADER || first.len() < 2 => direct[pane].push(row),
             Context::Messages if first.len() == 2 => message.push(row),
             Context::Sidebar if first.len() == 2 => conversation.push(row),
-            _ if first.len() == 2 => direct.push(row),
+            _ if first.len() == 2 => direct[pane].push(row),
             _ => match groups.iter_mut().find(|(p, _)| *p == first[..2]) {
                 Some((_, rows)) => rows.push(row),
                 None => groups.push((first[..2].to_vec(), vec![row])),
@@ -1287,11 +1295,11 @@ pub fn tree(keys: &Keymap) -> Vec<Section> {
     let default_place = |prefix: &[Key]| GROUPS.iter().position(|(s, ..)| keys.parse_sequences(Context::Global, &[s.to_string()]).is_ok_and(|p| p[0] == prefix)).unwrap_or(usize::MAX);
     groups.sort_by_key(|(prefix, _)| (default_place(prefix), prefix.iter().map(|k| k.spec()).collect::<Vec<_>>()));
     let leader = keys.show(&[LEADER]);
-    let mut out = vec![
-        Section { title: super::i18n::tr("Direct keys").into_owned(), rows: direct },
+    let mut out: Vec<Section> = direct.into_iter().zip(["everywhere", "sidebar", "messages and thread", "huddle view"]).map(|(rows, pane)| Section { title: format!("{} — {}", super::i18n::tr("Direct keys"), super::i18n::tr(pane)), rows }).collect();
+    out.extend([
         Section { title: format!("{leader} {}", super::i18n::tr("on a message")), rows: message },
         Section { title: format!("{leader} {}", super::i18n::tr("on a conversation")), rows: conversation },
-    ];
+    ]);
     for (prefix, rows) in groups {
         let name = keys.group(&prefix).map_or_else(|| format!("+{}", keys.show(&prefix[1..])), |g| g.0);
         out.push(Section { title: format!("{} {name}", keys.show(&prefix)), rows });
