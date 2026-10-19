@@ -406,32 +406,56 @@ impl Client {
     /// Upload the file at `path` without reading it into memory, calling `progress(sent, total)`
     /// as it goes.
     pub async fn upload_file(&self, channel: &str, path: &std::path::Path, filename: &str, comment: Option<&str>, thread_ts: Option<&str>, progress: impl Fn(u64, u64) + Send + Sync + 'static) -> Result<String> {
-        use tokio::io::AsyncReadExt;
-        let file = tokio::fs::File::open(path).await.map_err(|e| anyhow!("{}: {e}", path.display()))?;
-        let len = file.metadata().await?.len();
+        let item = Upload { name: filename.to_string(), source: UploadSource::Path(path.to_path_buf()) };
+        let ids = self.upload_files(channel, vec![item], comment, thread_ts, progress).await?;
+        Ok(ids.into_iter().next().unwrap_or_default())
+    }
+
+    /// Upload several files and share them as one message with `comment` as its text (Slack
+    /// takes up to 10), calling `progress(sent, total)` over all of them as they go. Files on
+    /// disk are streamed, not read into memory. Returns the file ids.
+    pub async fn upload_files(&self, channel: &str, items: Vec<Upload>, comment: Option<&str>, thread_ts: Option<&str>, progress: impl Fn(u64, u64) + Send + Sync + 'static) -> Result<Vec<String>> {
+        let mut sized = Vec::with_capacity(items.len());
+        for item in items {
+            let len = match &item.source {
+                UploadSource::Path(path) => tokio::fs::metadata(path).await.map_err(|e| anyhow!("{}: {e}", path.display()))?.len(),
+                UploadSource::Bytes(bytes) => bytes.len() as u64,
+            };
+            sized.push((item, len));
+        }
+        let total: u64 = sized.iter().map(|(_, len)| len).sum();
         let progress = std::sync::Arc::new(progress);
-        let chunks = futures_util::stream::unfold((file, 0u64), move |(mut file, sent)| {
-            let progress = progress.clone();
-            async move {
-                let mut buf = vec![0u8; 64 * 1024];
-                match file.read(&mut buf).await {
-                    Ok(0) => None,
-                    Ok(n) => {
-                        buf.truncate(n);
-                        let sent = sent + n as u64;
-                        progress(sent, len);
-                        Some((Ok::<_, std::io::Error>(buf), (file, sent)))
-                    }
-                    Err(e) => Some((Err(e), (file, sent))),
+        let mut files = Vec::with_capacity(sized.len());
+        let mut done = 0u64;
+        for (item, len) in sized {
+            let part = match item.source {
+                UploadSource::Path(path) => {
+                    let file = tokio::fs::File::open(&path).await.map_err(|e| anyhow!("{}: {e}", path.display()))?;
+                    reqwest::multipart::Part::stream_with_length(reqwest::Body::wrap_stream(read_chunks(file, done, total, progress.clone())), len)
                 }
-            }
-        });
-        let part = reqwest::multipart::Part::stream_with_length(reqwest::Body::wrap_stream(chunks), len).file_name(filename.to_string());
-        self.upload_part(channel, filename, len, part, comment, thread_ts, None).await
+                UploadSource::Bytes(bytes) => {
+                    let part = reqwest::multipart::Part::bytes(bytes);
+                    progress(done + len, total);
+                    part
+                }
+            };
+            let id = self.send_part(&item.name, len, part.file_name(item.name.clone()), None).await?;
+            files.push((id, item.name));
+            done += len;
+        }
+        self.complete_upload(channel, &files, comment, thread_ts).await?;
+        Ok(files.into_iter().map(|(id, _)| id).collect())
     }
 
     #[allow(clippy::too_many_arguments)]
     async fn upload_part(&self, channel: &str, filename: &str, len: u64, part: reqwest::multipart::Part, comment: Option<&str>, thread_ts: Option<&str>, snippet_type: Option<&str>) -> Result<String> {
+        let file_id = self.send_part(filename, len, part, snippet_type).await?;
+        self.complete_upload(channel, &[(file_id.clone(), filename.to_string())], comment, thread_ts).await?;
+        Ok(file_id)
+    }
+
+    /// Hand one file's bytes to Slack; returns its id (shared by `complete_upload`).
+    async fn send_part(&self, filename: &str, len: u64, part: reqwest::multipart::Part, snippet_type: Option<&str>) -> Result<String> {
         let mut params: Params = vec![("filename", filename.into()), ("length", len.to_string())];
         if let Some(t) = snippet_type {
             params.push(("snippet_type", t.into()));
@@ -446,7 +470,12 @@ impl Client {
             .send()
             .await?
             .error_for_status()?;
-        let files = serde_json::json!([{"id": file_id, "title": filename}]).to_string();
+        Ok(file_id)
+    }
+
+    /// Share uploaded files `(id, title)` in `channel` as one message.
+    async fn complete_upload(&self, channel: &str, files: &[(String, String)], comment: Option<&str>, thread_ts: Option<&str>) -> Result<()> {
+        let files = serde_json::Value::Array(files.iter().map(|(id, title)| serde_json::json!({"id": id, "title": title})).collect()).to_string();
         let mut params: Params = vec![("files", files), ("channel_id", channel.into())];
         if let Some(c) = comment.filter(|c| !c.is_empty()) {
             params.push(("initial_comment", c.into()));
@@ -455,7 +484,7 @@ impl Client {
             params.push(("thread_ts", t.into()));
         }
         self.call_raw("files.completeUploadExternal", &params).await?;
-        Ok(file_id)
+        Ok(())
     }
 
     // ---- real time ------------------------------------------------------------------------
@@ -463,5 +492,62 @@ impl Client {
     /// `rtm.connect` → websocket URL for live events.
     pub async fn rtm_url(&self) -> Result<String> {
         self.call_field("rtm.connect", "url", &[("batch_presence_aware", "1".into()), ("presence_sub", "true".into())]).await
+    }
+}
+
+/// A file for `Client::upload_files`.
+pub struct Upload {
+    /// The name it gets on Slack.
+    pub name: String,
+    pub source: UploadSource,
+}
+
+pub enum UploadSource {
+    /// A file on disk, streamed.
+    Path(std::path::PathBuf),
+    /// Bytes in memory (a pasted picture).
+    Bytes(Vec<u8>),
+}
+
+/// A file's contents in 64 KiB chunks, reporting `progress(offset + sent, total)` as they are read.
+fn read_chunks(file: tokio::fs::File, offset: u64, total: u64, progress: std::sync::Arc<impl Fn(u64, u64) + Send + Sync + 'static>) -> impl futures_util::Stream<Item = std::io::Result<Vec<u8>>> {
+    use tokio::io::AsyncReadExt;
+    futures_util::stream::unfold((file, offset), move |(mut file, sent)| {
+        let progress = progress.clone();
+        async move {
+            let mut buf = vec![0u8; 64 * 1024];
+            match file.read(&mut buf).await {
+                Ok(0) => None,
+                Ok(n) => {
+                    buf.truncate(n);
+                    let sent = sent + n as u64;
+                    progress(sent, total);
+                    Some((Ok(buf), (file, sent)))
+                }
+                Err(e) => Some((Err(e), (file, sent))),
+            }
+        }
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use futures_util::StreamExt;
+
+    #[tokio::test]
+    async fn chunks_report_progress_across_files() {
+        let dir = std::env::temp_dir().join(format!("klack-chunks-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("f.bin");
+        std::fs::write(&path, vec![7u8; 100_000]).unwrap();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = seen.clone();
+        let progress = std::sync::Arc::new(move |sent: u64, total: u64| log.lock().unwrap().push((sent, total)));
+        // The second of two files: 5 000 bytes of the first were sent before it.
+        let file = tokio::fs::File::open(&path).await.unwrap();
+        let chunks: Vec<Vec<u8>> = super::read_chunks(file, 5_000, 105_000, progress).map(|c| c.unwrap()).collect().await;
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(chunks.iter().map(Vec::len).sum::<usize>(), 100_000);
+        assert_eq!(*seen.lock().unwrap(), vec![(70_536, 105_000), (105_000, 105_000)]);
     }
 }

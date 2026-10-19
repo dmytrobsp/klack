@@ -50,6 +50,10 @@ impl Draft {
     pub fn has_text(&self) -> bool {
         !self.text.trim().is_empty() || self.editing.is_some()
     }
+
+    pub fn attachments(&self) -> Vec<Attachment> {
+        self.attachments.clone()
+    }
 }
 
 /// A file waiting in a composer to be sent with the message (pasted with Ctrl+V).

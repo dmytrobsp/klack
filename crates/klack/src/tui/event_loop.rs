@@ -59,6 +59,8 @@ enum Net {
     VideoReady { title: String, result: Result<std::path::PathBuf, String> },
     /// Result of a file save or upload, shown in the status bar.
     FileDone(String),
+    /// Sending a composer's attachments failed: its draft (keyed like `App::drafts`) goes back.
+    SendFailed { thread: bool, key: String, draft: Box<super::composer::Draft>, error: String },
     /// A pasted picture, encoded for a composer (the reply box's when `thread`).
     Pasted { thread: bool, result: Result<super::composer::Attachment, String> },
     /// `dnd.info` asked again after the known quiet-hours window ended.
@@ -424,6 +426,13 @@ impl App {
         let broadcast = thread && self.broadcast;
         let outside = self.ws.is_outside(&channel).then(|| self.ws.channel_label(&channel));
         let c = self.composer_for(thread);
+        if !c.attachments.is_empty() {
+            match outside {
+                Some(name) => self.status = format!("you are not in #{name} — /join to post"),
+                None => self.send_files(channel, thread, thread_ts),
+            }
+            return;
+        }
         if c.is_empty() {
             return;
         }
@@ -459,6 +468,57 @@ impl App {
                 Err(e) => Net::Error(format!("send failed: {e}")),
             };
             let _ = tx.send(msg);
+        });
+    }
+
+    /// Send a composer's attachments with its text (if any) as one message, as Slack's own
+    /// client does with pasted files; on failure they go back in the composer.
+    fn send_files(&mut self, channel: String, thread: bool, thread_ts: Option<String>) {
+        use super::composer::AttachmentData;
+        use slack_core::api::{Upload, UploadSource};
+        let key = match &thread_ts {
+            Some(ts) => super::state::thread_key(&channel, ts),
+            None => channel.clone(),
+        };
+        let c = self.composer_for(thread);
+        if c.attachments.len() > MAX_FILES {
+            self.status = format!("Slack takes at most {MAX_FILES} files in one message (Backspace removes the last)");
+            return;
+        }
+        let Some(draft) = c.draft() else { return };
+        let text = c.to_mrkdwn();
+        let items: Vec<Upload> = c
+            .attachments
+            .iter()
+            .map(|a| Upload {
+                name: a.name.clone(),
+                source: match &a.data {
+                    AttachmentData::File(path) => UploadSource::Path(path.clone()),
+                    AttachmentData::Png(png) => UploadSource::Bytes(png.to_vec()),
+                },
+            })
+            .collect();
+        let label = match items.as_slice() {
+            [one] => one.name.clone(),
+            many => format!("{} files", many.len()),
+        };
+        if !c.is_empty() {
+            c.push_history(c.text());
+        }
+        c.clear();
+        if thread {
+            self.thread_pane.to_bottom();
+        } else {
+            self.messages.to_bottom();
+        }
+        self.status = format!("uploading {label}…");
+        let (client, tx) = (self.client.clone(), self.net.clone());
+        tokio::spawn(async move {
+            let progress = upload_progress(tx.clone(), label.clone());
+            let _ = tx.send(match client.upload_files(&channel, items, Some(&text), thread_ts.as_deref(), progress).await {
+                Ok(_) => Net::FileDone(format!("sent {label}")),
+                Err(e) => Net::SendFailed { thread, key, draft: Box::new(draft), error: format!("sending {label} failed: {e}") },
+            });
         });
     }
 
@@ -1969,16 +2029,7 @@ impl App {
         let (client, tx) = (self.client.clone(), self.net.clone());
         tokio::spawn(async move {
             let message = super::composer::escape_text(&cmd.message);
-            // Progress at most every 250 ms (and at the end).
-            let last = std::sync::Mutex::new(std::time::Instant::now() - std::time::Duration::from_secs(1));
-            let (ptx, pname) = (tx.clone(), name.clone());
-            let progress = move |sent: u64, total: u64| {
-                let mut last = last.lock().unwrap_or_else(|e| e.into_inner());
-                if sent == total || last.elapsed() >= std::time::Duration::from_millis(250) {
-                    *last = std::time::Instant::now();
-                    let _ = ptx.send(Net::UploadProgress { name: pname.clone(), sent, total });
-                }
-            };
+            let progress = upload_progress(tx.clone(), name.clone());
             let result = client.upload_file(&channel, &cmd.path, &name, Some(&message), thread_ts.as_deref(), progress).await;
             let _ = tx.send(Net::FileDone(match result {
                 Ok(_) => format!("uploaded {name}"),
@@ -2203,6 +2254,21 @@ struct Ring {
 const RING_EVERY: Duration = Duration::from_millis(2500);
 
 /// "uploading a.mp4… 42% (3.1 of 7.4 MB)"; once all is sent, Slack still has to file it.
+/// The most files Slack shares in one message.
+const MAX_FILES: usize = 10;
+
+/// Reports an upload's progress as `Net::UploadProgress`, at most every 250 ms (and at the end).
+fn upload_progress(tx: mpsc::UnboundedSender<Net>, name: String) -> impl Fn(u64, u64) + Send + Sync + 'static {
+    let last = std::sync::Mutex::new(std::time::Instant::now() - std::time::Duration::from_secs(1));
+    move |sent: u64, total: u64| {
+        let mut last = last.lock().unwrap_or_else(|e| e.into_inner());
+        if sent == total || last.elapsed() >= std::time::Duration::from_millis(250) {
+            *last = std::time::Instant::now();
+            let _ = tx.send(Net::UploadProgress { name: name.clone(), sent, total });
+        }
+    }
+}
+
 /// The status after pasting files: what was attached and what could not be.
 fn attached_status(attached: &[String], skipped: &[String]) -> String {
     let mut parts = Vec::new();
@@ -3282,6 +3348,21 @@ fn handle_net(app: &mut App, msg: Net) {
             tl.loading = false;
         }
         Net::FileDone(message) => app.status = message,
+        Net::SendFailed { thread, key, draft, error } => {
+            app.status = error;
+            let here = if thread { app.thread.as_ref().map(|(c, ts)| super::state::thread_key(c, ts)) } else { app.current.clone() };
+            if here.as_deref() == Some(key.as_str()) {
+                let composer = app.composer_for(thread);
+                if composer.draft().is_none() {
+                    composer.restore(*draft);
+                } else {
+                    // Something was typed meanwhile: keep it, and add the files back.
+                    composer.attachments.extend(draft.attachments());
+                }
+            } else {
+                app.drafts.entry(key).or_insert(*draft);
+            }
+        }
         Net::Pasted { thread, result } => match result {
             Ok(a) => {
                 app.status = format!("attached {} ({})", a.name, super::text::human_size(a.size));
