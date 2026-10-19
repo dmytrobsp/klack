@@ -195,6 +195,8 @@ struct App {
     completion: Option<super::autocomplete::Completion>,
     /// Suggestions closed with Esc for this (composer, token start) until the token changes.
     completion_dismissed: Option<(bool, usize)>,
+    /// Threads and activity items opened in this run, for lists Slack has not updated yet.
+    seen: super::threads::Seen,
     /// The last `/upload` path looked up and what its folder offered (kept while it is typed).
     path_suggestions: Option<(super::composer::Trigger, Vec<super::autocomplete::Suggestion>)>,
     /// Composer boxes on the last draw (to anchor the suggestion list).
@@ -1127,6 +1129,7 @@ impl App {
     /// Open the thread whose parent is `parent` in `channel`.
     fn open_thread_at(&mut self, channel: String, parent: String) {
         let key = super::state::thread_key(&channel, &parent);
+        self.seen.insert(key.clone(), opened_now());
         if self.thread.as_ref().is_none_or(|(c, t)| super::state::thread_key(c, t) != key) {
             if let Some((c, t)) = &self.thread {
                 stash(&mut self.drafts, &super::state::thread_key(c, t), &mut self.thread_composer);
@@ -2268,6 +2271,11 @@ struct Ring {
 const RING_EVERY: Duration = Duration::from_millis(2500);
 
 /// "uploading a.mp4… 42% (3.1 of 7.4 MB)"; once all is sent, Slack still has to file it.
+/// Now in epoch seconds, for `App::seen` (Slack's clock, not a debug offset).
+fn opened_now() -> f64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())
+}
+
 /// The most files Slack shares in one message.
 const MAX_FILES: usize = 10;
 
@@ -2498,6 +2506,7 @@ async fn run_workspace(
         completion: None,
         completion_dismissed: None,
         path_suggestions: None,
+        seen: Default::default(),
         composer_area: Default::default(),
         thread_composer_area: Default::default(),
         thread: None,
@@ -2806,6 +2815,9 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
                 Some(Action::PageDown) => a.move_by(a.height.max(1) as isize),
                 Some(Action::Refresh) => app.open_activity(),
                 Some(Action::Open) => {
+                    if let Some(key) = a.selected_item().map(|it| it.key.clone()) {
+                        app.seen.insert(key, opened_now());
+                    }
                     if let Some((channel, ts, thread_ts)) = a.target() {
                         app.activity = None;
                         app.open_hit(super::search::Hit { channel, ts, thread_ts, user: None, text: String::new() });
@@ -3502,7 +3514,9 @@ fn handle_net(app: &mut App, msg: Net) {
         Net::ActivityFeed(result) => match result {
             Ok(v) => {
                 if let Some(a) = app.activity.as_mut() {
-                    a.items = Some(super::activity::parse(&v));
+                    let mut items = super::activity::parse(&v);
+                    super::activity::apply_seen(&mut items, &app.seen);
+                    a.items = Some(items);
                 }
             }
             Err(e) => {
@@ -3521,7 +3535,8 @@ fn handle_net(app: &mut App, msg: Net) {
         Net::ThreadView { result, more } => match result {
             Ok(v) => {
                 if let Some(t) = app.threads.as_mut() {
-                    let (page, has_more) = super::threads::parse(&v);
+                    let (mut page, has_more) = super::threads::parse(&v);
+                    super::threads::apply_seen(&mut page, &app.seen);
                     if !more {
                         t.entries = None;
                     }

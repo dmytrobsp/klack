@@ -42,6 +42,23 @@ impl Entry {
     }
 }
 
+/// What was seen in this run: thread keys (`channel/ts`, and activity item keys) → when it was
+/// opened (epoch seconds). Slack learns of it a moment later, so lists loaded meanwhile are
+/// corrected with it.
+pub type Seen = std::collections::HashMap<String, f64>;
+
+/// Take out of `page` the unread replies of threads opened since they were posted; a thread
+/// left without any goes after those that still have some (in the order Slack gave).
+pub fn apply_seen(page: &mut Vec<Entry>, seen: &Seen) {
+    for e in page.iter_mut() {
+        let Some(&at) = seen.get(&super::state::thread_key(&e.channel, &e.root.ts)) else { continue };
+        let (old, new): (Vec<Message>, Vec<Message>) = std::mem::take(&mut e.unread).into_iter().partition(|r| r.time() <= at);
+        e.unread = new;
+        e.latest.extend(old);
+    }
+    page.sort_by_key(|e| e.unread.is_empty());
+}
+
 /// A page of the view: its threads and whether there are more.
 pub fn parse(v: &Value) -> (Vec<Entry>, bool) {
     (v["threads"].as_array().into_iter().flatten().filter_map(Entry::from_json).collect(), v["has_more"].as_bool().unwrap_or(false))
@@ -111,9 +128,11 @@ impl Threads {
                 let start = self.selected.saturating_sub(self.height.saturating_sub(1));
                 let mut lines = Vec::new();
                 for (n, e) in entries.iter().enumerate().skip(start).take(self.height) {
-                    let mut rows = vec![headline(ws, e), quote(ws, &e.root, "", width), e.reply().map_or_else(|| Line::raw(""), |r| quote(ws, r, "↳ ", width)), Line::raw("")];
-                    if n == self.selected {
-                        for l in rows.iter_mut().take(3) {
+                    let unread = !e.unread.is_empty();
+                    let mut rows = vec![headline(ws, e), quote(ws, &e.root, "", width, unread), e.reply().map_or_else(|| Line::raw(""), |r| quote(ws, r, "↳ ", width, unread)), Line::raw("")];
+                    for l in rows.iter_mut().take(3) {
+                        l.spans.insert(0, super::sidebar::unread_mark(unread));
+                        if n == self.selected {
                             *l = std::mem::take(l).style(Style::default().bg(p.selection));
                         }
                     }
@@ -149,7 +168,7 @@ pub fn headline(ws: &Workspace, e: &Entry) -> Line<'static> {
     };
     let replies = e.root.reply_count;
     let unread = !e.unread.is_empty();
-    let style = if unread { Style::default().add_modifier(Modifier::BOLD).fg(p.strong) } else { Style::default().add_modifier(Modifier::BOLD) };
+    let style = if unread { Style::default().add_modifier(Modifier::BOLD).fg(p.strong) } else { Style::default().fg(p.read) };
     let mut spans = vec![Span::styled(place, style), Span::styled(format!(" · {replies} {}", if replies == 1 { "reply" } else { "replies" }), Style::default().fg(p.dim))];
     if unread {
         spans.push(Span::raw(" "));
@@ -159,21 +178,35 @@ pub fn headline(ws: &Workspace, e: &Entry) -> Line<'static> {
     Line::from(spans)
 }
 
-/// "   Bob: the message text" on one row.
-fn quote(ws: &Workspace, m: &Message, lead: &str, width: usize) -> Line<'static> {
+/// "   Bob: the message text" on one row (after the unread mark's column); the text a step
+/// back when it was seen.
+fn quote(ws: &Workspace, m: &Message, lead: &str, width: usize, unread: bool) -> Line<'static> {
     let p = super::theme::p();
     let plain = format::plain_text(&format::message_blocks(&m.text, &m.blocks), &|i| text::inline_plain(ws, i)).replace('\n', " ");
     let plain = if plain.is_empty() && !m.files.is_empty() { format!("[{}]", m.files[0].name) } else { plain };
     let author = format!("{}: ", ws.author(m));
-    let room = width.saturating_sub(3 + lead.chars().count() + author.chars().count());
+    let room = width.saturating_sub(4 + lead.chars().count() + author.chars().count());
     let cut: String = if plain.chars().count() > room { plain.chars().take(room.saturating_sub(1)).chain(['…']).collect() } else { plain };
     let color = m.user.as_deref().map(text::user_color).unwrap_or(p.dim);
-    Line::from(vec![Span::raw(format!("   {lead}")), Span::styled(author, Style::default().fg(color)), Span::raw(cut)])
+    let text = if unread { Style::default() } else { Style::default().fg(p.read) };
+    Line::from(vec![Span::raw(format!("  {lead}")), Span::styled(author, Style::default().fg(color)), Span::styled(cut, text)])
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn threads_opened_here_are_seen() {
+        let msg = |ts: &str| Message { ts: ts.into(), ..Default::default() };
+        let entry = |root: &str, unread: &[&str]| Entry { channel: "C1".into(), root: msg(root), unread: unread.iter().map(|t| msg(t)).collect(), latest: vec![] };
+        let mut page = vec![entry("1.0", &["5.0", "9.0"]), entry("2.0", &["6.0"]), entry("3.0", &[])];
+        let seen = Seen::from([("C1/1.0".to_string(), 7.0), ("C1/2.0".to_string(), 8.0)]);
+        apply_seen(&mut page, &seen);
+        let state: Vec<(&str, usize, usize)> = page.iter().map(|e| (e.root.ts.as_str(), e.unread.len(), e.latest.len())).collect();
+        assert_eq!(state, [("1.0", 1, 1), ("2.0", 0, 1), ("3.0", 0, 0)], "a reply after the opening stays unread; a seen thread goes after the unread ones");
+        assert_eq!(page[1].reply().map(|r| r.ts.as_str()), Some("6.0"), "its newest reply is still shown");
+    }
 
     /// The shape of a real `subscriptions.thread.getView` answer (testbed, texts shortened).
     fn page() -> Value {

@@ -38,6 +38,18 @@ pub struct Item {
     pub when: f64,
 }
 
+/// Mark as read the items opened in this run since they came (`seen`: see
+/// `threads::Seen`; a thread's own key counts for its replies).
+pub fn apply_seen(items: &mut [Item], seen: &super::threads::Seen) {
+    for it in items.iter_mut().filter(|it| it.unread) {
+        let opened = |key: &str, t: f64| seen.get(key).is_some_and(|at| *at >= t);
+        it.unread = match &it.kind {
+            Kind::Thread { latest, .. } => !opened(&super::state::thread_key(&it.channel, &it.ts), latest.parse().unwrap_or(f64::MAX)) && !opened(&it.key, it.when),
+            _ => !opened(&it.key, it.when),
+        };
+    }
+}
+
 impl Item {
     fn from_json(v: &Value) -> Option<Item> {
         let it = &v["item"];
@@ -142,8 +154,9 @@ impl Activity {
                 for (n, it) in items.iter().enumerate().skip(start).take(self.height) {
                     let msg = self.messages.get(&(it.channel.clone(), it.ts.clone()));
                     let mut row = vec![headline(ws, it, msg.and_then(Option::as_ref)), body(ws, msg, width), Line::raw("")];
-                    if n == self.selected {
-                        for l in row.iter_mut().take(2) {
+                    for l in row.iter_mut().take(2) {
+                        l.spans.insert(0, super::sidebar::unread_mark(it.unread));
+                        if n == self.selected {
                             *l = std::mem::take(l).style(Style::default().bg(super::theme::p().selection));
                         }
                     }
@@ -184,7 +197,7 @@ pub fn headline(ws: &Workspace, it: &Item, msg: Option<&Message>) -> Line<'stati
         Kind::Thread { .. } => ("💬", format!("Thread in {place}")),
         Kind::Other(t) => ("•", format!("{t} in {place}")),
     };
-    let style = if it.unread { Style::default().add_modifier(Modifier::BOLD).fg(super::theme::p().strong) } else { Style::default() };
+    let style = if it.unread { Style::default().add_modifier(Modifier::BOLD).fg(super::theme::p().strong) } else { Style::default().fg(super::theme::p().read) };
     let mut spans = Vec::new();
     if !icon.is_empty() {
         spans.push(Span::raw(format!("{icon} ")));
@@ -196,13 +209,13 @@ pub fn headline(ws: &Workspace, it: &Item, msg: Option<&Message>) -> Line<'stati
 
 fn body(ws: &Workspace, msg: Option<&Option<Message>>, width: usize) -> Line<'static> {
     match msg {
-        None => Line::styled("   …", Style::default().fg(super::theme::p().dim)),
-        Some(None) => Line::styled("   (message not available)", Style::default().fg(super::theme::p().dim)),
+        None => Line::styled("  …", Style::default().fg(super::theme::p().dim)),
+        Some(None) => Line::styled("  (message not available)", Style::default().fg(super::theme::p().dim)),
         Some(Some(m)) => {
             let plain = format::plain_text(&format::message_blocks(&m.text, &m.blocks), &|i| text::inline_plain(ws, i)).replace('\n', " ");
             let plain = if plain.is_empty() && !m.files.is_empty() { format!("[{}]", m.files[0].name) } else { plain };
-            let cut: String = plain.chars().take(width.saturating_sub(4)).collect();
-            Line::styled(format!("   {cut}"), Style::default().fg(super::theme::p().dim))
+            let cut: String = plain.chars().take(width.saturating_sub(5)).collect();
+            Line::styled(format!("  {cut}"), Style::default().fg(super::theme::p().dim))
         }
     }
 }
@@ -210,6 +223,21 @@ fn body(ws: &Workspace, msg: Option<&Option<Message>>, width: usize) -> Line<'st
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn items_opened_here_are_seen() {
+        let item = |key: &str, kind: Kind, when: f64| Item { key: key.into(), kind, channel: "C1".into(), ts: "1.0".into(), author: None, unread: true, when };
+        let mut items = vec![
+            item("m1", Kind::Mention("at_user".into()), 5.0),
+            item("m2", Kind::Mention("at_user".into()), 9.0),
+            item("t1", Kind::Thread { unread: 2, latest: "6.0".into() }, 6.0),
+            item("t2", Kind::Thread { unread: 1, latest: "12.0".into() }, 12.0),
+        ];
+        items[3].ts = "2.0".into();
+        let seen = super::super::threads::Seen::from([("m1".to_string(), 7.0), ("m2".to_string(), 7.0), ("C1/1.0".to_string(), 7.0), ("C1/2.0".to_string(), 7.0)]);
+        apply_seen(&mut items, &seen);
+        assert_eq!(items.iter().map(|i| i.unread).collect::<Vec<_>>(), [false, true, false, true], "opened after it came: seen; newer: still unread; a thread opened anywhere counts");
+    }
 
     #[test]
     fn parses_real_items() {
