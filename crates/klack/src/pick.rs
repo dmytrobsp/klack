@@ -383,17 +383,19 @@ pub fn ask(prompt: &str, placeholder: impl Fn(&str) -> String) -> Result<Option<
 
 /// [`ask`] with `initial` already typed (Enter keeps it; Backspace takes it away a character at a time).
 pub fn ask_with(prompt: &str, initial: &str, placeholder: impl Fn(&str) -> String) -> Result<Option<String>> {
-    read_line(&|typed| prompt_line(prompt, typed, &placeholder), initial, &|t: &str| t.to_string(), false)
+    read_line(&|typed| prompt_line(prompt, typed, &placeholder), initial, &|t: &str| t.to_string(), false, &mut |_, _| Ok(()))
 }
 
 /// The prompt for a sign-in code: `___-___` filled in as it is typed, the hyphen put in by itself. Only letters and
 /// digits are taken (capitalised, six at most), so a typed or pasted hyphen or space does nothing. Enter gives the
-/// letters and digits typed (maybe fewer than six); Esc and Ctrl+C give `None`.
-pub fn ask_code(prompt: &str) -> Result<Option<String>> {
+/// letters and digits typed (maybe fewer than six); Esc and Ctrl+C give `None`. `resized(width, height)` is called
+/// with the cursor at the start of the cleared prompt line when the terminal's size is new (also once at the start,
+/// for a resize while nothing was asked); the prompt is drawn again after it, with what was typed.
+pub fn ask_code(prompt: &str, resized: &mut dyn FnMut(u16, u16) -> Result<()>) -> Result<Option<String>> {
     read_line(&|typed| {
         let (shown, rest) = code_mask(typed);
         (prompt.to_string(), shown, rest)
-    }, "", &code_chars, true)
+    }, "", &code_chars, true, resized)
 }
 
 /// What the code prompt keeps of `typed`: its letters and digits, capitalised, six at most.
@@ -419,13 +421,14 @@ fn code_mask(typed: &str) -> (String, String) {
 /// A one-line prompt for a secret (a cookie): what is typed or pasted is never drawn, only how many characters it has.
 /// Enter gives the text; Esc and Ctrl+C give `None`.
 pub fn ask_secret(prompt: &str) -> Result<Option<String>> {
-    read_line(&|typed| secret_line(prompt, typed), "", &|t: &str| t.to_string(), false)
+    read_line(&|typed| secret_line(prompt, typed), "", &|t: &str| t.to_string(), false, &mut |_, _| Ok(()))
 }
 
 /// The prompt loop of [`ask_with`], [`ask_code`] and [`ask_secret`]: `line(typed)` gives what to draw, `initial` is
-/// typed already, `keep(typed)` is what is kept of the text after each key or paste, and `paste` turns on bracketed
-/// paste (a paste then comes as one piece; without it, or where the terminal has none, as keys).
-fn read_line(line: &dyn Fn(&str) -> (String, String, String), initial: &str, keep: &dyn Fn(&str) -> String, paste: bool) -> Result<Option<String>> {
+/// typed already, `keep(typed)` is what is kept of the text after each key or paste, `paste` turns on bracketed
+/// paste (a paste then comes as one piece; without it, or where the terminal has none, as keys), and `resized` is
+/// told the terminal's size at the start and on each resize (see [`ask_code`]).
+fn read_line(line: &dyn Fn(&str) -> (String, String, String), initial: &str, keep: &dyn Fn(&str) -> String, paste: bool, resized: &mut dyn FnMut(u16, u16) -> Result<()>) -> Result<Option<String>> {
     struct Raw(bool);
     impl Drop for Raw {
         fn drop(&mut self) {
@@ -441,11 +444,20 @@ fn read_line(line: &dyn Fn(&str) -> (String, String, String), initial: &str, kee
     if paste {
         execute!(io::stdout(), event::EnableBracketedPaste)?;
     }
+    // A resize while klack was busy is thrown away with the keys: the size is told once here instead.
     drain_input()?;
+    let (w, h) = terminal::size()?;
+    resized(w, h)?;
     let mut typed = initial.to_string();
     loop {
         draw_prompt(line(&typed))?;
-        if let Some(enter) = apply(&mut typed, &event::read()?, keep) {
+        let ev = event::read()?;
+        if let Event::Resize(w, h) = ev {
+            execute!(io::stdout(), cursor::MoveToColumn(0), Clear(ClearType::CurrentLine))?;
+            resized(w, h)?;
+            continue;
+        }
+        if let Some(enter) = apply(&mut typed, &ev, keep) {
             return Ok(enter.then_some(typed));
         }
     }

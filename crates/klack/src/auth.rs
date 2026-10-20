@@ -410,26 +410,81 @@ fn no_workspace(email: &str) -> String {
     format!("no workspace signed in with {email} — sign up in Slack first")
 }
 
-/// The code screen printed above the code prompt: how many terminal lines it took, and the message line under it.
+/// The code screen printed above the code prompt, and the message line under it: printed again for the new size when
+/// the terminal is resized while the prompt waits.
 struct CodeScreen {
+    email: String,
+    /// The lines printed, and how many terminal lines they took at `width`.
+    lines: Vec<String>,
     rows: usize,
     width: u16,
+    height: u16,
     /// Whether it can be erased: the screen, the message line and the prompt all fit the terminal.
     erasable: bool,
+    /// The message line: the hint (dim) until there is something to say.
+    message: String,
+    hint: bool,
+}
+
+/// How the old code screen goes after a resize: `Up(n)`, its lines and the message line erased from `n` lines up; or
+/// `All`, the terminal cleared.
+#[derive(Debug, PartialEq, Eq)]
+enum Redraw {
+    Up(usize),
+    All,
+}
+
+/// [`Redraw`] for a code screen that was `was_erasable` and now takes `rows_now` lines (re-wrapped at the new width)
+/// on a terminal `height` lines high: erased in place while it, the message line and the prompt still fit.
+fn redraw(was_erasable: bool, rows_now: usize, height: u16) -> Redraw {
+    if was_erasable && rows_now + qr::PROMPT_LINES <= height as usize { Redraw::Up(rows_now + 1) } else { Redraw::All }
 }
 
 impl CodeScreen {
     /// Prints the screen of `email` for this terminal's size, then the hint line; the prompt goes on the next line.
     fn show(email: &str) -> Result<CodeScreen> {
         let (width, height) = crossterm::terminal::size()?;
-        let lines = qr::code_screen(email, width, height);
-        for l in &lines {
-            println!("{l}");
-        }
-        let rows = qr::rows_on(&lines, width);
-        let screen = CodeScreen { rows, width, erasable: rows + qr::PROMPT_LINES <= height as usize };
-        println!("\x1b[2m{}\x1b[0m", screen.fitted(CODE_HINT));
+        let mut screen = CodeScreen { email: email.to_string(), lines: Vec::new(), rows: 0, width, height, erasable: false, message: CODE_HINT.to_string(), hint: true };
+        screen.print(width, height)?;
         Ok(screen)
+    }
+
+    /// Prints the screen and the message line for a terminal `width` x `height`, from where the cursor is. Lines end
+    /// with `\r\n`, so this works in raw mode too (while the prompt waits).
+    fn print(&mut self, width: u16, height: u16) -> Result<()> {
+        use std::io::Write;
+        self.lines = qr::code_screen(&self.email, width, height);
+        self.rows = qr::rows_on(&self.lines, width);
+        (self.width, self.height) = (width, height);
+        self.erasable = self.rows + qr::PROMPT_LINES <= height as usize;
+        let mut out = std::io::stdout();
+        for l in &self.lines {
+            write!(out, "{l}\r\n")?;
+        }
+        let message = self.fitted(&self.message);
+        if self.hint {
+            write!(out, "\x1b[2m{message}\x1b[0m\r\n")?;
+        } else {
+            write!(out, "{message}\r\n")?;
+        }
+        out.flush()?;
+        Ok(())
+    }
+
+    /// The terminal is now `width` x `height` (the cursor at the start of the prompt line): the old screen is erased
+    /// (or the terminal cleared, see [`redraw`]) and the screen printed again for the new size. Nothing when the size
+    /// is the same.
+    fn resized(&mut self, width: u16, height: u16) -> Result<()> {
+        use crossterm::{cursor::{MoveTo, MoveToPreviousLine}, terminal::{Clear, ClearType}};
+        if (width, height) == (self.width, self.height) {
+            return Ok(());
+        }
+        let mut out = std::io::stdout();
+        match redraw(self.erasable, qr::rows_on(&self.lines, width), height) {
+            Redraw::Up(n) => crossterm::execute!(out, MoveToPreviousLine(n as u16), Clear(ClearType::FromCursorDown))?,
+            Redraw::All => crossterm::execute!(out, Clear(ClearType::All), MoveTo(0, 0))?,
+        }
+        self.print(width, height)
     }
 
     /// `text` cut to one line of the terminal, so the message line stays one line.
@@ -438,8 +493,9 @@ impl CodeScreen {
     }
 
     /// Puts `text` on the message line, in place of what was there (the cursor is at the start of the prompt line).
-    fn say(&self, text: &str) -> Result<()> {
+    fn say(&mut self, text: &str) -> Result<()> {
         use crossterm::{cursor::MoveToPreviousLine, terminal::{Clear, ClearType}};
+        (self.message, self.hint) = (text.to_string(), false);
         crossterm::execute!(std::io::stdout(), MoveToPreviousLine(1), Clear(ClearType::CurrentLine))?;
         println!("{}", self.fitted(text));
         Ok(())
@@ -477,10 +533,11 @@ async fn code_way(saved: &Profile, hint: &Hint) -> Result<Step<Vec<Result<Worksp
             return Ok(Step::Done(Vec::new()));
         }
     };
-    let screen = CodeScreen::show(&email)?;
+    let mut screen = CodeScreen::show(&email)?;
     loop {
         // The code is shown as typed: it is short and works once.
-        let Some(typed) = pick::ask_code("Code: ")? else {
+        // A resize while the prompt waits prints the screen again for the new size (the typed code stays).
+        let Some(typed) = pick::ask_code("Code: ", &mut |w, h| screen.resized(w, h))? else {
             screen.erase()?;
             return Ok(Step::Back);
         };
@@ -1277,6 +1334,27 @@ mod tests {
         assert_eq!(cookie_rows(&teams[..1], &profile, None).1, [0]);
         // The hint names the second.
         assert_eq!(cookie_rows(&teams, &profile, Some("T0000000002")).1, [1]);
+    }
+
+    #[test]
+    fn a_resized_code_screen_is_erased_when_it_still_fits() {
+        // 20 lines now (re-wrapped at the new width) and the message line: moved over and erased while they and the
+        // prompt fit the new height.
+        assert_eq!(redraw(true, 20, 50), Redraw::Up(21));
+        assert_eq!(redraw(true, 20, 22), Redraw::Up(21));
+        assert_eq!(redraw(true, 20, 21), Redraw::All);
+        // Taller than the terminal when it was printed: part of it is in the scrollback, the screen is cleared.
+        assert_eq!(redraw(false, 5, 50), Redraw::All);
+    }
+
+    #[test]
+    fn a_resized_code_screen_is_laid_out_for_the_new_size() {
+        let qr_in = |w, h| qr::code_screen("person@example.com", w, h).iter().any(|l| l.contains('▀'));
+        let beside = |w, h| qr::code_screen("person@example.com", w, h).iter().any(|l| l.contains('▀') && l.contains("or open"));
+        // Small: only the link; grown: the code under its text, then beside it.
+        assert!(!qr_in(80, 24));
+        assert!(qr_in(103, 50) && !beside(103, 50));
+        assert!(beside(130, 40));
     }
 
     #[test]
