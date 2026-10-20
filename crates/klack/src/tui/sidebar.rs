@@ -253,6 +253,16 @@ impl Sidebar {
     }
 
     /// The conversation item drawn at a terminal position.
+    /// The row the pointer is over, for the hover shade: a conversation or the Threads row.
+    pub fn hover_at(&self, column: u16, row: u16) -> Option<usize> {
+        let inner = self.area.inner(ratatui::layout::Margin { horizontal: 1, vertical: 1 });
+        if !inner.contains((column, row).into()) {
+            return None;
+        }
+        let n = self.offset + (row - inner.y) as usize;
+        matches!(self.items.get(n), Some(Item::Conversation(_) | Item::Threads)).then_some(n)
+    }
+
     pub fn item_at(&self, column: u16, row: u16) -> Option<usize> {
         let inner = self.area.inner(ratatui::layout::Margin { horizontal: 1, vertical: 1 });
         if !inner.contains((column, row).into()) {
@@ -303,7 +313,7 @@ impl Sidebar {
             .skip(self.offset)
             .take(height)
             .map(|(n, item)| match item {
-                Item::Threads => threads_line(ws, n == self.selected),
+                Item::Threads => threads_line(ws, n == self.selected, n != self.selected && self.hover == Some(n)),
                 Item::Header(h) => match self.hidden.get(h) {
                     Some(ids) => folded_line(ws, &shown_name(ws, h), ids, n == self.selected, width),
                     None => header_line(&shown_name(ws, h), width),
@@ -339,7 +349,7 @@ fn header_line(name: &str, width: usize) -> Line<'static> {
 }
 
 /// "💬 Threads", with how many replies you have not read and the mentions among them.
-fn threads_line(ws: &Workspace, selected: bool) -> Line<'static> {
+fn threads_line(ws: &Workspace, selected: bool, hover: bool) -> Line<'static> {
     let p = super::theme::p();
     let t = &ws.thread_unread;
     let name = if t.has_unreads { Style::default().add_modifier(Modifier::BOLD).fg(p.strong) } else { Style::default().fg(p.read) };
@@ -352,7 +362,7 @@ fn threads_line(ws: &Workspace, selected: bool) -> Line<'static> {
         spans.push(Span::styled(format!(" {} ", t.mentions), Style::default().fg(p.badge_fg).bg(p.badge_bg).add_modifier(Modifier::BOLD)));
     }
     let line = Line::from(spans);
-    if selected { line.style(Style::default().bg(p.selection)) } else { line }
+    if selected { line.style(Style::default().bg(p.selection)) } else if hover { line.style(super::theme::hover_style()) } else { line }
 }
 
 /// The first column of a row: a bar in the accent colour when it has something you have not
@@ -598,14 +608,14 @@ mod tests {
     fn the_threads_row() {
         let mut w = ws();
         let text = |l: &Line| l.spans.iter().map(|s| s.content.to_string()).collect::<String>();
-        assert_eq!(text(&threads_line(&w, false)), " 💬Threads", "nothing unread: no bar, no count");
+        assert_eq!(text(&threads_line(&w, false, false)), " 💬Threads", "nothing unread: no bar, no count");
         w.apply_counts(&serde_json::json!({"threads": {"has_unreads": true, "mention_count": 1, "unread_count_by_channel": {"C1": 2, "D1": 1}}}));
-        let line = threads_line(&w, false);
+        let line = threads_line(&w, false, false);
         assert_eq!(text(&line), "▌💬Threads 3  1 ", "the bar, three unread replies, one mention");
         assert!(line.spans[2].style.add_modifier.contains(Modifier::BOLD));
         // Live: read elsewhere.
         super::super::live::apply(&mut w, &serde_json::json!({"type": "update_global_thread_state", "has_unreads": false, "mention_count": 0, "unread_count_by_channel": {}}), None);
-        assert_eq!(text(&threads_line(&w, false)), " 💬Threads");
+        assert_eq!(text(&threads_line(&w, false, false)), " 💬Threads");
         // It is a stop for the selection, and keeps the conversation shown.
         let mut s = Sidebar::default();
         s.rebuild(&w);
@@ -652,6 +662,10 @@ mod tests {
         terminal.draw(|f| s.draw(f, f.area(), &w, false)).unwrap();
         assert_eq!((s.header_at(3, 3), s.header_at(3, 5), s.header_at(3, 6)), (Some("Channels".into()), Some("Direct messages".into()), None));
         assert!(s.threads_at(3, 1) && !s.threads_at(3, 2), "and the Threads row");
+        // The pointer over the Threads row shades it (the selection stays).
+        assert_eq!((s.hover_at(3, 1), s.hover_at(3, 2)), (Some(0), None), "hover reaches the Threads row, not a gap");
+        assert_ne!(threads_line(&w, false, true).style, threads_line(&w, false, false).style, "the hovered Threads row is shaded");
+        assert_eq!(threads_line(&w, true, true).style, threads_line(&w, true, false).style, "the selection wins over the hover");
         // Unfolding the selected section: back on the conversation still shown in it, else
         // on its first.
         s.move_by(-1);

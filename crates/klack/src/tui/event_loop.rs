@@ -4131,7 +4131,7 @@ fn handle_main(app: &mut App, ev: Event) -> bool {
         Event::Paste(text) if app.focus == Focus::ThreadComposer => app.thread_composer.insert_str(&text.replace("\r\n", "\n")),
         Event::Mouse(m) if m.kind == MouseEventKind::Moved => {
             let (c, r) = (m.column, m.row);
-            app.sidebar.hover = app.sidebar.item_at(c, r);
+            app.sidebar.hover = app.sidebar.hover_at(c, r);
             app.messages.hover = app.messages.message_at(c, r);
             app.thread_pane.hover = if app.thread.is_some() { app.thread_pane.message_at(c, r) } else { None };
         }
