@@ -23,6 +23,8 @@ use super::terminal::TerminalGuard;
 
 /// Results of background API calls.
 enum Net {
+    /// Muting (`true`) or unmuting a conversation failed.
+    MuteFailed { channel: String, muted: bool, error: String },
     Boot { boot: Value, users: Vec<User>, counts: Option<Value> },
     /// A desktop notification was clicked.
     NotificationClicked(super::notify::Target),
@@ -2067,13 +2069,18 @@ impl App {
     }
 
     /// ␣cM: mute the current conversation, or unmute it. Here at once (the sidebar dims it and the
-    /// unread count leaves it out), then on Slack; a failure fetches the prefs again, which puts it back.
+    /// unread count leaves it out), then on Slack; a failure puts it back (`Net::MuteFailed`).
     fn toggle_conversation_mute(&mut self) {
         let Some(channel) = self.current.clone() else { return };
         let muted = self.ws.toggle_muted(&channel);
         self.sidebar.rebuild(&self.ws);
         self.status = format!("{} {}", if muted { "muted" } else { "unmuted" }, self.ws.channel_label(&channel));
-        self.save_notification_pref("muted", muted.to_string(), Some(channel), false);
+        let (client, tx) = (self.client.clone(), self.net.clone());
+        tokio::spawn(async move {
+            if let Err(e) = client.set_notification_pref("muted", &muted.to_string(), Some(&channel)).await {
+                let _ = tx.send(Net::MuteFailed { channel, muted, error: e.to_string() });
+            }
+        });
     }
 
     /// A conversation's own level ("default": none), here at once and then on Slack.
@@ -4717,6 +4724,12 @@ fn handle_net(app: &mut App, msg: Net) {
             }
         }
         Net::Prefs(v) => app.ws.apply_prefs(&v),
+        Net::MuteFailed { channel, muted, error } => {
+            if app.ws.revert_mute(&channel, muted) {
+                app.sidebar.rebuild(&app.ws);
+            }
+            app.status = format!("couldn't {} {}: {error}", if muted { "mute" } else { "unmute" }, app.ws.channel_label(&channel));
+        }
         Net::Dnd(v) => {
             app.ws.dnd.set_info(&v);
             // An answer that is already out of date is not asked again.

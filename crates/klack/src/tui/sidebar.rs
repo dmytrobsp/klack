@@ -489,6 +489,22 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_mute_is_reverted_once() {
+        let mut w = ws();
+        // A mute that failed is put back.
+        assert!(w.toggle_muted("C1"));
+        assert!(w.revert_mute("C1", true) && !w.muted.contains("C1"));
+        // Slack's own event already settled it: left alone.
+        assert!(w.toggle_muted("C1"));
+        w.muted.remove("C1");
+        assert!(!w.revert_mute("C1", true) && !w.muted.contains("C1"));
+        // An unmute that failed goes back to muted.
+        w.muted.insert("C1".into());
+        w.toggle_muted("C1");
+        assert!(w.revert_mute("C1", false) && w.muted.contains("C1"));
+    }
+
+    #[test]
     fn the_last_conversation_is_kept() {
         let dir = std::env::temp_dir().join(format!("klack-last-{}", std::process::id()));
         let mut s = Sidebar::kept_in(Some(dir.clone()), "T1", "U1");

@@ -759,6 +759,16 @@ impl Workspace {
         true
     }
 
+    /// A mute call failed: put the conversation back as it was, unless Slack's own event has
+    /// already changed it since. True when something was reverted.
+    pub fn revert_mute(&mut self, id: &str, attempted: bool) -> bool {
+        if self.muted.contains(id) != attempted {
+            return false;
+        }
+        self.toggle_muted(id);
+        true
+    }
+
     pub fn total_unread(&self) -> (usize, u64) {
         // As the sidebar shows them: listed conversations only (not archived ones, or ones Slack
         // counts that are not in the list); a muted one is not unread, but its mentions count.
