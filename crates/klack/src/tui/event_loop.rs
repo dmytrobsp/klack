@@ -99,6 +99,8 @@ enum Net {
     SnippetText { id: String, result: Result<String, String> },
     /// A full-size image for the viewer.
     FullImage { id: String, result: Result<image::DynamicImage, String> },
+    /// A linked message's author (None: no such message, or no name for it).
+    LinkAuthor { channel: String, ts: String, message: Option<slack_core::types::Message> },
     /// A thumbnail finished loading.
     Thumb { id: String, result: Result<ratatui_image::sliced::SlicedProtocol, String> },
     /// A permalink to copy.
@@ -3066,6 +3068,31 @@ impl App {
         });
     }
 
+    /// Ask for the authors of linked messages that were drawn without one (this workspace's links only), a few at a time.
+    fn request_authors(&mut self) {
+        let shown = self.workspace;
+        let wanted: Vec<_> = self
+            .messages
+            .app_links()
+            .chain(self.thread_pane.app_links())
+            .filter(|l| super::applink::workspace_of(l, &self.addresses, shown) == Some(shown))
+            .filter_map(|l| match &l.target {
+                super::applink::Target::Message { channel, ts, thread_ts } => Some((channel.clone(), ts.clone(), thread_ts.clone())),
+                _ => None,
+            })
+            .collect();
+        for (channel, ts, thread_ts) in wanted {
+            self.authors.want(&channel, &ts, thread_ts.as_deref());
+        }
+        for (channel, ts, _) in self.authors.next_requests() {
+            let (client, tx) = (self.client.clone(), self.net.clone());
+            tokio::spawn(async move {
+                let message = client.message_at(&channel, &ts).await.ok().flatten();
+                let _ = tx.send(Net::LinkAuthor { channel, ts, message });
+            });
+        }
+    }
+
     /// Start loading thumbnails that were on screen but not cached yet.
     fn request_thumbs(&mut self) {
         let view = self.huddle_view.as_mut().map(|v| std::mem::take(&mut v.wanted)).unwrap_or_default();
@@ -3667,6 +3694,7 @@ async fn run_workspace(
             super::media::reattach_pictures(f.buffer_mut());
         })?;
         app.request_thumbs();
+        app.request_authors();
         app.request_activity_messages();
         app.refresh_dnd();
         let which_key_due = app.which_key_due();
@@ -4992,6 +5020,10 @@ fn handle_net(app: &mut App, msg: Net) {
             if app.ws.note_activity(&channel, message.time()) && app.ws.conversations.get(&channel).is_some_and(|c| c.is_dm()) {
                 app.sidebar.rebuild(&app.ws);
             }
+        }
+        Net::LinkAuthor { channel, ts, message } => {
+            let name = message.and_then(|m| super::applink::author_name(&app.ws, &m));
+            app.authors.finish(&channel, &ts, name);
         }
         Net::Replies { channel, ts, page } => {
             let tl = app.ws.threads.entry(super::state::thread_key(&channel, &ts)).or_default();

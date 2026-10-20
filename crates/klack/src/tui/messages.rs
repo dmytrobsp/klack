@@ -167,6 +167,11 @@ impl MessagePane {
         self.rows.get((row - inner.y) as usize).cloned().flatten()
     }
 
+    /// The links into the profile's workspaces drawn now.
+    pub fn app_links(&self) -> impl Iterator<Item = &AppLink> {
+        self.links.iter().filter_map(|(_, _, app)| app.as_ref())
+    }
+
     /// The link into the profile's workspaces drawn at a terminal position.
     pub fn link_at(&self, column: u16, row: u16) -> Option<AppLink> {
         self.link_under(column, row).and_then(|(_, app)| app)

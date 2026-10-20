@@ -141,27 +141,85 @@ pub fn workspace_of(link: &AppLink, workspaces: &[(String, String)], shown: usiz
     if all.contains(&shown) { Some(shown) } else { all.first().copied() }
 }
 
-/// Who wrote linked messages, by (channel, ts): what a link to a message is labelled with (filled in Z5).
+/// What is known of a linked message's author.
+#[derive(Debug, Clone, PartialEq)]
+enum Author {
+    Known(String),
+    /// Asked for, or waiting for a turn.
+    Pending,
+    /// Deleted, no access or no name: the label stays plain.
+    Missing,
+}
+
+/// How many authors are asked for at once.
+pub const AUTHORS_IN_FLIGHT: usize = 3;
+
+/// Who wrote linked messages, by channel, then ts (looked up by `&str`, as it is on the draw path): what a link to a
+/// message is labelled with. Each link is asked for once per run, a few at a time.
 #[derive(Debug, Default)]
-pub struct Authors(std::collections::BTreeMap<(String, String), String>);
+pub struct Authors {
+    by_channel: std::collections::HashMap<String, std::collections::HashMap<String, Author>>,
+    /// (channel, ts, thread_ts) waiting for a turn.
+    queue: std::collections::VecDeque<(String, String, Option<String>)>,
+    in_flight: usize,
+}
 
 impl Authors {
-    pub const fn new() -> Authors {
-        Authors(std::collections::BTreeMap::new())
+    pub fn new() -> Authors {
+        Authors { by_channel: Default::default(), queue: Default::default(), in_flight: 0 }
     }
 
     pub fn get(&self, channel: &str, ts: &str) -> Option<&str> {
-        self.0.get(&(channel.to_string(), ts.to_string())).map(String::as_str)
+        match self.by_channel.get(channel)?.get(ts)? {
+            Author::Known(name) => Some(name),
+            _ => None,
+        }
+    }
+
+    /// A link to this message is on screen: queue it unless it was asked for already.
+    pub fn want(&mut self, channel: &str, ts: &str, thread_ts: Option<&str>) {
+        if self.by_channel.get(channel).is_some_and(|m| m.contains_key(ts)) {
+            return;
+        }
+        self.by_channel.entry(channel.to_string()).or_default().insert(ts.to_string(), Author::Pending);
+        self.queue.push_back((channel.to_string(), ts.to_string(), thread_ts.map(str::to_string)));
+    }
+
+    /// The links to ask for now: queued ones, up to the limit in flight.
+    pub fn next_requests(&mut self) -> Vec<(String, String, Option<String>)> {
+        let mut out = Vec::new();
+        while self.in_flight < AUTHORS_IN_FLIGHT {
+            let Some(r) = self.queue.pop_front() else { break };
+            self.in_flight += 1;
+            out.push(r);
+        }
+        out
+    }
+
+    /// The answer for a link (None: no such message, or no name for it).
+    pub fn finish(&mut self, channel: &str, ts: &str, name: Option<String>) {
+        self.in_flight = self.in_flight.saturating_sub(1);
+        let state = name.filter(|n| !n.is_empty()).map_or(Author::Missing, Author::Known);
+        self.by_channel.entry(channel.to_string()).or_default().insert(ts.to_string(), state);
     }
 
     #[cfg(test)]
     pub fn insert(&mut self, channel: &str, ts: &str, name: &str) {
-        self.0.insert((channel.into(), ts.into()), name.into());
+        self.by_channel.entry(channel.into()).or_default().insert(ts.into(), Author::Known(name.into()));
+    }
+}
+
+/// The name of whoever wrote `m`, when this workspace knows it (never an id).
+pub fn author_name(ws: &Workspace, m: &Message) -> Option<String> {
+    let named = |n: &str| Some(n.trim().to_string()).filter(|n| !n.is_empty());
+    match m.user.as_deref() {
+        Some(u) => known_user(ws, u),
+        None => m.bot_profile.as_ref().and_then(|b| b["name"].as_str()).and_then(named).or_else(|| m.username.as_deref().and_then(named)),
     }
 }
 
 /// None known.
-static NO_AUTHORS: Authors = Authors::new();
+static NO_AUTHORS: std::sync::LazyLock<Authors> = std::sync::LazyLock::new(Authors::new);
 
 /// Where links are drawn: this workspace, the profile's workspaces ((url, team id) each, `names` their rail labels,
 /// `shown` this one's index), what is known of linked messages, and the message the link is in (its link previews and
@@ -179,7 +237,7 @@ pub struct Here<'a> {
 impl<'a> Here<'a> {
     /// This workspace alone, which no link matches: every link is drawn as an external one.
     pub fn alone(ws: &'a Workspace) -> Here<'a> {
-        Here { ws, workspaces: &[], names: &[], shown: 0, authors: &NO_AUTHORS, message: None }
+        Here { ws, workspaces: &[], names: &[], shown: 0, authors: &*NO_AUTHORS, message: None }
     }
 
     /// The same, for links in message `m`.
@@ -415,5 +473,65 @@ mod tests {
         assert_eq!(l("https://nobody.slack.com/archives/C1", &here), None);
         assert_eq!(l("https://app.slack.com/client/T9/C1", &here), None);
         assert_eq!(l("https://acme.slack.com/archives/C1", &Here::alone(&ws)), None);
+    }
+
+    #[test]
+    fn authors_are_fetched_once_and_few_at_a_time() {
+        let mut a = Authors::new();
+        for i in 0..10 {
+            a.want("C1", &format!("1.{i}"), None);
+            a.want("C1", &format!("1.{i}"), None);
+        }
+        let first = a.next_requests();
+        assert_eq!(first.len(), 3);
+        assert!(a.next_requests().is_empty(), "three in flight: the rest wait");
+        a.finish("C1", &first[0].1, Some("Bob".into()));
+        assert_eq!(a.get("C1", &first[0].1), Some("Bob"));
+        let more = a.next_requests();
+        assert_eq!(more.len(), 1);
+        assert!(!first.contains(&more[0]));
+        // Asked for once per run: an answered or missing link is never queued again.
+        a.want("C1", &first[0].1, None);
+        a.finish("C1", &first[1].1, None);
+        a.want("C1", &first[1].1, None);
+        let mut seen: Vec<_> = first.iter().chain(&more).map(|r| r.1.clone()).collect();
+        while a.in_flight > 0 {
+            a.finish("C1", "x", None);
+            seen.extend(a.next_requests().into_iter().map(|r| r.1));
+        }
+        seen.sort();
+        seen.dedup();
+        assert_eq!(seen.len(), 10, "each of the ten asked exactly once");
+    }
+
+    #[test]
+    fn a_missing_message_keeps_the_plain_label() {
+        let ws = Workspace::default();
+        let workspaces = vec![("https://acme.slack.com/".to_string(), "T1".to_string())];
+        let names = vec!["acme".to_string()];
+        let link = parse("https://acme.slack.com/archives/C1/p1729440000000200").unwrap();
+        let mut authors = Authors::new();
+        authors.want("C1", "1729440000.000200", None);
+        authors.next_requests();
+        authors.finish("C1", "1729440000.000200", None);
+        let here = Here { ws: &ws, workspaces: &workspaces, names: &names, shown: 0, authors: &authors, message: None };
+        assert_eq!(label(&link, &here, None).as_deref(), Some("a channel › message"));
+        authors.want("C1", "1729440000.000200", None);
+        assert!(authors.next_requests().is_empty(), "a missing message is not asked for again");
+    }
+
+    #[test]
+    fn an_author_without_a_name_is_not_labelled_with_an_id() {
+        let mut ws = Workspace::default();
+        let user: slack_core::types::User = serde_json::from_value(serde_json::json!({"id": "U9"})).unwrap();
+        ws.users.insert("U9".into(), user);
+        let mut m = Message::default();
+        m.user = Some("U9".into());
+        assert_eq!(author_name(&ws, &m), None, "every name empty: no id in the label");
+        m.user = Some("U8".into());
+        assert_eq!(author_name(&ws, &m), None, "an unknown user");
+        m.user = None;
+        m.username = Some("deploybot".into());
+        assert_eq!(author_name(&ws, &m).as_deref(), Some("deploybot"));
     }
 }
