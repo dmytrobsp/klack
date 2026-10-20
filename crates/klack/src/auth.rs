@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
-use slack_core::session::{self, Profile, SessionSource, WorkspaceSession, workspace_url};
+use slack_core::session::{self, LoggedInTeam, Profile, SessionSource, WorkspaceSession, workspace_url};
 use slack_core::signin::{self, CodeError, CodeSignIn, CodeTeam};
 
 use crate::login_import::Group;
@@ -357,7 +357,7 @@ pub async fn guide(profile_name: &str) -> Result<usize> {
                     println!("in your browser — coming in the next step");
                     Step::Back
                 }
-                Choice::Cookie => cookie_way().await?,
+                Choice::Cookie => cookie_way(&Hint::default(), &saved).await?,
             };
             match step {
                 // The way has said why already.
@@ -574,19 +574,71 @@ fn team_rows(teams: &[CodeTeam], profile: &Profile, team_hint: Option<&str>) -> 
         })
         .collect();
     let usable: Vec<usize> = (0..teams.len()).filter(|&i| why_not(&teams[i]).is_none()).collect();
-    let marked = match team_hint {
-        Some(id) => usable.iter().copied().filter(|&i| teams[i].team_id == id).collect(),
-        None if usable.len() == 1 => usable,
-        None => Vec::new(),
-    };
+    let marked = marking(usable, team_hint, |i| &teams[i].team_id);
     (rows, marked)
 }
 
-/// The cookie way as W had it (Task Y4 replaces it): the `d` cookie, then the workspace it is for.
-async fn cookie_way() -> Result<Step<Vec<Result<WorkspaceSession, Failed>>>> {
-    let Some(c) = pick::ask_secret(COOKIE_PROMPT)? else { return Ok(Step::Back) };
-    let Some(url) = ask_workspace()? else { return Ok(Step::Back) };
-    Ok(Step::Done(vec![cookie_session(&url, &c).await.map_err(|e| (host_of(&url), format!("{e:#}")))]))
+/// The rows to mark at the start among `usable`: the one `team_hint` names, else the only one there is.
+fn marking<'a>(usable: Vec<usize>, team_hint: Option<&str>, id: impl Fn(usize) -> &'a str) -> Vec<usize> {
+    match team_hint {
+        Some(hint) => usable.into_iter().filter(|&i| id(i) == hint).collect(),
+        None if usable.len() == 1 => usable,
+        None => Vec::new(),
+    }
+}
+
+/// The workspaces a cookie is signed in to, as picker rows ("already signed in" when `profile` has the team), and the
+/// rows marked at the start (as [`team_rows`]).
+fn cookie_rows(teams: &[LoggedInTeam], profile: &Profile, team_hint: Option<&str>) -> (Vec<Row>, Vec<usize>) {
+    let rows = teams
+        .iter()
+        .map(|t| {
+            let already = profile.workspaces.iter().any(|w| w.team_id == t.team_id);
+            item(&t.team_name, &host_of(&t.url), if already { "already signed in" } else { "" }, true)
+        })
+        .collect();
+    (rows, marking((0..teams.len()).collect(), team_hint, |i| &teams[i].team_id))
+}
+
+/// The way "paste a cookie": the `d` cookie (hidden), then the workspaces Slack says it is signed in to to pick from
+/// (`hint` marks one, `profile` is for "already signed in"). When Slack's page lists none at all (it changed), the
+/// workspace is asked for as W did. Esc (or Ctrl+C) goes `Back`.
+async fn cookie_way(hint: &Hint, profile: &Profile) -> Result<Step<Vec<Result<WorkspaceSession, Failed>>>> {
+    let http = session::web_client()?;
+    loop {
+        let Some(c) = pick::ask_secret(COOKIE_PROMPT)? else { return Ok(Step::Back) };
+        let cookie = c.trim().trim_start_matches("d=").to_string();
+        let Some(listed) = looking("Asking Slack…", session::signed_in_teams_with(&http, &cookie)).await? else { return Ok(Step::Back) };
+        let teams = match listed {
+            Ok(Some(t)) => t,
+            Ok(None) => {
+                let Some(url) = ask_workspace()? else { return Ok(Step::Back) };
+                return Ok(Step::Done(vec![cookie_session(&url, &c).await.map_err(|e| (host_of(&url), format!("{e:#}")))]));
+            }
+            Err(e) => {
+                println!("✗ Slack's sign-in page did not answer: {e:#}");
+                return Ok(Step::Done(Vec::new()));
+            }
+        };
+        if teams.is_empty() {
+            println!("that cookie isn't signed in to any workspace");
+            continue;
+        }
+        let (rows, marked) = cookie_rows(&teams, profile, hint.team.as_ref().map(|(id, _)| id.as_str()));
+        let pick::Outcome::Picked(at) = pick::choose_marked("Sign in to:", rows, &marked)? else { return Ok(Step::Back) };
+        let mut done = Vec::new();
+        for t in at.into_iter().map(|i| &teams[i]) {
+            let Some(r) = looking(&format!("Signing in to {}…", t.team_name), session::session_from_cookie_with(&http, &t.url, &cookie)).await? else {
+                // Ctrl+C: the workspaces signed in to so far are kept, the others are left.
+                if done.is_empty() {
+                    return Ok(Step::Back);
+                }
+                break;
+            };
+            done.push((t.team_name.clone(), r.map(|s| WorkspaceSession { source: Some(SessionSource::Cookie), ..s })));
+        }
+        return Ok(Step::Done(redeemed(done)));
+    }
 }
 
 /// `auth login --email ADDRESS`: the code way for that address. In a terminal it is [`code_way`] with the address
@@ -1204,6 +1256,22 @@ mod tests {
         assert_eq!(team_rows(&teams, &profile, Some("T0000000003")).1, Vec::<usize>::new());
         // Only one can be used: it is marked.
         assert_eq!(team_rows(&teams[..2], &profile, None).1, [0]);
+    }
+
+    #[test]
+    fn a_cookie_s_workspaces_are_offered() {
+        let team = |id: &str, name: &str| LoggedInTeam { team_id: id.into(), team_name: name.into(), domain: name.to_lowercase(), url: format!("https://{}.slack.com/", name.to_lowercase()), email: "person@example.com".into() };
+        let teams = vec![team("T0000000001", "Acme"), team("T0000000002", "Widgets")];
+        let mut profile = Profile::default();
+        profile.upsert(account("T0000000002", "Widgets", "U0000000001"));
+        let (rows, marked) = cookie_rows(&teams, &profile, None);
+        assert_eq!(shown(&rows), ["- Acme | acme.slack.com | ", "- Widgets | widgets.slack.com | already signed in"]);
+        // Two workspaces and no hint: none is guessed.
+        assert_eq!(marked, Vec::<usize>::new());
+        // One workspace: marked.
+        assert_eq!(cookie_rows(&teams[..1], &profile, None).1, [0]);
+        // The hint names the second.
+        assert_eq!(cookie_rows(&teams, &profile, Some("T0000000002")).1, [1]);
     }
 
     #[test]
