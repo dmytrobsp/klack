@@ -54,7 +54,7 @@ pub async fn login(profile: &str, flags: LoginFlags) -> Result<()> {
         let pick = if working.len() > 1 && std::io::IsTerminal::is_terminal(&std::io::stdin()) {
             eprintln!("{} profiles sign in to {url}:", working.len());
             for (n, (p, s)) in working.iter().enumerate() {
-                eprintln!("  {}) {} — {}", n + 1, login_import::profile_name(p), s.user_name);
+                eprintln!("  {}) {} — {}", n + 1, login_import::profile_at(source, p).label, s.user_name);
             }
             loop {
                 eprint!("which one? [1-{}] ", working.len());
@@ -72,8 +72,8 @@ pub async fn login(profile: &str, flags: LoginFlags) -> Result<()> {
             0
         };
         let (dir, mut s) = working.swap_remove(pick);
-        eprintln!("took the session from {} ({})", login_import::label(source), login_import::profile_name(&dir));
-        let label = format!("{} · {}", login_import::label(source), login_import::profile_name(&dir));
+        let label = login_import::profile_at(source, &dir).label;
+        eprintln!("took the session from {label}");
         s.source = Some(SessionSource::Browser { browser: login_import::label(source).to_lowercase(), profile: dir, label });
         signed_in = Some(s);
     } else if given.is_none() && !no_browser {

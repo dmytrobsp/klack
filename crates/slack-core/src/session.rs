@@ -251,6 +251,70 @@ pub async fn session_from_cookie(workspace_url: &str, cookie_d: &str) -> Result<
     })
 }
 
+/// A workspace a `d` cookie is signed in to, as Slack's sign-in page lists it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LoggedInTeam {
+    pub team_id: String,
+    pub team_name: String,
+    /// The workspace's address name: `acme` of `acme.slack.com`.
+    pub domain: String,
+    /// e.g. `https://acme.slack.com/`
+    pub url: String,
+    /// The email the account signs in with.
+    pub email: String,
+}
+
+/// Slack's sign-in page; seen with a `d` cookie it lists every workspace that cookie is signed in to.
+const SIGNIN_URL: &str = "https://slack.com/signin";
+
+/// The workspaces Slack's sign-in page lists as signed in: its JSON (HTML-escaped inside the
+/// page) has `"loggedInTeams":[{team_id, team_name, team_domain, user_email, …}]`. A signed-out or
+/// unexpected page gives none.
+pub fn parse_logged_in_teams(html: &str) -> Vec<LoggedInTeam> {
+    const NAME: &str = "loggedInTeams";
+    for (at, _) in html.match_indices(NAME) {
+        let rest = unescape_html(&html[at + NAME.len()..]);
+        // `":[…]` after the name (anything else, like `loggedInTeamsCount`, is not the list).
+        let Some(list) = rest.trim_start_matches(['"', '\\']).trim_start().strip_prefix(':') else { continue };
+        let list = list.trim_start();
+        if !list.starts_with('[') {
+            continue;
+        }
+        let Some(Ok(entries)) = serde_json::Deserializer::from_str(list).into_iter::<Vec<serde_json::Value>>().next() else { continue };
+        return entries
+            .iter()
+            .filter_map(|t| {
+                let s = |k: &str| t[k].as_str().unwrap_or_default().to_string();
+                let (team_id, domain) = (s("team_id"), s("team_domain"));
+                if team_id.is_empty() || domain.is_empty() {
+                    return None;
+                }
+                Some(LoggedInTeam { team_id, team_name: s("team_name"), url: format!("https://{domain}.slack.com/"), domain, email: s("user_email") })
+            })
+            .collect();
+    }
+    Vec::new()
+}
+
+/// Undo the HTML escaping of an attribute value (`&quot;` and friends; `&amp;` last, so that an
+/// escaped `&amp;quot;` stays `&quot;`).
+fn unescape_html(text: &str) -> String {
+    let mut out = text.to_string();
+    for (from, to) in [("&quot;", "\""), ("&#34;", "\""), ("&#x22;", "\""), ("&#39;", "'"), ("&#x27;", "'"), ("&apos;", "'"), ("&lt;", "<"), ("&gt;", ">"), ("&#x2F;", "/"), ("&#47;", "/"), ("&amp;", "&")] {
+        if out.contains(from) {
+            out = out.replace(from, to);
+        }
+    }
+    out
+}
+
+/// The workspaces the `d` cookie `cookie_d` is signed in to, from Slack's sign-in page.
+pub async fn signed_in_teams(cookie_d: &str) -> Result<Vec<LoggedInTeam>> {
+    let http = crate::api::http_client(|| reqwest::Client::builder().user_agent(USER_AGENT))?;
+    let html = http.get(SIGNIN_URL).header(reqwest::header::COOKIE, format!("d={cookie_d}")).send().await?.error_for_status()?.text().await?;
+    Ok(parse_logged_in_teams(&html))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -389,5 +453,25 @@ mod tests {
         }
         let text = serde_json::to_string(&WorkspaceSession { source: Some(SessionSource::Window), ..Default::default() }).unwrap();
         assert!(text.contains(r#""source":{"kind":"window"}"#), "{text}");
+    }
+
+    #[test]
+    fn the_signin_page_names_every_workspace() {
+        let teams = parse_logged_in_teams(include_str!("../tests/fixtures/signin-page.html"));
+        let acme = LoggedInTeam { team_id: "T0000000001".into(), team_name: "Acme & Sons".into(), domain: "acme".into(), url: "https://acme.slack.com/".into(), email: "person@example.com".into() };
+        let widgets = LoggedInTeam { team_id: "T0000000002".into(), team_name: "Widgets Inc".into(), domain: "widgets-inc".into(), url: "https://widgets-inc.slack.com/".into(), email: "person@example.com".into() };
+        assert_eq!(teams, [acme, widgets]);
+    }
+
+    #[test]
+    fn a_page_without_teams_gives_none() {
+        // Signed out: an empty list, or none at all.
+        assert!(parse_logged_in_teams(r#"<div data-props="{&quot;loggedInTeams&quot;:[],&quot;x&quot;:1}"></div>"#).is_empty());
+        assert!(parse_logged_in_teams("<html><title>Sign in | Slack</title></html>").is_empty());
+        // Garbage: a cut-off list, not a list, entries without an id or domain.
+        assert!(parse_logged_in_teams("loggedInTeams&quot;:[{&quot;team_id&quot;:&quot;T0000000001").is_empty());
+        assert!(parse_logged_in_teams(r#"{"loggedInTeams":{"team_id":"T0000000001"}}"#).is_empty());
+        assert!(parse_logged_in_teams(r#"{"loggedInTeams":[{"team_name":"x"},{"team_id":"T0000000001"},7]}"#).is_empty());
+        assert!(parse_logged_in_teams("loggedInTeams").is_empty());
     }
 }
