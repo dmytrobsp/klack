@@ -3,7 +3,7 @@
 //! and the lock a running klack holds on its profile so it is not removed under it.
 //! Every function takes the folders as `Dirs`, so tests work in a temporary folder.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Result, anyhow, bail};
 
@@ -26,6 +26,15 @@ impl Dirs {
     pub fn system() -> Result<Dirs> {
         let dirs = crate::session::project_dirs().ok_or_else(|| anyhow!("no home directory"))?;
         Ok(Dirs { config: dirs.config_dir().to_path_buf(), cache: dirs.cache_dir().to_path_buf(), data: dirs.data_local_dir().to_path_buf() })
+    }
+
+    /// The folders of the former name (`slacktui`) that still exist (`session::adopt_old_dirs`).
+    pub fn old_system() -> Vec<PathBuf> {
+        let Some(old) = directories::ProjectDirs::from("io.github", "rslack", "slacktui") else { return vec![] };
+        let mut all = vec![old.config_dir().to_path_buf(), old.cache_dir().to_path_buf(), old.data_local_dir().to_path_buf(), old.data_dir().to_path_buf()];
+        all.dedup();
+        all.retain(|p| p.symlink_metadata().is_ok());
+        all
     }
 }
 
@@ -160,10 +169,64 @@ pub fn is_running(d: &Dirs, name: &str) -> bool {
     valid_name(name).is_ok() && d.cache.join(name).join(LOCK_FILE).is_file() && matches!(lock(d, name), Ok(None))
 }
 
+/// Every folder of the cache that a running klack holds locked: a profile that never signed in
+/// has no config folder, so `list` would miss it. Sorted.
+pub fn running_profiles(d: &Dirs) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(&d.cache)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| is_running(d, n))
+        .collect();
+    names.sort();
+    names
+}
+
+/// Whether `name` is a file klack leaves in the temporary folder: `klack-cookies-…` (a copy of a
+/// browser's cookie database) or `klack-<pid>-…` (a video made for the player).
+fn is_temp_leftover(name: &str) -> bool {
+    if name.starts_with("klack-cookies-") {
+        return true;
+    }
+    let Some(rest) = name.strip_prefix("klack-") else { return false };
+    let digits = rest.chars().take_while(char::is_ascii_digit).count();
+    digits > 0 && rest[digits..].strip_prefix('-').is_some_and(|tail| !tail.is_empty())
+}
+
+/// What `purge` deletes, existing paths only: klack's config, cache and data folders, the `old`
+/// folders (of the former name), and in `temp` only the entries klack makes (`is_temp_leftover`).
+pub fn purge_targets(d: &Dirs, old: &[PathBuf], temp: &Path) -> Vec<PathBuf> {
+    let mut targets: Vec<PathBuf> = [&d.config, &d.cache, &d.data].into_iter().chain(old).cloned().collect();
+    let mut leftovers: Vec<PathBuf> = std::fs::read_dir(temp)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.file_name().to_str().is_some_and(is_temp_leftover))
+        .map(|e| e.path())
+        .collect();
+    leftovers.sort();
+    targets.extend(leftovers);
+    targets.dedup();
+    targets.retain(|p| p.symlink_metadata().is_ok());
+    targets
+}
+
+/// Delete `targets`; a symbolic link is removed itself, never what it points to.
+pub fn purge(targets: &[PathBuf]) -> Result<()> {
+    for path in targets {
+        match path.symlink_metadata() {
+            Ok(m) if m.is_dir() => std::fs::remove_dir_all(path)?,
+            Ok(_) => std::fs::remove_file(path)?,
+            Err(_) => {}
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
 
     /// A fresh set of folders under the temporary folder, removed when dropped.
     struct Temp(PathBuf, Dirs);
@@ -329,5 +392,60 @@ mod tests {
         assert!(!t.1.cache.join("a").exists());
         // Checking does not make a folder.
         assert!(!is_running(&t.1, "zz") && !t.1.cache.join("zz").exists());
+    }
+
+    #[test]
+    fn purge_lists_every_klack_folder() {
+        let t = Temp::new("purge-list");
+        three(&t);
+        touch(&t.1.config.join("settings.toml"));
+        let old = t.0.join("old-config");
+        touch(&old.join("default/session.json"));
+        let gone_old = t.0.join("old-cache-missing");
+        let temp = t.0.join("tmp");
+        std::fs::create_dir_all(&temp).unwrap();
+        let got = purge_targets(&t.1, &[old.clone(), gone_old], &temp);
+        assert_eq!(got, [t.1.config.clone(), t.1.cache.clone(), t.1.data.clone(), old]);
+        // A folder that does not exist is not listed.
+        std::fs::remove_dir_all(&t.1.data).unwrap();
+        assert!(!purge_targets(&t.1, &[], &temp).contains(&t.1.data));
+        // Deleting takes the whole folders and nothing next to them.
+        touch(&t.0.join("other/keep.txt"));
+        let targets = purge_targets(&t.1, &[], &temp);
+        purge(&targets).unwrap();
+        assert!(!t.1.config.exists() && !t.1.cache.exists());
+        assert!(t.0.join("other/keep.txt").is_file());
+        purge(&targets).unwrap();
+    }
+
+    #[test]
+    fn purge_keeps_unrelated_temp_files() {
+        let t = Temp::new("purge-temp");
+        let temp = t.0.join("tmp");
+        for name in ["klack-cookies-12-34", "klack-777-F1.mp4", "klackery", "klack-notes.txt", "other", "klack-12", "klack--x", "klack-1a-x", "xklack-1-x"] {
+            touch(&temp.join(name));
+        }
+        std::fs::create_dir_all(temp.join("klack-cookies-5-6")).unwrap();
+        let got = purge_targets(&t.1, &[], &temp);
+        assert_eq!(got, [temp.join("klack-777-F1.mp4"), temp.join("klack-cookies-12-34"), temp.join("klack-cookies-5-6")]);
+        purge(&got).unwrap();
+        assert_eq!(tree(&temp).len(), 7);
+        assert!(temp.join("klack-notes.txt").is_file() && temp.join("other").is_file() && !temp.join("klack-cookies-5-6").exists());
+    }
+
+    #[test]
+    fn purge_refuses_while_running() {
+        let t = Temp::new("purge-running");
+        three(&t);
+        assert!(running_profiles(&t.1).is_empty());
+        // A profile that never signed in has only a cache folder: still seen.
+        let held = lock(&t.1, "fresh").unwrap();
+        let other = lock(&t.1, "a").unwrap();
+        assert_eq!(running_profiles(&t.1), ["a", "fresh"]);
+        drop(held);
+        drop(other);
+        assert!(running_profiles(&t.1).is_empty());
+        // Checking made no folder.
+        assert!(!t.1.config.join("fresh").exists());
     }
 }

@@ -6,7 +6,7 @@ mod login_browser;
 mod login_import;
 mod tui;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
 use slack_core::profiles::{self, Dirs};
 use slack_core::session::{self, Profile};
@@ -38,6 +38,13 @@ enum Command {
     Profile {
         #[command(subcommand)]
         cmd: ProfileCmd,
+    },
+    /// Delete everything klack wrote to this machine: every profile's sign-ins, settings, logs,
+    /// drafts. Files you saved from messages stay.
+    Purge {
+        /// Do not ask.
+        #[arg(long)]
+        yes: bool,
     },
     /// Scriptable commands (used for automation and end-to-end tests).
     Ctl {
@@ -155,6 +162,7 @@ async fn run() -> Result<()> {
             AuthCmd::Status => auth::status(&profile).await,
         },
         Some(Command::Profile { cmd }) => profile_command(&dirs, cmd),
+        Some(Command::Purge { yes }) => purge_command(&dirs, yes),
         Some(Command::Ctl { cmd }) => ctl::run(&profile, cli.team.as_deref(), cmd).await,
         None => {
             let p = Profile::load(&profile)?;
@@ -164,6 +172,32 @@ async fn run() -> Result<()> {
             tui::event_loop::run(p, cli.team.as_deref()).await
         }
     }
+}
+
+/// `klack purge`: lists, asks, then deletes klack's folders and temporary leftovers.
+fn purge_command(dirs: &Dirs, yes: bool) -> Result<()> {
+    let running = profiles::running_profiles(dirs);
+    if !running.is_empty() {
+        bail!("klack is running (profile {}) — quit it first", running.join(", "));
+    }
+    let targets = profiles::purge_targets(dirs, &Dirs::old_system(), &std::env::temp_dir());
+    if targets.is_empty() {
+        println!("nothing to delete");
+        return Ok(());
+    }
+    eprintln!("This deletes everything klack wrote (files you saved from messages stay):");
+    for path in &targets {
+        eprintln!("  {}", path.display());
+    }
+    if !auth::confirm("Delete all of this?", yes)? {
+        println!("nothing deleted");
+        return Ok(());
+    }
+    profiles::purge(&targets)?;
+    for path in &targets {
+        println!("deleted {}", path.display());
+    }
+    Ok(())
 }
 
 /// `klack profile …`: reads and removes local files only.

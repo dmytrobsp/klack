@@ -115,6 +115,11 @@ only, nothing secret). One profile may hold two accounts of the same workspace.
 - `klack profile remove NAME` — lists and, after a y/N question (or `--yes`), deletes the profile's
   `~/.config/klack/NAME/` (sign-ins) and `~/.cache/klack/NAME/` (log, caches); drafts and the
   sidebar layout stay. Refused while a klack runs on that profile.
+- `klack purge` — deletes everything klack wrote, as if it was never launched: `~/.config/klack/`
+  (every profile's sign-ins, `settings.toml`, `keys.toml`, `locales/`, `themes/`), `~/.cache/klack/` (logs,
+  caches, `login-browser/`), `~/.local/share/klack/` (drafts, sidebar layout), old `slacktui` folders and
+  klack's own `klack-cookies-*` / `klack-<pid>-*` files in the temporary folder. Lists them first and asks
+  y/N (or `--yes`); refused while a klack runs. Files you saved from messages stay; Slack is not signed out.
 
 Use `--profile NAME` to keep several accounts apart (letters, digits, `-` and `_`); signing in under a
 new name makes that profile. Profiles separate accounts only:
