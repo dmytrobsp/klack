@@ -394,6 +394,7 @@ pub enum Action {
     Yes,
     NotificationLevel,
     MuteConversation,
+    MarkUnread,
     LeaveConversation,
     JoinConversation,
     RenameSection,
@@ -443,6 +444,7 @@ actions! {
         MoveToSection "move_to_section" "move the conversation to a section (or a new one)" "move to section" "📦" ["<leader> c m"]
         NotificationLevel "notification_level" "what the conversation notifies about: the next level" "notifications" "🔔" ["<leader> c b"]
         MuteConversation "mute_conversation" "mute / unmute the conversation" "mute" "🔕" ["<leader> c M"]
+        MarkUnread "mark_unread" "mark unread from the selected message (or the latest)" "mark unread" "🔵" ["<leader> c u"]
         LeaveConversation "leave" "leave the channel (y/n)" "leave" "👋" ["<leader> c l"]
         JoinConversation "join" "join the channel you are looking at" "join" "📥" ["<leader> c j"]
         RenameSection "rename_section" "rename the conversation's section (/section rename)" "rename section" "📝" ["<leader> c r"]
@@ -520,6 +522,7 @@ actions! {
         Save "save" "save attachments" "save" "💾" ["<leader> s"]
         Pin "pin" "pin / unpin" "pin / unpin" "📌" ["<leader> p"]
         Profile "profile" "profile card: author, ←/→ people mentioned" "profile" "👤" ["<leader> u"]
+        MarkUnread "mark_unread" "mark unread from this message" "mark unread" "🔵" ["<leader> U"]
         ThreadHuddle "thread_huddle" "start or join a huddle in the message's thread" "thread huddle" "🎧" ["<leader> h T"]
         ContextMenu "menu" "the message's menu (as a right-click does)" "menu" "📜" ["<leader> m"]
         Help "help" "this help" "help" "❓" ["?"]
@@ -1808,10 +1811,10 @@ mod tests {
         let short = |map: &Keymap, c: &[Child]| c.iter().map(|c| format!("{} {}{}", map.show(&[c.key]), if c.group { "group " } else { "" }, c.label)).collect::<Vec<_>>();
         let top = map.children(&[Messages, Global], Mode::Normal, &[LEADER]);
         // The pane's actions, then global's, then the groups by key.
-        let message = ["t thread", "r react", "e edit", "d delete", "y copy", "Y copy link", "o open", "s save", "p pin / unpin", "u profile", "m menu"];
+        let message = ["t thread", "r react", "e edit", "d delete", "y copy", "Y copy link", "o open", "s save", "p pin / unpin", "u profile", "U mark unread", "m menu"];
         assert_eq!(short(&map, &top), [&message[..], &["␣ jump to", "a group availability", "c group conversation", "f group find", "h group huddle", "n group new", "w group workspace"]].concat());
         assert_eq!((top[1].action, top[1].icon.as_str()), (Some((Messages, Action::React)), "😀"));
-        assert_eq!((top[15].action, top[15].icon.as_str()), (None, "🎧"), "from GROUPS");
+        assert_eq!((top[16].action, top[16].icon.as_str()), (None, "🎧"), "from GROUPS");
         // The huddle group: global's, and the pane's own ␣hT.
         let huddle = map.children(&[Messages, Global], Mode::Normal, &[LEADER, k("h")]);
         assert_eq!(short(&map, &huddle), ["T thread huddle", "h join / leave", "m mute", "t huddle thread", "v huddle view", "c camera", "s share screen", "d decline"]);
@@ -1820,7 +1823,7 @@ mod tests {
         let (map, warnings) = Keymap::load(&format!("{text}[sidebar]\nstar = \"<leader> x s\"\n[groups]\n\"<leader> h\" = {{ name = \"calls\", icon = \"📞\" }}\n"));
         assert!(warnings.is_empty(), "{warnings:?}");
         let top = map.children(&[Messages, Global], Mode::Normal, &[LEADER]);
-        assert_eq!((top[15].label.as_str(), top[15].icon.as_str()), ("calls", "📞"));
+        assert_eq!((top[16].label.as_str(), top[16].icon.as_str()), ("calls", "📞"));
         let groups = |c: Vec<Child>| short(&map, &c.into_iter().filter(|c| c.group).collect::<Vec<_>>());
         assert_eq!(groups(map.children(&[Sidebar, Global], Mode::Normal, &[LEADER])), ["a group availability", "c group conversation", "f group find", "h group calls", "n group new", "w group workspace", "x group +x"]);
         // The pane wins a key both bind; [global] text keys do not count in INSERT.
@@ -1912,7 +1915,7 @@ mod tests {
         assert!(warnings.is_empty(), "{warnings:?}");
         let normal = |c: Context, pending: &[Key], key: &str| map.resolve(&[c, Global], Mode::Normal, pending, k(key));
         // The selected message's own actions are one key after the leader.
-        let message = [("r", Action::React), ("e", Action::Edit), ("d", Action::Delete), ("y", Action::Copy), ("Y", Action::CopyLink), ("o", Action::Open), ("s", Action::Save), ("p", Action::Pin), ("u", Action::Profile), ("t", Action::OpenThread), ("m", Action::ContextMenu)];
+        let message = [("r", Action::React), ("e", Action::Edit), ("d", Action::Delete), ("y", Action::Copy), ("Y", Action::CopyLink), ("o", Action::Open), ("s", Action::Save), ("p", Action::Pin), ("u", Action::Profile), ("U", Action::MarkUnread), ("t", Action::OpenThread), ("m", Action::ContextMenu)];
         for (key, action) in message {
             assert_eq!(normal(Messages, &[LEADER], key), Resolved::Action(Messages, action), "␣{key}");
         }

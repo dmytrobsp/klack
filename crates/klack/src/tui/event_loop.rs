@@ -25,6 +25,8 @@ use super::terminal::TerminalGuard;
 enum Net {
     /// Muting (`true`) or unmuting a conversation failed.
     MuteFailed { channel: String, muted: bool, error: String },
+    /// Marking a conversation unread failed: Slack still has it read.
+    MarkUnreadFailed { channel: String, error: String },
     Boot { boot: Value, users: Vec<User>, counts: Option<Value> },
     /// A desktop notification was clicked.
     NotificationClicked(super::notify::Target),
@@ -354,6 +356,8 @@ impl App {
             }
             if let Some(old) = &self.current {
                 stash(&mut self.drafts, old, &mut self.composer);
+                // Marked unread and left: opening it again marks it read as usual.
+                self.ws.release_unread(old);
             }
             if let Some(d) = selected.as_ref().and_then(|id| self.drafts.remove(id)) {
                 self.composer.restore(d);
@@ -388,11 +392,8 @@ impl App {
 
     /// Mark the current conversation read up to its newest message.
     fn mark_current_read(&mut self) {
-        let Some(channel) = self.current.clone().filter(|c| !self.ws.is_outside(c)) else { return };
-        let Some(latest) = self.ws.timelines.get(&channel).and_then(|t| t.messages.last()).map(|m| m.ts.clone()) else { return };
-        if self.marked.get(&channel) == Some(&latest) {
-            return;
-        }
+        let Some(channel) = self.current.clone() else { return };
+        let Some(latest) = read_mark_target(&self.ws, &channel, &self.marked) else { return };
         self.marked.insert(channel.clone(), latest.clone());
         if let Some(u) = self.ws.unread.get_mut(&channel) {
             u.has_unreads = false;
@@ -1018,6 +1019,7 @@ impl App {
                     self.toggle_pin(&ts);
                 }
             }
+            Some(Action::MarkUnread) => self.mark_unread(self.messages.selected.clone(), in_thread),
             Some(Action::ThreadHuddle) => {
                 let target = self.selected_ts().and_then(|ts| self.current.clone().map(|c| (c, ts)));
                 match target {
@@ -2083,6 +2085,38 @@ impl App {
         });
     }
 
+    /// ␣cu: mark the current conversation unread from `selected` (with none: from the newest), as
+    /// Slack's "Mark unread" does. Unread here at once, the "new" line above that message, and
+    /// klack does not mark it read again until the user switches away and back
+    /// (`Workspace::held_unread`); then on Slack. `in_thread`: a thread's replies are not marked.
+    fn mark_unread(&mut self, selected: Option<String>, in_thread: bool) {
+        if in_thread {
+            self.status = "mark unread works on the conversation's messages".into();
+            return;
+        }
+        let Some(channel) = self.current.clone() else { return };
+        if self.ws.is_outside(&channel) {
+            self.status = "join the channel to mark it unread".into();
+            return;
+        }
+        let order: Vec<String> = self.ws.timelines.get(&channel).map(|t| super::messages::shown_messages(t, false).map(|m| m.ts.clone()).collect()).unwrap_or_default();
+        let Some(ts) = mark_unread_ts(&order, selected.as_deref()) else {
+            self.status = "no messages to mark unread".into();
+            return;
+        };
+        hold_unread(&mut self.ws, &mut self.marked, &channel, &ts);
+        self.messages.new_since = Some(ts.clone());
+        self.messages.jump_to_new = false;
+        self.sidebar.rebuild(&self.ws);
+        self.status = format!("marked {} unread", self.ws.channel_label(&channel));
+        let (client, tx) = (self.client.clone(), self.net.clone());
+        tokio::spawn(async move {
+            if let Err(e) = client.mark(&channel, &ts).await {
+                let _ = tx.send(Net::MarkUnreadFailed { channel, error: e.to_string() });
+            }
+        });
+    }
+
     /// A conversation's own level ("default": none), here at once and then on Slack.
     fn set_conversation_level(&mut self, channel: String, level: String) {
         if level == "default" {
@@ -3004,6 +3038,46 @@ fn upload_status(name: &str, sent: u64, total: u64) -> String {
 
 /// The reply a thread is read up to once it is shown: its newest, when its replies are loaded and
 /// it has any.
+/// What the open conversation `channel` is marked read up to now: its newest message, unless
+/// that is marked already (`marked`), the user marked it unread while here
+/// (`Workspace::held_unread`), or it is a channel we are not in.
+fn read_mark_target(ws: &super::state::Workspace, channel: &str, marked: &std::collections::HashMap<String, String>) -> Option<String> {
+    if ws.is_outside(channel) || ws.held_unread.contains(channel) {
+        return None;
+    }
+    let latest = ws.timelines.get(channel).and_then(|t| t.messages.last()).map(|m| m.ts.clone())?;
+    (marked.get(channel) != Some(&latest)).then_some(latest)
+}
+
+/// ␣cu here: the conversation is unread after `ts` and held so (`Workspace::mark_unread`); what
+/// was marked read before is forgotten, so opening it again marks it read even with nothing new.
+fn hold_unread(ws: &mut super::state::Workspace, marked: &mut std::collections::HashMap<String, String>, channel: &str, ts: &str) {
+    ws.mark_unread(channel, ts);
+    marked.remove(channel);
+}
+
+/// Where Slack's read mark goes so that `selected` (with none: the newest) is the first unread
+/// message of `order`: the message before it, or a microsecond before it when it is the first
+/// one loaded.
+fn mark_unread_ts(order: &[String], selected: Option<&str>) -> Option<String> {
+    let at = match selected {
+        Some(ts) => order.iter().position(|o| o == ts)?,
+        None => order.len().checked_sub(1)?,
+    };
+    match at {
+        0 => ts_just_before(&order[0]),
+        i => Some(order[i - 1].clone()),
+    }
+}
+
+/// The Slack timestamp one microsecond before `ts` (exact: no floats).
+fn ts_just_before(ts: &str) -> Option<String> {
+    let (secs, frac) = ts.split_once('.').unwrap_or((ts, ""));
+    let micros: u64 = format!("{frac:0<6}").get(..6)?.parse().ok()?;
+    let total = secs.parse::<u64>().ok()?.checked_mul(1_000_000)?.checked_add(micros)?.checked_sub(1)?;
+    Some(format!("{}.{:06}", total / 1_000_000, total % 1_000_000))
+}
+
 fn thread_mark_target(t: &super::state::Timeline, parent: &str) -> Option<String> {
     t.messages.last().map(|m| m.ts.clone()).filter(|ts| t.loaded && ts != parent)
 }
@@ -4269,6 +4343,8 @@ fn applies(here: &Here, context: Context, action: Action) -> bool {
     match (context, action) {
         (Context::Global, _) if here.dialog && opens_something(action) => false,
         (Context::Messages, OpenThread) => !here.in_thread,
+        (Context::Messages, MarkUnread) => !here.in_thread && here.offers.is_some(),
+        (Context::Global, MarkUnread) => !here.in_thread && !here.outside,
         (Context::Messages, Edit | Delete | Open | Save | Copy) => here.offers.is_some_and(|o| o.allows(action)),
         (Context::Global, JoinConversation) => here.outside,
         (Context::Global, LeaveConversation) => here.leavable,
@@ -4304,6 +4380,12 @@ fn run_global(app: &mut App, action: Action) -> bool {
         },
         Action::NotificationLevel => app.cycle_conversation_level(),
         Action::MuteConversation => app.toggle_conversation_mute(),
+        Action::MarkUnread => {
+            // From the messages pane its selection; from the sidebar or the composer the newest.
+            let selected = app.messages.selected.clone().filter(|_| app.focus == Focus::Messages);
+            let in_thread = matches!(app.focus, Focus::Thread | Focus::ThreadComposer);
+            app.mark_unread(selected, in_thread);
+        }
         Action::LeaveConversation | Action::JoinConversation | Action::DeleteSection => {
             use super::commands::Command;
             let cmd = match action {
@@ -4724,6 +4806,18 @@ fn handle_net(app: &mut App, msg: Net) {
             }
         }
         Net::Prefs(v) => app.ws.apply_prefs(&v),
+        Net::MarkUnreadFailed { channel, error } => {
+            // Slack still has it read: so here, and read-marking takes it up again.
+            app.ws.release_unread(&channel);
+            if let Some(u) = app.ws.unread.get_mut(&channel) {
+                u.has_unreads = false;
+            }
+            if app.current.as_deref() == Some(channel.as_str()) {
+                app.messages.new_since = None;
+            }
+            app.sidebar.rebuild(&app.ws);
+            app.status = format!("couldn't mark {} unread: {error}", app.ws.channel_label(&channel));
+        }
         Net::MuteFailed { channel, muted, error } => {
             if app.ws.revert_mute(&channel, muted) {
                 app.sidebar.rebuild(&app.ws);
@@ -5675,6 +5769,9 @@ mod tests {
         assert!(!applies(&Here { offers: Some(Offers { text: false, ..theirs }), ..here }, C::Messages, Copy), "no text");
         assert!(!applies(&Here { offers: None, ..here }, C::Messages, Edit), "no message selected");
         assert!(!applies(&Here { in_thread: true, ..here }, C::Messages, OpenThread), "already in the thread");
+        assert!(applies(&here, C::Messages, MarkUnread) && applies(&here, C::Global, MarkUnread));
+        assert!(!applies(&Here { in_thread: true, ..here }, C::Messages, MarkUnread) && !applies(&Here { in_thread: true, ..here }, C::Global, MarkUnread), "not a thread's replies");
+        assert!(!applies(&Here { offers: None, ..here }, C::Messages, MarkUnread) && !applies(&Here { outside: true, ..here }, C::Global, MarkUnread));
         assert!(!applies(&here, C::Global, JoinConversation) && applies(&Here { outside: true, ..here }, C::Global, JoinConversation), "join only from outside");
         assert!(!applies(&here, C::Global, LeaveConversation) && applies(&Here { leavable: true, ..here }, C::Global, LeaveConversation), "no leaving a DM");
         assert!(!applies(&here, C::Sidebar, LeaveConversation) && applies(&Here { selected_leavable: true, ..here }, C::Sidebar, LeaveConversation));
@@ -5831,5 +5928,68 @@ mod tests {
         assert_eq!(super::shown_note(None, None, "copied the link"), Some("copied the link".to_string()));
         assert_eq!(super::shown_note(None, None, ""), None);
         assert_eq!(super::shown_note(Some("📞 ann invites you".into()), Some(&sticky), ""), Some("📞 ann invites you".to_string()));
+    }
+
+    #[test]
+    fn mark_unread_ts_is_just_before() {
+        use super::mark_unread_ts;
+        let order: Vec<String> = ["1792357735.815229", "1792357790.000100", "1792357801.123456"].map(String::from).to_vec();
+        assert_eq!(mark_unread_ts(&order, Some("1792357801.123456")).as_deref(), Some("1792357790.000100"), "the previous message");
+        assert_eq!(mark_unread_ts(&order, Some("1792357790.000100")).as_deref(), Some("1792357735.815229"));
+        assert_eq!(mark_unread_ts(&order, Some("1792357735.815229")).as_deref(), Some("1792357735.815228"), "the first loaded: a microsecond before it");
+        assert_eq!(mark_unread_ts(&order, None).as_deref(), Some("1792357790.000100"), "no selection: from the latest");
+        assert_eq!(mark_unread_ts(&order[..1], None).as_deref(), Some("1792357735.815228"), "the only message");
+        assert_eq!(mark_unread_ts(&["1792357800.000000".to_string()], None).as_deref(), Some("1792357799.999999"), "across the second");
+        assert_eq!(mark_unread_ts(&[], None), None, "nothing loaded: nothing to mark");
+    }
+
+    #[test]
+    fn marking_unread_survives_the_view() {
+        use super::{hold_unread, read_mark_target};
+        use crate::tui::media::Media;
+        use crate::tui::messages::MessagePane;
+        use crate::tui::state::{Timeline, Workspace};
+        use slack_core::types::{Conversation, Message, User};
+        let mut ws = Workspace { self_id: "UME".into(), ..Default::default() };
+        ws.users.insert("U1".into(), User { id: "U1".into(), name: "ann".into(), ..Default::default() });
+        ws.conversations.insert("D1".into(), Conversation { id: "D1".into(), is_im: true, user: Some("U1".into()), ..Default::default() });
+        let ts = |i: usize| format!("{}.000100", 1_700_000_000 + i * 600);
+        let mut t = Timeline { loaded: true, ..Default::default() };
+        for i in 0..5 {
+            t.upsert(Message { ts: ts(i), user: Some("U1".into()), text: format!("message {i}"), ..Default::default() });
+        }
+        ws.timelines.insert("D1".into(), t);
+        // Open and read: marked up to the newest once.
+        let mut marked = std::collections::HashMap::new();
+        assert_eq!(read_mark_target(&ws, "D1", &marked), Some(ts(4)));
+        marked.insert("D1".to_string(), ts(4));
+        assert_eq!(read_mark_target(&ws, "D1", &marked), None, "once");
+        // ␣cu on message 2: Slack's mark goes to message 1, and the conversation is unread.
+        hold_unread(&mut ws, &mut marked, "D1", &ts(1));
+        assert!(ws.unread["D1"].has_unreads, "unread (bold in the sidebar)");
+        assert_eq!(ws.conversations["D1"].last_read, Some(ts(1)));
+        assert!(ws.held_unread.contains("D1"));
+        // Drawn with the line above message 2, scrolled to the bottom, drawn again: still not marked.
+        let mut pane = MessagePane::default();
+        (pane.new_since, pane.selected) = (Some(ts(1)), Some(ts(2)));
+        let media = Media::with(ratatui_image::picker::Picker::halfblocks());
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 20)).unwrap();
+        for _ in 0..2 {
+            terminal.draw(|f| pane.draw(f, f.area(), &ws, "t", ws.timelines.get("D1"), true, &media)).unwrap();
+            let buf = terminal.backend().buffer();
+            let rows: Vec<String> = (0..buf.area.height).map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect()).collect();
+            let line = rows.iter().position(|r| r.contains(" new ")).expect("the new line");
+            assert!(rows[line + 1..].iter().find(|r| r.contains("message")).is_some_and(|r| r.contains("message 2")), "above message 2: {rows:#?}");
+            assert_eq!(read_mark_target(&ws, "D1", &marked), None, "the view does not mark it read");
+            pane.to_bottom();
+        }
+        // A new message while it is open: still unread.
+        ws.timelines.get_mut("D1").unwrap().upsert(Message { ts: ts(5), user: Some("U1".into()), text: "message 5".into(), ..Default::default() });
+        assert_eq!(read_mark_target(&ws, "D1", &marked), None);
+        // Left and opened again: marked read as usual, though the newest is the one marked before.
+        ws.release_unread("D1");
+        assert!(ws.unread["D1"].has_unreads, "leaving does not read it");
+        ws.timelines.get_mut("D1").unwrap().messages.pop();
+        assert_eq!(read_mark_target(&ws, "D1", &marked), Some(ts(4)), "the cache of what was marked is forgotten");
     }
 }

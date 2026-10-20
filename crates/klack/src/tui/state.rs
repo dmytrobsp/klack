@@ -127,6 +127,9 @@ pub struct Workspace {
     /// Slack's own and apps' slash commands (`commands.list`), for suggestions.
     pub slack_commands: Vec<slack_core::types::SlashCommand>,
     pub muted: std::collections::HashSet<String>,
+    /// Conversations the user marked unread (␣cu) while open: klack's own read-marking leaves
+    /// them unread until the user switches away and back.
+    pub held_unread: std::collections::HashSet<String>,
     pub dnd: Dnd,
     /// The `dnd_*` prefs seen so far (boot, then one per `pref_change`), for `dnd.schedule`.
     pub dnd_prefs: serde_json::Map<String, Value>,
@@ -757,6 +760,22 @@ impl Workspace {
         }
         self.muted.insert(id.to_string());
         true
+    }
+
+    /// ␣cu: the conversation is unread after `ts` (Slack's read mark now), and held so while it
+    /// stays open (`held_unread`).
+    pub fn mark_unread(&mut self, id: &str, ts: &str) {
+        self.unread.entry(id.to_string()).or_default().has_unreads = true;
+        if let Some(c) = self.conversations.get_mut(id) {
+            c.last_read = Some(ts.to_string());
+        }
+        self.held_unread.insert(id.to_string());
+    }
+
+    /// The user left a conversation they marked unread: it stays unread, and opening it again
+    /// marks it read as usual.
+    pub fn release_unread(&mut self, id: &str) {
+        self.held_unread.remove(id);
     }
 
     /// A mute call failed: put the conversation back as it was, unless Slack's own event has

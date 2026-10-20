@@ -90,6 +90,7 @@ const MESSAGE_ACTIONS: &[Action] = &[
     Action::Open,
     Action::Save,
     Action::Pin,
+    Action::MarkUnread,
     Action::Profile,
     Action::ThreadHuddle,
 ];
@@ -104,7 +105,7 @@ impl Menu {
             Target::Message { thread } => MESSAGE_ACTIONS
                 .iter()
                 .filter(|a| offers.allows(**a))
-                .filter(|a| !(*thread && **a == Action::OpenThread))
+                .filter(|a| !(*thread && matches!(**a, Action::OpenThread | Action::MarkUnread)))
                 .map(|a| (Item::Do(*a), describe(Context::Messages, *a), key(Context::Messages, *a)))
                 .collect(),
             Target::Opener { .. } => Vec::new(),
