@@ -83,26 +83,30 @@ unread); a click on a tile switches, like Alt+1…9.
 terminal: it looks for Slack in your browsers and lists every workspace each browser profile is signed
 in to, grouped by where it comes from (`Chrome · Work  you@example.com`, `Firefox · default-release`),
 with who you are there. ↑↓ or j k move, Space marks several, Enter signs in to the marked ones (or the
-one under the cursor), `/` filters, a click marks a row, Esc leaves without changing anything.
+one under the cursor), `/` filters, a click marks a row, Esc in the list leaves without saving anything.
 Workspaces a browser is signed out of are shown dim with the reason; ones already in the profile say
 `already signed in` (picking one refreshes it). The last row, `another workspace, or sign in another
 way…`, asks for the workspace (`acme` — `.slack.com` is filled in — or a link pasted from the browser)
 and how to sign in to it: a browser profile signed in there, a new browser window, or the `d` cookie
-by hand. Each workspace ends in one line: `✓ Signed in to Acme as you — profile default saved.`
+by hand. Esc at those questions skips only that workspace: rows marked together with `another
+workspace…` are still signed in to and saved. Each workspace ends in one line: `✓ Signed in to Acme as
+you — profile default saved.`
 
 For scripts (nothing is asked without a terminal):
 
 - **In a browser window:** `klack auth login --workspace acme.slack.com` (in a terminal it lists the
   ways for that workspace first) opens Chrome,
   Chromium, Edge or Brave (an installed one or a flatpak; `KLACK_BROWSER` picks another) on the
-  workspace's sign-in page, with a temporary profile of its own (no sync, and Chrome does not offer to sign itself in or set up a
-  profile after a Google sign-in on the page). Sign in there however Slack offers
+  workspace's sign-in page, with a temporary profile of its own (no sync; klack turns off Chrome's offers to sign
+  itself in or set up a profile after a Google sign-in on the page, in that profile only). Sign in there however Slack offers
   (password, Google / SSO, 2FA, an emailed code); klack notices, takes the session, closes the window
   and deletes that profile. Your own browser profile is never read or changed. Ctrl+C cancels.
 - **From the browser you already use:** `klack auth login --workspace acme.slack.com --from-browser
   firefox` (or `chrome`) takes the session from a browser you are signed in to Slack with. Its cookie
   database is copied and read, never changed; Chrome's (and Chromium's, Edge's, Brave's) cookies are
-  decrypted with its key from the system keyring (Linux) or the Keychain (macOS, which asks once).
+  decrypted with its key from the system keyring (Linux) or the Keychain (macOS, which asks once per
+  browser, one after another — the guide too). On macOS answer the Keychain's question with “Allow”, not
+  “Always Allow” (that would let any program read the key through the `security` tool without asking).
   `--browser-profile DIR` picks one profile (or a browser's folder of profiles); otherwise every profile
   is tried. When several sign in to the workspace as different people, klack lists them (the browser's
   profile name and the account) and asks which; without a terminal to ask in it takes the one used
@@ -120,10 +124,12 @@ only, nothing secret). One profile may hold two accounts of the same workspace.
 
 - `klack auth status` — each workspace of the profile, who you are there, where the session came from
   and whether it still works (checked with Slack); ★ marks the one plain `klack` opens.
-- `klack auth logout --team NAME` (or `--all`) — forgets that sign-in on this machine only; Slack is
-  not signed out (a session taken from a browser stays that browser's). The profile stays, empty if
+- `klack auth logout` — in a terminal lists the profile's sign-ins (Space marks several, Enter forgets
+  the marked ones, Esc changes nothing); `--team NAME` (or `--all`) for scripts. It forgets the sign-in
+  on this machine only; Slack is not signed out (a session taken from a browser stays that browser's). The profile stays, empty if
   it was the last.
-- `klack profile list` — every profile, ★ on the default, with its workspaces (local files only).
+- `klack profile list` — every profile, ★ on the default, with its workspaces (local files only); a
+  folder with sign-ins whose name can't be a profile's is named (`skipped NAME: why`).
 - `klack profile default NAME` — plain `klack` (and `auth`, `ctl`) use that profile from now on
   (kept in `~/.config/klack/default-profile`); `--profile NAME` always wins.
 - `klack profile remove NAME` — lists and, after a y/N question (or `--yes`), deletes the profile's
@@ -132,10 +138,12 @@ only, nothing secret). One profile may hold two accounts of the same workspace.
 - `klack purge` — deletes everything klack wrote, as if it was never launched: `~/.config/klack/`
   (every profile's sign-ins, `settings.toml`, `keys.toml`, `locales/`, `themes/`), `~/.cache/klack/` (logs,
   caches, `login-browser/`), `~/.local/share/klack/` (drafts, sidebar layout), old `slacktui` folders and
-  klack's own `klack-cookies-*` / `klack-<pid>-*` files in the temporary folder. Lists them first and asks
-  y/N (or `--yes`); refused while a klack runs. Files you saved from messages stay; Slack is not signed out.
+  klack's own `klack-cookies-*` / `klack-<pid>-*` files in the temporary folder (yours only). Lists them first and asks
+  y/N (or `--yes`); refused while a klack runs. A folder that is a symbolic link loses only the link (what it
+  points to stays, and klack says so). Files you saved from messages stay; Slack is not signed out.
 
-Use `--profile NAME` to keep several accounts apart (letters, digits, `-` and `_`); signing in under a
+Use `--profile NAME` to keep several accounts apart (letters, digits, `-` and `_`, and `.` or `@` inside
+the name: `john.doe`, `me@work`); signing in under a
 new name makes that profile. Profiles separate accounts only:
 the preferences (`settings.toml`, everything in F6), `keys.toml`, `themes/` and `locales/` are shared
 by all profiles; each profile has its own sessions and its own log/cache folder. To tell workspaces

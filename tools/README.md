@@ -3,7 +3,7 @@
 Helpers used while developing and testing; none of them is needed to build or run klack. The
 live-test helpers assume Linux with Hyprland, kitty and PipeWire.
 
-- `launch.sh` — start klack in the `klack-test` kitty window (abstract socket `unix:@klack-test`), DM with B open.
+- `launch.sh` — start klack on profile `default` (given by name, so it is account A even when another profile is the default) in the `klack-test` kitty window (abstract socket `unix:@klack-test`), DM with B open.
   Drive it with `kitty @ --to unix:@klack-test send-key …/send-text …`; quit with `send-key ctrl+q`.
 - `streamrec.py OUT_DIR TOTAL_S [PER_STREAM_S]` — record every new klack playback stream (never a source) with
   pw-record while it runs; `tonecheck.py HZ[,HZ…] FILE.wav…` — peak level per frequency (to tell sounds apart).

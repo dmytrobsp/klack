@@ -242,8 +242,20 @@ pub async fn discover() -> Vec<Group> {
 /// be looked at (its browser's key, a step that takes longer than 10 s, a sign-in page klack can't
 /// read) gets a `problem`; nothing here fails.
 pub async fn discover_in(profiles: Vec<BrowserProfile>) -> Vec<Group> {
-    discover_with(profiles, |family| async move { chrome_key(&family).await }).await
+    discover_with(profiles, KEY_READS, |family| async move { chrome_key(&family).await }).await
 }
+
+/// How the browsers' keys are read while looking: `one_at_a_time` (one browser after another), each waited for
+/// `timeout` at most.
+#[derive(Debug, Clone, Copy)]
+struct KeyReads {
+    one_at_a_time: bool,
+    timeout: Duration,
+}
+
+/// On macOS each read raises a Keychain dialog: one browser after another (never several dialogs at once), each given
+/// a minute to be answered. Elsewhere nothing is asked: all at once, within [`STEP_TIMEOUT`].
+const KEY_READS: KeyReads = if cfg!(target_os = "macos") { KeyReads { one_at_a_time: true, timeout: Duration::from_secs(60) } } else { KeyReads { one_at_a_time: false, timeout: STEP_TIMEOUT } };
 
 /// At most this many requests to Slack at once while looking (a machine with many browser
 /// profiles signed in to many workspaces would otherwise send them all together).
@@ -292,8 +304,8 @@ fn listed(profiles: Vec<BrowserProfile>, windows: bool) -> Vec<BrowserProfile> {
     profiles.into_iter().filter(|p| !(windows && p.source == Source::Chrome)).collect()
 }
 
-/// [`discover_in`], reading a Chrome-family browser's key with `key`.
-async fn discover_with<K, F>(profiles: Vec<BrowserProfile>, key: K) -> Vec<Group>
+/// [`discover_in`], reading a Chrome-family browser's key with `key` as `reads` says.
+async fn discover_with<K, F>(profiles: Vec<BrowserProfile>, reads: KeyReads, key: K) -> Vec<Group>
 where
     K: Fn(String) -> F,
     F: std::future::Future<Output = Result<Vec<u8>>>,
@@ -306,18 +318,26 @@ where
             families.push(family(p).to_string());
         }
     }
-    let reads = futures_util::future::join_all(families.iter().map(|f| {
-        let read = key(f.clone());
+    let read = |f: &str| {
+        let (f, read) = (f.to_string(), key(f.to_string()));
         async move {
-            match timeout(STEP_TIMEOUT, read).await {
+            match timeout(reads.timeout, read).await {
                 Ok(Ok(key)) => Ok(key),
                 Ok(Err(e)) => Err(format!("can't read {f}'s key: {e:#}")),
-                Err(_) => Err(format!("can't read {f}'s key: no answer in {} s", STEP_TIMEOUT.as_secs())),
+                Err(_) => Err(format!("can't read {f}'s key: no answer in {} s", reads.timeout.as_secs())),
             }
         }
-    }))
-    .await;
-    let keys: HashMap<String, Result<Vec<u8>, String>> = families.into_iter().zip(reads).collect();
+    };
+    let got = if reads.one_at_a_time {
+        let mut got = Vec::new();
+        for f in &families {
+            got.push(read(f).await);
+        }
+        got
+    } else {
+        futures_util::future::join_all(families.iter().map(|f| read(f))).await
+    };
+    let keys: HashMap<String, Result<Vec<u8>, String>> = families.into_iter().zip(got).collect();
     // One client for every request, made when the first cookie is found.
     let http = std::sync::OnceLock::new();
     let limit = tokio::sync::Semaphore::new(CHECKS_AT_ONCE);
@@ -523,13 +543,24 @@ fn pbkdf2_sha1(password: &[u8], salt: &[u8], rounds: u32) -> [u8; 16] {
     key
 }
 
-/// The cookie-key password of the Chrome-family browser `family` ("Chrome", "Chromium", "Edge",
-/// "Brave") from the system keyring; its own entry is tried first, then the others'.
-async fn chrome_key(family: &str) -> Result<Vec<u8>> {
-    // The browsers' entries: (family, Secret Service `application`, Keychain service).
-    const ENTRIES: [(&str, &str, &str); 4] = [("Chrome", "chrome", "Chrome Safe Storage"), ("Chromium", "chromium", "Chromium Safe Storage"), ("Brave", "brave", "Brave Safe Storage"), ("Edge", "microsoft-edge", "Microsoft Edge Safe Storage")];
-    let mut entries = ENTRIES.to_vec();
+/// The keyring entries of the Chrome-family browsers: (family, Secret Service `application`, Keychain service).
+const KEY_ENTRIES: [(&str, &str, &str); 4] = [("Chrome", "chrome", "Chrome Safe Storage"), ("Chromium", "chromium", "Chromium Safe Storage"), ("Brave", "brave", "Brave Safe Storage"), ("Edge", "microsoft-edge", "Microsoft Edge Safe Storage")];
+
+/// The entries to try for `family`'s key: its own first, then the others' — or its own only (`own_only`).
+fn key_entries(family: &str, own_only: bool) -> Vec<(&'static str, &'static str, &'static str)> {
+    let mut entries = KEY_ENTRIES.to_vec();
     entries.sort_by_key(|(f, _, _)| *f != family);
+    if own_only {
+        entries.retain(|(f, _, _)| *f == family);
+    }
+    entries
+}
+
+/// The cookie-key password of the Chrome-family browser `family` ("Chrome", "Chromium", "Edge",
+/// "Brave") from the system keyring: its own entry first, then the others'. On macOS its own entry
+/// only: the Keychain asks about each entry read, and another browser's is never this one's key.
+async fn chrome_key(family: &str) -> Result<Vec<u8>> {
+    let entries = key_entries(family, cfg!(target_os = "macos"));
     #[cfg(target_os = "linux")]
     {
         let apps: Vec<&str> = entries.iter().map(|(_, app, _)| *app).collect();
@@ -693,7 +724,7 @@ mod tests {
         let profile = |source, dir: PathBuf, label: &str| BrowserProfile { source, dir, label: label.into(), account: None };
         let profiles = vec![profile(Source::Chrome, chrome.join("Default"), "Chrome · Work"), profile(Source::Firefox, firefox.clone(), "Firefox · default"), profile(Source::Chrome, chrome.join("Profile 1"), "Chrome · Profile 1")];
         let asked = std::sync::atomic::AtomicUsize::new(0);
-        let groups = discover_with(profiles, |_family| {
+        let groups = discover_with(profiles, KEY_READS, |_family| {
             asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             async { Err(anyhow!("the keyring is locked")) }
         })
@@ -710,6 +741,59 @@ mod tests {
         assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), if cfg!(windows) { 0 } else { 1 });
         std::fs::remove_dir_all(&chrome).unwrap();
         std::fs::remove_dir_all(&firefox).unwrap();
+    }
+
+    #[tokio::test]
+    async fn keys_can_be_read_one_browser_after_another() {
+        use std::sync::Mutex;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let profile = |label: &str| BrowserProfile { source: Source::Chrome, dir: PathBuf::from(format!("/nowhere/{label}")), label: label.into(), account: None };
+        let profiles = || vec![profile("Chrome · Work"), profile("Edge · Default"), profile("Chrome · Home"), profile("Brave · Default")];
+        for (one_at_a_time, most_at_once) in [(true, 1), (false, 3)] {
+            let (now, most) = (AtomicUsize::new(0), AtomicUsize::new(0));
+            let asked = Mutex::new(Vec::new());
+            let reads = KeyReads { one_at_a_time, timeout: Duration::from_secs(5) };
+            discover_with(profiles(), reads, |family| {
+                asked.lock().unwrap().push(family);
+                let n = now.fetch_add(1, Ordering::SeqCst) + 1;
+                most.fetch_max(n, Ordering::SeqCst);
+                let now = &now;
+                async move {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    now.fetch_sub(1, Ordering::SeqCst);
+                    // A denied dialog: that browser only, nothing else is asked.
+                    Err(anyhow!("denied"))
+                }
+            })
+            .await;
+            // Each browser once, in the order its first profile comes.
+            assert_eq!(*asked.lock().unwrap(), if cfg!(windows) { Vec::<String>::new() } else { vec!["Chrome".to_string(), "Edge".into(), "Brave".into()] });
+            if !cfg!(windows) {
+                assert_eq!(most.load(Ordering::SeqCst), most_at_once, "one_at_a_time: {one_at_a_time}");
+            }
+        }
+        // A dialog nobody answers in time is a problem of that browser only.
+        let reads = KeyReads { one_at_a_time: true, timeout: Duration::from_millis(50) };
+        let groups = discover_with(vec![profile("Chrome · Work")], reads, |_| async {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            Ok(vec![])
+        })
+        .await;
+        if !cfg!(windows) {
+            assert_eq!(groups[0].problem.as_deref(), Some("can't read Chrome's key: no answer in 0 s"));
+        }
+    }
+
+    #[test]
+    fn on_macos_only_the_browser_s_own_keychain_entry_is_read() {
+        let services = |family: &str, own_only: bool| key_entries(family, own_only).into_iter().map(|(_, _, s)| s).collect::<Vec<_>>();
+        // The Keychain asks about each entry read: only the browser's own.
+        assert_eq!(services("Edge", true), ["Microsoft Edge Safe Storage"]);
+        assert_eq!(services("Brave", true), ["Brave Safe Storage"]);
+        // The keyring (Linux) asks nothing per entry: its own first, then the others'.
+        assert_eq!(services("Edge", false), ["Microsoft Edge Safe Storage", "Chrome Safe Storage", "Chromium Safe Storage", "Brave Safe Storage"]);
+        assert_eq!(KEY_READS.one_at_a_time, cfg!(target_os = "macos"));
+        assert_eq!(KEY_READS.timeout, if cfg!(target_os = "macos") { Duration::from_secs(60) } else { STEP_TIMEOUT });
     }
 
     fn team(id: &str, email: &str) -> LoggedInTeam {

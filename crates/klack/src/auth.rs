@@ -7,14 +7,17 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
-use slack_core::session::{self, Profile, SessionSource, WorkspaceSession};
+use slack_core::session::{self, Profile, SessionSource, WorkspaceSession, workspace_url};
 
 use crate::login_import::Group;
 use crate::pick::{Item, Row};
 use crate::{login_browser, login_import, pick};
 
-/// How long `auth status` and the check at start wait for each workspace's answer.
-const CHECK_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long `auth status` waits for each workspace's answer.
+const STATUS_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long the check at start waits for each workspace's answer: no answer only means "can't check" and the app
+/// starts anyway, so a network that hangs does not hold up every start for long.
+const START_CHECK_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// The flags of `klack auth login`.
 pub struct LoginFlags {
@@ -313,12 +316,9 @@ fn picked_items<T: Copy>(item_rows: &[usize], items: &[T], at: &[usize]) -> Vec<
 /// Enter signs in to them), or another workspace and how to sign in to it. Returns how many
 /// sessions were saved; Esc leaves without saving (or creating) anything.
 pub async fn guide(profile_name: &str) -> Result<usize> {
-    let mut saved = Profile::read_or_new(&session::config_dir(profile_name)?.join("session.json"))?;
-    if saved.workspaces.is_empty() {
-        println!("Profile {profile_name} has no sign-ins yet.");
-    } else {
-        println!("Signing in profile {profile_name}.");
-    }
+    let path = session::config_dir(profile_name)?.join("session.json");
+    let mut saved = Profile::read_or_new(&path)?;
+    println!("{}", opening_line(profile_name, path.exists()));
     let Some(groups) = looking("Looking for Slack in your browsers…", login_import::discover()).await? else {
         nothing_signed_in()?;
         return Ok(0);
@@ -364,6 +364,12 @@ pub async fn guide(profile_name: &str) -> Result<usize> {
         Some(e) => Err(e),
         None => Ok(saved_now),
     }
+}
+
+/// The guide's first line: the profile it signs in, or that there is no such profile yet (`exists`: it has a
+/// session file, even one without sign-ins).
+fn opening_line(profile_name: &str, exists: bool) -> String {
+    if exists { format!("Signing in profile {profile_name}.") } else { format!("Profile {profile_name} has no sign-ins yet.") }
 }
 
 /// Signs `ws`'s account in again, offering where its session came from first: a browser profile
@@ -419,34 +425,6 @@ const OTHER: &str = "another workspace, or sign in another way…";
 const WINDOW: &str = "in a new browser window";
 const WINDOW_NOTE: &str = "fresh — Google won't know you; may ask for a captcha";
 const COOKIE: &str = "paste the d cookie by hand";
-
-/// The address of the workspace typed as `input`: a name (`acme`), an address (`acme.slack.com`,
-/// `acme.enterprise.slack.com`) or a link from the browser (`https://acme.slack.com/archives/…`).
-pub fn workspace_url(input: &str) -> Result<String, String> {
-    let text = input.trim().to_lowercase();
-    let rest = text.strip_prefix("https://").or_else(|| text.strip_prefix("http://")).unwrap_or(&text);
-    let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
-    // A pasted https link may carry its port.
-    let host = host.strip_suffix(":443").unwrap_or(host);
-    if host.is_empty() {
-        return Err("type the workspace's name, like acme".into());
-    }
-    // Slack's own hosts that are not a workspace (and the sign-in page's).
-    let (first, rest) = host.split_once('.').unwrap_or((host, ""));
-    let slack = ["slack.com", "slack-gov.com"];
-    if slack.contains(&host) || (slack.contains(&rest) && ["app", "www", "api", "edgeapi", "files", "status"].contains(&first)) || host.contains("slack-files") {
-        return Err("that link doesn't name the workspace — type its name".into());
-    }
-    let host = if host.contains('.') { host.to_string() } else { format!("{host}.slack.com") };
-    let name_ok = host.split('.').all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'));
-    if !name_ok {
-        return Err(format!("“{}” is not a workspace name — letters, digits and - only", input.trim()));
-    }
-    if !host.ends_with(".slack.com") && !host.ends_with(".slack-gov.com") {
-        return Err(format!("{host} is not a Slack address — type the workspace's name, like acme"));
-    }
-    Ok(format!("https://{host}/"))
-}
 
 /// The host of a workspace's address: `acme.slack.com` of `https://acme.slack.com/`.
 fn host_of(url: &str) -> String {
@@ -637,20 +615,20 @@ pub enum Health {
     Unknown(String),
 }
 
-/// Whether `ws` still works (waiting [`CHECK_TIMEOUT`] at most).
-async fn health(ws: &WorkspaceSession) -> Health {
-    let answer = tokio::time::timeout(CHECK_TIMEOUT, async { slack_core::Client::new(ws.clone())?.auth_test().await }).await;
+/// Whether `ws` still works (waiting `wait` at most).
+async fn health(ws: &WorkspaceSession, wait: Duration) -> Health {
+    let answer = tokio::time::timeout(wait, async { slack_core::Client::new(ws.clone())?.auth_test().await }).await;
     match answer {
         Ok(Ok(_)) => Health::Works,
         Ok(Err(e)) if slack_core::api::is_signed_out(&e) => Health::SignedOut,
         Ok(Err(e)) => Health::Unknown(format!("{e:#}")),
-        Err(_) => Health::Unknown(format!("no answer in {} s", CHECK_TIMEOUT.as_secs())),
+        Err(_) => Health::Unknown(format!("no answer in {} s", wait.as_secs())),
     }
 }
 
-/// Whether each workspace of `profile` still works, in its order (all asked at once).
-pub async fn check(profile: &Profile) -> Vec<Health> {
-    futures_util::future::join_all(profile.workspaces.iter().map(health)).await
+/// Whether each workspace of `profile` still works, in its order (all asked at once, each waited for `wait` at most).
+pub async fn check(profile: &Profile, wait: Duration) -> Vec<Health> {
+    futures_util::future::join_all(profile.workspaces.iter().map(|w| health(w, wait))).await
 }
 
 /// What to do about a workspace whose session has ended (one per row of [`fix_rows`]).
@@ -674,9 +652,9 @@ fn fix_rows(launchable: bool) -> (Vec<Row>, Vec<Fix>) {
     (vec![item("sign in again", "", "", true), item("remove it from the profile", "", "", true), last.0], vec![Fix::SignInAgain, Fix::Remove, last.1])
 }
 
-/// [`check`], with a line saying so while it runs when `asking`; None when Ctrl+C was pressed.
+/// [`check`] at start (a short wait), with a line saying so while it runs when `asking`; None when Ctrl+C was pressed.
 async fn checked(p: &Profile, asking: bool) -> Result<Option<Vec<Health>>> {
-    let health = if asking { looking("Checking the sign-ins…", check(p)).await? } else { Some(check(p).await) };
+    let health = if asking { looking("Checking the sign-ins…", check(p, START_CHECK_TIMEOUT)).await? } else { Some(check(p, START_CHECK_TIMEOUT).await) };
     for (w, h) in p.workspaces.iter().zip(health.iter().flatten()) {
         if let Health::Unknown(why) = h {
             tracing::warn!("{}: can't check the session: {why}", w.team_name);
@@ -750,7 +728,7 @@ pub async fn status(profile: &str) -> Result<()> {
         return Ok(());
     }
     let start = p.workspace(None).map(|w| (w.team_id.clone(), w.user_id.clone()));
-    let states = check(&p).await;
+    let states = check(&p, STATUS_CHECK_TIMEOUT).await;
     println!("profile {profile}:");
     for (w, health) in p.workspaces.iter().zip(states) {
         let mark = if start.as_ref().is_some_and(|(t, u)| *t == w.team_id && *u == w.user_id) { '★' } else { ' ' };
@@ -826,31 +804,6 @@ mod tests {
                 Row::Item(it) => format!("- {} | {} | {}{}", it.text, it.detail, it.note, if it.enabled { "" } else { " (dim)" }),
             })
             .collect()
-    }
-
-    #[test]
-    fn workspace_url_takes_names_addresses_and_links() {
-        for typed in ["acme", "acme.slack.com", "https://acme.slack.com/archives/C1", " Acme ", "ACME.slack.com/", "http://acme.slack.com"] {
-            assert_eq!(workspace_url(typed).as_deref(), Ok("https://acme.slack.com/"), "{typed:?}");
-        }
-        assert_eq!(workspace_url("acme.enterprise.slack.com").as_deref(), Ok("https://acme.enterprise.slack.com/"));
-        assert_eq!(workspace_url("my-team2").as_deref(), Ok("https://my-team2.slack.com/"));
-        // The port of a pasted https link is dropped.
-        assert_eq!(workspace_url("https://acme.slack.com:443/archives/C1").as_deref(), Ok("https://acme.slack.com/"));
-    }
-
-    #[test]
-    fn workspace_url_refuses_what_names_no_workspace() {
-        assert_eq!(workspace_url("https://app.slack.com/client/T1/C1"), Err("that link doesn't name the workspace — type its name".to_string()));
-        assert!(workspace_url("app.slack.com").is_err());
-        // Slack's own hosts that are not a workspace.
-        for host in ["files.slack.com", "https://status.slack.com/", "api.slack.com/methods", "edgeapi.slack.com", "www.slack.com", "https://slack-files.com/T1-F1-abc", "app.slack-gov.com"] {
-            assert_eq!(workspace_url(host), Err("that link doesn't name the workspace — type its name".to_string()), "{host:?}");
-        }
-        assert!(workspace_url("acme.slack.com:8080").is_err());
-        for bad in ["", "   ", "a b", "acme.example.com", "acme..slack.com", "ac_me"] {
-            assert!(workspace_url(bad).is_err(), "{bad:?}");
-        }
     }
 
     #[test]
@@ -982,6 +935,26 @@ mod tests {
             ["- acme (as person-U0000000001) | https://acme.slack.com/ | ", "- acme (as person-U0000000002) | https://acme.slack.com/ | ", "- other (as person-U0000000001) | https://other.slack.com/ | "]
         );
         assert_eq!(shown(&account_rows(&p.matching("acme"))).len(), 2, "--team acme: its two accounts");
+    }
+
+    #[tokio::test]
+    async fn the_check_at_start_waits_a_short_time_only() {
+        // A network that does not answer only means "can't check, launch": the start waits little for it.
+        assert_eq!((START_CHECK_TIMEOUT, STATUS_CHECK_TIMEOUT), (Duration::from_secs(3), Duration::from_secs(10)));
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        // A server that takes the connection and never answers.
+        let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let ws = WorkspaceSession { url: format!("http://{}/", silent.local_addr().unwrap()), ..account("T0000000001", "acme", "U0000000001") };
+        let started = std::time::Instant::now();
+        let h = health(&ws, Duration::from_millis(300)).await;
+        assert!(matches!(&h, Health::Unknown(why) if why.starts_with("no answer in")), "{h:?}");
+        assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
+    }
+
+    #[test]
+    fn the_guide_says_whether_the_profile_exists() {
+        assert_eq!(opening_line("work", true), "Signing in profile work.");
+        assert_eq!(opening_line("asd", false), "Profile asd has no sign-ins yet.");
     }
 
     #[test]

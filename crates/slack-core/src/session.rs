@@ -123,9 +123,13 @@ impl Profile {
     }
 
     pub fn load(profile: &str) -> Result<Self> {
-        let path = Self::path(profile)?;
-        let text = std::fs::read_to_string(&path).with_context(|| format!("no session for profile '{profile}' — run `klack auth login`"))?;
-        Ok(serde_json::from_str(&text)?)
+        Self::load_at(profile, &Self::path(profile)?)
+    }
+
+    /// [`Profile::load`] from the file `path`: a file that cannot be read names itself.
+    fn load_at(profile: &str, path: &Path) -> Result<Self> {
+        let text = std::fs::read_to_string(path).with_context(|| format!("no session for profile '{profile}' — run `klack auth login`"))?;
+        serde_json::from_str(&text).with_context(|| format!("cannot read {}", path.display()))
     }
 
     /// Read a session file, or a new empty profile when there is none; a file that exists but
@@ -305,12 +309,53 @@ pub fn find_logged_in_teams(html: &str) -> Option<Vec<LoggedInTeam>> {
                 if team_id.is_empty() || domain.is_empty() {
                     return None;
                 }
-                Some(LoggedInTeam { team_id, team_name: s("team_name"), url: format!("https://{domain}.slack.com/"), domain, email: s("user_email") })
+                let url = team_address(&s("team_url")).unwrap_or_else(|| format!("https://{domain}.slack.com/"));
+                Some(LoggedInTeam { team_id, team_name: s("team_name"), url, domain, email: s("user_email") })
             })
             .collect();
         return Some(teams);
     }
     None
+}
+
+/// A workspace's address from the `team_url` the sign-in page gives (`https://acme.slack.com/ssb/redirect` →
+/// `https://acme.slack.com/`): only an https link whose host is a workspace's on Slack's domains, as
+/// [`workspace_url`] takes them.
+fn team_address(team_url: &str) -> Option<String> {
+    let rest = team_url.trim().to_lowercase().strip_prefix("https://")?.to_string();
+    let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    if !host.contains('.') {
+        return None;
+    }
+    workspace_url(team_url).ok()
+}
+
+/// The address of the workspace typed as `input`: a name (`acme`), an address (`acme.slack.com`,
+/// `acme.enterprise.slack.com`) or a link from the browser (`https://acme.slack.com/archives/…`).
+pub fn workspace_url(input: &str) -> Result<String, String> {
+    let text = input.trim().to_lowercase();
+    let rest = text.strip_prefix("https://").or_else(|| text.strip_prefix("http://")).unwrap_or(&text);
+    let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    // A pasted https link may carry its port.
+    let host = host.strip_suffix(":443").unwrap_or(host);
+    if host.is_empty() {
+        return Err("type the workspace's name, like acme".into());
+    }
+    // Slack's own hosts that are not a workspace (and the sign-in page's).
+    let (first, rest) = host.split_once('.').unwrap_or((host, ""));
+    let slack = ["slack.com", "slack-gov.com"];
+    if slack.contains(&host) || (slack.contains(&rest) && ["app", "www", "api", "edgeapi", "files", "status"].contains(&first)) || host.contains("slack-files") {
+        return Err("that link doesn't name the workspace — type its name".into());
+    }
+    let host = if host.contains('.') { host.to_string() } else { format!("{host}.slack.com") };
+    let name_ok = host.split('.').all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'));
+    if !name_ok {
+        return Err(format!("“{}” is not a workspace name — letters, digits and - only", input.trim()));
+    }
+    if !host.ends_with(".slack.com") && !host.ends_with(".slack-gov.com") {
+        return Err(format!("{host} is not a Slack address — type the workspace's name, like acme"));
+    }
+    Ok(format!("https://{host}/"))
 }
 
 /// Undo the HTML escaping of an attribute value (`&quot;` and friends; `&amp;` last, so that an
@@ -483,6 +528,61 @@ mod tests {
         let acme = LoggedInTeam { team_id: "T0000000001".into(), team_name: "Acme & Sons".into(), domain: "acme".into(), url: "https://acme.slack.com/".into(), email: "person@example.com".into() };
         let widgets = LoggedInTeam { team_id: "T0000000002".into(), team_name: "Widgets Inc".into(), domain: "widgets-inc".into(), url: "https://widgets-inc.slack.com/".into(), email: "person@example.com".into() };
         assert_eq!(teams, [acme, widgets]);
+    }
+
+    #[test]
+    fn a_team_s_address_comes_from_its_team_url() {
+        let page = |team_url: Option<&str>| {
+            let field = team_url.map_or(String::new(), |u| format!(r#""team_url":"{u}","#));
+            format!(r#"{{"loggedInTeams":[{{"team_id":"T0000000001","team_name":"Acme",{field}"team_domain":"acme","user_email":"person@example.com"}}]}}"#)
+        };
+        let url = |team_url: Option<&str>| parse_logged_in_teams(&page(team_url))[0].url.clone();
+        // Enterprise Grid: the host is not `<domain>.slack.com`; the path (and JSON's escaped slashes) is dropped.
+        assert_eq!(url(Some("https://acme-corp.enterprise.slack.com/ssb/redirect")), "https://acme-corp.enterprise.slack.com/");
+        assert_eq!(url(Some(r"https:\/\/acme.slack-gov.com\/ssb\/redirect")), "https://acme.slack-gov.com/");
+        // None, not https, not a workspace on Slack's hosts: the domain's.
+        for other in [None, Some(""), Some("http://acme2.slack.com/"), Some("https://evil.example.com/"), Some("https://app.slack.com/client"), Some("https://acme2/"), Some("acme2.slack.com")] {
+            assert_eq!(url(other), "https://acme.slack.com/", "{other:?}");
+        }
+    }
+
+    #[test]
+    fn a_broken_session_file_is_named() {
+        let dir = std::env::temp_dir().join(format!("klack-session-load-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("session.json");
+        std::fs::write(&path, "{ 7 }").unwrap();
+        let e = format!("{:#}", Profile::load_at("work", &path).unwrap_err());
+        assert!(e.contains(&path.display().to_string()), "{e}");
+        std::fs::remove_file(&path).unwrap();
+        let e = format!("{:#}", Profile::load_at("work", &path).unwrap_err());
+        assert!(e.contains("no session for profile 'work'"), "{e}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn workspace_url_takes_names_addresses_and_links() {
+        for typed in ["acme", "acme.slack.com", "https://acme.slack.com/archives/C1", " Acme ", "ACME.slack.com/", "http://acme.slack.com"] {
+            assert_eq!(workspace_url(typed).as_deref(), Ok("https://acme.slack.com/"), "{typed:?}");
+        }
+        assert_eq!(workspace_url("acme.enterprise.slack.com").as_deref(), Ok("https://acme.enterprise.slack.com/"));
+        assert_eq!(workspace_url("my-team2").as_deref(), Ok("https://my-team2.slack.com/"));
+        // The port of a pasted https link is dropped.
+        assert_eq!(workspace_url("https://acme.slack.com:443/archives/C1").as_deref(), Ok("https://acme.slack.com/"));
+    }
+
+    #[test]
+    fn workspace_url_refuses_what_names_no_workspace() {
+        assert_eq!(workspace_url("https://app.slack.com/client/T1/C1"), Err("that link doesn't name the workspace — type its name".to_string()));
+        assert!(workspace_url("app.slack.com").is_err());
+        // Slack's own hosts that are not a workspace.
+        for host in ["files.slack.com", "https://status.slack.com/", "api.slack.com/methods", "edgeapi.slack.com", "www.slack.com", "https://slack-files.com/T1-F1-abc", "app.slack-gov.com"] {
+            assert_eq!(workspace_url(host), Err("that link doesn't name the workspace — type its name".to_string()), "{host:?}");
+        }
+        assert!(workspace_url("acme.slack.com:8080").is_err());
+        for bad in ["", "   ", "a b", "acme.example.com", "acme..slack.com", "ac_me"] {
+            assert!(workspace_url(bad).is_err(), "{bad:?}");
+        }
     }
 
     #[test]

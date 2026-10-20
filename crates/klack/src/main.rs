@@ -171,7 +171,8 @@ async fn run() -> Result<()> {
         None => {
             let mut p = Profile::read_or_new(&session_file)?;
             // No sign-ins yet: the guide first (in a terminal), then the TUI if it saved any.
-            if p.workspaces.is_empty() {
+            let just_signed_in = p.workspaces.is_empty();
+            if just_signed_in {
                 if !pick::interactive() {
                     bail!("profile {profile} has no sign-ins — klack auth login");
                 }
@@ -191,8 +192,14 @@ async fn run() -> Result<()> {
                 },
                 None => None,
             };
-            // Sessions that have ended are offered a fix (or skipped) before the app starts.
-            let Some((p, signed_out)) = auth::at_start(&profile, p).await? else { return Ok(()) };
+            // Sessions that have ended are offered a fix (or skipped) before the app starts; the ones the guide has
+            // just signed in to were checked with Slack a moment ago.
+            let (p, signed_out) = if just_signed_in {
+                (p, Default::default())
+            } else {
+                let Some(checked) = auth::at_start(&profile, p).await? else { return Ok(()) };
+                checked
+            };
             // Held while klack runs so the profile is not removed under it; a second klack on the
             // same profile runs without it.
             let _lock = profiles::lock(&dirs, &profile).ok().flatten();
@@ -207,14 +214,25 @@ fn purge_command(dirs: &Dirs, yes: bool) -> Result<()> {
     if !running.is_empty() {
         bail!("klack is running (profile {}) — quit it first", running.join(", "));
     }
-    let targets = profiles::purge_targets(dirs, &Dirs::old_system(), &std::env::temp_dir());
+    // Windows' roaming data folder (where an old one was moved) and the folders of the former name.
+    let more: Vec<std::path::PathBuf> = Dirs::roaming_data().into_iter().chain(Dirs::old_system()).collect();
+    // Only this user's leftovers in a shared temporary folder.
+    #[cfg(unix)]
+    // SAFETY: getuid only returns the real user id of this process; it cannot fail.
+    let owner = Some(unsafe { libc::getuid() });
+    #[cfg(not(unix))]
+    let owner = None;
+    let targets = profiles::purge_targets(dirs, &more, &std::env::temp_dir(), owner);
     if targets.is_empty() {
         println!("nothing to delete");
         return Ok(());
     }
     eprintln!("This deletes everything klack wrote (files you saved from messages stay):");
     for path in &targets {
-        eprintln!("  {}", path.display());
+        match profiles::link_target(path) {
+            Some(to) => eprintln!("  {} (a link: only the link, not {})", path.display(), to.display()),
+            None => eprintln!("  {}", path.display()),
+        }
     }
     if !auth::confirm("Delete all of this?", yes)? {
         println!("nothing deleted");
@@ -223,7 +241,8 @@ fn purge_command(dirs: &Dirs, yes: bool) -> Result<()> {
     let mut failed = 0;
     for (path, result) in profiles::purge(&targets) {
         match result {
-            Ok(()) => println!("deleted {}", path.display()),
+            Ok(None) => println!("deleted {}", path.display()),
+            Ok(Some(to)) => println!("removed the link {} (its target {} was left)", path.display(), to.display()),
             Err(e) => {
                 failed += 1;
                 eprintln!("could not delete {}: {e}", path.display());
@@ -256,6 +275,10 @@ fn profile_command(dirs: &Dirs, cmd: ProfileCmd) -> Result<()> {
                     }
                     Err(e) => println!("    cannot read its session.json: {e:#}"),
                 }
+            }
+            // Sign-ins in a folder whose name klack no longer takes as a profile's (an earlier klack took any).
+            for (name, why) in profiles::skipped(dirs) {
+                println!("skipped {name}: {why}");
             }
             Ok(())
         }

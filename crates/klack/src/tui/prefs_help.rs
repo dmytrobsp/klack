@@ -167,7 +167,7 @@ fn build(field: Field, _ws: &Workspace, keys: &Keymap, tr: &dyn Fn(&'static str)
         }
         Field::Schedule => {
             b.text("The hours you receive notifications; outside them they are paused. Changes are saved to Slack at once.").blank();
-            b.value("off", "notifications come at any time").value("every day", "the same hours every day").value("weekdays", "the hours on Monday to Friday").value("custom", "hours of its own for each day, listed below").blank();
+            b.value("off", "notifications come at any time").value("every day", "the same hours every day").value("weekdays", "the hours on Monday to Friday: paused from each of those evenings to the next morning, so from Saturday morning to Monday evening notifications come at any time").value("custom", "hours of its own for each day, listed below").blank();
             b.step("change the kind");
         }
         Field::ScheduleHours => {
@@ -557,6 +557,9 @@ mod tests {
         let h = help(Field::Schedule, &Workspace::default(), &keys());
         assert_eq!(values(&h), ["off", "every day", "weekdays", "custom"]);
         assert!(key_lines(&h).iter().any(|k| k.contains("Enter")), "{:?}", key_lines(&h));
+        // What the weekend does with "weekdays" (`Schedule::quiet_at`): Friday's pause runs into Saturday morning, then free.
+        let weekdays = value_of(&h, "weekdays").unwrap();
+        assert!(weekdays.contains("from Saturday morning to Monday evening notifications come at any time"), "{weekdays}");
     }
 
     #[test]

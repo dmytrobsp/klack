@@ -36,28 +36,54 @@ impl Dirs {
         all.retain(|p| p.symlink_metadata().is_ok());
         all
     }
+
+    /// The roaming data folder when it is not `data`: on Windows `%APPDATA%\klack\data`, where an old roaming
+    /// folder of the former name is moved (`session::adopt_old_dirs`); elsewhere it is `data` itself, so None.
+    pub fn roaming_data() -> Option<PathBuf> {
+        let dirs = crate::session::project_dirs()?;
+        (dirs.data_dir() != dirs.data_local_dir()).then(|| dirs.data_dir().to_path_buf())
+    }
 }
 
-/// Names next to the profiles that are klack's own (the default-profile file, `themes/` and
-/// `locales/` in the config folder, `login-browser/` in the cache folder), and Windows' device names.
-const RESERVED: &[&str] = &[
-    DEFAULT_FILE, "themes", "locales", "login-browser", "con", "nul", "aux", "prn", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
-];
+/// Names next to the profiles that are klack's own: the default-profile file, `settings.toml` and `keys.toml` (and the
+/// `.tmp` files they are written through), `themes/` and `locales/` in the config folder, `login-browser/` in the cache
+/// folder.
+const RESERVED: &[&str] = &[DEFAULT_FILE, "settings.toml", "settings.tmp", "keys.toml", "keys.tmp", "themes", "locales", "login-browser"];
+
+/// Windows' device names: a file named so, with any extension after it (`con.txt`), is the device there.
+const DEVICES: &[&str] = &["con", "nul", "aux", "prn", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9"];
 
 /// What klack writes into a profile's cache folder.
 const CACHE_FILES: &[&str] = &["klack.log", "slacktui.log", LOCK_FILE];
 
-/// A profile name is a folder name: letters, digits, `-` and `_` only (no dots or slashes, so it
-/// can never point outside klack's folders), and none of klack's own names next to the profiles
-/// in any case (file systems may ignore case).
+/// Why `name` cannot be a profile name, or None when it can. A profile name is a folder name: letters, digits, `-`
+/// and `_`, and `.` or `@` inside it (`john.doe`, `me@work`; never first or last, never two dots together, so it can
+/// never point outside klack's folders); none of klack's own names next to the profiles nor a Windows device name, in
+/// any case (file systems may ignore case).
+fn name_problem(name: &str) -> Option<&'static str> {
+    let allowed = |c: char| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '@');
+    if name.is_empty() || !name.chars().all(allowed) {
+        return Some("letters, digits, - and _ only, and . or @ inside the name");
+    }
+    if name.starts_with(['.', '@']) || name.ends_with(['.', '@']) || name.contains("..") {
+        return Some(". and @ only inside the name, never two dots together");
+    }
+    let lower = name.to_ascii_lowercase();
+    if RESERVED.contains(&lower.as_str()) {
+        return Some("klack's own name for a file next to the profiles");
+    }
+    if lower.split('.').next().is_some_and(|stem| DEVICES.contains(&stem)) {
+        return Some("a device name on Windows");
+    }
+    None
+}
+
+/// Refuses a name that cannot be a profile's (see `name_problem`).
 pub fn valid_name(name: &str) -> Result<()> {
-    if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-        bail!("'{name}' is not a profile name: letters, digits, - and _ only");
+    match name_problem(name) {
+        Some(why) => bail!("'{name}' cannot be a profile name: {why}"),
+        None => Ok(()),
     }
-    if RESERVED.contains(&name.to_ascii_lowercase().as_str()) {
-        bail!("'{name}' cannot be a profile name");
-    }
-    Ok(())
 }
 
 /// Every profile with sign-ins (a folder of `d.config` holding `session.json`), sorted.
@@ -72,6 +98,23 @@ pub fn list(d: &Dirs) -> Vec<String> {
         .collect();
     names.sort();
     names
+}
+
+/// The folders of `d.config` holding `session.json` that `list` leaves out because their names cannot be a profile's,
+/// each with why (sorted): sign-ins of an earlier klack under a name it no longer takes.
+pub fn skipped(d: &Dirs) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = std::fs::read_dir(&d.config)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.path().join("session.json").is_file())
+        .filter_map(|e| match e.file_name().into_string() {
+            Ok(name) => name_problem(&name).map(|why| (name, why.to_string())),
+            Err(raw) => Some((raw.to_string_lossy().into_owned(), "not a name klack can read".to_string())),
+        })
+        .collect();
+    out.sort();
+    out
 }
 
 /// The profile plain `klack` uses: the first line of `default-profile`, else `default`.
@@ -194,15 +237,16 @@ fn is_temp_leftover(name: &str) -> bool {
     digits > 0 && rest[digits..].strip_prefix('-').is_some_and(|tail| !tail.is_empty())
 }
 
-/// What `purge` deletes, existing paths only: klack's config, cache and data folders, the `old`
-/// folders (of the former name), and in `temp` only the entries klack makes (`is_temp_leftover`).
-pub fn purge_targets(d: &Dirs, old: &[PathBuf], temp: &Path) -> Vec<PathBuf> {
-    let mut targets: Vec<PathBuf> = [&d.config, &d.cache, &d.data].into_iter().chain(old).cloned().collect();
+/// What `purge` deletes, existing paths only: klack's config, cache and data folders, the `more` folders (the
+/// roaming data folder, those of the former name), and in `temp` only the entries klack makes (`is_temp_leftover`) —
+/// on Unix only those of the user `owner` (a shared /tmp holds other users' too; None: any).
+pub fn purge_targets(d: &Dirs, more: &[PathBuf], temp: &Path, owner: Option<u32>) -> Vec<PathBuf> {
+    let mut targets: Vec<PathBuf> = [&d.config, &d.cache, &d.data].into_iter().chain(more).cloned().collect();
     let mut leftovers: Vec<PathBuf> = std::fs::read_dir(temp)
         .into_iter()
         .flatten()
         .flatten()
-        .filter(|e| e.file_name().to_str().is_some_and(is_temp_leftover))
+        .filter(|e| e.file_name().to_str().is_some_and(is_temp_leftover) && owned_by(e, owner))
         .map(|e| e.path())
         .collect();
     leftovers.sort();
@@ -214,18 +258,39 @@ pub fn purge_targets(d: &Dirs, old: &[PathBuf], temp: &Path) -> Vec<PathBuf> {
     targets
 }
 
+/// Whether the entry `e` (itself, not what a link points to) belongs to the user `owner` (None: anyone's). Other
+/// systems than Unix have no such owner here: every entry.
+fn owned_by(e: &std::fs::DirEntry, owner: Option<u32>) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        owner.is_none_or(|uid| e.metadata().is_ok_and(|m| m.uid() == uid))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (e, owner);
+        true
+    }
+}
+
+/// Where `path` points when it is a symbolic link (None when it is not one).
+pub fn link_target(path: &Path) -> Option<PathBuf> {
+    path.symlink_metadata().ok().filter(|m| m.file_type().is_symlink()).and_then(|_| std::fs::read_link(path).ok())
+}
+
 /// Delete `targets`, every one even when another fails; a symbolic link is removed itself, never
-/// what it points to. Returns each target with how deleting it went.
-pub fn purge(targets: &[PathBuf]) -> Vec<(PathBuf, std::io::Result<()>)> {
+/// what it points to. Returns each target with how deleting it went: `Some(where it pointed)` for a link.
+pub fn purge(targets: &[PathBuf]) -> Vec<(PathBuf, std::io::Result<Option<PathBuf>>)> {
     targets
         .iter()
         .map(|path| {
+            let link = link_target(path);
             let result = match path.symlink_metadata() {
                 Ok(m) if m.is_dir() => std::fs::remove_dir_all(path),
                 Ok(_) => std::fs::remove_file(path),
                 Err(_) => Ok(()),
             };
-            (path.clone(), result)
+            (path.clone(), result.map(|()| link))
         })
         .collect()
 }
@@ -294,8 +359,14 @@ mod tests {
         touch(&t.1.config.join("themes/sunset.toml"));
         touch(&t.1.config.join("locales/de.toml"));
         touch(&t.1.cache.join("login-browser/klack-login-1/Cookies"));
+        touch(&t.1.config.join("settings.toml"));
         let before = tree(&t.0);
-        for name in ["", ".", "..", "../x", "a/b", "a\\b", "default-profile", "Default-Profile", "a b", "../config/a", "themes", "Themes", "locales", "login-browser", "con", "NUL", "aux", "prn", "com1", "COM9", "lpt1", "lpt9"] {
+        for name in [
+            "", ".", "..", "../x", "a/b", "a\\b", "default-profile", "Default-Profile", "a b", "../config/a", "themes", "Themes", "locales", "login-browser", "con", "NUL", "aux", "prn", "com1", "COM9", "lpt1", "lpt9",
+            // A dot or @ only inside a name, never two dots; klack's files next to the profiles; a device name with an
+            // extension is still the device on Windows.
+            ".a", "a.", "..a", "a..b", ".hidden", "@a", "a@", "settings.toml", "Keys.toml", "settings.tmp", "con.txt", "NUL.json", "com1.x", "lpt9.tar.gz", "Aux.a.b",
+        ] {
             assert!(valid_name(name).is_err(), "{name:?}");
             assert!(remove(&t.1, name).is_err(), "{name:?}");
             assert!(set_default(&t.1, name).is_err(), "{name:?}");
@@ -305,6 +376,43 @@ mod tests {
         for name in ["default", "a", "Work_2", "b-c", "com", "com10", "console"] {
             assert!(valid_name(name).is_ok(), "{name:?}");
         }
+    }
+
+    #[test]
+    fn names_of_earlier_versions_still_work() {
+        // klack 0.6 took any folder name: a dot or @ inside one is still a profile.
+        for name in ["john.doe", "work.acme", "me@work", "a.b.c", "first.last@work.example", "com10.x", "console.app", "themes.old", "x.con"] {
+            assert!(valid_name(name).is_ok(), "{name:?}");
+        }
+        let t = Temp::new("dotted");
+        three(&t);
+        touch(&t.1.config.join("john.doe/session.json"));
+        touch(&t.1.config.join("me@work/session.json"));
+        assert_eq!(list(&t.1), ["a", "b", "john.doe", "me@work"]);
+        set_default(&t.1, "john.doe").unwrap();
+        assert_eq!(default_name(&t.1), "john.doe");
+        assert_eq!(remove(&t.1, "me@work").unwrap(), [t.1.config.join("me@work")]);
+        assert_eq!(list(&t.1), ["a", "b", "john.doe"]);
+    }
+
+    #[test]
+    fn folders_list_cannot_use_are_named() {
+        let t = Temp::new("skipped");
+        three(&t);
+        // Sign-ins in folders whose names are not profile names: named with why; a folder without sign-ins, or one
+        // that is a profile, is not.
+        touch(&t.1.config.join("a b/session.json"));
+        touch(&t.1.config.join(".hidden/session.json"));
+        touch(&t.1.config.join("con.txt/session.json"));
+        std::fs::create_dir_all(t.1.config.join("no sign-ins")).unwrap();
+        touch(&t.1.config.join("themes/sunset.toml"));
+        let left_out = skipped(&t.1);
+        let names: Vec<&str> = left_out.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, [".hidden", "a b", "con.txt"]);
+        assert!(left_out.iter().all(|(_, why)| !why.is_empty()));
+        assert!(left_out[2].1.contains("device"), "{:?}", left_out[2]);
+        assert_eq!(list(&t.1), ["a", "b"]);
+        assert!(skipped(&Temp::new("skipped-none").1).is_empty());
     }
 
     #[test]
@@ -410,18 +518,29 @@ mod tests {
         let gone_old = t.0.join("old-cache-missing");
         let temp = t.0.join("tmp");
         std::fs::create_dir_all(&temp).unwrap();
-        let got = purge_targets(&t.1, &[old.clone(), gone_old], &temp);
+        let got = purge_targets(&t.1, &[old.clone(), gone_old], &temp, None);
         assert_eq!(got, [t.1.config.clone(), t.1.cache.clone(), t.1.data.clone(), old]);
         // A folder that does not exist is not listed.
         std::fs::remove_dir_all(&t.1.data).unwrap();
-        assert!(!purge_targets(&t.1, &[], &temp).contains(&t.1.data));
+        assert!(!purge_targets(&t.1, &[], &temp, None).contains(&t.1.data));
         // Deleting takes the whole folders and nothing next to them.
         touch(&t.0.join("other/keep.txt"));
-        let targets = purge_targets(&t.1, &[], &temp);
+        let targets = purge_targets(&t.1, &[], &temp, None);
         assert!(purge(&targets).iter().all(|(_, r)| r.is_ok()));
         assert!(!t.1.config.exists() && !t.1.cache.exists());
         assert!(t.0.join("other/keep.txt").is_file());
         assert!(purge(&targets).iter().all(|(_, r)| r.is_ok()));
+    }
+
+    #[test]
+    fn the_roaming_data_folder_is_listed_only_where_it_is_another() {
+        // Windows keeps `%APPDATA%\klack\data` apart from `%LOCALAPPDATA%\klack\data`; elsewhere they are one folder.
+        let Some(roaming) = Dirs::roaming_data() else {
+            assert!(!cfg!(windows));
+            return;
+        };
+        assert!(cfg!(windows));
+        assert_ne!(Some(roaming), Dirs::system().ok().map(|d| d.data));
     }
 
     #[test]
@@ -431,7 +550,7 @@ mod tests {
         // As on macOS: config and data are one folder, and an old folder repeats a new one.
         t.1.data = t.1.config.clone();
         let temp = t.0.join("tmp");
-        let got = purge_targets(&t.1, &[t.1.cache.clone(), t.1.config.clone()], &temp);
+        let got = purge_targets(&t.1, &[t.1.cache.clone(), t.1.config.clone()], &temp, None);
         assert_eq!(got, [t.1.config.clone(), t.1.cache.clone()]);
     }
 
@@ -464,11 +583,46 @@ mod tests {
             touch(&temp.join(name));
         }
         std::fs::create_dir_all(temp.join("klack-cookies-5-6")).unwrap();
-        let got = purge_targets(&t.1, &[], &temp);
+        let got = purge_targets(&t.1, &[], &temp, None);
         assert_eq!(got, [temp.join("klack-777-F1.mp4"), temp.join("klack-cookies-12-34"), temp.join("klack-cookies-5-6")]);
         assert!(purge(&got).iter().all(|(_, r)| r.is_ok()));
         assert_eq!(tree(&temp).len(), 7);
         assert!(temp.join("klack-notes.txt").is_file() && temp.join("other").is_file() && !temp.join("klack-cookies-5-6").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn purge_takes_only_this_user_s_temp_files() {
+        use std::os::unix::fs::MetadataExt;
+        let t = Temp::new("purge-owner");
+        let temp = t.0.join("tmp");
+        touch(&temp.join("klack-777-F1.mp4"));
+        touch(&temp.join("klack-cookies-1-2"));
+        let me = std::fs::metadata(temp.join("klack-777-F1.mp4")).unwrap().uid();
+        assert_eq!(purge_targets(&t.1, &[], &temp, Some(me)), [temp.join("klack-777-F1.mp4"), temp.join("klack-cookies-1-2")]);
+        // Another user's (a shared /tmp): not listed, so not deleted.
+        assert!(purge_targets(&t.1, &[], &temp, Some(me + 1)).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn purge_removes_a_link_and_says_where_it_pointed() {
+        let t = Temp::new("purge-link");
+        let real = t.0.join("real-config");
+        touch(&real.join("a/session.json"));
+        std::os::unix::fs::symlink(&real, &t.1.config).unwrap();
+        assert_eq!(link_target(&t.1.config), Some(real.clone()));
+        assert_eq!(link_target(&real), None);
+        let targets = purge_targets(&t.1, &[], &t.0.join("tmp"), None);
+        assert_eq!(targets, [t.1.config.clone()]);
+        let results = purge(&targets);
+        assert_eq!(results[0].1.as_ref().ok(), Some(&Some(real.clone())));
+        // The link is gone, what it pointed to stays.
+        assert!(t.1.config.symlink_metadata().is_err());
+        assert!(real.join("a/session.json").is_file());
+        // A folder that is not a link says so too.
+        touch(&t.1.cache.join("a/klack.log"));
+        assert_eq!(purge(&[t.1.cache.clone()])[0].1.as_ref().ok(), Some(&None));
     }
 
     #[test]
