@@ -1094,6 +1094,20 @@ mod tests {
         let (ex, ey) = cell("\x1b]8;;https://x.y/a?b=2\x1b\\");
         assert_eq!(note((ex, ey)).as_deref(), Some("x.y/a?b=2"), "an outside link its address, without https://");
         assert_eq!(note((x - 2, y)), None, "off the link: no note, so the status line is clear again");
+        // The pointer stays where it is while the pane scrolls the link away: the next draw finds nothing there.
+        let mut t = Timeline { loaded: true, ..Default::default() };
+        for n in 0..14 {
+            t.upsert(msg(&format!("1729440000.{:06}", n), "U2", "filler"));
+        }
+        t.upsert(msg("1729440000.000500", "U2", &format!("see <{}|>", url.replace('&', "&amp;"))));
+        let mut pane = MessagePane::default();
+        terminal.draw(|f| pane.draw(f, f.area(), &here, "t", Some(&t), true, &media)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let (x, y) = (0..buf.area.height).flat_map(|y| (0..buf.area.width).map(move |x| (x, y))).find(|&(x, y)| buf[(x, y)].symbol().contains("↪")).expect("the link is on screen at the bottom");
+        assert!(pane.link_under(x + 3, y).is_some());
+        pane.scroll_up(6);
+        terminal.draw(|f| pane.draw(f, f.area(), &here, "t", Some(&t), true, &media)).unwrap();
+        assert_eq!(pane.link_under(x + 3, y), None, "scrolled away: nothing under the pointer any more");
     }
 
     #[test]

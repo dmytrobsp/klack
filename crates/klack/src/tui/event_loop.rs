@@ -281,6 +281,9 @@ struct App {
     status: String,
     /// What the link under the mouse pointer does (the status line shows it while nothing else is said).
     link_note: Option<String>,
+    /// Where the mouse pointer was last seen (None when it left the window): the hover note is worked out from it at
+    /// every draw, so scrolling, a keyboard move or a new conversation under a still pointer is followed too.
+    pointer: Option<(u16, u16)>,
     /// The status as last seen and since when, to clear it after [`STATUS_TTL`].
     status_shown: (String, std::time::Instant),
     loading: bool,
@@ -2468,7 +2471,6 @@ impl App {
 
     /// Forget the hovered row of the sidebar and the message panes.
     fn clear_main_hover(&mut self) {
-        self.link_note = None;
         self.sidebar.hover = None;
         self.messages.hover = None;
         self.thread_pane.hover = None;
@@ -3637,6 +3639,7 @@ async fn run_workspace(
         current: None,
         status: "loading workspace…".into(),
         link_note: None,
+        pointer: None,
         status_shown: (String::new(), std::time::Instant::now()),
         loading: true,
     };
@@ -3802,6 +3805,11 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
 }
 
 fn handle_event(app: &mut App, ev: Event) -> bool {
+    match &ev {
+        Event::Mouse(m) => app.pointer = Some((m.column, m.row)),
+        Event::FocusLost => app.pointer = None,
+        _ => {}
+    }
     if let Event::FocusGained | Event::FocusLost = ev {
         app.terminal_focused = matches!(ev, Event::FocusGained);
         if !app.terminal_focused {
@@ -3883,7 +3891,6 @@ fn handle_dialog(app: &mut App, ev: &Event) -> bool {
             }
         }
         Event::Mouse(m) if app.menu.is_some() && matches!(m.kind, MouseEventKind::Moved | MouseEventKind::Down(_)) => {
-            app.link_note = None;
             let hit = app.menu.as_ref().and_then(|menu| menu.item_at(m.column, m.row));
             match (m.kind, hit) {
                 (MouseEventKind::Moved, Some(n)) => {
@@ -4399,7 +4406,6 @@ fn handle_main(app: &mut App, ev: Event) -> bool {
             app.sidebar.hover = app.sidebar.hover_at(c, r);
             app.messages.hover = app.messages.message_at(c, r);
             app.thread_pane.hover = if app.thread.is_some() { app.thread_pane.message_at(c, r) } else { None };
-            app.link_note = app.link_note_at(c, r);
         }
         Event::Mouse(m) if m.kind == MouseEventKind::Down(MouseButton::Right) => app.open_menu(m.column, m.row),
         Event::Mouse(m) => match m.kind {
@@ -5526,6 +5532,8 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         let key = |a| app.keys.first_shown_in(app.mode(), Context::Global, a).unwrap_or_default();
         format!("📞 {} invites you to a huddle · {} join · {} decline", app.ws.user_name(&ring.user), key(Action::Huddle), key(Action::DeclineHuddle))
     });
+    // The note for the link under the pointer, from where the panes are drawn now (not under a dialog or menu).
+    app.link_note = app.pointer.filter(|_| app.overlay().is_none()).and_then(|(c, r)| app.link_note_at(c, r));
     // The hover note only fills a silent status line: a real message, whenever it came, stays.
     let note = shown_note(ringing, app.signed_out_note.as_deref(), &app.status).or_else(|| app.link_note.clone());
     let info = super::status::Info {
