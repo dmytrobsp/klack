@@ -4067,7 +4067,8 @@ fn handle_main(app: &mut App, ev: Event) -> bool {
                 } else if let Some(name) = app.sidebar.header_at(m.column, m.row) {
                     app.sidebar.toggle_fold_keeping(&app.ws, &name, app.current.as_deref());
                 } else if app.sidebar.click(m.column, m.row) {
-                    app.focus = Focus::Composer;
+                    // On its messages in NORMAL, as Jump to (`i` types).
+                    app.focus = Focus::Messages;
                 } else if app.messages.click(m.column, m.row) {
                     app.focus = Focus::Messages;
                 } else if app.thread.is_some() && app.thread_pane.click(m.column, m.row) {
