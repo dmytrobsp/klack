@@ -207,21 +207,27 @@ pub fn purge_targets(d: &Dirs, old: &[PathBuf], temp: &Path) -> Vec<PathBuf> {
         .collect();
     leftovers.sort();
     targets.extend(leftovers);
-    targets.dedup();
+    // The same folder can come twice (macOS keeps config and data in one): listed and deleted once.
+    let mut seen = std::collections::HashSet::new();
+    targets.retain(|p| seen.insert(p.clone()));
     targets.retain(|p| p.symlink_metadata().is_ok());
     targets
 }
 
-/// Delete `targets`; a symbolic link is removed itself, never what it points to.
-pub fn purge(targets: &[PathBuf]) -> Result<()> {
-    for path in targets {
-        match path.symlink_metadata() {
-            Ok(m) if m.is_dir() => std::fs::remove_dir_all(path)?,
-            Ok(_) => std::fs::remove_file(path)?,
-            Err(_) => {}
-        }
-    }
-    Ok(())
+/// Delete `targets`, every one even when another fails; a symbolic link is removed itself, never
+/// what it points to. Returns each target with how deleting it went.
+pub fn purge(targets: &[PathBuf]) -> Vec<(PathBuf, std::io::Result<()>)> {
+    targets
+        .iter()
+        .map(|path| {
+            let result = match path.symlink_metadata() {
+                Ok(m) if m.is_dir() => std::fs::remove_dir_all(path),
+                Ok(_) => std::fs::remove_file(path),
+                Err(_) => Ok(()),
+            };
+            (path.clone(), result)
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -412,10 +418,42 @@ mod tests {
         // Deleting takes the whole folders and nothing next to them.
         touch(&t.0.join("other/keep.txt"));
         let targets = purge_targets(&t.1, &[], &temp);
-        purge(&targets).unwrap();
+        assert!(purge(&targets).iter().all(|(_, r)| r.is_ok()));
         assert!(!t.1.config.exists() && !t.1.cache.exists());
         assert!(t.0.join("other/keep.txt").is_file());
-        purge(&targets).unwrap();
+        assert!(purge(&targets).iter().all(|(_, r)| r.is_ok()));
+    }
+
+    #[test]
+    fn purge_lists_a_repeated_folder_once() {
+        let mut t = Temp::new("purge-dup");
+        three(&t);
+        // As on macOS: config and data are one folder, and an old folder repeats a new one.
+        t.1.data = t.1.config.clone();
+        let temp = t.0.join("tmp");
+        let got = purge_targets(&t.1, &[t.1.cache.clone(), t.1.config.clone()], &temp);
+        assert_eq!(got, [t.1.config.clone(), t.1.cache.clone()]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn purge_goes_on_after_a_failure() {
+        use std::os::unix::fs::PermissionsExt;
+        let t = Temp::new("purge-fail");
+        touch(&t.0.join("locked/stuck/f"));
+        touch(&t.0.join("free/f"));
+        let (stuck, free) = (t.0.join("locked/stuck"), t.0.join("free"));
+        // A folder whose parent cannot be written cannot be removed.
+        std::fs::set_permissions(t.0.join("locked"), std::fs::Permissions::from_mode(0o555)).unwrap();
+        let results = purge(&[stuck.clone(), free.clone()]);
+        std::fs::set_permissions(t.0.join("locked"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        // (Running as root nothing is refused: then there is nothing to check.)
+        if results[0].1.is_err() {
+            assert!(stuck.exists());
+        }
+        assert_eq!(results[0].0, stuck);
+        assert_eq!(results[1].0, free);
+        assert!(results[1].1.is_ok() && !free.exists());
     }
 
     #[test]
@@ -428,7 +466,7 @@ mod tests {
         std::fs::create_dir_all(temp.join("klack-cookies-5-6")).unwrap();
         let got = purge_targets(&t.1, &[], &temp);
         assert_eq!(got, [temp.join("klack-777-F1.mp4"), temp.join("klack-cookies-12-34"), temp.join("klack-cookies-5-6")]);
-        purge(&got).unwrap();
+        assert!(purge(&got).iter().all(|(_, r)| r.is_ok()));
         assert_eq!(tree(&temp).len(), 7);
         assert!(temp.join("klack-notes.txt").is_file() && temp.join("other").is_file() && !temp.join("klack-cookies-5-6").exists());
     }

@@ -193,9 +193,18 @@ fn purge_command(dirs: &Dirs, yes: bool) -> Result<()> {
         println!("nothing deleted");
         return Ok(());
     }
-    profiles::purge(&targets)?;
-    for path in &targets {
-        println!("deleted {}", path.display());
+    let mut failed = 0;
+    for (path, result) in profiles::purge(&targets) {
+        match result {
+            Ok(()) => println!("deleted {}", path.display()),
+            Err(e) => {
+                failed += 1;
+                eprintln!("could not delete {}: {e}", path.display());
+            }
+        }
+    }
+    if failed > 0 {
+        bail!("{failed} of {} could not be deleted (see above); quit what uses them and run purge again", targets.len());
     }
     Ok(())
 }
