@@ -1,6 +1,7 @@
 // The headline's loop: the "BROWSER." scrap peels off "BULLSHIT.", hangs limp, and a hand slaps it back.
 // Stop-motion at 6 fps, 8.0 s loop. Ported from the approved mockup (hero-v17). The timeline and the
-// shapes are pure functions (tested in tools/site/hero.test.mjs); only startHero touches the DOM.
+// shapes are pure functions (tested in tools/site/hero.test.mjs: node --test "tools/site/*.test.mjs");
+// only startHero touches the DOM.
 
 export const FPS = 6, LOOP = 8.0;
 

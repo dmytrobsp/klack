@@ -1,4 +1,4 @@
-// Unit tests for the headline's 6 fps loop (site/js/hero.js). Run: node --test tools/site/
+// Unit tests for the headline's 6 fps loop (site/js/hero.js). Run: node --test "tools/site/*.test.mjs"
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
