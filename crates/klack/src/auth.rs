@@ -367,7 +367,7 @@ pub struct Hint {
     pub team: Option<(String, String)>,
     /// The workspace's host (`acme.slack.com`): that workspace is marked when a list has it.
     pub host: Option<String>,
-    /// The sign-in link of the way "in your browser" (Slack's sign-in page when there is none). Task Y7 fills it in.
+    /// The sign-in link of the way "in your browser" (Slack's sign-in page when there is none): `--workspace` and signing in again fill it in.
     pub link: Option<String>,
 }
 
@@ -492,7 +492,7 @@ impl Screen {
 /// the phone, the code Slack emails, then the workspaces of that email to pick from (`saved`: the profile, for
 /// "already signed in"), each marked one signed in to. Esc (or Ctrl+C) at any question goes `Back`.
 async fn code_way(saved: &Profile, hint: &Hint) -> Result<Step<Vec<Result<WorkspaceSession, Failed>>>> {
-    let mut typed = hint.email.clone().unwrap_or_default();
+    let mut typed = hint.email.as_deref().map(clean_email).unwrap_or_default();
     let email = loop {
         let Some(t) = pick::ask_with("Email: ", &typed, |t| if t.is_empty() { "the address you sign in to Slack with".into() } else { String::new() })? else { return Ok(Step::Back) };
         let email = clean_email(&t);
@@ -813,30 +813,78 @@ fn opening_line(profile_name: &str, exists: bool) -> String {
     if exists { format!("Signing in profile {profile_name}.") } else { format!("Profile {profile_name} has no sign-ins yet.") }
 }
 
-/// Signs `ws`'s account in again, offering where its session came from first: a browser profile
-/// that is still signed in to that workspace as that account is a one-row question (Enter takes
-/// it); otherwise, or on Esc, the full guide. Returns whether anything was saved.
+/// Where signing in again starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum First {
+    /// The code way, with the email filled in.
+    Code,
+    /// The profile the session came from, then the browser way.
+    BrowserProfile,
+    /// The full list.
+    Guide,
+}
+
+/// Where signing in again starts for `ws`, and what the way it starts with is told about the workspace.
+fn again_hint(ws: &WorkspaceSession) -> (First, Hint) {
+    let hint = Hint { team: Some((ws.team_id.clone(), ws.team_name.clone())), host: Some(host_of(&ws.url)), ..Hint::default() };
+    match &ws.source {
+        Some(SessionSource::Code { email }) => (First::Code, Hint { email: Some(email.clone()), ..hint }),
+        Some(SessionSource::Browser { .. }) => (First::BrowserProfile, Hint { link: Some(ws.url.clone()), ..hint }),
+        _ => (First::Guide, hint),
+    }
+}
+
+/// Signs `ws`'s account in again, starting from the way its session came from: a code session asks the code way with
+/// its email filled in; a browser session offers that profile if it is still signed in (a one-row question, Enter
+/// takes it), then the browser way with the workspace's own link. Esc there, or any other source, shows the full
+/// guide. Returns whether anything was saved.
 pub async fn sign_in_again(profile_name: &str, ws: &WorkspaceSession) -> Result<bool> {
-    if let Some(SessionSource::Browser { profile, label, .. }) = &ws.source {
-        let still = match login_import::browser_profiles().into_iter().find(|b| &b.dir == profile) {
-            Some(b) => match looking(&format!("Looking at {label}…"), login_import::discover_in(vec![b])).await? {
-                Some(groups) => still_signed_in(&groups, ws),
-                None => {
-                    nothing_signed_in()?;
-                    return Ok(false);
-                }
-            },
-            None => None,
-        };
-        match still {
-            Some(s) => {
-                let rows = vec![item("use it", "", &format!("as {}", s.user_name), true)];
-                if let pick::Outcome::Picked(_) = pick::choose(&format!("{label} is still signed in to {} — use it?", ws.team_name), rows, false)? {
-                    let mut saved = Profile::read_or_new(&session::config_dir(profile_name)?.join("session.json"))?;
-                    return Ok(finish(profile_name, &mut saved, vec![Ok(s)])? > 0);
+    let (first, hint) = again_hint(ws);
+    match first {
+        First::Guide => {}
+        First::Code => {
+            let mut saved = Profile::read_or_new(&session::config_dir(profile_name)?.join("session.json"))?;
+            match code_way(&saved, &hint).await? {
+                Step::Done(results) if results.is_empty() => return Ok(false),
+                Step::Done(results) => return Ok(finish(profile_name, &mut saved, results)? > 0),
+                Step::Back => {}
+            }
+        }
+        First::BrowserProfile => {
+            if let Some(SessionSource::Browser { profile, label, .. }) = &ws.source {
+                let still = match login_import::browser_profiles().into_iter().find(|b| &b.dir == profile) {
+                    Some(b) => match looking(&format!("Looking at {label}…"), login_import::discover_in(vec![b])).await? {
+                        Some(groups) => still_signed_in(&groups, ws),
+                        None => {
+                            nothing_signed_in()?;
+                            return Ok(false);
+                        }
+                    },
+                    None => None,
+                };
+                match still {
+                    Some(s) => {
+                        let rows = vec![item("use it", "", &format!("as {}", s.user_name), true)];
+                        if let pick::Outcome::Picked(_) = pick::choose(&format!("{label} is still signed in to {} — use it?", ws.team_name), rows, false)? {
+                            let mut saved = Profile::read_or_new(&session::config_dir(profile_name)?.join("session.json"))?;
+                            return Ok(finish(profile_name, &mut saved, vec![Ok(s)])? > 0);
+                        }
+                    }
+                    None => println!("{label} is signed out of {} as well.", ws.team_name),
                 }
             }
-            None => println!("{label} is signed out of {} as well.", ws.team_name),
+            let Some((groups, keys, _)) = look_around().await? else {
+                nothing_signed_in()?;
+                return Ok(false);
+            };
+            match browser_way(&hint, &groups, &keys).await? {
+                Step::Done(results) if results.is_empty() => return Ok(false),
+                Step::Done(results) => {
+                    let mut saved = Profile::read_or_new(&session::config_dir(profile_name)?.join("session.json"))?;
+                    return Ok(finish(profile_name, &mut saved, results)? > 0);
+                }
+                Step::Back => {}
+            }
         }
     }
     Ok(guide(profile_name).await? > 0)
@@ -1393,12 +1441,34 @@ mod tests {
         assert_eq!(team_rows(&teams, &profile, &team_hint("T0000000002")).1, [3]);
         // A hint naming a team that can't be used marks nothing.
         assert_eq!(team_rows(&teams, &profile, &team_hint("T0000000003")).1, Vec::<usize>::new());
+        // A hint naming a team that is not listed marks nothing, even though only one can be used.
+        assert_eq!(team_rows(&teams[..2], &profile, &team_hint("T0000000009")).1, Vec::<usize>::new());
         // Only one can be used: it is marked.
         assert_eq!(team_rows(&teams[..2], &profile, &Hint::default()).1, [0]);
         // "Already signed in" is that account: another user of the team is not, and without a user the team is.
         let other_user = CodeTeam { user_id: "U0000000002".into(), ..teams[3].clone() };
         let no_user = CodeTeam { user_id: String::new(), ..teams[3].clone() };
         assert_eq!(shown(&team_rows(&[other_user, no_user], &profile, &Hint::default()).0), ["- Widgets | widgets.slack.com | ", "- Widgets | widgets.slack.com | already signed in"]);
+    }
+
+    #[test]
+    fn signing_in_again_starts_where_it_came_from() {
+        let mut ws = account("T0000000001", "Acme", "U0000000001");
+        ws.url = "https://acme.slack.com/".into();
+        ws.source = Some(SessionSource::Code { email: "person@example.com".into() });
+        let (first, hint) = again_hint(&ws);
+        assert_eq!(first, First::Code);
+        assert_eq!(hint.email.as_deref(), Some("person@example.com"));
+        assert_eq!(hint.team, Some(("T0000000001".to_string(), "Acme".to_string())));
+        assert_eq!((hint.host.as_deref(), hint.link), (Some("acme.slack.com"), None));
+        ws.source = Some(SessionSource::Browser { browser: "firefox".into(), profile: "/p".into(), label: "Firefox".into() });
+        let (first, hint) = again_hint(&ws);
+        assert_eq!(first, First::BrowserProfile);
+        assert_eq!(hint.link.as_deref(), Some("https://acme.slack.com/"));
+        for source in [Some(SessionSource::Window), Some(SessionSource::Cookie), None] {
+            ws.source = source;
+            assert_eq!(again_hint(&ws).0, First::Guide);
+        }
     }
 
     fn team_hint(id: &str) -> Hint {
