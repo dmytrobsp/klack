@@ -4,9 +4,6 @@
 //! afterwards stays in the scrollback. The key handling is a pure state machine ([`Picker`]); [`choose`] and [`ask`] are
 //! thin drivers around it.
 
-// Used by the sign-in guide (W7).
-#![allow(dead_code)]
-
 use std::cell::Cell;
 use std::collections::BTreeSet;
 use std::io::{self, IsTerminal, Stdout, Write};
@@ -32,6 +29,8 @@ pub struct Item {
     pub enabled: bool,
 }
 
+/// A heading names a group of items; one without a title is drawn all dim (a note such as why a group is empty, or a
+/// blank separating line when its detail is empty too).
 pub enum Row {
     Heading { title: String, detail: String },
     Item(Item),
@@ -223,6 +222,7 @@ impl Picker {
         let mut out = vec![Line::from(Span::styled(question.to_string(), bold))];
         for (i, cursor, marked) in self.visible(height) {
             match &self.rows[i] {
+                Row::Heading { title, detail } if title.is_empty() => out.push(Line::from(Span::styled(detail.clone(), dim))),
                 Row::Heading { title, detail } => {
                     let mut spans = vec![Span::styled(title.clone(), bold)];
                     if !detail.is_empty() {
@@ -282,7 +282,11 @@ impl Session {
 
 impl Drop for Session {
     fn drop(&mut self) {
+        // `clear` puts the cursor back where the last drawing left it (inside the erased list): what is printed next
+        // goes where the list started.
         let _ = self.term.clear();
+        let top = self.term.get_frame().area().as_position();
+        let _ = self.term.set_cursor_position(top);
         let _ = self.term.show_cursor();
         let _ = execute!(io::stdout(), DisableMouseCapture);
         let _ = disable_raw_mode();
@@ -326,8 +330,13 @@ fn prompt_line(prompt: &str, typed: &str, placeholder: &dyn Fn(&str) -> String) 
     (prompt.to_string(), typed.to_string(), placeholder(typed))
 }
 
-fn draw_prompt(prompt: &str, typed: &str, placeholder: &dyn Fn(&str) -> String) -> Result<()> {
-    let (p, t, dim) = prompt_line(prompt, typed, placeholder);
+/// The parts of a secret's prompt line: nothing of what is typed is drawn, only how much (dim).
+fn secret_line(prompt: &str, typed: &str) -> (String, String, String) {
+    let dim = if typed.is_empty() { "paste it, then Enter".to_string() } else { format!("{} characters", typed.chars().count()) };
+    (prompt.to_string(), String::new(), dim)
+}
+
+fn draw_prompt((p, t, dim): (String, String, String)) -> Result<()> {
     let mut out = io::stdout();
     queue!(out, cursor::MoveToColumn(0), Clear(ClearType::CurrentLine), style::Print(&p), style::Print(&t))?;
     queue!(out, style::SetAttribute(style::Attribute::Dim), style::Print(&dim), style::SetAttribute(style::Attribute::Reset))?;
@@ -340,6 +349,17 @@ fn draw_prompt(prompt: &str, typed: &str, placeholder: &dyn Fn(&str) -> String) 
 /// A one-line text prompt. `placeholder(typed)` is drawn dim after the cursor. Enter gives the text; Esc and Ctrl+C give
 /// `None`. The line is erased afterwards.
 pub fn ask(prompt: &str, placeholder: impl Fn(&str) -> String) -> Result<Option<String>> {
+    read_line(&|typed| prompt_line(prompt, typed, &placeholder))
+}
+
+/// A one-line prompt for a secret (a cookie): what is typed or pasted is never drawn, only how many characters it has.
+/// Enter gives the text; Esc and Ctrl+C give `None`.
+pub fn ask_secret(prompt: &str) -> Result<Option<String>> {
+    read_line(&|typed| secret_line(prompt, typed))
+}
+
+/// The prompt loop of [`ask`] and [`ask_secret`]: `line(typed)` gives what to draw.
+fn read_line(line: &dyn Fn(&str) -> (String, String, String)) -> Result<Option<String>> {
     struct Raw;
     impl Drop for Raw {
         fn drop(&mut self) {
@@ -351,7 +371,7 @@ pub fn ask(prompt: &str, placeholder: impl Fn(&str) -> String) -> Result<Option<
     let _raw = Raw;
     let mut typed = String::new();
     loop {
-        draw_prompt(prompt, &typed, &placeholder)?;
+        draw_prompt(line(&typed))?;
         let Event::Key(k) = event::read()? else { continue };
         if k.kind == KeyEventKind::Release {
             continue;
@@ -529,6 +549,14 @@ mod tests {
         let mut p = sample(true);
         p.key(ch('/'));
         assert!(matches!(p.key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)), Some(Outcome::Cancelled)));
+    }
+
+    #[test]
+    fn a_secret_is_never_drawn() {
+        let (p, shown, dim) = secret_line("d cookie: ", "xoxd-abc%2Fdef");
+        assert_eq!((p.as_str(), shown.as_str()), ("d cookie: ", ""));
+        assert_eq!(dim, "14 characters");
+        assert_eq!(secret_line("d cookie: ", "").2, "paste it, then Enter");
     }
 
     #[test]

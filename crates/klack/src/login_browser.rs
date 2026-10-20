@@ -94,10 +94,10 @@ pub async fn sign_in(browser: &Browser, workspace_url: &str) -> Result<Workspace
     let profile = browser.profile_root.join(format!("klack-login-{}", std::process::id()));
     std::fs::create_dir_all(&profile).with_context(|| format!("creating {}", profile.display()))?;
     let mut window = Window { child: None, profile: profile.clone() };
+    prepare_profile(&profile)?;
     let mut cmd = Command::new(&browser.program[0]);
     cmd.args(&browser.program[1..])
-        .arg(format!("--user-data-dir={}", profile.display()))
-        .args(["--remote-debugging-port=0", "--no-first-run", "--no-default-browser-check", "--new-window", workspace_url])
+        .args(window_args(&profile, workspace_url))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -109,6 +109,28 @@ pub async fn sign_in(browser: &Browser, workspace_url: &str) -> Result<Workspace
     };
     window.close().await;
     result
+}
+
+/// The switches the window is started with (after the browser's own command): its temporary profile, the DevTools
+/// port klack reads the cookie through, no first-run pages, no default-browser question and no sync.
+fn window_args(profile: &Path, workspace_url: &str) -> Vec<String> {
+    let mut args = vec![format!("--user-data-dir={}", profile.display())];
+    args.extend(["--remote-debugging-port=0", "--no-first-run", "--no-default-browser-check", "--disable-sync", "--new-window", workspace_url].map(String::from));
+    args
+}
+
+/// Seed the temporary profile's settings before the browser starts: browser sign-in off. After a Google sign-in on a
+/// page (Slack's "Sign in with Google") Chrome offers to sign the browser in ("Sign in to Chrome?") or to set up a
+/// profile for that account; neither has a command-line switch or a feature to turn off any more (Chromium's
+/// interception feature flags were removed once it launched), but both are skipped when the profile's `signin.allowed`
+/// is false, and `signin.interception_enabled` false turns the profile bubble off on its own. Signing in on the page
+/// itself works as in any window.
+fn prepare_profile(profile: &Path) -> Result<()> {
+    let prefs = json!({"signin": {"allowed": false, "interception_enabled": false}, "browser": {"has_seen_welcome_page": true}});
+    let dir = profile.join("Default");
+    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    std::fs::write(dir.join("Preferences"), prefs.to_string())?;
+    Ok(())
 }
 
 /// The browser process and its temporary profile, removed on close (and on drop).
@@ -233,6 +255,23 @@ fn slack_cookie(answer: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_window_is_kept_out_of_chrome_sign_in_and_sync() {
+        let profile = std::env::temp_dir().join(format!("klack-test-window-{}", std::process::id()));
+        let args = window_args(&profile, "https://acme.slack.com/");
+        for want in ["--disable-sync", "--no-first-run", "--no-default-browser-check", "--remote-debugging-port=0"] {
+            assert!(args.iter().any(|a| a == want), "{want} in {args:?}");
+        }
+        assert_eq!(args.first().map(String::as_str), Some(format!("--user-data-dir={}", profile.display()).as_str()));
+        assert_eq!(args.last().map(String::as_str), Some("https://acme.slack.com/"));
+        // Browser sign-in (the "Sign in to Chrome?" and "set up a profile" bubbles after a Google sign-in on a page) is off.
+        prepare_profile(&profile).unwrap();
+        let prefs: Value = serde_json::from_str(&std::fs::read_to_string(profile.join("Default/Preferences")).unwrap()).unwrap();
+        assert_eq!(prefs["signin"]["allowed"], json!(false));
+        assert_eq!(prefs["signin"]["interception_enabled"], json!(false));
+        std::fs::remove_dir_all(&profile).unwrap();
+    }
 
     #[test]
     fn devtools_port_file() {

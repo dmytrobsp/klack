@@ -38,22 +38,16 @@ pub struct BrowserProfile {
     /// The browser and the profile's name: "Chrome · Work", "Firefox · default-release".
     pub label: String,
     /// The Google account a Chrome-family profile is signed in to.
-    // Used by the sign-in guide (W7).
-    #[allow(dead_code)]
-    pub account: Option<String>,
+            pub account: Option<String>,
 }
 
 /// A workspace a browser profile is signed in to, and its session (or why it does not work).
-// Used by the sign-in guide (W7).
-#[allow(dead_code)]
 pub struct Candidate {
     pub team: LoggedInTeam,
     pub session: Result<WorkspaceSession, String>,
 }
 
 /// What one browser profile is signed in to; `problem` says why it could not be looked at.
-// Used by the sign-in guide (W7).
-#[allow(dead_code)]
 pub struct Group {
     pub profile: BrowserProfile,
     pub problem: Option<String>,
@@ -238,20 +232,58 @@ fn firefox_profiles_in(root: &Path) -> Vec<BrowserProfile> {
 }
 
 /// Every workspace each browser profile of this machine is signed in to, checked.
-// Used by the sign-in guide (W7).
-#[allow(dead_code)]
 pub async fn discover() -> Vec<Group> {
     discover_in(browser_profiles()).await
 }
 
 /// Every workspace each of `profiles` is signed in to: its `d` cookies (freshest first), the
 /// workspaces Slack's sign-in page lists for each, and a session for each (`session_from_cookie`),
-/// all at once. A profile that cannot be looked at (its browser's key, a step that takes longer
-/// than 10 s) gets a `problem`; nothing here fails.
-// Used by the sign-in guide (W7).
-#[allow(dead_code)]
+/// all at once but at most six requests to Slack together, over one client. A profile that cannot
+/// be looked at (its browser's key, a step that takes longer than 10 s, a sign-in page klack can't
+/// read) gets a `problem`; nothing here fails.
 pub async fn discover_in(profiles: Vec<BrowserProfile>) -> Vec<Group> {
     discover_with(profiles, |family| async move { chrome_key(&family).await }).await
+}
+
+/// At most this many requests to Slack at once while looking (a machine with many browser
+/// profiles signed in to many workspaces would otherwise send them all together).
+const CHECKS_AT_ONCE: usize = 6;
+
+/// What a profile's group says when Slack's sign-in page no longer has the list klack reads.
+const PAGE_CHANGED: &str = "Slack's sign-in page changed — klack couldn't read it";
+
+/// One sign-in page as looked at: its workspaces, `None` for a page without the list, or why there is none.
+type Page = Result<Option<Vec<LoggedInTeam>>, String>;
+
+/// `step` once one of `limit`'s places is free, within [`STEP_TIMEOUT`] (the wait for a place does not count).
+async fn limited<F: std::future::Future>(limit: &tokio::sync::Semaphore, step: F) -> Result<F::Output, tokio::time::error::Elapsed> {
+    // The semaphore is never closed, so the place is always given.
+    let _place = limit.acquire().await.ok();
+    timeout(STEP_TIMEOUT, step).await
+}
+
+/// The workspaces of a profile's sign-in pages (one per cookie, freshest first), each account once (the freshest
+/// cookie's), with the index of its cookie; when there are none, why (a page that could not be read or got no answer).
+fn teams_of(pages: Vec<Page>) -> (Vec<(LoggedInTeam, usize)>, Option<String>) {
+    let mut teams: Vec<(LoggedInTeam, usize)> = Vec::new();
+    let mut failed = None;
+    for (cookie, page) in pages.into_iter().enumerate() {
+        match page {
+            Ok(Some(list)) => {
+                for t in list {
+                    if !teams.iter().any(|(o, _)| o.team_id == t.team_id && o.email == t.email) {
+                        teams.push((t, cookie));
+                    }
+                }
+            }
+            Ok(None) => failed = Some(PAGE_CHANGED.to_string()),
+            Err(e) => failed = Some(e),
+        }
+    }
+    if !teams.is_empty() {
+        failed = None;
+    }
+    (teams, failed)
 }
 
 /// The profiles klack can read on this platform: on Windows Chrome's family encrypts its cookies
@@ -286,26 +318,42 @@ where
     }))
     .await;
     let keys: HashMap<String, Result<Vec<u8>, String>> = families.into_iter().zip(reads).collect();
+    // One client for every request, made when the first cookie is found.
+    let http = std::sync::OnceLock::new();
+    let limit = tokio::sync::Semaphore::new(CHECKS_AT_ONCE);
     futures_util::future::join_all(profiles.into_iter().map(|profile| {
         let key = keys.get(family(&profile));
-        profile_group(profile, key)
+        profile_group(profile, key, &http, &limit)
     }))
     .await
 }
 
-/// What `profile` is signed in to; `key` is its browser's key (Chrome's family).
-async fn profile_group(profile: BrowserProfile, key: Option<&Result<Vec<u8>, String>>) -> Group {
+/// The `d` cookies of `profile` (Chrome's family: decrypted with `key`), read off the async threads: copying the
+/// database, SQLite and the key derivation block.
+async fn read_cookies(profile: &BrowserProfile, key: Option<Vec<u8>>) -> Result<Vec<Found>> {
+    let (source, dir) = (profile.source, profile.dir.clone());
+    tokio::task::spawn_blocking(move || match (source, key) {
+        (Source::Firefox, _) => firefox_cookies(&dir),
+        (Source::Chrome, Some(key)) => chrome_cookies(&dir, &key),
+        (Source::Chrome, None) => Err(anyhow!("no key")),
+    })
+    .await
+    .map_err(|e| anyhow!("{e}"))?
+}
+
+/// What `profile` is signed in to; `key` is its browser's key (Chrome's family). Requests go out over the client in
+/// `http` (made by the first that needs it), each once `limit` has a place.
+async fn profile_group(profile: BrowserProfile, key: Option<&Result<Vec<u8>, String>>, http: &std::sync::OnceLock<Result<slack_core::reqwest::Client, String>>, limit: &tokio::sync::Semaphore) -> Group {
     let mut group = Group { profile, problem: None, candidates: Vec::new() };
-    let cookies = match (group.profile.source, key) {
-        (Source::Firefox, _) => firefox_cookies(&group.profile.dir),
-        (Source::Chrome, Some(Ok(key))) => chrome_cookies(&group.profile.dir, key),
+    let key = match (group.profile.source, key) {
         (Source::Chrome, Some(Err(problem))) => {
             group.problem = Some(problem.clone());
             return group;
         }
-        (Source::Chrome, None) => Err(anyhow!("no key")),
+        (Source::Chrome, Some(Ok(key))) => Some(key.clone()),
+        _ => None,
     };
-    let mut cookies = match cookies {
+    let mut cookies = match read_cookies(&group.profile, key).await {
         Ok(c) => c,
         Err(e) => {
             group.problem = Some(format!("can't read the cookies: {e:#}"));
@@ -318,29 +366,33 @@ async fn profile_group(profile: BrowserProfile, key: Option<&Result<Vec<u8>, Str
         seen.push(f.cookie.clone());
         true
     });
-    // The workspaces of each cookie, each account once (the freshest cookie's).
-    let pages = futures_util::future::join_all(cookies.iter().map(|f| timeout(STEP_TIMEOUT, session::signed_in_teams(&f.cookie)))).await;
-    let mut teams: Vec<(LoggedInTeam, &str)> = Vec::new();
-    let mut failed = None;
-    for (f, page) in cookies.iter().zip(pages) {
-        match page {
-            Ok(Ok(list)) => {
-                for t in list {
-                    if !teams.iter().any(|(o, _)| o.team_id == t.team_id && o.email == t.email) {
-                        teams.push((t, &f.cookie));
-                    }
-                }
-            }
-            Ok(Err(e)) => failed = Some(format!("can't reach Slack: {e:#}")),
-            Err(_) => failed = Some(format!("Slack did not answer in {} s", STEP_TIMEOUT.as_secs())),
-        }
+    if cookies.is_empty() {
+        return group;
     }
+    let http = match http.get_or_init(|| session::web_client().map_err(|e| format!("can't reach Slack: {e:#}"))) {
+        Ok(http) => http,
+        Err(problem) => {
+            group.problem = Some(problem.clone());
+            return group;
+        }
+    };
+    // The workspaces of each cookie, each account once (the freshest cookie's).
+    let pages = futures_util::future::join_all(cookies.iter().map(|f| limited(limit, session::signed_in_teams_with(http, &f.cookie)))).await;
+    let pages = pages
+        .into_iter()
+        .map(|page| match page {
+            Ok(Ok(list)) => Ok(list),
+            Ok(Err(e)) => Err(format!("can't reach Slack: {e:#}")),
+            Err(_) => Err(format!("Slack did not answer in {} s", STEP_TIMEOUT.as_secs())),
+        })
+        .collect();
+    let (teams, problem) = teams_of(pages);
     if teams.is_empty() {
-        group.problem = failed;
+        group.problem = problem;
         return group;
     }
     let source = SessionSource::Browser { browser: label(group.profile.source).to_lowercase(), profile: group.profile.dir.clone(), label: group.profile.label.clone() };
-    let checks = futures_util::future::join_all(teams.iter().map(|(t, cookie)| timeout(STEP_TIMEOUT, session::session_from_cookie(&t.url, cookie)))).await;
+    let checks = futures_util::future::join_all(teams.iter().map(|(t, cookie)| limited(limit, session::session_from_cookie_with(http, &t.url, &cookies[*cookie].cookie)))).await;
     group.candidates = teams
         .into_iter()
         .zip(checks)
@@ -658,6 +710,44 @@ mod tests {
         assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), if cfg!(windows) { 0 } else { 1 });
         std::fs::remove_dir_all(&chrome).unwrap();
         std::fs::remove_dir_all(&firefox).unwrap();
+    }
+
+    fn team(id: &str, email: &str) -> LoggedInTeam {
+        LoggedInTeam { team_id: id.into(), team_name: format!("team {id}"), domain: id.to_lowercase(), url: format!("https://{}.slack.com/", id.to_lowercase()), email: email.into() }
+    }
+
+    #[test]
+    fn a_page_without_the_list_is_a_problem() {
+        let (teams, problem) = teams_of(vec![Ok(None)]);
+        assert!(teams.is_empty());
+        assert_eq!(problem.as_deref(), Some(PAGE_CHANGED));
+        // A signed-out cookie's page has an empty list: nothing to show, and no problem.
+        assert_eq!(teams_of(vec![Ok(Some(vec![]))]), (vec![], None));
+        assert_eq!(teams_of(vec![Err("Slack did not answer in 10 s".into())]).1.as_deref(), Some("Slack did not answer in 10 s"));
+        // Another cookie's page that worked wins; each account once, the freshest cookie's.
+        let a = team("T0000000001", "person@example.com");
+        let b = team("T0000000002", "person@example.com");
+        let (teams, problem) = teams_of(vec![Ok(None), Ok(Some(vec![a.clone()])), Ok(Some(vec![a.clone(), b.clone()]))]);
+        assert_eq!(teams, vec![(a, 1), (b, 2)]);
+        assert_eq!(problem, None);
+    }
+
+    #[tokio::test]
+    async fn at_most_six_checks_run_at_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let limit = tokio::sync::Semaphore::new(CHECKS_AT_ONCE);
+        let (now, most) = (AtomicUsize::new(0), AtomicUsize::new(0));
+        let steps = (0..20).map(|_| {
+            limited(&limit, async {
+                let n = now.fetch_add(1, Ordering::SeqCst) + 1;
+                most.fetch_max(n, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                now.fetch_sub(1, Ordering::SeqCst);
+            })
+        });
+        let done = futures_util::future::join_all(steps).await;
+        assert!(done.iter().all(|d| d.is_ok()));
+        assert_eq!(most.load(Ordering::SeqCst), CHECKS_AT_ONCE);
     }
 
     #[test]

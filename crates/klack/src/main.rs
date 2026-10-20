@@ -56,11 +56,12 @@ enum Command {
 
 #[derive(Subcommand)]
 enum AuthCmd {
-    /// Sign the profile in to a workspace (a new profile name makes that profile).
+    /// Sign the profile in (a new profile name makes that profile). Without flags a guide lists the
+    /// Slack sign-ins of your browsers to pick from, or signs in to another workspace.
     Login {
-        /// The workspace URL (https://acme.slack.com). Without --cookie / $KLACK_COOKIE_D a browser
-        /// window opens to sign in (Chrome, Chromium, Edge or Brave, with a temporary profile);
-        /// failing that, you are asked for the `d` cookie.
+        /// The workspace (acme, acme.slack.com or a link from the browser). In a terminal the ways
+        /// to sign in to it are listed; without one a browser window opens to sign in (Chrome,
+        /// Chromium, Edge or Brave, with a temporary profile), failing that the `d` cookie is read.
         #[arg(long, value_name = "URL")]
         workspace: Option<String>,
         /// Value of the browser's `d` cookie for slack.com (prefer the env var or the prompt,
@@ -150,7 +151,9 @@ async fn run() -> Result<()> {
     profiles::valid_name(&profile)?;
     // Only what works on a signed-in profile logs: a mistyped profile name leaves no folder.
     let logs = matches!(cli.command, None | Some(Command::Ctl { .. }) | Some(Command::Auth { cmd: AuthCmd::Status | AuthCmd::Logout { .. } }));
-    if logs && dirs.config.join(&profile).join("session.json").is_file() {
+    let session_file = dirs.config.join(&profile).join("session.json");
+    let logging = logs && session_file.is_file();
+    if logging {
         init_logging(&profile)?;
         for line in adopted {
             tracing::info!("{line}");
@@ -166,7 +169,20 @@ async fn run() -> Result<()> {
         Some(Command::Purge { yes }) => purge_command(&dirs, yes),
         Some(Command::Ctl { cmd }) => ctl::run(&profile, cli.team.as_deref(), cmd).await,
         None => {
-            let p = Profile::load(&profile)?;
+            let mut p = Profile::read_or_new(&session_file)?;
+            // No sign-ins yet: the guide first (in a terminal), then the TUI if it saved any.
+            if p.workspaces.is_empty() {
+                if !pick::interactive() {
+                    bail!("profile {profile} has no sign-ins — klack auth login");
+                }
+                if auth::guide(&profile).await? == 0 {
+                    return Ok(());
+                }
+                if !logging {
+                    init_logging(&profile)?;
+                }
+                p = Profile::load(&profile)?;
+            }
             // Held while klack runs so the profile is not removed under it; a second klack on the
             // same profile runs without it.
             let _lock = profiles::lock(&dirs, &profile).ok().flatten();

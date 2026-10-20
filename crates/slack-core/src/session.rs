@@ -216,8 +216,18 @@ pub fn extract_api_token(html: &str) -> Option<String> {
 /// Fetch the `xoxc` token for a workspace using the `d` cookie, then confirm it with
 /// `auth.test`.
 pub async fn session_from_cookie(workspace_url: &str, cookie_d: &str) -> Result<WorkspaceSession> {
+    session_from_cookie_with(&web_client()?, workspace_url, cookie_d).await
+}
+
+/// The client for Slack's web pages (a workspace's pages, the sign-in page): a browser's user agent.
+/// One can be shared by many requests, as finding the sign-ins of every browser does.
+pub fn web_client() -> Result<reqwest::Client> {
+    crate::api::http_client(|| reqwest::Client::builder().user_agent(USER_AGENT))
+}
+
+/// [`session_from_cookie`] with the client `http`.
+pub async fn session_from_cookie_with(http: &reqwest::Client, workspace_url: &str, cookie_d: &str) -> Result<WorkspaceSession> {
     let base = workspace_url.trim_end_matches('/');
-    let http = crate::api::http_client(|| reqwest::Client::builder().user_agent(USER_AGENT))?;
     let html = http
         .get(format!("{base}/customize/emoji"))
         .header(reqwest::header::COOKIE, format!("d={cookie_d}"))
@@ -271,6 +281,12 @@ const SIGNIN_URL: &str = "https://slack.com/signin";
 /// page) has `"loggedInTeams":[{team_id, team_name, team_domain, user_email, …}]`. A signed-out or
 /// unexpected page gives none.
 pub fn parse_logged_in_teams(html: &str) -> Vec<LoggedInTeam> {
+    find_logged_in_teams(html).unwrap_or_default()
+}
+
+/// Like [`parse_logged_in_teams`], but a page without the list (Slack changed its page) is `None`:
+/// a signed-out page still has it, empty.
+pub fn find_logged_in_teams(html: &str) -> Option<Vec<LoggedInTeam>> {
     const NAME: &str = "loggedInTeams";
     for (at, _) in html.match_indices(NAME) {
         let rest = unescape_html(&html[at + NAME.len()..]);
@@ -281,7 +297,7 @@ pub fn parse_logged_in_teams(html: &str) -> Vec<LoggedInTeam> {
             continue;
         }
         let Some(Ok(entries)) = serde_json::Deserializer::from_str(list).into_iter::<Vec<serde_json::Value>>().next() else { continue };
-        return entries
+        let teams = entries
             .iter()
             .filter_map(|t| {
                 let s = |k: &str| t[k].as_str().unwrap_or_default().to_string();
@@ -292,8 +308,9 @@ pub fn parse_logged_in_teams(html: &str) -> Vec<LoggedInTeam> {
                 Some(LoggedInTeam { team_id, team_name: s("team_name"), url: format!("https://{domain}.slack.com/"), domain, email: s("user_email") })
             })
             .collect();
+        return Some(teams);
     }
-    Vec::new()
+    None
 }
 
 /// Undo the HTML escaping of an attribute value (`&quot;` and friends; `&amp;` last, so that an
@@ -310,9 +327,14 @@ fn unescape_html(text: &str) -> String {
 
 /// The workspaces the `d` cookie `cookie_d` is signed in to, from Slack's sign-in page.
 pub async fn signed_in_teams(cookie_d: &str) -> Result<Vec<LoggedInTeam>> {
-    let http = crate::api::http_client(|| reqwest::Client::builder().user_agent(USER_AGENT))?;
+    Ok(signed_in_teams_with(&web_client()?, cookie_d).await?.unwrap_or_default())
+}
+
+/// [`signed_in_teams`] with the client `http`; `None` when the page has no list of workspaces at
+/// all (see [`find_logged_in_teams`]).
+pub async fn signed_in_teams_with(http: &reqwest::Client, cookie_d: &str) -> Result<Option<Vec<LoggedInTeam>>> {
     let html = http.get(SIGNIN_URL).header(reqwest::header::COOKIE, format!("d={cookie_d}")).send().await?.error_for_status()?.text().await?;
-    Ok(parse_logged_in_teams(&html))
+    Ok(find_logged_in_teams(&html))
 }
 
 #[cfg(test)]
@@ -461,6 +483,17 @@ mod tests {
         let acme = LoggedInTeam { team_id: "T0000000001".into(), team_name: "Acme & Sons".into(), domain: "acme".into(), url: "https://acme.slack.com/".into(), email: "person@example.com".into() };
         let widgets = LoggedInTeam { team_id: "T0000000002".into(), team_name: "Widgets Inc".into(), domain: "widgets-inc".into(), url: "https://widgets-inc.slack.com/".into(), email: "person@example.com".into() };
         assert_eq!(teams, [acme, widgets]);
+    }
+
+    #[test]
+    fn a_page_without_the_list_is_not_a_signed_out_page() {
+        // Signed out (checked 2026-10-20): the list is there, empty.
+        assert_eq!(find_logged_in_teams(r#"<div data-props="{&quot;loggedInTeams&quot;:[],&quot;x&quot;:1}"></div>"#), Some(vec![]));
+        assert_eq!(find_logged_in_teams(include_str!("../tests/fixtures/signin-page.html")).map(|t| t.len()), Some(2));
+        // No list at all, or one that cannot be read: Slack changed its page.
+        assert_eq!(find_logged_in_teams("<html><title>Sign in | Slack</title></html>"), None);
+        assert_eq!(find_logged_in_teams("loggedInTeams&quot;:[{&quot;team_id&quot;:&quot;T0000000001"), None);
+        assert_eq!(find_logged_in_teams(r#"{"loggedInTeamsCount":2}"#), None);
     }
 
     #[test]

@@ -48,8 +48,7 @@ certificates klack uses the Mozilla roots it carries.
 
 ```sh
 cargo build --release
-./target/release/klack auth login --workspace acme.slack.com   # opens a browser window to sign in
-./target/release/klack
+./target/release/klack    # the first time: a short guide signs you in, then klack opens
 ```
 
 Windows from Linux: `rustup target add x86_64-pc-windows-gnu`, `apt install mingw-w64`, then
@@ -80,9 +79,23 @@ unread); a click on a tile switches, like Alt+1…9.
 
 ## Signing in
 
-- **In a browser window (the easy way):** `klack auth login --workspace acme.slack.com` opens Chrome,
+`klack auth login` (and plain `klack` on a profile with no sign-ins yet) guides you, right in the
+terminal: it looks for Slack in your browsers and lists every workspace each browser profile is signed
+in to, grouped by where it comes from (`Chrome · Work  you@example.com`, `Firefox · default-release`),
+with who you are there. ↑↓ or j k move, Space marks several, Enter signs in to the marked ones (or the
+one under the cursor), `/` filters, a click marks a row, Esc leaves without changing anything.
+Workspaces a browser is signed out of are shown dim with the reason; ones already in the profile say
+`already signed in` (picking one refreshes it). The last row, `another workspace, or sign in another
+way…`, asks for the workspace (`acme` — `.slack.com` is filled in — or a link pasted from the browser)
+and how to sign in to it: a browser profile signed in there, a new browser window, or the `d` cookie
+by hand. Each workspace ends in one line: `✓ Signed in to Acme as you — profile default saved.`
+
+For scripts (nothing is asked without a terminal):
+
+- **In a browser window:** `klack auth login --workspace acme.slack.com` (in a terminal it lists the
+  ways for that workspace first) opens Chrome,
   Chromium, Edge or Brave (an installed one or a flatpak; `KLACK_BROWSER` picks another) on the
-  workspace's sign-in page, with a temporary profile of its own. Sign in there however Slack offers
+  workspace's sign-in page, with a temporary profile of its own (no sync, no browser sign-in). Sign in there however Slack offers
   (password, Google / SSO, 2FA, an emailed code); klack notices, takes the session, closes the window
   and deletes that profile. Your own browser profile is never read or changed. Ctrl+C cancels.
 - **From the browser you already use:** `klack auth login --workspace acme.slack.com --from-browser
