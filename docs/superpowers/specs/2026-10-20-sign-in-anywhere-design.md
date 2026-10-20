@@ -1,6 +1,6 @@
 # Sign in anywhere: a code from your phone, or your own browser — design (queue Y)
 
-Status: brainstormed with the user on 2026-10-20; builder check done (its questions were all about claiming
+Status: brainstormed with the user on 2026-10-20 and approved by them; builder check done (its questions were all about claiming
 `slack://`, which the user then dropped). "(user)" marks their decisions, "(Claude's call)" marks choices made for
 them that they did not object to when played back, "(builder's call)" is left to the implementer. Anything unmarked
 follows from the user's request, from the code as it is, or from what was verified live.
@@ -71,9 +71,10 @@ Sign in to Slack (profile default)
 ```
 
 - The ways are equals (user); the code is first, as it works everywhere (Claude's call on the order).
-- With no graphical session (Linux: no `DISPLAY`/`WAYLAND_DISPLAY`; any system: `SSH_CONNECTION` or `SSH_TTY` set)
-  "in your browser" is **left out**: a browser elsewhere can't be read from here (Claude's call, played back: "code
-  first"). A way that can't work here for another reason is shown dim with the reason, as W's rows are.
+- **"In your browser" is always offered, SSH or not** (user: detecting SSH "may not be reliable", and they SSH and
+  RDP into the same machine — copy the link from SSH, open it in a browser over RDP). It is dim only when klack finds
+  no browser profile on this machine at all ("no browser found here — use the code"), since there would be nothing
+  to watch. Any way that can't work here is shown dim with the reason, as W's rows are.
 - **No way asks for a workspace name first** (Claude's call): each ends with the workspaces Slack lists for that
   sign-in, in the same picker (Space marks several, Enter signs in to all marked, `/` filters, a click moves and
   toggles), with W's notes ("already signed in", a reason when one can't be used).
@@ -183,7 +184,7 @@ owner-only `session.json`, never logged.
 ## Tests
 
 - Unit: parsing of `signin.confirmCode` / `signin.findWorkspaces` replies (anonymised fixtures from the live run),
-  the code normalisation, the QR link and its percent-encoding, the list's rows with and without a graphical session,
+  the code normalisation, the QR link and its percent-encoding, the list's rows with and without browser profiles,
   the "what is new" comparison of two discovery snapshots.
 - Live (needs the user, who requests the codes on their phone and reads B's inbox): the code way end to end on B in
   an environment without `DISPLAY` (as over SSH). The browser way only against a throwaway browser profile seeded or
