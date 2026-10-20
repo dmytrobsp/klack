@@ -22,7 +22,7 @@
       </h1>
 
       <div class="sub"><p class="pitch">YOUR TERMINAL JUST <br>LEARNED TO HUDDLE.</p><span class="scrawl really">Yes, really.</span></div>
-      <div class="dl"><!-- fill:download-button --><a class="dl-button" href="#get">DOWNLOAD FOR LINUX</a><span>macOS · Windows · <a href="#get">all downloads</a></span><!-- /fill:download-button --></div>
+      <div class="dl-area"><!-- fill:download-button --><a class="dl" data-os="linux" href="https://github.com/dmytrobsp/klack/releases/download/v0.8.0/klack-0.8.0-x86_64-linux.zip">DOWNLOAD FOR LINUX</a><span class="dl-meta">v0.8.0 · 12.7 MB · <span class="dl-others"><a href="https://github.com/dmytrobsp/klack/releases/download/v0.8.0/klack-0.8.0-aarch64-macos.zip">macOS</a> · <a href="https://github.com/dmytrobsp/klack/releases/download/v0.8.0/klack-0.8.0-x86_64-windows.zip">Windows</a> · <a href="#get">all downloads</a></span></span><!-- /fill:download-button --></div>
       <div class="hero-capture"><!-- fill:hero-capture --><div class="term"><div class="dots">● ● ●  klack</div><span class="standin">stand-in</span><pre><span style="color:#ECB22E">▌your-team</span>        #general
  # general       <span style="color:#36C5F0">A</span>  ship it?
  # deploys       <span style="color:#E01E5A">B</span>  👍   ↪ #deploys
@@ -77,6 +77,7 @@
     <script type="module">
       import { startHero } from './js/hero.js';
       startHero(document.getElementById('hero-art'));
+      import('./js/download.js').then(m => m.load(document));
     </script>
   </section>
 

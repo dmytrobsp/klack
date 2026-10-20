@@ -70,10 +70,10 @@ section h2 { font-family: 'Anton', sans-serif; font-weight: 400; font-size: 44px
 .stage .sub { position: absolute; left: 34px; top: 410px; width: 400px; color: #e8dcc4; }
 .pitch { margin: 0; font-family: 'Anton', sans-serif; font-size: 44px; line-height: 1.02; letter-spacing: .5px; color: var(--cream); text-transform: uppercase; }
 .really { margin-top: 8px; }
-.stage .dl { position: absolute; left: 34px; top: 560px; display: flex; gap: 14px; align-items: center; }
-.dl-button { font-family: 'Anton', sans-serif; font-size: 22px; letter-spacing: 1px; background: var(--yellow); color: var(--ink); padding: 9px 20px; box-shadow: 4px 4px 0 var(--pink); text-decoration: none; }
-.dl span { font-size: 12px; color: var(--muted); line-height: 1.5; }
-.dl span a { color: inherit; }
+.stage .dl-area { position: absolute; left: 34px; top: 560px; display: flex; gap: 14px; align-items: center; }
+.dl { font-family: 'Anton', sans-serif; font-size: 22px; letter-spacing: 1px; background: var(--yellow); color: var(--ink); padding: 9px 20px; box-shadow: 4px 4px 0 var(--pink); text-decoration: none; }
+.dl-meta { font-size: 12px; color: var(--muted); line-height: 1.5; }
+.dl-meta a { color: inherit; }
 .hero-capture { position: absolute; left: 470px; top: 350px; width: 340px; transform: rotate(2deg); }
 .term { position: relative; }
 .term .dots { padding: 6px 10px; font-size: 10px; color: #777; border-bottom: 1px solid #222; }
