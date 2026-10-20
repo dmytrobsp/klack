@@ -10,7 +10,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use slack_core::session::{self, LoggedInTeam, Profile, SessionSource, WorkspaceSession, workspace_url};
 use slack_core::signin::{self, CodeError, CodeSignIn, CodeTeam};
 
-use crate::login_import::{Group, Keys};
+use crate::login_import::{BrowserProfile, Group, Keys};
 use crate::pick::{Item, Row};
 use crate::{login_import, login_watch, pick, qr};
 
@@ -63,8 +63,8 @@ pub async fn login(profile: &str, flags: LoginFlags) -> Result<()> {
         vec![Ok(cookie_session(&url, &c).await?)]
     } else if asking {
         // `--workspace` alone: the browsers signed in to it first, then the ways to sign in to it.
-        let Some((groups, keys, browsers)) = look_around().await? else { return nothing_signed_in() };
-        match by_way(&groups, &keys, browsers, &saved, &url).await? {
+        let Some(looked) = look_around().await? else { return nothing_signed_in() };
+        match by_way(&looked, &saved, &url).await? {
             Step::Done(r) => r,
             Step::Back => Vec::new(),
         }
@@ -213,12 +213,12 @@ fn ask_workspace() -> Result<Option<String>> {
 /// A sign-in that did not work: the workspace, and why.
 type Failed = (String, String);
 
-/// Asks how to sign in to `url` (the browser profiles of `groups` signed in to it first, then the code, the browser
-/// and the cookie, each marking that workspace in its own picker) and does it. `keys` are the browsers' keys that
-/// `groups` were read with, `browsers` what was found. `Back` when a question was left with Esc.
-async fn by_way(groups: &[Group], keys: &Keys, browsers: Browsers, saved: &Profile, url: &str) -> Result<Step<Vec<Result<WorkspaceSession, Failed>>>> {
-    let host = host_of(url);
-    let (rows, listed) = ways(groups, url, browsers);
+/// Asks how to sign in to `url` (the browser profiles `looked` found signed in to it first, then the code, the
+/// browser and the cookie, each marking that workspace in its own picker) and does it. `Back` when a question was
+/// left with Esc.
+async fn by_way(looked: &Looked, saved: &Profile, url: &str) -> Result<Step<Vec<Result<WorkspaceSession, Failed>>>> {
+    let (groups, host) = (&looked.groups, host_of(url));
+    let (rows, listed) = ways(groups, url, &looked.browsers);
     let items = item_rows(&rows);
     let pick::Outcome::Picked(at) = pick::choose(&format!("How to sign in to {host}?"), rows, false)? else { return Ok(Step::Back) };
     let Some(&way) = picked_items(&items, &listed, &at).first() else { return Ok(Step::Back) };
@@ -229,7 +229,7 @@ async fn by_way(groups: &[Group], keys: &Keys, browsers: Browsers, saved: &Profi
             Err(e) => Err((host, e.clone())),
         }]),
         Way::Code => code_way(saved, &hint).await?,
-        Way::InBrowser => browser_way(&hint, groups, keys).await?,
+        Way::InBrowser => browser_way(&hint, looked).await?,
         Way::Cookie => cookie_way(&hint, saved).await?,
     })
 }
@@ -284,16 +284,30 @@ fn picked_items<T: Copy>(item_rows: &[usize], items: &[T], at: &[usize]) -> Vec<
     at.iter().filter_map(|r| item_rows.iter().position(|i| i == r)).map(|k| items[k]).collect()
 }
 
-/// Looks for Slack in the browsers: what is signed in to there, the browsers' keys (kept for the way "in your browser":
-/// on macOS the Keychain is asked once) and whether there are browsers to watch. `None` when Ctrl+C was pressed.
-async fn look_around() -> Result<Option<(Vec<Group>, Keys, Browsers)>> {
+/// What looking for Slack in the browsers found: what each profile is signed in to, the browsers' keys it was read
+/// with (kept for the way "in your browser" and the guide's list, so on macOS the Keychain is asked once) and what the
+/// way "in your browser" can watch.
+struct Looked {
+    groups: Vec<Group>,
+    keys: Keys,
+    browsers: Browsers,
+}
+
+/// Looks for Slack in the browsers, reading their keys. `None` when Ctrl+C was pressed.
+async fn look_around() -> Result<Option<Looked>> {
     let profiles = login_import::browser_profiles();
-    let browsers = browsers_here(!profiles.is_empty(), login_import::unreadable_chrome_here());
     let looked = async move {
         let keys = login_import::read_keys(&profiles).await;
-        (login_import::discover_with_keys(profiles, &keys).await, keys)
+        look_with(profiles, keys).await
     };
-    Ok(looking("Looking for Slack in your browsers…", looked).await?.map(|(groups, keys)| (groups, keys, browsers)))
+    looking("Looking for Slack in your browsers…", looked).await
+}
+
+/// Looks for Slack in `profiles` with their browsers' keys read already (`keys`): nothing more is asked of the
+/// keyring or the Keychain.
+async fn look_with(profiles: Vec<BrowserProfile>, keys: Keys) -> Looked {
+    let browsers = browsers_here(&profiles, &keys, login_import::unreadable_chrome_here());
+    Looked { groups: login_import::discover_with_keys(profiles, &keys).await, keys, browsers }
 }
 
 /// The guided sign-in: lists the Slack sign-ins of every browser profile and the three ways to sign in afresh (Space
@@ -301,17 +315,30 @@ async fn look_around() -> Result<Option<(Vec<Group>, Keys, Browsers)>> {
 /// them), then each marked way runs in list order; Esc in a way shows the list again, rebuilt. Returns how many
 /// sessions were saved; Esc at the list leaves without saving (or creating) anything more.
 pub async fn guide(profile_name: &str) -> Result<usize> {
+    guide_with(profile_name, None).await
+}
+
+/// [`guide`] with what looking in the browsers found already (`looked`, from signing in again): the browsers are not
+/// looked at, nor their keys read, again.
+async fn guide_with(profile_name: &str, looked: Option<Looked>) -> Result<usize> {
     let path = session::config_dir(profile_name)?.join("session.json");
     let mut saved = Profile::read_or_new(&path)?;
     println!("{}", opening_line(profile_name, path.exists()));
-    let Some((groups, keys, browsers)) = look_around().await? else {
-        nothing_signed_in()?;
-        return Ok(0);
+    let looked = match looked {
+        Some(l) => l,
+        None => match look_around().await? {
+            Some(l) => l,
+            None => {
+                nothing_signed_in()?;
+                return Ok(0);
+            }
+        },
     };
+    let groups = &looked.groups;
     // `reported`: `finish` has said what was signed in to (or that nothing was).
     let (mut total, mut reported) = (0, false);
     'list: loop {
-        let (rows, choices) = rows(&groups, &saved, browsers);
+        let (rows, choices) = rows(groups, &saved, &looked.browsers);
         let items = item_rows(&rows);
         let pick::Outcome::Picked(at) = pick::choose("Sign in to:", rows, true)? else { break };
         let picked = picked_items(&items, &choices, &at);
@@ -330,7 +357,7 @@ pub async fn guide(profile_name: &str) -> Result<usize> {
             let step = match choice {
                 Choice::Candidate(..) => continue,
                 Choice::Code => code_way(&saved, &Hint::default()).await?,
-                Choice::InBrowser => browser_way(&Hint::default(), &groups, &keys).await?,
+                Choice::InBrowser => browser_way(&Hint::default(), &looked).await?,
                 Choice::Cookie => cookie_way(&Hint::default(), &saved).await?,
             };
             match step {
@@ -681,9 +708,9 @@ async fn cookie_way(hint: &Hint, profile: &Profile) -> Result<Step<Vec<Result<Wo
     }
 }
 
-/// The browser way's screen: the link to open (an OSC 8 hyperlink) and what klack does meanwhile; `chrome_note` when
-/// Chrome is here but can't be read.
-fn browser_screen(link: &str, chrome_note: bool) -> Vec<String> {
+/// The browser way's screen: the link to open (an OSC 8 hyperlink) and what klack does meanwhile, then a line for
+/// each browser that is here but can't be read (`unreadable`, see [`Browsers`]).
+fn browser_screen(link: &str, unreadable: &[String]) -> Vec<String> {
     let mut lines = vec![
         "Sign in in your browser".to_string(),
         "  Open this link in the browser and profile you want to use (copy it, or Ctrl+Shift+click in kitty):".to_string(),
@@ -693,9 +720,7 @@ fn browser_screen(link: &str, chrome_note: bool) -> Vec<String> {
         "  Sign in there any way Slack offers. klack is watching your browsers and picks the new sign-in up".to_string(),
         "  (it can take up to half a minute for the browser to save it). Esc cancels.".to_string(),
     ];
-    if chrome_note {
-        lines.push(format!("  {UNREADABLE_CHROME}"));
-    }
+    lines.extend(unreadable.iter().map(|n| format!("  {n}")));
     lines
 }
 
@@ -712,16 +737,16 @@ fn new_rows(groups: &[Group], new: &[(usize, usize)]) -> Vec<Row> {
 }
 
 /// The way "in your browser": prints the link (`hint`'s, else Slack's sign-in page) to open in a browser of the
-/// person's own, watches the browser profiles for a sign-in that is not among `groups` (the guide's discovery; `keys`
-/// its browsers' keys), and offers the new ones, all marked. Esc while waiting or at the list, and 10 minutes with
-/// nothing new, go `Back`.
-async fn browser_way(hint: &Hint, groups: &[Group], keys: &Keys) -> Result<Step<Vec<Result<WorkspaceSession, Failed>>>> {
+/// person's own, watches the browser profiles it can read for a sign-in that is not among `looked`'s (the guide's
+/// discovery, with its browsers' keys), and offers the new ones, all marked. Esc while waiting or at the list, and 10
+/// minutes with nothing new, go `Back`.
+async fn browser_way(hint: &Hint, looked: &Looked) -> Result<Step<Vec<Result<WorkspaceSession, Failed>>>> {
     let link = hint.link.clone().unwrap_or_else(|| signin::SIGNIN_PAGE.to_string());
-    let chrome_note = login_import::unreadable_chrome_here();
-    let before = login_watch::baseline(groups);
+    let unreadable = looked.browsers.unreadable.clone();
+    let before = login_watch::baseline(&looked.groups);
     let started = std::time::Instant::now();
-    let mut screen = Screen::show(Box::new(move |_, _| browser_screen(&link, chrome_note)), "")?;
-    let watched = login_watch::watch(before.clone(), keys, &mut |w, h| screen.resized(w, h)).await;
+    let mut screen = Screen::show(Box::new(move |_, _| browser_screen(&link, &unreadable)), "")?;
+    let watched = login_watch::watch(before.clone(), &looked.keys, &mut |w, h| screen.resized(w, h)).await;
     screen.erase()?;
     let Some(now) = watched? else {
         if started.elapsed() >= login_watch::GIVE_UP {
@@ -836,8 +861,9 @@ fn again_hint(ws: &WorkspaceSession) -> (First, Hint) {
 
 /// Signs `ws`'s account in again, starting from the way its session came from: a code session asks the code way with
 /// its email filled in; a browser session offers that profile if it is still signed in (a one-row question, Enter
-/// takes it), then the browser way with the workspace's own link. Esc there, or any other source, shows the full
-/// guide. Returns whether anything was saved.
+/// takes it), then the browser way with the workspace's own link (the browsers' keys read once for both and for the
+/// list after). Esc there, a browser way with nothing it can read, or any other source, shows the full guide. Returns
+/// whether anything was saved.
 pub async fn sign_in_again(profile_name: &str, ws: &WorkspaceSession) -> Result<bool> {
     let (first, hint) = again_hint(ws);
     match first {
@@ -851,18 +877,33 @@ pub async fn sign_in_again(profile_name: &str, ws: &WorkspaceSession) -> Result<
             }
         }
         First::BrowserProfile => {
-            if let Some(SessionSource::Browser { profile, label, .. }) = &ws.source {
-                let still = match login_import::browser_profiles().into_iter().find(|b| &b.dir == profile) {
-                    Some(b) => match looking(&format!("Looking at {label}…"), login_import::discover_in(vec![b])).await? {
-                        Some(groups) => still_signed_in(&groups, ws),
-                        None => {
-                            nothing_signed_in()?;
-                            return Ok(false);
-                        }
-                    },
-                    None => None,
+            let profiles = login_import::browser_profiles();
+            // The profile the session came from (when it is still there), and its name.
+            let came_from = match &ws.source {
+                Some(SessionSource::Browser { profile, label, .. }) => Some((profiles.iter().find(|b| &b.dir == profile).cloned(), label.clone())),
+                _ => None,
+            };
+            let line = match &came_from {
+                Some((Some(_), label)) => format!("Looking at {label}…"),
+                _ => "Looking for Slack in your browsers…".to_string(),
+            };
+            let one = came_from.as_ref().and_then(|(b, _)| b.clone());
+            // Every browser's key is read once, here (on macOS one Keychain question per browser): for the question
+            // about that profile, the browser way and the full list.
+            let read = async {
+                let keys = login_import::read_keys(&profiles).await;
+                let groups = match one {
+                    Some(b) => login_import::discover_with_keys(vec![b], &keys).await,
+                    None => Vec::new(),
                 };
-                match still {
+                (keys, groups)
+            };
+            let Some((keys, groups)) = looking(&line, read).await? else {
+                nothing_signed_in()?;
+                return Ok(false);
+            };
+            if let Some((_, label)) = &came_from {
+                match still_signed_in(&groups, ws) {
                     Some(s) => {
                         let rows = vec![item("use it", "", &format!("as {}", s.user_name), true)];
                         if let pick::Outcome::Picked(_) = pick::choose(&format!("{label} is still signed in to {} — use it?", ws.team_name), rows, false)? {
@@ -870,20 +911,25 @@ pub async fn sign_in_again(profile_name: &str, ws: &WorkspaceSession) -> Result<
                             return Ok(finish(profile_name, &mut saved, vec![Ok(s)])? > 0);
                         }
                     }
-                    None => println!("{label} is signed out of {} as well.", ws.team_name),
+                    None => println!("{}", not_signed_in_there(label, &ws.team_name, &groups)),
                 }
             }
-            let Some((groups, keys, _)) = look_around().await? else {
+            let Some(looked) = looking("Looking for Slack in your browsers…", look_with(profiles, keys)).await? else {
                 nothing_signed_in()?;
                 return Ok(false);
             };
-            match browser_way(&hint, &groups, &keys).await? {
+            // Nothing klack can read to watch: the full list, whose row says why.
+            if !looked.browsers.readable {
+                return Ok(guide_with(profile_name, Some(looked)).await? > 0);
+            }
+            match browser_way(&hint, &looked).await? {
                 Step::Done(results) if results.is_empty() => return Ok(false),
                 Step::Done(results) => {
                     let mut saved = Profile::read_or_new(&session::config_dir(profile_name)?.join("session.json"))?;
                     return Ok(finish(profile_name, &mut saved, results)? > 0);
                 }
-                Step::Back => {}
+                // The full list, with what was found: the keys are not asked for again.
+                Step::Back => return Ok(guide_with(profile_name, Some(looked)).await? > 0),
             }
         }
     }
@@ -903,24 +949,32 @@ pub enum Choice {
     Cookie,
 }
 
-/// Whether this machine has browser profiles for the way "in your browser" to watch.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Browsers {
-    Some,
-    /// No browser profile at all.
-    None,
-    /// Only Chrome, which can't be read here (Windows).
-    OnlyUnreadable,
+/// What the way "in your browser" can watch on this machine.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Browsers {
+    /// Whether there is a browser profile klack can read: Firefox, or one of Chrome's family whose key was read.
+    pub readable: bool,
+    /// A line for each browser that is here but can't be read, and why (named on the waiting screen; the way's note
+    /// when nothing can be read).
+    pub unreadable: Vec<String>,
 }
 
-/// [`Browsers`] of a machine where klack found browser profiles it can read (`readable`) or not, and where Chrome
-/// is there but can't be read (`unreadable_chrome`).
-fn browsers_here(readable: bool, unreadable_chrome: bool) -> Browsers {
-    match (readable, unreadable_chrome) {
-        (true, _) => Browsers::Some,
-        (false, false) => Browsers::None,
-        (false, true) => Browsers::OnlyUnreadable,
+/// [`Browsers`] of a machine with the browser profiles `profiles`, whose Chrome-family keys are `keys`;
+/// `chrome_on_windows` when Chrome is there but can't be read (Windows, where it is not among `profiles`).
+fn browsers_here(profiles: &[BrowserProfile], keys: &Keys, chrome_on_windows: bool) -> Browsers {
+    let mut unreadable: Vec<String> = keys.failed().iter().map(|(family, why)| unreadable_key(family, why)).collect();
+    if chrome_on_windows {
+        unreadable.push(UNREADABLE_CHROME.to_string());
     }
+    Browsers { readable: profiles.iter().any(|p| keys.has(p)), unreadable }
+}
+
+/// The line of a browser whose key could not be read (`why`): the first part of why, cut to 60 characters, comes last,
+/// so a list row too long for the terminal loses only that.
+fn unreadable_key(family: &str, why: &str) -> String {
+    let first = why.split(": ").next().unwrap_or(why);
+    let short: String = first.chars().take(60).collect();
+    format!("{family}'s key can't be read here — use Firefox, or the code ({short}{})", if short.len() < first.len() { "…" } else { "" })
 }
 
 /// Why Chrome is not watched on Windows.
@@ -953,8 +1007,8 @@ fn item(text: &str, detail: &str, note: &str, enabled: bool) -> Row {
 
 /// The guide's list: a heading per browser profile (a dim one with its problem when it could not be
 /// looked at), a row per workspace found there, and the three ways to sign in afresh (the browser way
-/// dim with why when `browsers` says there is none to use).
-pub fn rows(groups: &[Group], profile: &Profile, browsers: Browsers) -> (Vec<Row>, Vec<Choice>) {
+/// dim with why when `browsers` says there is none it can read).
+pub fn rows(groups: &[Group], profile: &Profile, browsers: &Browsers) -> (Vec<Row>, Vec<Choice>) {
     let (mut rows, mut choices) = (Vec::new(), Vec::new());
     for (g, group) in groups.iter().enumerate() {
         let label = &group.profile.label;
@@ -990,14 +1044,17 @@ pub fn rows(groups: &[Group], profile: &Profile, browsers: Browsers) -> (Vec<Row
     (rows, choices)
 }
 
-/// The three ways to sign in afresh, as rows (the browser way dim with why when `browsers` says there is none to use).
-fn fresh_ways(browsers: Browsers) -> [Row; 3] {
-    let browser_note = match browsers {
-        Browsers::Some => "",
-        Browsers::None => "no browser found here — use the code",
-        Browsers::OnlyUnreadable => UNREADABLE_CHROME,
+/// The three ways to sign in afresh, as rows (the browser way dim with why when `browsers` says there is none it can
+/// read: no browser at all, or each that is here can't be read).
+fn fresh_ways(browsers: &Browsers) -> [Row; 3] {
+    let browser_note = if browsers.readable {
+        String::new()
+    } else if browsers.unreadable.is_empty() {
+        "no browser found here — use the code".to_string()
+    } else {
+        browsers.unreadable.join(" · ")
     };
-    [item(CODE_WAY, "", "phone or any device", true), item(IN_BROWSER, "", browser_note, browsers == Browsers::Some), item(PASTE_COOKIE, "", "", true)]
+    [item(CODE_WAY, "", "phone or any device", true), item(IN_BROWSER, "", &browser_note, browsers.readable), item(PASTE_COOKIE, "", "", true)]
 }
 
 /// The note of a workspace whose check failed in the browser profile `label`.
@@ -1011,7 +1068,7 @@ fn reason(error: &str, label: &str) -> String {
 }
 
 /// The ways to sign in to `url`: the browser profiles found signed in to it, then the three ways to sign in afresh.
-fn ways(groups: &[Group], url: &str, browsers: Browsers) -> (Vec<Row>, Vec<Way>) {
+fn ways(groups: &[Group], url: &str, browsers: &Browsers) -> (Vec<Row>, Vec<Way>) {
     let (mut rows, mut ways) = (Vec::new(), Vec::new());
     let host = host_of(url);
     for (g, group) in groups.iter().enumerate() {
@@ -1032,6 +1089,15 @@ fn ways(groups: &[Group], url: &str, browsers: Browsers) -> (Vec<Row>, Vec<Way>)
     rows.extend(fresh_ways(browsers));
     ways.extend([Way::Code, Way::InBrowser, Way::Cookie]);
     (rows, ways)
+}
+
+/// What signing in again says when the profile `label` that a session of `team` came from has no session of that
+/// account: signed out there, or why it could not be looked at (`groups`: what looking at it found).
+fn not_signed_in_there(label: &str, team: &str, groups: &[Group]) -> String {
+    match groups.iter().find_map(|g| g.problem.as_deref()) {
+        Some(problem) => format!("{label} can't be looked at: {problem}"),
+        None => format!("{label} is signed out of {team} as well."),
+    }
 }
 
 /// The session of `ws`'s account (team + user) among those `groups` found still signed in.
@@ -1319,6 +1385,11 @@ mod tests {
         Group { profile, problem: problem.map(String::from), candidates }
     }
 
+    /// A machine with a browser klack can read, and none it can't.
+    fn watchable() -> Browsers {
+        Browsers { readable: true, unreadable: vec![] }
+    }
+
     /// The rows as text: `# title | detail` for a heading, `- text | detail | note` for an item (`(dim)` when it can't be picked).
     fn shown(rows: &[Row]) -> Vec<String> {
         rows.iter()
@@ -1341,7 +1412,7 @@ mod tests {
         profile.upsert(account("T0000000002", "Widgets", "U0000000001"));
         // Another account of Acme is not this one.
         profile.upsert(account("T0000000001", "Acme", "U0000000002"));
-        let (rows, choices) = rows(&groups, &profile, Browsers::Some);
+        let (rows, choices) = rows(&groups, &profile, &watchable());
         assert_eq!(
             shown(&rows),
             [
@@ -1362,46 +1433,71 @@ mod tests {
     #[test]
     fn a_problem_group_is_a_dim_heading() {
         let groups = vec![group("Chrome · Work", Some("person@example.com"), Some("can't read Chrome's key: the keyring is locked"), vec![])];
-        let (rows, choices) = rows(&groups, &Profile::default(), Browsers::Some);
+        let (rows, choices) = rows(&groups, &Profile::default(), &watchable());
         assert_eq!(shown(&rows), ["#  | Chrome · Work  person@example.com — can't read Chrome's key: the keyring is locked", "#  | ", "- with a code from your email |  | phone or any device", "- in your browser |  | ", "- paste a cookie |  | "]);
         assert_eq!(choices, [Choice::Code, Choice::InBrowser, Choice::Cookie]);
     }
 
     #[test]
     fn nothing_found_still_offers_another_way() {
-        let (rows, choices) = rows(&[], &Profile::default(), Browsers::Some);
+        let (rows, choices) = rows(&[], &Profile::default(), &watchable());
         assert_eq!(shown(&rows), ["- with a code from your email |  | phone or any device", "- in your browser |  | ", "- paste a cookie |  | "]);
         assert_eq!(choices, [Choice::Code, Choice::InBrowser, Choice::Cookie]);
     }
 
     #[test]
     fn the_browser_way_is_dim_without_browsers() {
-        let none = shown(&rows(&[], &Profile::default(), Browsers::None).0);
+        let none = shown(&rows(&[], &Profile::default(), &Browsers { readable: false, unreadable: vec![] }).0);
         assert_eq!(none[1], "- in your browser |  | no browser found here — use the code (dim)");
-        let unreadable = shown(&rows(&[], &Profile::default(), Browsers::OnlyUnreadable).0);
+        let unreadable = shown(&rows(&[], &Profile::default(), &Browsers { readable: false, unreadable: vec![UNREADABLE_CHROME.to_string()] }).0);
         assert_eq!(unreadable[1], "- in your browser |  | Chrome on Windows can't be read — use Firefox, or the code (dim)");
         // The code and the cookie can always be picked.
         assert!(!unreadable[0].ends_with("(dim)") && !unreadable[2].ends_with("(dim)"));
     }
 
+    fn browser_profile(source: Source, label: &str) -> BrowserProfile {
+        BrowserProfile { source, dir: PathBuf::from(format!("/profiles/{label}")), label: label.into(), account: None }
+    }
+
     #[test]
-    fn the_browser_way_knows_what_it_can_watch() {
-        assert_eq!(browsers_here(true, false), Browsers::Some);
-        // Firefox is read even where Chrome can't be.
-        assert_eq!(browsers_here(true, true), Browsers::Some);
-        assert_eq!(browsers_here(false, false), Browsers::None);
-        assert_eq!(browsers_here(false, true), Browsers::OnlyUnreadable);
+    fn the_browser_way_counts_only_the_browsers_it_can_read() {
+        let (firefox, chrome) = (browser_profile(Source::Firefox, "Firefox · default"), browser_profile(Source::Chrome, "Chrome · Work"));
+        let failed = Keys::of(&[("Chrome", Err("can't read Chrome's key: no D-Bus session: org.freedesktop.DBus.Error.ServiceUnknown"))]);
+        let note = "Chrome's key can't be read here — use Firefox, or the code (no D-Bus session)";
+        // Chrome's key can't be read, Firefox is here: the way can be picked, and its screen names Chrome and why.
+        let b = browsers_here(&[firefox.clone(), chrome.clone()], &failed, false);
+        assert_eq!(b, Browsers { readable: true, unreadable: vec![note.to_string()] });
+        assert_eq!(shown(&fresh_ways(&b))[1], "- in your browser |  | ");
+        let screen = browser_screen(signin::SIGNIN_PAGE, &b.unreadable);
+        assert_eq!(screen.last().unwrap(), &format!("  {note}"));
+        // Only that Chrome: the way is dim, with why.
+        let b = browsers_here(&[chrome.clone()], &failed, false);
+        assert_eq!(b, Browsers { readable: false, unreadable: vec![note.to_string()] });
+        assert_eq!(shown(&fresh_ways(&b))[1], format!("- in your browser |  | {note} (dim)"));
+        // Its key read: watched, nothing to say.
+        let read = Keys::of(&[("Chrome", Ok(b"pw"))]);
+        assert_eq!(browsers_here(&[chrome.clone()], &read, false), Browsers { readable: true, unreadable: vec![] });
+        // No browser at all.
+        let none = browsers_here(&[], &Keys::of(&[]), false);
+        assert_eq!(shown(&fresh_ways(&none))[1], "- in your browser |  | no browser found here — use the code (dim)");
+        // Windows: Chrome is not listed and its key not read; with Firefox the screen says so, without it the way is dim.
+        assert_eq!(browsers_here(&[firefox], &Keys::of(&[]), true), Browsers { readable: true, unreadable: vec![UNREADABLE_CHROME.to_string()] });
+        assert_eq!(browsers_here(&[], &Keys::of(&[]), true), Browsers { readable: false, unreadable: vec![UNREADABLE_CHROME.to_string()] });
+        // A long reason is cut.
+        let long = Keys::of(&[("Brave", Err(&*format!("can't read Brave's key: {}", "x".repeat(100))))]);
+        let b = browsers_here(&[browser_profile(Source::Chrome, "Brave · Default")], &long, false);
+        assert_eq!(b.unreadable, [format!("Brave's key can't be read here — use Firefox, or the code ({}…)", "x".repeat(60))]);
     }
 
     #[test]
     fn the_browser_screen_shows_the_link() {
-        let screen = browser_screen(signin::SIGNIN_PAGE, false);
+        let screen = browser_screen(signin::SIGNIN_PAGE, &[]);
         assert_eq!(screen[0], "Sign in in your browser");
         assert_eq!(screen[3], format!("  {}", qr::osc8("https://slack.com/signin")));
         assert!(screen.last().unwrap().ends_with("Esc cancels."));
         assert!(!screen.join("\n").contains("Chrome on Windows"));
         // Chrome here but unreadable: said, as the last line.
-        let screen = browser_screen("https://acme.slack.com/", true);
+        let screen = browser_screen("https://acme.slack.com/", &[UNREADABLE_CHROME.to_string()]);
         assert!(screen[3].contains("https://acme.slack.com/"));
         assert_eq!(screen.last().unwrap(), "  Chrome on Windows can't be read — use Firefox, or the code");
     }
@@ -1524,8 +1620,9 @@ mod tests {
     fn a_resized_code_screen_is_laid_out_for_the_new_size() {
         let qr_in = |w, h| qr::code_screen("person@example.com", w, h).iter().any(|l| l.contains('▀'));
         let beside = |w, h| qr::code_screen("person@example.com", w, h).iter().any(|l| l.contains('▀') && l.contains("or open"));
-        // Small: only the link; grown: the code under its text, then beside it.
-        assert!(!qr_in(80, 24));
+        // Smaller than 80 x 24: only the link; 80 x 24: the compact code; grown: the code under its text, then beside it.
+        assert!(!qr_in(80, 22));
+        assert!(qr_in(80, 24) && qr::code_screen("person@example.com", 80, 24)[0].starts_with("Sign in with a code · "));
         assert!(qr_in(103, 50) && !beside(103, 50));
         assert!(beside(130, 40));
     }
@@ -1562,7 +1659,7 @@ mod tests {
             group("Chrome · Work", Some("person@example.com"), None, vec![found("T0000000002", "Widgets", Some("U0000000001"), "Chrome · Work"), found("T0000000001", "Acme", Some("U0000000001"), "Chrome · Work")]),
             group("Firefox · default", None, None, vec![found("T0000000001", "Acme", None, "Firefox · default")]),
         ];
-        let (rows, listed) = ways(&groups, "https://acme.slack.com/", Browsers::Some);
+        let (rows, listed) = ways(&groups, "https://acme.slack.com/", &watchable());
         assert_eq!(
             shown(&rows),
             [
@@ -1575,7 +1672,7 @@ mod tests {
         );
         assert_eq!(listed, [Way::Browser(0, 1), Way::Browser(1, 0), Way::Code, Way::InBrowser, Way::Cookie]);
         // No browser to watch: the browser way can't be picked; the code and the cookie always can.
-        let (rows, listed) = ways(&[], "https://other.slack.com/", Browsers::None);
+        let (rows, listed) = ways(&[], "https://other.slack.com/", &Browsers { readable: false, unreadable: vec![] });
         assert_eq!(shown(&rows), ["- with a code from your email |  | phone or any device", "- in your browser |  | no browser found here — use the code (dim)", "- paste a cookie |  | "]);
         assert_eq!(listed, [Way::Code, Way::InBrowser, Way::Cookie]);
     }
@@ -1589,6 +1686,17 @@ mod tests {
         // Signed out there, or never signed in there.
         assert!(still_signed_in(&groups, &account("T0000000002", "Widgets", "U0000000001")).is_none());
         assert!(still_signed_in(&groups, &account("T0000000003", "Other", "U0000000001")).is_none());
+    }
+
+    #[test]
+    fn signing_in_again_says_why_the_profile_was_not_used() {
+        let signed_out = vec![group("Chrome · Work", None, None, vec![found("T0000000001", "Acme", None, "Chrome · Work")])];
+        assert_eq!(not_signed_in_there("Chrome · Work", "Acme", &signed_out), "Chrome · Work is signed out of Acme as well.");
+        // The profile is gone.
+        assert_eq!(not_signed_in_there("Chrome · Work", "Acme", &[]), "Chrome · Work is signed out of Acme as well.");
+        // Its browser's key could not be read: not "signed out".
+        let unread = vec![group("Chrome · Work", None, Some("can't read Chrome's key: no D-Bus session"), vec![])];
+        assert_eq!(not_signed_in_there("Chrome · Work", "Acme", &unread), "Chrome · Work can't be looked at: can't read Chrome's key: no D-Bus session");
     }
 
     #[test]

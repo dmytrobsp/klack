@@ -241,7 +241,9 @@ pub async fn discover() -> Vec<Group> {
 /// workspaces Slack's sign-in page lists for each, and a session for each (`session_from_cookie`),
 /// all at once but at most six requests to Slack together, over one client. A profile that cannot
 /// be looked at (its browser's key, a step that takes longer than 10 s, a sign-in page klack can't
-/// read) gets a `problem`; nothing here fails.
+/// read) gets a `problem`; nothing here fails. (klack itself reads the keys first and keeps them: [`read_keys`],
+/// [`discover_with_keys`].)
+#[cfg(test)]
 pub async fn discover_in(profiles: Vec<BrowserProfile>) -> Vec<Group> {
     let keys = read_keys(&profiles).await;
     discover_with_keys(profiles, &keys).await
@@ -331,6 +333,23 @@ impl Keys {
     /// was read.
     pub fn has(&self, profile: &BrowserProfile) -> bool {
         profile.source == Source::Firefox || matches!(self.0.get(family(profile)), Some(Ok(_)))
+    }
+
+    /// The browsers whose key could not be read, and why (without "can't read Chrome's key: "), by name.
+    pub fn failed(&self) -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = self
+            .0
+            .iter()
+            .filter_map(|(f, k)| k.as_ref().err().map(|e| (f.clone(), e.strip_prefix(&format!("can't read {f}'s key: ")).unwrap_or(e).to_string())))
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// Test only: keys as given (a key, or why it could not be read, per browser).
+    #[cfg(test)]
+    pub fn of(keys: &[(&str, Result<&[u8], &str>)]) -> Keys {
+        Keys(keys.iter().map(|(f, k)| (f.to_string(), k.map(<[u8]>::to_vec).map_err(str::to_string))).collect())
     }
 }
 
@@ -960,6 +979,31 @@ mod tests {
         let keys = Keys(HashMap::from([("Chrome".to_string(), Ok(b"pw".to_vec()))]));
         assert!(keys.has(&chrome) && keys.has(&firefox));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn keys_read_once_serve_every_look_after() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        // Signing in again looks at the profile the session came from, then at every profile: each browser's key is
+        // asked for once (on macOS one Keychain question), before both.
+        let chrome = temp("keys-once");
+        touch(&chrome.join("Default/Cookies"));
+        touch(&chrome.join("Profile 1/Cookies"));
+        let profile = |dir: &str, label: &str| BrowserProfile { source: Source::Chrome, dir: chrome.join(dir), label: label.into(), account: None };
+        let profiles = vec![profile("Default", "Chrome · Work"), profile("Profile 1", "Chrome · Profile 1"), profile("Edge", "Edge · Default")];
+        let asked = AtomicUsize::new(0);
+        let keys = read_keys_with(&profiles, KEY_READS, |family| {
+            asked.fetch_add(1, Ordering::SeqCst);
+            async move { if family == "Chrome" { Err(anyhow!("no D-Bus session: not running")) } else { Ok(b"pw".to_vec()) } }
+        })
+        .await;
+        discover_with_keys(vec![profiles[0].clone()], &keys).await;
+        discover_with_keys(profiles.clone(), &keys).await;
+        assert_eq!(asked.load(Ordering::SeqCst), if cfg!(windows) { 0 } else { 2 });
+        // The browsers whose key could not be read, and why.
+        let failed: Vec<(String, String)> = if cfg!(windows) { vec![] } else { vec![("Chrome".into(), "no D-Bus session: not running".into())] };
+        assert_eq!(keys.failed(), failed);
+        std::fs::remove_dir_all(&chrome).unwrap();
     }
 
     #[test]

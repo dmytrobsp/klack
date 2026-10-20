@@ -226,9 +226,20 @@ pub async fn session_from_cookie(workspace_url: &str, cookie_d: &str) -> Result<
 }
 
 /// The client for Slack's web pages (a workspace's pages, the sign-in page): a browser's user agent.
-/// One can be shared by many requests, as finding the sign-ins of every browser does.
+/// One can be shared by many requests, as finding the sign-ins of every browser does. A connection is given
+/// [`WEB_CONNECT_TIMEOUT`] and a request [`WEB_TIMEOUT`], as the code sign-in's client, so one that stalls does not
+/// hang the cookie way or a script for ever (discovery's own 10 s per step comes first).
 pub fn web_client() -> Result<reqwest::Client> {
-    crate::api::http_client(|| reqwest::Client::builder().user_agent(USER_AGENT))
+    web_client_within(WEB_CONNECT_TIMEOUT, WEB_TIMEOUT)
+}
+
+/// How long [`web_client`] waits for a connection, and for a whole request.
+const WEB_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+const WEB_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// [`web_client`] waiting `connect` for a connection and `total` for a request.
+fn web_client_within(connect: std::time::Duration, total: std::time::Duration) -> Result<reqwest::Client> {
+    crate::api::http_client(|| reqwest::Client::builder().user_agent(USER_AGENT).connect_timeout(connect).timeout(total))
 }
 
 /// [`session_from_cookie`] with the client `http`.
@@ -387,6 +398,20 @@ pub async fn signed_in_teams_with(http: &reqwest::Client, cookie_d: &str) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_web_page_that_never_answers_is_given_up() {
+        // As the code sign-in's client: a stalled connection does not hang the cookie way or a script for ever.
+        assert_eq!((WEB_CONNECT_TIMEOUT, WEB_TIMEOUT), (std::time::Duration::from_secs(15), std::time::Duration::from_secs(30)));
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        // A server that takes the connection and never answers.
+        let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let http = web_client_within(std::time::Duration::from_millis(300), std::time::Duration::from_millis(300)).unwrap();
+        let started = std::time::Instant::now();
+        let r = session_from_cookie_with(&http, &format!("http://{}/", silent.local_addr().unwrap()), "x").await;
+        assert!(r.is_err());
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "{:?}", started.elapsed());
+    }
 
     #[test]
     fn an_old_window_session_still_loads() {

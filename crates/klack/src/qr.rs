@@ -7,14 +7,25 @@ use unicode_width::UnicodeWidthStr;
 /// The modules of the QR code of `text` (dark = true), error correction M, with a 4-module quiet zone of
 /// light on every side. Square. Empty when the text does not fit a code.
 pub fn modules(text: &str) -> Vec<Vec<bool>> {
-    let Ok(code) = QrCode::with_error_correction_level(text, EcLevel::M) else { return Vec::new() };
+    modules_with(text, EcLevel::M, 4)
+}
+
+/// The modules of the compact layout's code: error correction L and a 2-module quiet zone, so it fits a terminal of
+/// 80 x 24.
+pub fn compact_modules(text: &str) -> Vec<Vec<bool>> {
+    modules_with(text, EcLevel::L, 2)
+}
+
+/// The modules of the QR code of `text` at error correction `ec`, with a quiet zone of `quiet` modules.
+fn modules_with(text: &str, ec: EcLevel, quiet: usize) -> Vec<Vec<bool>> {
+    let Ok(code) = QrCode::with_error_correction_level(text, ec) else { return Vec::new() };
     let w = code.width();
     let colors = code.to_colors();
-    let size = w + 8;
+    let size = w + 2 * quiet;
     let mut rows = vec![vec![false; size]; size];
     for y in 0..w {
         for x in 0..w {
-            rows[y + 4][x + 4] = colors[y * w + x] == Color::Dark;
+            rows[y + quiet][x + quiet] = colors[y * w + x] == Color::Dark;
         }
     }
     rows
@@ -49,6 +60,8 @@ pub fn osc8(url: &str) -> String {
 pub enum Fit {
     Beside,
     Under,
+    /// One header line, a smaller code ([`compact_modules`]) and the link: for a terminal of 80 x 24.
+    Compact,
     LinkOnly,
 }
 
@@ -73,8 +86,28 @@ pub fn fit(qr_cols: usize, qr_rows: usize, text_cols: usize, width: u16, height:
     }
 }
 
+/// Whether the compact layout fits: the code's width across, and down its header line, the code, the link (as many
+/// lines as it wraps to at this width) and the prompt lines.
+pub fn compact_fits(qr_cols: usize, qr_rows: usize, link_cols: usize, width: u16, height: u16) -> bool {
+    let (width, height) = (width as usize, height as usize);
+    qr_cols <= width && 1 + qr_rows + link_cols.div_ceil(width.max(1)) + PROMPT_LINES <= height
+}
+
+/// The layout of the code screen of `link` on a terminal `width` x `height`: a full one when it fits ([`fit`]), else
+/// the compact one when that fits, else the link only. `text_cols`: the widest line of the full layouts' text.
+fn layout(link: &str, text_cols: usize, width: u16, height: u16) -> Fit {
+    let m = modules(link);
+    let full = if m.is_empty() { Fit::LinkOnly } else { fit(m.len(), m.len().div_ceil(2), text_cols, width, height) };
+    if full != Fit::LinkOnly {
+        return full;
+    }
+    let c = compact_modules(link);
+    if !c.is_empty() && compact_fits(c.len(), c.len().div_ceil(2), link.width(), width, height) { Fit::Compact } else { Fit::LinkOnly }
+}
+
 /// The lines of the code screen for a terminal of `width` x `height` (heading, email, blank, the code with its
-/// text, as far as it fits).
+/// text, as far as it fits; on a small terminal one header line, a smaller code and the link; on a smaller one the
+/// link and a dim line saying that a bigger window shows the code).
 pub fn code_screen(email: &str, width: u16, height: u16) -> Vec<String> {
     let link = slack_core::signin::signin_link(email);
     let intro = "On your phone, scan this — or open";
@@ -86,10 +119,16 @@ pub fn code_screen(email: &str, width: u16, height: u16) -> Vec<String> {
         (hint2.to_string(), hint2.width()),
     ];
     let text_cols = text.iter().map(|t| t.1).max().unwrap_or(0);
+    let chosen = layout(&link, text_cols, width, height);
+    if chosen == Fit::Compact {
+        let mut lines = vec![format!("Sign in with a code · {email}")];
+        lines.extend(half_blocks(&compact_modules(&link)));
+        lines.push(osc8(&link));
+        return lines;
+    }
     let mut lines = vec!["Sign in with a code".to_string(), format!("  Email: {email}"), String::new()];
-    let m = modules(&link);
-    let (qr, qr_cols) = (half_blocks(&m), m.len());
-    match if qr.is_empty() { Fit::LinkOnly } else { fit(qr_cols, qr.len(), text_cols, width, height) } {
+    let qr = half_blocks(&modules(&link));
+    match chosen {
         Fit::Beside => {
             for (i, q) in qr.iter().enumerate() {
                 match text.get(i) {
@@ -103,7 +142,10 @@ pub fn code_screen(email: &str, width: u16, height: u16) -> Vec<String> {
             lines.push(String::new());
             lines.extend(text.into_iter().map(|t| t.0));
         }
-        Fit::LinkOnly => lines.extend(text.into_iter().skip(1).map(|t| t.0)),
+        Fit::Compact | Fit::LinkOnly => {
+            lines.extend(text.into_iter().skip(1).map(|t| t.0));
+            lines.push("\x1b[2ma bigger window shows a QR code\x1b[0m".to_string());
+        }
     }
     lines
 }
@@ -213,11 +255,65 @@ mod tests {
         assert_eq!(rows_on(&screen, 100), screen.len());
     }
 
-    /// Prints the screen for the live check: `KLACK_QR_OUT=file cargo test -p klack qr_print -- --ignored`.
+    #[test]
+    fn an_80x24_terminal_gets_the_compact_code() {
+        let link = slack_core::signin::signin_link("person@example.com");
+        assert!((70..=75).contains(&link.width()), "{link}");
+        let screen = code_screen("person@example.com", 80, 24);
+        // One header line, the code, the link; the message and the prompt lines come under it.
+        assert_eq!(screen[0], "Sign in with a code · person@example.com");
+        assert!(screen[1..screen.len() - 1].iter().all(|l| l.contains('▀')), "{screen:?}");
+        assert_eq!(screen.last().unwrap(), &osc8(&link));
+        for l in &screen {
+            assert!(visible(l).width() <= 80, "{:?}", visible(l));
+        }
+        assert!(rows_on(&screen, 80) + PROMPT_LINES <= 24, "{}", rows_on(&screen, 80));
+        // A terminal big enough for the full code still gets it, under its text.
+        let under = code_screen("person@example.com", 103, 50);
+        assert_eq!(under[0], "Sign in with a code");
+        assert!(under.iter().any(|l| l.contains('▀')) && !under.iter().any(|l| l.contains('▀') && l.contains("or open")));
+    }
+
+    #[test]
+    fn the_compact_code_is_smaller_with_a_narrower_quiet_zone() {
+        let link = slack_core::signin::signin_link("person@example.com");
+        let (full, small) = (modules(&link), compact_modules(&link));
+        // Error correction L takes the link in version 4 (33 modules) instead of 5 (37), and the quiet zone is 2.
+        assert_eq!((full.len(), small.len()), (45, 37));
+        assert!(small[..2].iter().chain(&small[35..]).all(|r| r.iter().all(|d| !d)));
+        assert!(small.iter().all(|r| !r[0] && !r[1] && !r[35] && !r[36]));
+        assert!((2..=8).all(|x| small[2][x]) && !small[3][3]);
+        assert_eq!(layout(&link, 71, 80, 24), Fit::Compact);
+        assert_eq!(layout(&link, 71, 103, 50), Fit::Under);
+        assert_eq!(layout(&link, 71, 130, 40), Fit::Beside);
+        assert_eq!(layout(&link, 71, 36, 40), Fit::LinkOnly);
+        // Down: 1 + 19 + the link + 2; the link wraps to two lines below 71 columns.
+        assert!(compact_fits(37, 19, 71, 80, 23) && !compact_fits(37, 19, 71, 80, 22));
+        assert!(compact_fits(37, 19, 71, 40, 24) && !compact_fits(37, 19, 71, 40, 23));
+        assert!(!compact_fits(37, 19, 71, 36, 50));
+    }
+
+    #[test]
+    fn the_link_only_screen_says_a_bigger_window_shows_the_code() {
+        let screen = code_screen("person@example.com", 30, 40);
+        assert!(!screen.iter().any(|l| l.contains('▀')));
+        assert_eq!(visible(screen.last().unwrap()), "a bigger window shows a QR code");
+        assert!(screen.last().unwrap().starts_with("\x1b[2m"));
+        // Too short for the compact code too.
+        assert!(!code_screen("person@example.com", 80, 22).iter().any(|l| l.contains('▀')));
+    }
+
+    /// Prints the screen for the live check: `KLACK_QR_OUT=file [KLACK_QR_SIZE=80x24] cargo test -p klack qr_print -- --ignored`
+    /// (120 x 40 when no size is given).
     #[test]
     #[ignore]
     fn qr_print() {
         let out = std::env::var("KLACK_QR_OUT").unwrap();
-        std::fs::write(out, code_screen("person@example.com", 120, 40).join("\n") + "\n").unwrap();
+        let size = std::env::var("KLACK_QR_SIZE").ok().and_then(|s| {
+            let (w, h) = s.split_once('x')?;
+            Some((w.parse().ok()?, h.parse().ok()?))
+        });
+        let (w, h) = size.unwrap_or((120, 40));
+        std::fs::write(out, code_screen("person@example.com", w, h).join("\n") + "\n").unwrap();
     }
 }
