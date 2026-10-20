@@ -111,6 +111,11 @@ impl MessagePane {
         MessagePane { thread: true, ..Default::default() }
     }
 
+    #[cfg(test)]
+    pub fn offset(&self) -> usize {
+        self.scroll
+    }
+
     pub fn scroll_up(&mut self, n: usize) {
         let back = n.min(self.down);
         self.down -= back;

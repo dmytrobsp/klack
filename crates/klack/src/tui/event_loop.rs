@@ -4343,17 +4343,32 @@ fn run_global(app: &mut App, action: Action) -> bool {
         Action::Workspace9 => app.switch_workspace(8),
         Action::PrevConversation => app.sidebar.move_by_conversation(-1),
         Action::NextConversation => app.sidebar.move_by_conversation(1),
-        Action::ScrollUp => {
-            app.messages.scroll_up(app.messages.area.height.saturating_sub(3) as usize);
-            app.maybe_load_older();
+        Action::ScrollUp | Action::ScrollDown => {
+            let older = scroll_page(app.focus, app.thread.is_some(), &mut app.messages, &mut app.thread_pane, action == Action::ScrollUp);
+            if older {
+                app.maybe_load_older();
+            }
         }
-        Action::ScrollDown => app.messages.scroll_down(app.messages.area.height.saturating_sub(3) as usize),
         Action::FocusNext | Action::FocusPrev => {
             app.focus = step_focus(&app.focus_order(), app.focus, action == Action::FocusNext);
         }
         _ => {}
     }
     true
+}
+
+/// PgUp / PgDn: a page of the pane that has focus (the thread and its reply box: the thread;
+/// anything else: the messages). True when the messages scrolled up (older ones may be wanted).
+fn scroll_page(focus: Focus, thread_open: bool, messages: &mut MessagePane, thread: &mut MessagePane, up: bool) -> bool {
+    let in_thread = thread_open && matches!(focus, Focus::Thread | Focus::ThreadComposer);
+    let pane = if in_thread { thread } else { messages };
+    let page = pane.area.height.saturating_sub(3) as usize;
+    if up {
+        pane.scroll_up(page);
+    } else {
+        pane.scroll_down(page);
+    }
+    up && !in_thread
 }
 
 fn handle_rtm(app: &mut App, ev: slack_core::rtm::RtmEvent) {
@@ -5649,6 +5664,32 @@ mod tests {
         let dialog = Here { dialog: true, ..here };
         assert!(!applies(&dialog, C::Global, Search) && !applies(&dialog, C::Global, HuddleView) && applies(&dialog, C::Global, Mute), "nothing opens under a dialog");
         assert!(!applies(&Here { leavable: true, ..dialog }, C::Global, LeaveConversation), "its y/n would open under the dialog");
+    }
+
+    #[test]
+    fn page_keys_scroll_what_has_focus() {
+        use super::{Focus, MessagePane};
+        use ratatui::layout::Rect;
+        let panes = || {
+            let (mut m, mut t) = (MessagePane::default(), MessagePane::thread());
+            (m.area, t.area) = (Rect::new(0, 0, 40, 23), Rect::new(40, 0, 40, 13));
+            (m, t)
+        };
+        for focus in [Focus::Thread, Focus::ThreadComposer] {
+            let (mut m, mut t) = panes();
+            assert!(!super::scroll_page(focus, true, &mut m, &mut t, true));
+            assert_eq!((m.offset(), t.offset()), (0, 10), "{focus:?}: PgUp moves the thread only");
+            super::scroll_page(focus, true, &mut m, &mut t, false);
+            assert_eq!((m.offset(), t.offset()), (0, 0), "{focus:?}: PgDn");
+        }
+        for focus in [Focus::Messages, Focus::Composer, Focus::Sidebar] {
+            let (mut m, mut t) = panes();
+            assert!(super::scroll_page(focus, true, &mut m, &mut t, true));
+            assert_eq!((m.offset(), t.offset()), (20, 0), "{focus:?}: PgUp moves the messages only");
+        }
+        let (mut m, mut t) = panes();
+        super::scroll_page(Focus::Thread, false, &mut m, &mut t, true);
+        assert_eq!((m.offset(), t.offset()), (20, 0), "no thread open: the messages");
     }
 
     #[test]
