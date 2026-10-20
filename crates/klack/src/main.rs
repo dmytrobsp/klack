@@ -183,10 +183,12 @@ async fn run() -> Result<()> {
                 }
                 p = Profile::load(&profile)?;
             }
+            // Sessions that have ended are offered a fix (or skipped) before the app starts.
+            let Some((p, signed_out)) = auth::at_start(&profile, p).await? else { return Ok(()) };
             // Held while klack runs so the profile is not removed under it; a second klack on the
             // same profile runs without it.
             let _lock = profiles::lock(&dirs, &profile).ok().flatten();
-            tui::event_loop::run(p, cli.team.as_deref()).await
+            tui::event_loop::run(p, cli.team.as_deref(), signed_out).await
         }
     }
 }

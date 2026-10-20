@@ -150,6 +150,8 @@ struct App {
     workspace: usize,
     /// Leave this workspace for another (index into `workspaces`).
     switch_to: Option<usize>,
+    /// The workspaces whose sessions have ended (skipped: not switched to, not polled).
+    signed_out: SignedOut,
     /// The huddle we are in.
     call: Option<super::call::Call>,
     /// Presence subscription sent on the current RTM connection.
@@ -2476,14 +2478,10 @@ impl App {
 
     /// Leave this workspace for workspace `index` of the profile.
     fn switch_workspace(&mut self, index: usize) {
-        if index >= self.workspaces.len() {
-            self.status = format!("there is no workspace {} (this profile has {})", index + 1, self.workspaces.len());
-        } else if index == self.workspace {
-            self.status = format!("already in {}", self.workspaces[index]);
-        } else if self.call.is_some() {
-            self.status = "leave the huddle first".into();
-        } else {
-            self.switch_to = Some(index);
+        let signed_out = self.signed_out.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        match switch_check(index, self.workspace, &self.workspaces, self.call.is_some(), &signed_out) {
+            Ok(i) => self.switch_to = Some(i),
+            Err(why) => self.status = why,
         }
     }
 
@@ -3007,23 +3005,51 @@ fn stash(drafts: &mut super::drafts::Drafts, key: &str, composer: &mut super::co
     };
 }
 
-/// Run the app on the profile's workspace `team` (or its default); Alt+1…9 and `/workspace`
-/// switch to another of the profile's workspaces without leaving the terminal.
-pub async fn run(profile: slack_core::session::Profile, team: Option<&str>) -> Result<()> {
+/// The workspaces (indices into the profile's) whose sessions have ended, shared with the pollers.
+pub type SignedOut = std::sync::Arc<std::sync::Mutex<std::collections::HashSet<usize>>>;
+
+/// The workspace to start on: `wanted` if it is signed in, else the first that is; None when
+/// every one is signed out.
+fn start_index(sessions: &[slack_core::session::WorkspaceSession], wanted: usize, signed_out: &std::collections::HashSet<usize>) -> Option<usize> {
+    std::iter::once(wanted).chain(0..sessions.len()).find(|i| *i < sessions.len() && !signed_out.contains(i))
+}
+
+/// Whether workspace `index` can be switched to from `current` (`labels` name them; `in_call`: in
+/// a huddle): the index, or what the status line says instead.
+fn switch_check(index: usize, current: usize, labels: &[String], in_call: bool, signed_out: &std::collections::HashSet<usize>) -> Result<usize, String> {
+    if index >= labels.len() {
+        Err(format!("there is no workspace {} (this profile has {})", index + 1, labels.len()))
+    } else if index == current {
+        Err(format!("already in {}", labels[index]))
+    } else if signed_out.contains(&index) {
+        Err(format!("{}: signed out — klack auth login, then restart klack", labels[index]))
+    } else if in_call {
+        Err("leave the huddle first".into())
+    } else {
+        Ok(index)
+    }
+}
+
+/// Run the app on the profile's workspace `team` (or its default; the first signed-in one when
+/// that one is in `signed_out`); Alt+1…9 and `/workspace` switch to another of the profile's
+/// workspaces without leaving the terminal. The signed-out ones are skipped.
+pub async fn run(profile: slack_core::session::Profile, team: Option<&str>, signed_out: std::collections::HashSet<usize>) -> Result<()> {
     let sessions = profile.workspaces.clone();
     let start = profile.workspace(team).ok_or_else(|| anyhow::anyhow!("no such workspace in this profile"))?;
-    let mut index = sessions.iter().position(|s| s.team_id == start.team_id && s.user_id == start.user_id).unwrap_or(0);
+    let wanted = sessions.iter().position(|s| s.team_id == start.team_id && s.user_id == start.user_id).unwrap_or(0);
+    let mut index = start_index(&sessions, wanted, &signed_out).ok_or_else(|| anyhow::anyhow!("every workspace of this profile is signed out — klack auth login"))?;
+    let signed_out: SignedOut = std::sync::Arc::new(std::sync::Mutex::new(signed_out));
     let labels = workspace_labels(&sessions);
     let keymap = super::keymap::load_user();
     let shown = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(index));
     let badges: super::others::Badges = Default::default();
     let wake = std::sync::Arc::new(tokio::sync::Notify::new());
-    super::others::spawn(sessions.clone(), shown.clone(), badges.clone(), wake.clone());
+    super::others::spawn(sessions.clone(), shown.clone(), badges.clone(), wake.clone(), signed_out.clone());
     let (clicks_tx, mut clicks) = mpsc::unbounded_channel();
-    super::others::spawn_watchers(sessions.clone(), labels.clone(), shown.clone(), clicks_tx);
+    super::others::spawn_watchers(sessions.clone(), labels.clone(), shown.clone(), clicks_tx, signed_out.clone());
     let open_after: super::others::OpenAfter = Default::default();
     let logos: super::others::Logos = Default::default();
-    super::others::spawn_logos(sessions.clone(), logos.clone());
+    super::others::spawn_logos(sessions.clone(), logos.clone(), signed_out.clone());
 
     for w in &keymap.1 {
         tracing::warn!("{w}");
@@ -3056,7 +3082,7 @@ pub async fn run(profile: slack_core::session::Profile, team: Option<&str>) -> R
         let mut keymap = super::keymap::load_user();
         keymap.1.extend(settings_problem);
         super::messages::set_open_key(keymap.0.first_shown(Context::Messages, Action::Open).unwrap_or_default());
-        let (next, kept_media, kept_clipboard) = run_workspace(client, (labels.clone(), index, badges.clone(), open_after.clone(), logos.clone()), &mut clicks, &keymap, &settings, &mut terminal, &mut events, media, clipboard).await?;
+        let (next, kept_media, kept_clipboard) = run_workspace(client, (labels.clone(), index, badges.clone(), open_after.clone(), logos.clone(), signed_out.clone()), &mut clicks, &keymap, &settings, &mut terminal, &mut events, media, clipboard).await?;
         (media, clipboard) = (kept_media, kept_clipboard);
         match next {
             Some(i) => index = i,
@@ -3079,7 +3105,7 @@ fn workspace_labels(sessions: &[slack_core::session::WorkspaceSession]) -> Vec<S
 /// One workspace until quit (None) or a switch (Some(index)); hands back what outlives it.
 async fn run_workspace(
     client: Client,
-    workspaces: (Vec<String>, usize, super::others::Badges, super::others::OpenAfter, super::others::Logos),
+    workspaces: (Vec<String>, usize, super::others::Badges, super::others::OpenAfter, super::others::Logos, SignedOut),
     clicks: &mut mpsc::UnboundedReceiver<super::others::Click>,
     keymap: &(Keymap, Vec<String>),
     settings: &super::settings::Settings,
@@ -3110,6 +3136,7 @@ async fn run_workspace(
         logos: workspaces.4,
         rail_wanted: Vec::new(),
         switch_to: None,
+        signed_out: workspaces.5,
         media,
         viewer: None,
         snippet: None,
@@ -4792,7 +4819,8 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         let [rail, rest] = Layout::horizontal([Constraint::Length(super::rail::WIDTH), Constraint::Min(1)]).areas(body);
         let badges = app.others.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let logos = app.logos.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        (app.rail, app.rail_wanted) = super::rail::draw(f, rail, &app.workspaces, app.workspace, &badges, &logos, &app.media);
+        let signed_out = app.signed_out.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        (app.rail, app.rail_wanted) = super::rail::draw(f, rail, &app.workspaces, app.workspace, &badges, &logos, &app.media, &signed_out);
         rest
     } else {
         app.rail.clear();
@@ -5567,5 +5595,30 @@ mod tests {
     fn workspace_labels_name_the_account_when_a_team_repeats() {
         let labels = super::workspace_labels(&[session("T1", "acme", "ann"), session("T2", "beta", "ann"), session("T1", "acme", "bob")]);
         assert_eq!(labels, vec!["acme · ann", "beta", "acme · bob"]);
+    }
+
+    #[test]
+    fn start_skips_signed_out() {
+        use std::collections::HashSet;
+        let sessions = [session("T1", "acme", "ann"), session("T2", "beta", "ann"), session("T3", "gamma", "ann")];
+        assert_eq!(super::start_index(&sessions, 0, &HashSet::new()), Some(0));
+        assert_eq!(super::start_index(&sessions, 2, &HashSet::from([0])), Some(2), "the wanted one works");
+        assert_eq!(super::start_index(&sessions, 0, &HashSet::from([0])), Some(1), "else the first that does");
+        assert_eq!(super::start_index(&sessions, 1, &HashSet::from([0, 1])), Some(2));
+        assert_eq!(super::start_index(&sessions, 0, &HashSet::from([0, 1, 2])), None);
+    }
+
+    #[test]
+    fn switching_to_a_signed_out_workspace_stays() {
+        use std::collections::HashSet;
+        let labels: Vec<String> = ["acme", "beta", "gamma"].map(String::from).into();
+        let out = HashSet::from([1]);
+        let note = Err("beta: signed out — klack auth login, then restart klack".to_string());
+        assert_eq!(super::switch_check(1, 0, &labels, false, &out), note);
+        assert_eq!(super::switch_check(1, 0, &labels, true, &out), note, "in a huddle too");
+        assert_eq!(super::switch_check(2, 0, &labels, false, &out), Ok(2));
+        assert_eq!(super::switch_check(2, 0, &labels, true, &out), Err("leave the huddle first".to_string()));
+        assert_eq!(super::switch_check(0, 0, &labels, false, &out), Err("already in acme".to_string()));
+        assert_eq!(super::switch_check(5, 0, &labels, false, &out), Err("there is no workspace 6 (this profile has 3)".to_string()));
     }
 }

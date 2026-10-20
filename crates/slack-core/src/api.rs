@@ -17,6 +17,12 @@ pub struct ApiError {
     pub error: String,
 }
 
+/// Whether `e` is Slack saying the session has ended (signed out, revoked, or the account
+/// deactivated), as opposed to any other refusal or a network failure.
+pub fn is_signed_out(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<ApiError>().is_some_and(|a| ["invalid_auth", "not_authed", "token_revoked", "account_inactive"].contains(&a.error.as_str()))
+}
+
 #[derive(Clone)]
 pub struct Client {
     http: reqwest::Client,
@@ -579,6 +585,18 @@ fn read_chunks(file: tokio::fs::File, offset: u64, total: u64, progress: std::sy
 #[cfg(test)]
 mod tests {
     use futures_util::StreamExt;
+
+    #[test]
+    fn signed_out_errors_are_recognised() {
+        let api = |error: &str| anyhow::Error::from(super::ApiError { method: "auth.test".into(), error: error.into() });
+        for error in ["invalid_auth", "not_authed", "token_revoked", "account_inactive"] {
+            assert!(super::is_signed_out(&api(error)), "{error}");
+        }
+        // Also under a context line.
+        assert!(super::is_signed_out(&api("invalid_auth").context("client.userBoot")));
+        assert!(!super::is_signed_out(&api("ratelimited")));
+        assert!(!super::is_signed_out(&anyhow::anyhow!("error sending request for url (https://acme.slack.com/api/auth.test): connection refused")));
+    }
 
     #[tokio::test]
     async fn chunks_report_progress_across_files() {

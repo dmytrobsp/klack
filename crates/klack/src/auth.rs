@@ -2,6 +2,7 @@
 //! on this machine and checking which still work. Sessions are kept per team + user, so one
 //! profile may hold two accounts of one workspace.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -12,7 +13,7 @@ use crate::login_import::Group;
 use crate::pick::{Item, Row};
 use crate::{login_browser, login_import, pick};
 
-/// How long `auth status` waits for each workspace's answer.
+/// How long `auth status` and the check at start wait for each workspace's answer.
 const CHECK_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The flags of `klack auth login`.
@@ -368,8 +369,6 @@ pub async fn guide(profile_name: &str) -> Result<usize> {
 /// Signs `ws`'s account in again, offering where its session came from first: a browser profile
 /// that is still signed in to that workspace as that account is a one-row question (Enter takes
 /// it); otherwise, or on Esc, the full guide. Returns whether anything was saved.
-// Used when a session has ended, at start (W8).
-#[allow(dead_code)]
 pub async fn sign_in_again(profile_name: &str, ws: &WorkspaceSession) -> Result<bool> {
     if let Some(SessionSource::Browser { profile, label, .. }) = &ws.source {
         let still = match login_import::browser_profiles().into_iter().find(|b| &b.dir == profile) {
@@ -591,17 +590,117 @@ pub fn source_label(source: Option<&SessionSource>) -> &str {
     }
 }
 
-/// Whether the session still works: `works`, `signed out`, or `can't check: <why>` (a network
-/// failure says nothing about the session).
-async fn check(ws: &WorkspaceSession) -> String {
+/// Whether a session still works, as `auth.test` answers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Health {
+    Works,
+    /// Slack says the session has ended.
+    SignedOut,
+    /// No answer, or another error: why. A network failure says nothing about the session.
+    Unknown(String),
+}
+
+/// Whether `ws` still works (waiting [`CHECK_TIMEOUT`] at most).
+async fn health(ws: &WorkspaceSession) -> Health {
     let answer = tokio::time::timeout(CHECK_TIMEOUT, async { slack_core::Client::new(ws.clone())?.auth_test().await }).await;
     match answer {
-        Ok(Ok(_)) => "works".into(),
-        Ok(Err(e)) => match e.downcast_ref::<slack_core::api::ApiError>() {
-            Some(a) if ["invalid_auth", "not_authed", "token_revoked", "account_inactive"].contains(&a.error.as_str()) => "signed out".into(),
-            _ => format!("can't check: {e:#}"),
-        },
-        Err(_) => format!("can't check: no answer in {} s", CHECK_TIMEOUT.as_secs()),
+        Ok(Ok(_)) => Health::Works,
+        Ok(Err(e)) if slack_core::api::is_signed_out(&e) => Health::SignedOut,
+        Ok(Err(e)) => Health::Unknown(format!("{e:#}")),
+        Err(_) => Health::Unknown(format!("no answer in {} s", CHECK_TIMEOUT.as_secs())),
+    }
+}
+
+/// Whether each workspace of `profile` still works, in its order (all asked at once).
+pub async fn check(profile: &Profile) -> Vec<Health> {
+    futures_util::future::join_all(profile.workspaces.iter().map(health)).await
+}
+
+/// What to do about a workspace whose session has ended (one per row of [`fix_rows`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Fix {
+    SignInAgain,
+    Remove,
+    Launch,
+    Quit,
+}
+
+/// The question about a signed-out workspace.
+fn question(ws: &WorkspaceSession) -> String {
+    format!("{} (as {}): signed out", ws.team_name, ws.user_name)
+}
+
+/// The answers to [`question`]: launching without it only while another workspace can start
+/// (`launchable`), else quitting.
+fn fix_rows(launchable: bool) -> (Vec<Row>, Vec<Fix>) {
+    let last = if launchable { (item("launch anyway", "", "without it", true), Fix::Launch) } else { (item("quit", "", "", true), Fix::Quit) };
+    (vec![item("sign in again", "", "", true), item("remove it from the profile", "", "", true), last.0], vec![Fix::SignInAgain, Fix::Remove, last.1])
+}
+
+/// [`check`], with a line saying so while it runs when `asking`; None when Ctrl+C was pressed.
+async fn checked(p: &Profile, asking: bool) -> Result<Option<Vec<Health>>> {
+    let health = if asking { looking("Checking the sign-ins…", check(p)).await? } else { Some(check(p).await) };
+    for (w, h) in p.workspaces.iter().zip(health.iter().flatten()) {
+        if let Health::Unknown(why) = h {
+            tracing::warn!("{}: can't check the session: {why}", w.team_name);
+        }
+    }
+    Ok(health)
+}
+
+/// Before the app starts: each workspace of `p` is checked. In a terminal each signed-out one is
+/// asked about, in profile order — sign in again (where the session came from first), remove it
+/// from the profile, or launch anyway without it (only while another can start; else quit).
+/// Without a terminal a warning per signed-out workspace, and the others start (an error when
+/// none can). One that could not be checked starts as normal. Returns the profile to run and
+/// its signed-out workspaces; None to quit.
+pub async fn at_start(profile_name: &str, mut p: Profile) -> Result<Option<(Profile, HashSet<usize>)>> {
+    let asking = pick::interactive();
+    let Some(mut health) = checked(&p, asking).await? else { return Ok(None) };
+    // The accounts (team + user) answered with "launch anyway".
+    let mut skipped: Vec<(String, String)> = Vec::new();
+    loop {
+        let out: HashSet<usize> = health.iter().enumerate().filter(|(_, h)| **h == Health::SignedOut).map(|(i, _)| i).collect();
+        let launchable = out.len() < p.workspaces.len();
+        if !asking {
+            for (_, w) in p.workspaces.iter().enumerate().filter(|(i, _)| out.contains(i)) {
+                eprintln!("warning: {} — klack auth login", question(w));
+            }
+            if !launchable {
+                bail!("every workspace of profile {profile_name} is signed out — klack auth login");
+            }
+            return Ok(Some((p, out)));
+        }
+        let asked = (0..p.workspaces.len()).find(|i| out.contains(i) && !skipped.iter().any(|(t, u)| *t == p.workspaces[*i].team_id && *u == p.workspaces[*i].user_id));
+        let Some(i) = asked else { return Ok(Some((p, out))) };
+        let ws = p.workspaces[i].clone();
+        let (rows, fixes) = fix_rows(launchable);
+        // Esc and Ctrl+C: quit, as `quit` does.
+        let pick::Outcome::Picked(at) = pick::choose(&question(&ws), rows, false)? else { return Ok(None) };
+        match at.first().map(|a| fixes[*a]) {
+            Some(Fix::SignInAgain) => match sign_in_again(profile_name, &ws).await {
+                Ok(true) => {
+                    p = Profile::load(profile_name)?;
+                    let Some(again) = checked(&p, asking).await? else { return Ok(None) };
+                    health = again;
+                }
+                // Nothing saved: the same question again.
+                Ok(false) => {}
+                Err(e) => println!("✗ {e:#}"),
+            },
+            Some(Fix::Remove) => {
+                p.remove(&ws.team_id, &ws.user_id);
+                health.remove(i);
+                p.save(profile_name)?;
+                println!("forgot {} as {} (this machine only; Slack is not signed out)", ws.team_name, ws.user_name);
+                if p.workspaces.is_empty() {
+                    println!("profile {profile_name} has no sign-ins now — klack auth login");
+                    return Ok(None);
+                }
+            }
+            Some(Fix::Launch) => skipped.push((ws.team_id.clone(), ws.user_id.clone())),
+            Some(Fix::Quit) | None => return Ok(None),
+        }
     }
 }
 
@@ -614,10 +713,15 @@ pub async fn status(profile: &str) -> Result<()> {
         return Ok(());
     }
     let start = p.workspace(None).map(|w| (w.team_id.clone(), w.user_id.clone()));
-    let states = futures_util::future::join_all(p.workspaces.iter().map(check)).await;
+    let states = check(&p).await;
     println!("profile {profile}:");
-    for (w, state) in p.workspaces.iter().zip(states) {
+    for (w, health) in p.workspaces.iter().zip(states) {
         let mark = if start.as_ref().is_some_and(|(t, u)| *t == w.team_id && *u == w.user_id) { '★' } else { ' ' };
+        let state = match health {
+            Health::Works => "works".to_string(),
+            Health::SignedOut => "signed out".to_string(),
+            Health::Unknown(why) => format!("can't check: {why}"),
+        };
         println!("{mark} {}  {}  as {}  {}  {state}", w.team_name, w.url, w.user_name, source_label(w.source.as_ref()));
     }
     Ok(())
@@ -815,6 +919,18 @@ mod tests {
         let items = item_rows(&rows);
         assert_eq!(picked_items(&items, &['a', 'b', 'c'], &[1, 4]), ['a', 'c']);
         assert_eq!(picked_items(&items, &['a', 'b', 'c'], &[0]), Vec::<char>::new());
+    }
+
+    #[test]
+    fn launch_anyway_only_when_another_works() {
+        let ws = account("T0000000001", "acme", "U0000000001");
+        assert_eq!(question(&ws), "acme (as person-U0000000001): signed out");
+        let (rows, fixes) = fix_rows(true);
+        assert_eq!(shown(&rows), ["- sign in again |  | ", "- remove it from the profile |  | ", "- launch anyway |  | without it"]);
+        assert_eq!(fixes, [Fix::SignInAgain, Fix::Remove, Fix::Launch]);
+        let (rows, fixes) = fix_rows(false);
+        assert_eq!(shown(&rows), ["- sign in again |  | ", "- remove it from the profile |  | ", "- quit |  | "]);
+        assert_eq!(fixes, [Fix::SignInAgain, Fix::Remove, Fix::Quit]);
     }
 
     #[test]

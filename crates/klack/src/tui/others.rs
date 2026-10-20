@@ -11,6 +11,8 @@ use serde_json::Value;
 use slack_core::api::Client;
 use slack_core::session::WorkspaceSession;
 
+use super::event_loop::SignedOut;
+
 /// How often the other workspaces are asked.
 const POLL: Duration = Duration::from_secs(30);
 
@@ -49,13 +51,21 @@ pub fn logo_file(team: &str, icon: &Value) -> Option<slack_core::types::File> {
     slack_hosted.then(|| slack_core::types::File { id: format!("{}team:{team}", super::media::AVATAR_PREFIX), mimetype: "image/png".into(), thumb_360: Some(url.to_string()), ..Default::default() })
 }
 
-/// Ask each workspace for its logo once (nothing to do with a single workspace).
-pub fn spawn_logos(sessions: Vec<WorkspaceSession>, logos: Logos) {
+/// Whether workspace `index` is signed out (its session ended): nothing is asked of it.
+fn out(signed_out: &SignedOut, index: usize) -> bool {
+    signed_out.lock().unwrap_or_else(|e| e.into_inner()).contains(&index)
+}
+
+/// Ask each workspace that is signed in for its logo once (nothing to do with a single workspace).
+pub fn spawn_logos(sessions: Vec<WorkspaceSession>, logos: Logos, signed_out: SignedOut) {
     if sessions.len() < 2 {
         return;
     }
     tokio::spawn(async move {
         for (i, session) in sessions.into_iter().enumerate() {
+            if out(&signed_out, i) {
+                continue;
+            }
             let team = session.team_id.clone();
             let Ok(client) = Client::new(session) else { continue };
             match client.call_raw("team.info", &[]).await {
@@ -70,10 +80,10 @@ pub fn spawn_logos(sessions: Vec<WorkspaceSession>, logos: Logos) {
     });
 }
 
-/// Ask every workspace but the shown one (`shown`, kept current by the caller) for its counts,
-/// now, every [`POLL`] and whenever `wake` is notified (a switch); nothing to do with a single
-/// workspace.
-pub fn spawn(sessions: Vec<WorkspaceSession>, shown: Arc<AtomicUsize>, badges: Badges, wake: Arc<tokio::sync::Notify>) {
+/// Ask every workspace but the shown one (`shown`, kept current by the caller) and the signed-out
+/// ones for its counts, now, every [`POLL`] and whenever `wake` is notified (a switch); nothing
+/// to do with a single workspace.
+pub fn spawn(sessions: Vec<WorkspaceSession>, shown: Arc<AtomicUsize>, badges: Badges, wake: Arc<tokio::sync::Notify>, signed_out: SignedOut) {
     if sessions.len() < 2 {
         return;
     }
@@ -81,7 +91,7 @@ pub fn spawn(sessions: Vec<WorkspaceSession>, shown: Arc<AtomicUsize>, badges: B
         let clients: Vec<Option<Client>> = sessions.into_iter().map(|s| Client::new(s).ok()).collect();
         loop {
             for (i, client) in clients.iter().enumerate() {
-                let Some(client) = client.as_ref().filter(|_| i != shown.load(Ordering::Relaxed)) else { continue };
+                let Some(client) = client.as_ref().filter(|_| i != shown.load(Ordering::Relaxed) && !out(&signed_out, i)) else { continue };
                 match client.counts().await {
                     Ok(v) => {
                         badges.lock().unwrap_or_else(|e| e.into_inner()).insert(i, badge(&v));
@@ -116,15 +126,19 @@ fn join_keys(keys: &super::keymap::Keymap, index: usize) -> String {
 }
 
 /// Start a headless watcher for every workspace of a profile with several; each runs only
-/// while its workspace is not the shown one (that one notifies itself).
-pub fn spawn_watchers(sessions: Vec<WorkspaceSession>, labels: Vec<String>, shown: Arc<AtomicUsize>, clicks: tokio::sync::mpsc::UnboundedSender<Click>) {
+/// while its workspace is not the shown one (that one notifies itself), and stops for good once
+/// its workspace is signed out.
+pub fn spawn_watchers(sessions: Vec<WorkspaceSession>, labels: Vec<String>, shown: Arc<AtomicUsize>, clicks: tokio::sync::mpsc::UnboundedSender<Click>, signed_out: SignedOut) {
     if sessions.len() < 2 {
         return;
     }
     for (index, (session, label)) in sessions.into_iter().zip(labels).enumerate() {
-        let (shown, clicks) = (shown.clone(), clicks.clone());
+        if out(&signed_out, index) {
+            continue;
+        }
+        let (shown, clicks, signed_out) = (shown.clone(), clicks.clone(), signed_out.clone());
         tokio::spawn(async move {
-            if let Err(e) = watch(index, session, label, shown, clicks).await {
+            if let Err(e) = watch(index, session, label, shown, clicks, signed_out).await {
                 tracing::warn!("watching workspace {}: {e}", index + 1);
             }
         });
@@ -137,11 +151,15 @@ const SHOWN_CHECK: Duration = Duration::from_secs(1);
 /// Watch workspace `index` while it is not the shown one; while it is shown the app has its
 /// own connection, so the watcher holds none (no RTM, no copy of the users) and boots afresh
 /// when the user switches away.
-async fn watch(index: usize, session: WorkspaceSession, label: String, shown: Arc<AtomicUsize>, clicks: tokio::sync::mpsc::UnboundedSender<Click>) -> anyhow::Result<()> {
+async fn watch(index: usize, session: WorkspaceSession, label: String, shown: Arc<AtomicUsize>, clicks: tokio::sync::mpsc::UnboundedSender<Click>, signed_out: SignedOut) -> anyhow::Result<()> {
     let client = Client::new(session)?;
     loop {
         while shown.load(Ordering::Relaxed) == index {
             tokio::time::sleep(SHOWN_CHECK).await;
+        }
+        if out(&signed_out, index) {
+            tracing::debug!("workspace {} is signed out: its watcher stops", index + 1);
+            return Ok(());
         }
         tracing::debug!("watching workspace {}", index + 1);
         match watch_hidden(index, &client, &label, &shown, &clicks).await {
