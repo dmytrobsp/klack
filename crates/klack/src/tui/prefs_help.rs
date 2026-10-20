@@ -35,6 +35,9 @@ pub struct Help {
 /// shorter, the box is not drawn.
 pub const MIN_TEXT_ROWS: u16 = 3;
 
+/// The most rows (borders included) the help box keeps from a long list.
+const MAX_KEPT_ROWS: u16 = 14;
+
 /// Blank cells between the columns of a value or key line.
 const GAP: usize = 2;
 
@@ -478,6 +481,14 @@ pub fn box_height(help: &Help, outer: u16, room: u16) -> Option<u16> {
     (room >= rows.min(MIN_TEXT_ROWS) + 2).then(|| (rows + 2).min(room))
 }
 
+/// How many rows of `height` a list longer than that shows: the help box under it keeps two
+/// fifths (at least its least, at most [`MAX_KEPT_ROWS`]) and a blank row, the same for every
+/// item so the list stays still as the selection moves.
+pub fn list_rows(height: u16) -> u16 {
+    let kept = (height * 2 / 5).clamp(MIN_TEXT_ROWS + 2, MAX_KEPT_ROWS);
+    height.saturating_sub(kept + 1).max(1)
+}
+
 /// `lines` cut to `rows`; the last of a cut help ends in "…".
 fn fitted(mut lines: Vec<Line<'static>>, rows: usize, width: usize) -> Vec<Line<'static>> {
     if lines.len() <= rows {
@@ -604,6 +615,14 @@ mod tests {
     #[test]
     fn a_short_help_needs_less() {
         assert_eq!(box_height(&lines_of(2), 60, 4), Some(4));
+    }
+
+    #[test]
+    fn a_long_list_leaves_the_help_room() {
+        assert_eq!(list_rows(12), 6, "the least box: 3 rows of text");
+        assert_eq!(list_rows(30), 17, "two fifths");
+        assert_eq!(list_rows(60), 45, "at most 14 rows");
+        assert_eq!(list_rows(3), 1);
     }
 
     #[test]

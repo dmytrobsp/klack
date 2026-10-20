@@ -1075,8 +1075,8 @@ impl Prefs {
         let width_of = |bindings: bool| (fields.iter().filter(|f| matches!(f, Field::Binding(_)) == bindings && !matches!(f, Field::GroupHeader(_))).map(|f| label_of(f).width()).max().unwrap_or(0) + 2).min(right.width as usize / 2 + 8);
         let (settings_w, bindings_w) = (width_of(false), width_of(true));
         // Keep the selection in view (the Keys list is long).
-        // Room is left under the rows for the help box at its least, after a blank row.
-        let room = list_area.height.saturating_sub(super::prefs_help::MIN_TEXT_ROWS + 3).max(1) as usize;
+        // Room is left under the rows for the help box, after a blank row.
+        let room = super::prefs_help::list_rows(list_area.height) as usize;
         if self.selected < self.scroll {
             self.scroll = self.selected;
         } else if self.selected >= self.scroll + room {
