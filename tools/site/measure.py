@@ -16,10 +16,10 @@ class Proc(NamedTuple):
 
 
 def _parse_stat(text):
-    """Return (comm, ppid, utime, stime); the comm may hold spaces and parentheses."""
+    """Return (comm, ppid, utime, stime, starttime); the comm may hold spaces and parentheses."""
     lp, rp = text.index("("), text.rindex(")")
     rest = text[rp + 1:].split()  # rest[0] is state (field 3)
-    return text[lp + 1:rp], int(rest[1]), int(rest[11]), int(rest[12])
+    return text[lp + 1:rp], int(rest[1]), int(rest[11]), int(rest[12]), int(rest[19])
 
 
 def read_procs(proc=PROC):
@@ -28,7 +28,7 @@ def read_procs(proc=PROC):
         if not d.name.isdigit():
             continue
         try:
-            comm, ppid, _, _ = _parse_stat((d / "stat").read_text())
+            comm, ppid, _, _, _ = _parse_stat((d / "stat").read_text())
             try:
                 exe = os.readlink(d / "exe")
             except OSError:
@@ -76,25 +76,37 @@ def pss_kb(pids, proc=PROC):
 
 
 def ticks_by_pid(pids, proc=PROC):
+    """{pid: (utime+stime, starttime)}"""
     out = {}
     for pid in pids:
         try:
-            _, _, ut, st = _parse_stat((Path(proc) / str(pid) / "stat").read_text())
-            out[pid] = ut + st
+            _, _, ut, st, start = _parse_stat((Path(proc) / str(pid) / "stat").read_text())
+            out[pid] = (ut + st, start)
         except (OSError, ValueError, IndexError):
             pass
     return out
 
 
 def cpu_ticks(pids, proc=PROC):
-    return sum(ticks_by_pid(pids, proc).values())
+    return sum(t for t, _ in ticks_by_pid(pids, proc).values())
 
 
 def window(before, after):
-    """(ticks delta over pids present at both ends, how many such, came, went)"""
-    common = set(before) & set(after)
-    delta = sum(after[p] - before[p] for p in common)
-    return delta, len(common), len(set(after) - set(before)), len(set(before) - set(after))
+    """(ticks used in the window, pids present at both ends, came, went).
+    A pid that appeared mid-window counts in full; a pid whose start time changed was reused:
+    the old one went, the new one came and counts in full."""
+    delta = common = came = went = 0
+    for pid, (t, start) in after.items():
+        if pid in before and before[pid][1] == start:
+            delta += t - before[pid][0]
+            common += 1
+        else:
+            delta += t
+            came += 1
+            if pid in before:
+                went += 1
+    went += sum(1 for pid in before if pid not in after)
+    return delta, common, came, went
 
 
 def now():
@@ -149,8 +161,45 @@ def cmd_cpu(args):
     hz = os.sysconf("SC_CLK_TCK")
     print(json.dumps({"what": "cpu", "comm": args.comm, "roots": sorted(roots), "pids": common,
                       "percent_of_one_core": round(delta / hz / elapsed * 100, 2), "seconds": round(elapsed, 2),
-                      "came": came, "went": went, "at": now()}))
+                      "came": came, "went": went, "lower_bound": went > 0, "at": now()}))
     return 0
+
+
+def _snap(path):
+    try:
+        st = path.stat()
+        return (st.st_ino, st.st_size, st.st_mtime_ns)
+    except OSError:
+        return None
+
+
+def _marker(path, rx, before):
+    """Did the marker appear after the snapshot `before`? Only appended, complete lines count."""
+    now_ = _snap(path)
+    if now_ is None:
+        return False
+    same = before is not None and before[0] == now_[0] and now_[1] >= before[1]
+    if rx is None:
+        return not same or now_ != before
+    offset = before[1] if same else 0
+    try:
+        with open(path, "rb") as f:
+            f.seek(offset)
+            data = f.read()
+    except OSError:
+        return False
+    end = data.rfind(b"\n")
+    if end < 0:
+        return False
+    return any(rx.search(l) for l in data[:end].decode(errors="replace").splitlines())
+
+
+def _kill_group(child):
+    try:
+        os.killpg(child.pid, 9)
+    except OSError:
+        child.kill()
+    child.wait()
 
 
 def cmd_startup(args):
@@ -158,29 +207,24 @@ def cmd_startup(args):
     if not cmd:
         return _die("give the command to launch after --")
     rx = re.compile(args.until_line) if args.until_line else None
+    path = Path(args.until_file)
+    before = _snap(path)
     t0 = time.monotonic()
     child = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL, start_new_session=True)
-    path = Path(args.until_file)
     while True:
-        try:
-            if rx is None:
-                ok = path.exists()
-            else:
-                ok = any(rx.search(l) for l in path.read_text(errors="replace").splitlines())
-        except OSError:
-            ok = False
-        if ok:
+        if _marker(path, rx, before):
             secs = time.monotonic() - t0
             print(json.dumps({"what": "startup", "seconds": round(secs, 3), "pid": child.pid, "at": now()}))
             return 0
-        if time.monotonic() - t0 > args.timeout:
-            child.kill()
-            child.wait()
-            print("measure: timed out waiting for the marker", file=sys.stderr)
-            return 1
-        if child.poll() is not None and not path.exists():
+        if child.poll() is not None:
+            if _marker(path, rx, before):
+                continue
             print("measure: the command exited before the marker appeared", file=sys.stderr)
+            return 1
+        if time.monotonic() - t0 > args.timeout:
+            _kill_group(child)
+            print("measure: timed out waiting for the marker", file=sys.stderr)
             return 1
         time.sleep(0.02)
 

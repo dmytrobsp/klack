@@ -1,4 +1,4 @@
-import contextlib, io, os, subprocess, sys, tempfile, unittest
+import contextlib, io, os, subprocess, sys, tempfile, time, unittest
 from pathlib import Path
 HERE = Path(__file__).parent
 sys.path.insert(0, str(HERE))
@@ -71,7 +71,12 @@ class Fake(unittest.TestCase):
         add(self.p, 41, 10, "new", ut=50)
         after = measure.ticks_by_pid({10, 11, 41}, self.p)
         delta, common, came, went = measure.window(before, after)
-        self.assertEqual((delta, common, came, went), (10, 2, 1, 1))
+        self.assertEqual((delta, common, came, went), (60, 2, 1, 1))
+
+    def test_pid_reuse_counts_new_process_in_full(self):
+        before = {10: (100, 5), 11: (4, 5)}
+        after = {10: (7, 999), 11: (6, 5)}
+        self.assertEqual(measure.window(before, after), (9, 1, 1, 1))
 
 
 class Cli(unittest.TestCase):
@@ -126,6 +131,7 @@ class Cli(unittest.TestCase):
         j = json.loads(out)
         self.assertEqual((j["what"], j["percent_of_one_core"]), ("cpu", 0.0))
         self.assertEqual(j["came"], 0)
+        self.assertFalse(j["lower_bound"])
 
 
 class Startup(unittest.TestCase):
@@ -141,6 +147,61 @@ class Startup(unittest.TestCase):
         os.kill(j["pid"], 15)
         self.assertEqual((code, j["what"]), (0, "startup"))
         self.assertGreater(j["seconds"], 0.4)
+        d.cleanup()
+
+    def start(self, argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = main(argv)
+        return code, out.getvalue(), err.getvalue()
+
+    def test_stale_marker_is_ignored_until_appended(self):
+        import json
+        d = tempfile.TemporaryDirectory()
+        log = Path(d.name) / "log"
+        log.write_text("READY old run\n")
+        cmd = ["sh", "-c", f"sleep 0.6; printf 'READY new' >> {log}; sleep 0.3; echo >> {log}; sleep 30"]
+        code, out, _ = self.start(["startup", "--until-file", str(log), "--until-line", "READY", "--timeout", "10", "--"] + cmd)
+        j = json.loads(out)
+        os.kill(j["pid"], 15)
+        self.assertEqual(code, 0)
+        self.assertGreater(j["seconds"], 0.85)  # not at the partial line, not at the old one
+        d.cleanup()
+
+    def test_stale_file_without_line(self):
+        import json
+        d = tempfile.TemporaryDirectory()
+        f = Path(d.name) / "m"
+        f.write_text("old")
+        cmd = ["sh", "-c", f"sleep 0.4; echo x >> {f}; sleep 30"]
+        code, out, _ = self.start(["startup", "--until-file", str(f), "--timeout", "10", "--"] + cmd)
+        j = json.loads(out)
+        os.kill(j["pid"], 15)
+        self.assertGreater(j["seconds"], 0.35)
+        d.cleanup()
+
+    def test_child_exit_fails_even_if_file_exists(self):
+        d = tempfile.TemporaryDirectory()
+        f = Path(d.name) / "m"
+        f.write_text("old READY\n")
+        code, _, err = self.start(["startup", "--until-file", str(f), "--until-line", "READY", "--timeout", "10", "--", "true"])
+        self.assertEqual(code, 1)
+        self.assertIn("exited", err)
+        d.cleanup()
+
+    def test_timeout_kills_whole_group(self):
+        d = tempfile.TemporaryDirectory()
+        pidf = Path(d.name) / "pid"
+        cmd = ["sh", "-c", f"sleep 31 & echo $! > {pidf}; wait"]
+        code, _, _ = self.start(["startup", "--until-file", str(Path(d.name) / "never"), "--timeout", "0.6", "--"] + cmd)
+        self.assertEqual(code, 1)
+        gp = int(pidf.read_text())
+        time.sleep(0.2)
+        try:
+            alive = Path(f"/proc/{gp}/stat").read_text().split(")")[1].split()[0] != "Z"
+        except OSError:
+            alive = False
+        self.assertFalse(alive)
         d.cleanup()
 
     def test_timeout(self):
