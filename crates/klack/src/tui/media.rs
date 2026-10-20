@@ -166,6 +166,7 @@ fn protocol_named(name: &str) -> Option<ProtocolType> {
 }
 
 /// Whether a primary device attributes reply (`ESC [ ? 63 ; 1 ; 2 ; 4 ; … c`) lists sixel (4).
+#[cfg(any(unix, test))]
 fn da1_has_sixel(reply: &[u8]) -> bool {
     let Some(start) = reply.windows(3).position(|w| w == b"\x1b[?") else { return false };
     let rest = &reply[start + 3..];

@@ -18,7 +18,7 @@ Slack desktop app (4.52) and web client in October 2026.
 The desktop app opens the system browser; sign-in ends at a `slack://…/magic-login/<token>` link,
 and the app then loads `https://app.slack.com/api/auth.loginMagicBulk?magic_tokens=…&ssb=1` in a
 hidden window, which sets the cookies (`d`, `lc`). klack does not do this: you copy the `d`
-cookie from a browser where you are signed in (`klack login --workspace <url>`).
+cookie from a browser where you are signed in (`klack auth login`).
 
 ## Storage
 
@@ -37,4 +37,4 @@ DevTools protocol; values never logged):
 4. `signin.confirmCode email= code= domain=` → then a magic-login link (`/z-app-…`, `/magic-login/…`)
    sets the session cookie in the browser.
 
-So an emailed-code sign-in cannot be done without a browser (the captcha); `klack login` opens one (J1).
+So an emailed-code sign-in cannot be done without a browser (the captcha); `klack auth login` opens one (J1).

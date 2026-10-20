@@ -19,7 +19,7 @@ MinGW-w64 (`apt install mingw-w64`), then `cargo build --release --target x86_64
 
 ## Running against Slack
 
-klack signs in with a browser session (`klack login --workspace <url>`, see the README). Use a
+klack signs in with a browser session (`klack auth login`, see the README "Signing in"). Use a
 workspace of your own for testing: `klack --profile <name>` keeps separate sessions, and
 `klack --profile <name> ctl …` (post, edit, react, history, listen, api, huddle-media with a test
 tone or test video …) lets a second account play the other person in tests.
