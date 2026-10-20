@@ -1,0 +1,56 @@
+/* klack landing page — tokens, fonts, paper components. No third-party requests. */
+@font-face { font-family: 'Rubik Mono One'; src: url('../fonts/rubik-mono-one-400.woff2') format('woff2'); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Anton'; src: url('../fonts/anton-400.woff2') format('woff2'); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Permanent Marker'; src: url('../fonts/permanent-marker-400.woff2') format('woff2'); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Space Mono'; src: url('../fonts/space-mono-400.woff2') format('woff2'); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Space Mono'; src: url('../fonts/space-mono-700.woff2') format('woff2'); font-weight: 700; font-style: normal; font-display: swap; }
+
+:root {
+  --aubergine: #4A154B;
+  --pink: #E01E5A;
+  --blue: #36C5F0;
+  --green: #2EB67D;
+  --yellow: #ECB22E;
+  --bg: #160a17;
+  --cream: #f3e9d2;
+  --scrap: #f6f1e6;
+  --ink: #111;
+  --muted: #bfb2a0;
+  --dim: #6f6070;
+  --crease: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='300' height='90'%3E%3Cfilter id='c'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.018 0.04' numOctaves='3' seed='4'/%3E%3CfeDiffuseLighting surfaceScale='3.2' lighting-color='%23fff'%3E%3CfeDistantLight azimuth='225' elevation='60'/%3E%3C/feDiffuseLighting%3E%3C/filter%3E%3Crect width='300' height='90' filter='url(%23c)'/%3E%3C/svg%3E");
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body { margin: 0; background: var(--bg); color: var(--cream); font: 15px/1.6 'Space Mono', monospace; }
+a { color: var(--yellow); }
+.wrap { width: min(836px, 100% - 32px); margin: 0 auto; }
+
+.topnav { display: flex; justify-content: space-between; align-items: center; padding: 18px 0 6px; font-size: 12px; color: var(--muted); }
+.topnav .wordmark { font-family: 'Rubik Mono One', sans-serif; font-size: 16px; color: var(--yellow); text-decoration: none; }
+.topnav span a { color: var(--muted); text-decoration: none; margin-left: 18px; }
+.topnav span a:hover { color: var(--cream); }
+
+section { padding: 40px 0; }
+section h2 { font-family: 'Anton', sans-serif; font-weight: 400; font-size: 44px; line-height: 1.02; letter-spacing: .5px; text-transform: uppercase; color: var(--cream); margin: 0 0 16px; }
+
+/* paper pieces: crease texture, ragged straight-cut edges, hard shadow, no outline */
+.cut { display: inline-block; font-family: 'Rubik Mono One', sans-serif; padding: 1px 10px; margin: 3px 2px; transform: rotate(var(--r, 0deg)); box-shadow: 3px 3px 0 #000; color: var(--ink); font-size: 50px; background: var(--cream); }
+.paper { position: relative; isolation: isolate; }
+.paper::before { content: ''; position: absolute; inset: 0; z-index: -1; background: inherit; }
+.paper::after { content: ''; position: absolute; inset: 0; pointer-events: none; mix-blend-mode: multiply; opacity: .9; background-image: var(--crease); background-size: cover; }
+.paper.a { clip-path: polygon(0 4%, 30% 0, 62% 3%, 100% 0, 99% 52%, 100% 100%, 55% 97%, 20% 100%, 1% 96%, 0 50%); }
+.paper.b { clip-path: polygon(1% 0, 40% 3%, 75% 0, 100% 4%, 98% 48%, 100% 97%, 64% 100%, 28% 96%, 0 100%, 2% 46%); }
+.paper.pink { background: var(--pink); color: #fff; }
+.paper.scrap { background: var(--scrap); }
+
+.sticker { display: inline-block; font-family: 'Permanent Marker', cursive; padding: 16px; border-radius: 50%; text-align: center; line-height: 1.05; box-shadow: 3px 3px 0 #000; background: var(--yellow); color: var(--ink); transform: rotate(var(--r, -10deg)); font-size: 14px; }
+
+.scrawl { font-family: 'Permanent Marker', cursive; color: var(--yellow); display: inline-block; transform: rotate(-3deg); font-size: 24px; }
+.jab { font-family: 'Permanent Marker', cursive; color: var(--cream); transform: rotate(-1.5deg); display: inline-block; font-size: 22px; }
+.jab::before { content: '\2192\00a0'; color: var(--pink); }
+
+.term { background: #0b0b0d; border: 1px solid #3a2a3b; border-radius: 8px; box-shadow: 0 18px 40px rgba(0,0,0,.6); overflow: hidden; color: #d8d8d8; font-size: 11px; line-height: 1.45; }
+.term pre { margin: 0; padding: 10px 12px; font: inherit; white-space: pre; overflow-x: auto; }
+
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
