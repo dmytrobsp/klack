@@ -56,6 +56,20 @@ fn out(signed_out: &SignedOut, index: usize) -> bool {
     signed_out.lock().unwrap_or_else(|e| e.into_inner()).contains(&index)
 }
 
+/// Whether workspace `index` is signed out, first adding it to `signed_out` (the rail marks it)
+/// when Slack answered `client` that its session has ended.
+fn noticed(signed_out: &SignedOut, index: usize, client: &Client) -> bool {
+    if client.signed_out() && signed_out.lock().unwrap_or_else(|e| e.into_inner()).insert(index) {
+        tracing::warn!("workspace {} ({}): the session has ended", index + 1, client.session.team_name);
+    }
+    out(signed_out, index)
+}
+
+/// Drop the badges of the signed-out workspaces (nothing of theirs is up to date).
+fn forget_signed_out(badges: &mut HashMap<usize, Badge>, signed_out: &std::collections::HashSet<usize>) {
+    badges.retain(|i, _| !signed_out.contains(i));
+}
+
 /// Ask each workspace that is signed in for its logo once (nothing to do with a single workspace).
 pub fn spawn_logos(sessions: Vec<WorkspaceSession>, logos: Logos, signed_out: SignedOut) {
     if sessions.len() < 2 {
@@ -74,7 +88,10 @@ pub fn spawn_logos(sessions: Vec<WorkspaceSession>, logos: Logos, signed_out: Si
                         logos.lock().unwrap_or_else(|e| e.into_inner()).insert(i, file);
                     }
                 }
-                Err(e) => tracing::debug!("team.info of workspace {}: {e}", i + 1),
+                Err(e) => {
+                    tracing::debug!("team.info of workspace {}: {e}", i + 1);
+                    noticed(&signed_out, i, &client);
+                }
             }
         }
     });
@@ -96,9 +113,15 @@ pub fn spawn(sessions: Vec<WorkspaceSession>, shown: Arc<AtomicUsize>, badges: B
                     Ok(v) => {
                         badges.lock().unwrap_or_else(|e| e.into_inner()).insert(i, badge(&v));
                     }
-                    Err(e) => tracing::debug!("counts of workspace {}: {e}", i + 1),
+                    Err(e) => {
+                        tracing::debug!("counts of workspace {}: {e}", i + 1);
+                        noticed(&signed_out, i, client);
+                    }
                 }
             }
+            // Also those another part of klack found signed out since.
+            let out = signed_out.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            forget_signed_out(&mut badges.lock().unwrap_or_else(|e| e.into_inner()), &out);
             tokio::select! {
                 _ = tokio::time::sleep(POLL) => {}
                 _ = wake.notified() => {}
@@ -162,8 +185,9 @@ async fn watch(index: usize, session: WorkspaceSession, label: String, shown: Ar
             return Ok(());
         }
         tracing::debug!("watching workspace {}", index + 1);
-        match watch_hidden(index, &client, &label, &shown, &clicks).await {
+        match watch_hidden(index, &client, &label, &shown, &clicks, &signed_out).await {
             Ok(()) => tracing::debug!("workspace {} shown: its watcher pauses", index + 1),
+            Err(_) if noticed(&signed_out, index, &client) => {}
             Err(e) => {
                 tracing::warn!("watching workspace {}: {e}", index + 1);
                 tokio::time::sleep(Duration::from_secs(30)).await;
@@ -173,8 +197,8 @@ async fn watch(index: usize, session: WorkspaceSession, label: String, shown: Ar
 }
 
 /// Boot workspace `index` into its own state and notify from its RTM events until it becomes
-/// the shown one (then the connection and the state are dropped).
-async fn watch_hidden(index: usize, client: &Client, label: &str, shown: &AtomicUsize, clicks: &tokio::sync::mpsc::UnboundedSender<Click>) -> anyhow::Result<()> {
+/// the shown one or is signed out (then the connection and the state are dropped).
+async fn watch_hidden(index: usize, client: &Client, label: &str, shown: &AtomicUsize, clicks: &tokio::sync::mpsc::UnboundedSender<Click>, signed_out: &SignedOut) -> anyhow::Result<()> {
     use super::state::Workspace;
     let (boot, users) = tokio::join!(client.user_boot(), client.users_list());
     let mut ws = Workspace::default();
@@ -188,13 +212,20 @@ async fn watch_hidden(index: usize, client: &Client, label: &str, shown: &Atomic
         let ev = tokio::select! {
             ev = rtm.events.recv() => ev.ok_or_else(|| anyhow::anyhow!("RTM stopped"))?,
             _ = check.tick() => {
-                if shown.load(Ordering::Relaxed) == index {
+                if shown.load(Ordering::Relaxed) == index || noticed(signed_out, index, client) {
                     return Ok(());
                 }
                 continue;
             }
         };
-        let slack_core::rtm::RtmEvent::Event(v) = ev else { continue };
+        let v = match ev {
+            slack_core::rtm::RtmEvent::Event(v) => v,
+            slack_core::rtm::RtmEvent::SignedOut => {
+                noticed(signed_out, index, client);
+                return Ok(());
+            }
+            _ => continue,
+        };
         let fx = super::live::apply(&mut ws, &v, None);
         if shown.load(Ordering::Relaxed) == index {
             return Ok(());
@@ -286,5 +317,12 @@ mod tests {
         all.insert(3, Badge::default());
         all.insert(0, Badge { attention: 9, unread: true });
         assert_eq!(label(&all, 0), " · Alt+2 @3 · Alt+3 •", "the shown workspace and quiet ones are left out");
+    }
+
+    #[test]
+    fn signed_out_workspaces_lose_their_badges() {
+        let mut badges = HashMap::from([(1, Badge { attention: 3, unread: true }), (2, Badge { attention: 0, unread: true })]);
+        forget_signed_out(&mut badges, &std::collections::HashSet::from([1]));
+        assert_eq!(label(&badges, 0), " · Alt+3 •", "the stale badge of workspace 2 is gone");
     }
 }

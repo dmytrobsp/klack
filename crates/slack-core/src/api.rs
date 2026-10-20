@@ -1,5 +1,7 @@
 //! Slack Web API client authenticated like the web client (xoxc token + `d` cookie).
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
@@ -23,10 +25,43 @@ pub fn is_signed_out(e: &anyhow::Error) -> bool {
     e.downcast_ref::<ApiError>().is_some_and(|a| ["invalid_auth", "not_authed", "token_revoked", "account_inactive"].contains(&a.error.as_str()))
 }
 
+/// Whether Slack has answered that a client's session has ended, shared by the client's clones.
+#[derive(Clone, Default)]
+struct SignedOutFlag(Arc<AtomicBool>);
+
+impl SignedOutFlag {
+    fn get(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
+    }
+
+    /// Keep `e` as the call's answer, first noting when it says the session has ended (a network
+    /// failure or another refusal leaves the flag as it is).
+    fn note(&self, e: anyhow::Error) -> anyhow::Error {
+        if is_signed_out(&e) {
+            self.0.store(true, Ordering::Relaxed);
+        }
+        e
+    }
+}
+
+/// The failure `KLACK_FAIL` (`spec`: `method` or `method=error` items, comma separated) makes
+/// `method`'s call answer with: Slack's `error` (an [`ApiError`]) or, for a plain `method`,
+/// `injected_failure`. Debug builds only.
+#[cfg(debug_assertions)]
+fn injected(spec: &str, method: &str) -> Option<anyhow::Error> {
+    spec.split(',').find_map(|item| match item.trim().split_once('=') {
+        Some((m, error)) if m.trim() == method => Some(ApiError { method: method.to_string(), error: error.trim().to_string() }.into()),
+        None if item.trim() == method => Some(anyhow!("{method}: injected_failure (KLACK_FAIL)")),
+        _ => None,
+    })
+}
+
 #[derive(Clone)]
 pub struct Client {
     http: reqwest::Client,
     pub session: WorkspaceSession,
+    /// Set once Slack answered that the session has ended; shared by every clone.
+    signed_out: SignedOutFlag,
 }
 
 pub type Params<'a> = Vec<(&'a str, String)>;
@@ -47,7 +82,13 @@ pub fn http_client(builder: impl Fn() -> reqwest::ClientBuilder) -> Result<reqwe
 impl Client {
     pub fn new(session: WorkspaceSession) -> Result<Self> {
         let http = http_client(|| reqwest::Client::builder().user_agent(USER_AGENT).connect_timeout(Duration::from_secs(15)).timeout(Duration::from_secs(120)))?;
-        Ok(Client { http, session })
+        Ok(Client { http, session, signed_out: SignedOutFlag::default() })
+    }
+
+    /// Whether Slack has answered one of this client's calls (or a clone's) saying the session
+    /// has ended (signed out, revoked, the account deactivated).
+    pub fn signed_out(&self) -> bool {
+        self.signed_out.get()
     }
 
     pub fn http(&self) -> &reqwest::Client {
@@ -55,13 +96,18 @@ impl Client {
     }
 
     /// Call `method` and return the raw JSON (after the `ok` check). Retries on HTTP 429
-    /// honouring `Retry-After`.
+    /// honouring `Retry-After`. An answer saying the session has ended sets [`Client::signed_out`].
     pub async fn call_raw(&self, method: &str, params: &[(&str, String)]) -> Result<Value> {
-        // Debug builds only: `KLACK_FAIL=chat.delete,chat.update` makes those calls fail, to
-        // test what the app does when Slack refuses.
+        self.ask(method, params).await.map_err(|e| self.signed_out.note(e))
+    }
+
+    async fn ask(&self, method: &str, params: &[(&str, String)]) -> Result<Value> {
+        // Debug builds only: `KLACK_FAIL=chat.delete,conversations.history=invalid_auth` makes
+        // those calls fail (the second with Slack's `invalid_auth`), to test what the app does
+        // when Slack refuses.
         #[cfg(debug_assertions)]
-        if std::env::var("KLACK_FAIL").is_ok_and(|v| v.split(',').any(|m| m.trim() == method)) {
-            return Err(anyhow!("{method}: injected_failure (KLACK_FAIL)"));
+        if let Some(e) = std::env::var("KLACK_FAIL").ok().and_then(|v| injected(&v, method)) {
+            return Err(e);
         }
         let url = format!("{}{}", self.session.api_base(), method);
         let mut form: Vec<(&str, &str)> = params.iter().map(|(k, v)| (*k, v.as_str())).collect();
@@ -596,6 +642,38 @@ mod tests {
         assert!(super::is_signed_out(&api("invalid_auth").context("client.userBoot")));
         assert!(!super::is_signed_out(&api("ratelimited")));
         assert!(!super::is_signed_out(&anyhow::anyhow!("error sending request for url (https://acme.slack.com/api/auth.test): connection refused")));
+    }
+
+    #[test]
+    fn a_signed_out_answer_sets_the_flag_for_every_clone() {
+        // What a Client holds (a Client clones it with itself; building one needs a TLS provider).
+        let flag = super::SignedOutFlag::default();
+        let copy = flag.clone();
+        let api = |error: &str| anyhow::Error::from(super::ApiError { method: "conversations.history".into(), error: error.into() });
+        // Other refusals and network failures say nothing about the session.
+        for e in [api("ratelimited"), api("channel_not_found"), anyhow::anyhow!("conversations.history: request failed")] {
+            let kept = flag.note(e);
+            assert!(!kept.to_string().is_empty());
+            assert!(!flag.get() && !copy.get());
+        }
+        let e = flag.note(api("invalid_auth"));
+        assert_eq!(e.to_string(), "conversations.history: invalid_auth", "the error is handed back as it was");
+        assert!(copy.get() && flag.get(), "every clone sees it");
+        assert!(!super::SignedOutFlag::default().get(), "a new client starts signed in");
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn klack_fail_takes_methods_and_errors() {
+        let spec = "chat.delete, conversations.history=invalid_auth";
+        let plain = super::injected(spec, "chat.delete").unwrap();
+        assert_eq!(plain.to_string(), "chat.delete: injected_failure (KLACK_FAIL)");
+        assert!(!super::is_signed_out(&plain));
+        let api = super::injected(spec, "conversations.history").unwrap();
+        assert_eq!(api.to_string(), "conversations.history: invalid_auth");
+        assert!(super::is_signed_out(&api), "an ApiError of that error");
+        assert!(super::injected(spec, "chat.postMessage").is_none());
+        assert!(super::injected("", "chat.delete").is_none());
     }
 
     #[tokio::test]

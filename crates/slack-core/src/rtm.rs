@@ -1,4 +1,5 @@
-//! Real-time events over the RTM websocket (`rtm.connect`). Reconnects with backoff.
+//! Real-time events over the RTM websocket (`rtm.connect`). Reconnects with backoff, and stops
+//! for good once the session has ended.
 
 use std::time::Duration;
 
@@ -14,6 +15,8 @@ use crate::session::USER_AGENT;
 pub enum RtmEvent {
     Connected,
     Disconnected(String),
+    /// The session has ended (Slack said so): the loop has stopped and does not reconnect.
+    SignedOut,
     /// A raw event (`{"type": "message", ...}`).
     Event(Value),
 }
@@ -33,6 +36,32 @@ pub struct Rtm {
     pub commands: mpsc::UnboundedSender<RtmCommand>,
 }
 
+/// What the loop does after a connection ended.
+#[derive(Debug, PartialEq, Eq)]
+enum Step {
+    /// The session has ended: no reconnecting.
+    Stop,
+    /// Connect again after this many seconds.
+    Retry(u64),
+}
+
+/// After a connection ended with `error` (None: it closed cleanly), `backoff` being the current
+/// wait: stop when Slack answered that the session has ended or the client knows it has
+/// (`signed_out`), else try again — at once after a clean end, else after the wait.
+fn next_step(error: Option<&anyhow::Error>, signed_out: bool, backoff: u64) -> Step {
+    match error {
+        _ if signed_out => Step::Stop,
+        Some(e) if crate::api::is_signed_out(e) => Step::Stop,
+        Some(_) => Step::Retry(backoff),
+        None => Step::Retry(1),
+    }
+}
+
+/// The wait after `wait`: twice as long, a minute at most.
+fn next_backoff(wait: u64) -> u64 {
+    (wait * 2).min(60)
+}
+
 /// Start the RTM loop on the current tokio runtime.
 pub fn spawn(client: Client) -> Rtm {
     let (ev_tx, ev_rx) = mpsc::unbounded_channel();
@@ -40,19 +69,26 @@ pub fn spawn(client: Client) -> Rtm {
     tokio::spawn(async move {
         let mut backoff = 1u64;
         loop {
-            match run_once(&client, &ev_tx, &mut cmd_rx).await {
-                Ok(()) => backoff = 1,
-                Err(e) => {
-                    if ev_tx.send(RtmEvent::Disconnected(e.to_string())).is_err() {
-                        return; // UI gone
-                    }
+            let result = run_once(&client, &ev_tx, &mut cmd_rx).await;
+            let step = next_step(result.as_ref().err(), client.signed_out(), backoff);
+            if let Err(e) = &result {
+                if step != Step::Stop && ev_tx.send(RtmEvent::Disconnected(e.to_string())).is_err() {
+                    return; // UI gone
                 }
             }
+            let wait = match step {
+                Step::Stop => {
+                    tracing::warn!("rtm: the session of {} has ended; not reconnecting", client.session.team_name);
+                    let _ = ev_tx.send(RtmEvent::SignedOut);
+                    return;
+                }
+                Step::Retry(wait) => wait,
+            };
             if ev_tx.is_closed() {
                 return;
             }
-            tokio::time::sleep(Duration::from_secs(backoff)).await;
-            backoff = (backoff * 2).min(60);
+            tokio::time::sleep(Duration::from_secs(wait)).await;
+            backoff = next_backoff(wait);
         }
     });
     Rtm { events: ev_rx, commands: cmd_tx }
@@ -74,6 +110,10 @@ async fn run_once(client: &Client, ev_tx: &mpsc::UnboundedSender<RtmEvent>, cmd_
         tokio::select! {
             frame = stream.next() => {
                 let Some(frame) = frame else { anyhow::bail!("websocket closed") };
+                // Another call of the client found the session ended.
+                if client.signed_out() {
+                    anyhow::bail!("signed out");
+                }
                 last_seen = tokio::time::Instant::now();
                 match frame? {
                     WsMessage::Text(text) => {
@@ -95,6 +135,9 @@ async fn run_once(client: &Client, ev_tx: &mpsc::UnboundedSender<RtmEvent>, cmd_
                 }
             }
             _ = ping.tick() => {
+                if client.signed_out() {
+                    anyhow::bail!("signed out");
+                }
                 if last_seen.elapsed() > Duration::from_secs(70) {
                     anyhow::bail!("websocket stalled");
                 }
@@ -117,5 +160,25 @@ async fn run_once(client: &Client, ev_tx: &mpsc::UnboundedSender<RtmEvent>, cmd_
                 sink.send(WsMessage::Text(frame.to_string().into())).await?;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_rtm_loop_stops_when_signed_out() {
+        let api = |error: &str| anyhow::Error::from(crate::api::ApiError { method: "rtm.connect".into(), error: error.into() });
+        // rtm.connect answering that the session has ended, or the client knowing it already.
+        assert_eq!(next_step(Some(&api("invalid_auth")), false, 4), Step::Stop);
+        assert_eq!(next_step(Some(&anyhow::anyhow!("websocket closed")), true, 4), Step::Stop);
+        assert_eq!(next_step(None, true, 4), Step::Stop);
+        // Anything else backs off as before: the wait doubles up to a minute, a clean end starts again at a second.
+        assert_eq!(next_step(Some(&api("ratelimited")), false, 4), Step::Retry(4));
+        assert_eq!(next_step(Some(&anyhow::anyhow!("rtm.connect: request failed")), false, 8), Step::Retry(8));
+        assert_eq!(next_step(None, false, 16), Step::Retry(1));
+        assert_eq!(next_backoff(4), 8);
+        assert_eq!(next_backoff(60), 60);
     }
 }

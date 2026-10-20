@@ -152,6 +152,8 @@ struct App {
     switch_to: Option<usize>,
     /// The workspaces whose sessions have ended (skipped: not switched to, not polled).
     signed_out: SignedOut,
+    /// Once this workspace's session has ended while running: what the status line keeps saying.
+    signed_out_note: Option<String>,
     /// The huddle we are in.
     call: Option<super::call::Call>,
     /// Presence subscription sent on the current RTM connection.
@@ -504,6 +506,15 @@ impl App {
     /// the thread composer replies in the open thread (optionally also to the channel).
     fn send(&mut self, thread: bool) {
         let Some(channel) = self.current.clone() else { return };
+        // Signed out: what is typed stays in the composer; only klack's own commands run.
+        if let Some(note) = self.signed_out_note.clone() {
+            let c = self.composer_for(thread);
+            let local = c.attachments.is_empty() && matches!(super::commands::parse(&c.text(), &c.to_mrkdwn()), Some(Ok(cmd)) if runs_while_signed_out(&cmd));
+            if !local {
+                self.status = note;
+                return;
+            }
+        }
         let thread_ts = if thread { self.thread.as_ref().map(|(_, ts)| ts.clone()) } else { None };
         if thread && thread_ts.is_none() {
             return;
@@ -1563,6 +1574,19 @@ impl App {
             super::switcher::Target::Conversation(id) => self.jump_to(&id),
             super::switcher::Target::User(user) => self.open_dm_with(user),
         }
+    }
+
+    /// This workspace's session has ended: it is marked in the rail (and not switched back to), the
+    /// status line keeps saying so, what is loaded stays readable and nothing more is sent.
+    fn mark_signed_out(&mut self) {
+        if self.signed_out_note.is_some() {
+            return;
+        }
+        tracing::warn!("workspace {} ({}): the session has ended", self.workspace + 1, self.client.session.team_name);
+        self.signed_out.lock().unwrap_or_else(|e| e.into_inner()).insert(self.workspace);
+        let note = signed_out_note(&self.workspaces[self.workspace]);
+        self.status = note.clone();
+        self.signed_out_note = Some(note);
     }
 
     /// Clear the status bar's message once it has been shown for [`STATUS_TTL`] (a new
@@ -3014,6 +3038,32 @@ fn start_index(sessions: &[slack_core::session::WorkspaceSession], wanted: usize
     std::iter::once(wanted).chain(0..sessions.len()).find(|i| *i < sessions.len() && !signed_out.contains(i))
 }
 
+/// What the status line says about workspace `label` once its session has ended.
+fn signed_out_note(label: &str) -> String {
+    format!("{label}: signed out — klack auth login, then restart klack")
+}
+
+/// Whether `cmd` can run in a workspace whose session has ended: only klack's own that need no
+/// Slack (switching workspaces, the preferences).
+fn runs_while_signed_out(cmd: &super::commands::Command) -> bool {
+    use super::commands::Command;
+    matches!(cmd, Command::Workspace(_) | Command::Prefs)
+}
+
+/// The status line's note: the ringing invitation, else the latest note — followed by the
+/// signed-out note (`sticky`), which routine notes do not replace.
+fn shown_note(ringing: Option<String>, sticky: Option<&str>, status: &str) -> Option<String> {
+    if ringing.is_some() {
+        return ringing;
+    }
+    match (status, sticky) {
+        ("", None) => None,
+        ("", Some(sticky)) => Some(sticky.to_string()),
+        (status, Some(sticky)) if status != sticky => Some(format!("{status} · {sticky}")),
+        (status, _) => Some(status.to_string()),
+    }
+}
+
 /// Whether workspace `index` can be switched to from `current` (`labels` name them; `in_call`: in
 /// a huddle): the index, or what the status line says instead.
 fn switch_check(index: usize, current: usize, labels: &[String], in_call: bool, signed_out: &std::collections::HashSet<usize>) -> Result<usize, String> {
@@ -3022,7 +3072,7 @@ fn switch_check(index: usize, current: usize, labels: &[String], in_call: bool, 
     } else if index == current {
         Err(format!("already in {}", labels[index]))
     } else if signed_out.contains(&index) {
-        Err(format!("{}: signed out — klack auth login, then restart klack", labels[index]))
+        Err(signed_out_note(&labels[index]))
     } else if in_call {
         Err("leave the huddle first".into())
     } else {
@@ -3030,13 +3080,22 @@ fn switch_check(index: usize, current: usize, labels: &[String], in_call: bool, 
     }
 }
 
-/// Run the app on the profile's workspace `team` (or its default; the first signed-in one when
-/// that one is in `signed_out`); Alt+1…9 and `/workspace` switch to another of the profile's
-/// workspaces without leaving the terminal. The signed-out ones are skipped.
-pub async fn run(profile: slack_core::session::Profile, team: Option<&str>, signed_out: std::collections::HashSet<usize>) -> Result<()> {
+/// The index of `account` (team id, user id) in `profile`; without one, or when it is no longer
+/// there (removed at the start question), the default workspace's, else the first.
+fn wanted_index(profile: &slack_core::session::Profile, account: Option<(&str, &str)>) -> usize {
+    let at = |team: &str, user: &str| profile.workspaces.iter().position(|s| s.team_id == team && s.user_id == user);
+    account
+        .and_then(|(team, user)| at(team, user))
+        .or_else(|| profile.workspace(None).and_then(|w| at(&w.team_id, &w.user_id)))
+        .unwrap_or(0)
+}
+
+/// Run the app on the profile's `account` (team id, user id; or its default workspace; the first
+/// signed-in one when that one is in `signed_out`); Alt+1…9 and `/workspace` switch to another of
+/// the profile's workspaces without leaving the terminal. The signed-out ones are skipped.
+pub async fn run(profile: slack_core::session::Profile, account: Option<(&str, &str)>, signed_out: std::collections::HashSet<usize>) -> Result<()> {
     let sessions = profile.workspaces.clone();
-    let start = profile.workspace(team).ok_or_else(|| anyhow::anyhow!("no such workspace in this profile"))?;
-    let wanted = sessions.iter().position(|s| s.team_id == start.team_id && s.user_id == start.user_id).unwrap_or(0);
+    let wanted = wanted_index(&profile, account);
     let mut index = start_index(&sessions, wanted, &signed_out).ok_or_else(|| anyhow::anyhow!("every workspace of this profile is signed out — klack auth login"))?;
     let signed_out: SignedOut = std::sync::Arc::new(std::sync::Mutex::new(signed_out));
     let labels = workspace_labels(&sessions);
@@ -3137,6 +3196,7 @@ async fn run_workspace(
         rail_wanted: Vec::new(),
         switch_to: None,
         signed_out: workspaces.5,
+        signed_out_note: None,
         media,
         viewer: None,
         snippet: None,
@@ -3305,6 +3365,10 @@ async fn run_workspace(
         }
         if app.switch_to.is_some() {
             break;
+        }
+        // A call answered that the session has ended (one of the app's, or a poller's of this workspace).
+        if app.signed_out_note.is_none() && (app.client.signed_out() || app.signed_out.lock().unwrap_or_else(|e| e.into_inner()).contains(&app.workspace)) {
+            app.mark_signed_out();
         }
         app.sync_current();
         app.autosave_drafts();
@@ -4281,6 +4345,10 @@ fn handle_rtm(app: &mut App, ev: slack_core::rtm::RtmEvent) {
             app.connected = false;
             tracing::warn!("rtm disconnected: {reason}");
         }
+        RtmEvent::SignedOut => {
+            app.connected = false;
+            app.mark_signed_out();
+        }
         RtmEvent::Event(v) => {
             let fx = super::live::apply(&mut app.ws, &v, app.current.as_deref());
             if v["type"] == "pref_change" && v["name"].as_str().is_some_and(|n| n.starts_with("dnd_")) {
@@ -4971,14 +5039,11 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         app.keys.context_hints(top)
     };
     let (unread, mentions) = app.ws.total_unread();
-    let note = if let Some(ring) = &app.ringing {
+    let ringing = app.ringing.as_ref().map(|ring| {
         let key = |a| app.keys.first_shown_in(app.mode(), Context::Global, a).unwrap_or_default();
-        Some(format!("📞 {} invites you to a huddle · {} join · {} decline", app.ws.user_name(&ring.user), key(Action::Huddle), key(Action::DeclineHuddle)))
-    } else if app.status.is_empty() {
-        None
-    } else {
-        Some(app.status.clone())
-    };
+        format!("📞 {} invites you to a huddle · {} join · {} decline", app.ws.user_name(&ring.user), key(Action::Huddle), key(Action::DeclineHuddle))
+    });
+    let note = shown_note(ringing, app.signed_out_note.as_deref(), &app.status);
     let info = super::status::Info {
         unread,
         mentions,
@@ -5620,5 +5685,44 @@ mod tests {
         assert_eq!(super::switch_check(2, 0, &labels, true, &out), Err("leave the huddle first".to_string()));
         assert_eq!(super::switch_check(0, 0, &labels, false, &out), Err("already in acme".to_string()));
         assert_eq!(super::switch_check(5, 0, &labels, false, &out), Err("there is no workspace 6 (this profile has 3)".to_string()));
+    }
+
+    #[test]
+    fn the_account_asked_for_or_the_default() {
+        let mut p = slack_core::session::Profile::default();
+        for s in [session("T1", "acme", "ann"), session("T2", "beta", "ann"), WorkspaceSession { user_id: "U2".into(), ..session("T2", "beta", "bob") }] {
+            p.upsert(s);
+        }
+        p.default_team = Some("T2".into());
+        assert_eq!(super::wanted_index(&p, Some(("T2", "U2"))), 2, "the second account of beta");
+        assert_eq!(super::wanted_index(&p, None), 1, "the default team's first account");
+        // --team named an account removed at the start question: the default, as plain klack.
+        assert_eq!(super::wanted_index(&p, Some(("T9", "U9"))), 1);
+        p.default_team = None;
+        assert_eq!(super::wanted_index(&p, Some(("T9", "U9"))), 0);
+    }
+
+    #[test]
+    fn signed_out_only_klack_commands_run() {
+        use super::super::commands::{Command, parse};
+        let cmd = |text: &str| parse(text, text).unwrap().unwrap();
+        assert!(super::runs_while_signed_out(&cmd("/workspace 2")));
+        assert!(super::runs_while_signed_out(&Command::Workspace(None)));
+        assert!(super::runs_while_signed_out(&Command::Prefs));
+        assert!(!super::runs_while_signed_out(&cmd("/remind me later")), "Slack's commands need the session");
+        assert!(!super::runs_while_signed_out(&cmd("/away")));
+        assert!(!super::runs_while_signed_out(&cmd("/leave")));
+    }
+
+    #[test]
+    fn the_signed_out_note_stays_over_routine_notes() {
+        let sticky = super::signed_out_note("acme");
+        assert_eq!(sticky, "acme: signed out — klack auth login, then restart klack");
+        assert_eq!(super::shown_note(None, Some(&sticky), "already in acme"), Some(format!("already in acme · {sticky}")), "a routine note goes before it");
+        assert_eq!(super::shown_note(None, Some(&sticky), ""), Some(sticky.clone()), "and when it has gone the note stays");
+        assert_eq!(super::shown_note(None, Some(&sticky), &sticky), Some(sticky.clone()), "a refused send says it once");
+        assert_eq!(super::shown_note(None, None, "copied the link"), Some("copied the link".to_string()));
+        assert_eq!(super::shown_note(None, None, ""), None);
+        assert_eq!(super::shown_note(Some("📞 ann invites you".into()), Some(&sticky), ""), Some("📞 ann invites you".to_string()));
     }
 }

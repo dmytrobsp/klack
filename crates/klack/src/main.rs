@@ -79,8 +79,8 @@ enum AuthCmd {
         #[arg(long, value_name = "DIR", requires = "from_browser")]
         browser_profile: Option<std::path::PathBuf>,
     },
-    /// Forget the sign-in of a workspace (--team) or of all (--all) on this machine; Slack is not
-    /// signed out.
+    /// Forget sign-ins on this machine (Slack is not signed out): in a terminal the profile's are
+    /// listed to choose from; --team or --all for scripts.
     Logout {
         /// Every workspace of the profile.
         #[arg(long)]
@@ -183,12 +183,20 @@ async fn run() -> Result<()> {
                 }
                 p = Profile::load(&profile)?;
             }
+            // --team naming a workspace with two accounts asks which one (in a terminal).
+            let account = match cli.team.as_deref() {
+                Some(t) => match auth::pick_account(&p, &profile, t)? {
+                    Some(w) => Some((w.team_id.clone(), w.user_id.clone())),
+                    None => return Ok(()),
+                },
+                None => None,
+            };
             // Sessions that have ended are offered a fix (or skipped) before the app starts.
             let Some((p, signed_out)) = auth::at_start(&profile, p).await? else { return Ok(()) };
             // Held while klack runs so the profile is not removed under it; a second klack on the
             // same profile runs without it.
             let _lock = profiles::lock(&dirs, &profile).ok().flatten();
-            tui::event_loop::run(p, cli.team.as_deref(), signed_out).await
+            tui::event_loop::run(p, account.as_ref().map(|(t, u)| (t.as_str(), u.as_str())), signed_out).await
         }
     }
 }

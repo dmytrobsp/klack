@@ -541,6 +541,16 @@ fn still_signed_in(groups: &[Group], ws: &WorkspaceSession) -> Option<WorkspaceS
     groups.iter().flat_map(|g| &g.candidates).filter_map(|c| c.session.as_ref().ok()).find(|s| s.team_id == ws.team_id && s.user_id == ws.user_id).cloned()
 }
 
+/// How an account is named in lists and refusals: `acme (as Dmytro)`.
+fn account_name(w: &WorkspaceSession) -> String {
+    format!("{} (as {})", w.team_name, w.user_name)
+}
+
+/// A list row per account (its address dim after it), in the order given.
+fn account_rows(accounts: &[&WorkspaceSession]) -> Vec<Row> {
+    accounts.iter().map(|w| item(&account_name(w), &w.url, "", true)).collect()
+}
+
 /// The one account of workspace `team` (id or name) in `p`; refused when there is none, or when
 /// the profile holds two accounts there (they are listed).
 pub fn one_account<'a>(p: &'a Profile, profile: &str, team: &str) -> Result<&'a WorkspaceSession> {
@@ -548,22 +558,49 @@ pub fn one_account<'a>(p: &'a Profile, profile: &str, team: &str) -> Result<&'a 
         [] => bail!("profile {profile} has no workspace {team}"),
         [one] => Ok(one),
         several => {
-            let who: Vec<String> = several.iter().map(|w| format!("{} ({})", w.user_name, w.user_id)).collect();
-            bail!("profile {profile} has {} accounts in {team}: {} — klack cannot tell which one yet", several.len(), who.join(", "))
+            let who: Vec<String> = several.iter().map(|w| account_name(w)).collect();
+            bail!("profile {profile} has {} accounts in {team}: {} — run this in a terminal to choose one", several.len(), who.join(", "))
         }
     }
 }
 
+/// The account of workspace `team` (id or name) in `p`, as [`one_account`] — except that in a
+/// terminal two accounts there are listed to choose from. None when the question was left with Esc.
+pub fn pick_account<'a>(p: &'a Profile, profile: &str, team: &str) -> Result<Option<&'a WorkspaceSession>> {
+    let accounts = p.matching(team);
+    if accounts.len() < 2 || !pick::interactive() {
+        return one_account(p, profile, team).map(Some);
+    }
+    let pick::Outcome::Picked(at) = pick::choose(&format!("{team}: which account?"), account_rows(&accounts), false)? else { return Ok(None) };
+    Ok(at.first().map(|i| accounts[*i]))
+}
+
 /// Forget sign-ins of `profile` on this machine (Slack is not signed out): the account of `team`,
-/// or every one with `all`. The profile stays, empty if nothing is left.
+/// or every one with `all`; with neither, in a terminal, the profile's accounts are listed (Space
+/// marks, Enter forgets the marked, Esc changes nothing). The profile stays, empty if nothing is left.
 pub async fn logout(profile: &str, team: Option<&str>, all: bool) -> Result<()> {
     let mut p = Profile::load(profile)?;
     let gone: Vec<(String, String)> = match (team, all) {
         (Some(_), true) => bail!("say --team or --all, not both"),
-        (None, false) => bail!("say --team or --all"),
+        (None, false) if !pick::interactive() => bail!("say --team or --all"),
+        (None, false) if p.workspaces.is_empty() => {
+            println!("profile {profile} has no sign-ins — nothing to forget");
+            return Ok(());
+        }
+        (None, false) => {
+            let accounts: Vec<&WorkspaceSession> = p.workspaces.iter().collect();
+            let pick::Outcome::Picked(at) = pick::choose("Forget on this machine (Slack is not signed out):", account_rows(&accounts), true)? else {
+                println!("nothing changed");
+                return Ok(());
+            };
+            at.iter().map(|i| (accounts[*i].team_id.clone(), accounts[*i].user_id.clone())).collect()
+        }
         (None, true) => p.workspaces.iter().map(|w| (w.team_id.clone(), w.user_id.clone())).collect(),
         (Some(t), false) => {
-            let w = one_account(&p, profile, t)?;
+            let Some(w) = pick_account(&p, profile, t)? else {
+                println!("nothing changed");
+                return Ok(());
+            };
             vec![(w.team_id.clone(), w.user_id.clone())]
         }
     };
@@ -759,7 +796,7 @@ mod tests {
         p.upsert(account("T0000000002", "other", "U0000000001"));
         assert_eq!(one_account(&p, "default", "other").unwrap().team_id, "T0000000002");
         let e = one_account(&p, "default", "acme").unwrap_err().to_string();
-        assert!(e.contains("2 accounts") && e.contains("person-U0000000001 (U0000000001)") && e.contains("U0000000002"), "{e}");
+        assert!(e.contains("2 accounts") && e.contains("acme (as person-U0000000001), acme (as person-U0000000002)"), "{e}");
         assert!(one_account(&p, "default", "nope").is_err());
     }
 
@@ -931,6 +968,20 @@ mod tests {
         let (rows, fixes) = fix_rows(false);
         assert_eq!(shown(&rows), ["- sign in again |  | ", "- remove it from the profile |  | ", "- quit |  | "]);
         assert_eq!(fixes, [Fix::SignInAgain, Fix::Remove, Fix::Quit]);
+    }
+
+    #[test]
+    fn logout_lists_each_account_with_its_address() {
+        let mut p = Profile::default();
+        for (team, name, user) in [("T0000000001", "acme", "U0000000001"), ("T0000000001", "acme", "U0000000002"), ("T0000000002", "other", "U0000000001")] {
+            p.upsert(WorkspaceSession { url: format!("https://{name}.slack.com/"), ..account(team, name, user) });
+        }
+        let all: Vec<&WorkspaceSession> = p.workspaces.iter().collect();
+        assert_eq!(
+            shown(&account_rows(&all)),
+            ["- acme (as person-U0000000001) | https://acme.slack.com/ | ", "- acme (as person-U0000000002) | https://acme.slack.com/ | ", "- other (as person-U0000000001) | https://other.slack.com/ | "]
+        );
+        assert_eq!(shown(&account_rows(&p.matching("acme"))).len(), 2, "--team acme: its two accounts");
     }
 
     #[test]
