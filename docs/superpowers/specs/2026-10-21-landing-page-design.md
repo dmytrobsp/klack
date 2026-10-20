@@ -4,7 +4,7 @@ Asked by the user on 2026-10-20: "create a cool landing page and host it on gith
 focus on streamlined login, huddles, screensharing, TUI, size, performance and RAM consumption especially when
 compared with official app. let's take a couple of punches at original slack, it deserves that."
 
-Brainstormed 2026-10-20/21 with the visual companion; the mockups are in
+Brainstormed 2026-10-20/21 with the visual companion and **approved by the user 2026-10-21**; the mockups are in
 `.superpowers/brainstorm/403418-1792528225/content/` (not committed; the latest first screen is
 `first-screen-v3.html`, the headline animation alone `hero-v17.html` — both are the reference for the look and the
 motion, not code to ship as is). In this document **(user)** marks what the user decided, **(Claude)** marks
@@ -154,7 +154,7 @@ improve, and the user approves the final copy at review.
   shares one synthetic window (an ffmpeg `testsrc` player) that the user picks at the portal picker themselves —
   Claude says just before it opens, never picks on their behalf, and cancels the picker if the user isn't there;
   nothing is recorded. The exact setup is confirmed with the user at the start of that run.
-- **Rows where klack doesn't clearly win (Claude):** the metric list is fixed before measuring and every measured
+- **Rows where klack doesn't clearly win (Claude; user: "yes. no bs"):** the metric list is fixed before measuring and every measured
   row is kept — the page is honest; a row where the two are close (CPU at idle may be ~0 % for both) gets a
   self-mocking scrawl instead of a circle (e.g. "ok, a tie. it's a chat app."), never a fudge. Copy for the sheet is
   written after the results are in. (The user: "you can bet there wont be any".)
@@ -169,8 +169,10 @@ improve, and the user approves the final copy at review.
   captured the user's own browser); a headless browser rendering our own page is fine.
 - Captures come from the test workspace (rslack-testbed, accounts A and B), never the work workspace, and show
   **no names, no channel titles, no real messages (user)**: every name, channel, workspace name and message on
-  the page is made up — staged demo content (posted in the test workspace for the capture and deleted afterwards)
-  or rewritten in the capture-to-HTML step (Claude: the builder picks per capture). A check fails the build if any
+  the page is made up — staged demo content posted in rslack-testbed (never in the work workspace: nothing is ever
+  posted under the `test` profile; demo posts in the test workspace need not be deleted — it is a throwaway
+  workspace for developing klack **(user)**) or rewritten in the capture-to-HTML step (Claude: the builder picks
+  per capture). A check fails the build if any
   real name, handle, email, id, channel or workspace name of the test accounts appears anywhere in `site/`.
 - Pictures inside klack (profile pictures, the huddle's video tiles, a shared screen) are not in the text capture;
   the builder composes them back in from synthetic sources only (the project's video test rules: synthetic
