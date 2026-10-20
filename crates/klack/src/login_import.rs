@@ -325,6 +325,35 @@ pub fn stamp(profile: &BrowserProfile) -> Option<std::time::SystemTime> {
 /// "in your browser" watches, so on macOS the Keychain is asked once.
 pub struct Keys(HashMap<String, Result<Vec<u8>, String>>);
 
+impl Keys {
+    /// Whether `profile` can be read with these keys: Firefox always, a Chrome-family profile when its browser's key
+    /// was read.
+    pub fn has(&self, profile: &BrowserProfile) -> bool {
+        profile.source == Source::Firefox || matches!(self.0.get(family(profile)), Some(Ok(_)))
+    }
+}
+
+/// A hash of a `d` cookie, so a new one is told apart without keeping the value.
+pub fn cookie_hash(cookie: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::hash::DefaultHasher::new();
+    cookie.hash(&mut h);
+    h.finish()
+}
+
+/// The hashes of `profile`'s `d` cookies, read from its cookie database only (nothing is asked of Slack); an error
+/// when its browser has no key in `keys` or the database can't be read (a browser writing it, say).
+pub async fn d_hashes(profile: &BrowserProfile, keys: &Keys) -> Result<std::collections::HashSet<u64>> {
+    let key = match profile.source {
+        Source::Firefox => None,
+        Source::Chrome => match keys.0.get(family(profile)) {
+            Some(Ok(key)) => Some(key.clone()),
+            _ => bail!("no key for {}", family(profile)),
+        },
+    };
+    Ok(read_cookies(profile, key).await?.iter().map(|f| cookie_hash(&f.cookie)).collect())
+}
+
 /// The key of each Chrome-family browser of `profiles` (on macOS one Keychain question per browser).
 pub async fn read_keys(profiles: &[BrowserProfile]) -> Keys {
     read_keys_with(profiles, KEY_READS, |family| async move { chrome_key(&family).await }).await
@@ -907,6 +936,29 @@ mod tests {
         assert_eq!(stamp(&BrowserProfile { source: Source::Chrome, dir: chrome.clone(), label: "Chrome · Work".into(), account: None }), Some(t1));
         std::fs::remove_dir_all(&dir).unwrap();
         std::fs::remove_dir_all(&chrome).unwrap();
+    }
+
+    #[tokio::test]
+    async fn d_cookies_are_read_as_hashes_only() {
+        let dir = temp("d-hashes");
+        {
+            let con = rusqlite::Connection::open(dir.join("cookies.sqlite")).unwrap();
+            con.execute_batch("CREATE TABLE moz_cookies (id INTEGER PRIMARY KEY, name TEXT, value TEXT, host TEXT, lastAccessed INTEGER);
+                INSERT INTO moz_cookies (name, value, host, lastAccessed) VALUES ('d', 'xoxd-one', '.slack.com', 1), ('d', 'xoxd-two', '.slack.com', 2), ('b', 'x', '.slack.com', 3);").unwrap();
+        }
+        let firefox = BrowserProfile { source: Source::Firefox, dir: dir.clone(), label: "Firefox · default".into(), account: None };
+        let keys = Keys(HashMap::new());
+        let got = d_hashes(&firefox, &keys).await.unwrap();
+        assert_eq!(got, std::collections::HashSet::from([cookie_hash("xoxd-one"), cookie_hash("xoxd-two")]));
+        // A Chrome-family profile whose browser has no key: not read, and said so.
+        let chrome = BrowserProfile { source: Source::Chrome, dir: dir.clone(), label: "Chrome · Work".into(), account: None };
+        assert!(!keys.has(&chrome));
+        assert!(d_hashes(&chrome, &keys).await.is_err());
+        let keys = Keys(HashMap::from([("Chrome".to_string(), Err("can't read Chrome's key: locked".to_string()))]));
+        assert!(!keys.has(&chrome));
+        let keys = Keys(HashMap::from([("Chrome".to_string(), Ok(b"pw".to_vec()))]));
+        assert!(keys.has(&chrome) && keys.has(&firefox));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

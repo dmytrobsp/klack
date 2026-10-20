@@ -2,7 +2,6 @@
 //! cookie files while the person signs in to Slack in a browser of their own, and gives the new sign-in.
 
 use std::collections::{HashMap, HashSet};
-use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
@@ -16,6 +15,9 @@ use crate::login_import::{self, BrowserProfile, Group, Keys};
 pub const TICK: Duration = Duration::from_secs(2);
 /// How long klack watches before it gives up.
 pub const GIVE_UP: Duration = Duration::from_secs(600);
+/// How long after a problem on Slack's side (no answer, an error, its page changed) a profile is asked about again
+/// when its `d` cookies have not changed meanwhile.
+const RETRY_AFTER: Duration = Duration::from_secs(30);
 
 /// A sign-in of a browser profile as klack saw it: the profile, the account, and a hash of its `d` cookie (never the
 /// cookie itself), so a new session of the same account is told apart.
@@ -29,9 +31,7 @@ struct Seen {
 
 impl Seen {
     fn of(profile: &BrowserProfile, s: &slack_core::session::WorkspaceSession) -> Seen {
-        let mut h = DefaultHasher::new();
-        s.cookie_d.hash(&mut h);
-        Seen { profile: profile.dir.clone(), team_id: s.team_id.clone(), user_id: s.user_id.clone(), cookie: h.finish() }
+        Seen { profile: profile.dir.clone(), team_id: s.team_id.clone(), user_id: s.user_id.clone(), cookie: login_import::cookie_hash(&s.cookie_d) }
     }
 }
 
@@ -142,30 +142,80 @@ async fn close(events: EventStream) -> Result<()> {
     Ok(())
 }
 
-/// Every [`TICK`] the profiles whose cookie files changed (or that are new since the start) are looked at, until
-/// one has a sign-in that is not in `before`; those looked at then are given. A profile that could not be looked at
-/// is tried again at the next tick.
+/// Whether Slack is asked about a profile whose `d` cookies (hashes) are `now` and were `before` (`None`: not read
+/// before, a profile made during the wait): when one of them is new. A write of the cookie file that leaves them
+/// as they were (another site's cookie, a visit), or a sign-out, asks nothing.
+fn to_check(before: Option<&HashSet<u64>>, now: &HashSet<u64>) -> bool {
+    match before {
+        Some(before) => now.iter().any(|h| !before.contains(h)),
+        None => !now.is_empty(),
+    }
+}
+
+/// What klack knows of a watched profile: when its cookies were last written and read, its `d` cookies (hashes)
+/// then, and when Slack may be asked about it again after a problem on Slack's side.
+#[derive(Default)]
+struct Watched {
+    stamp: Option<SystemTime>,
+    hashes: Option<HashSet<u64>>,
+    retry: Option<tokio::time::Instant>,
+}
+
+/// Every [`TICK`] the profiles whose cookie files changed (or that are new since the start) have their `d` cookies
+/// read, here only; Slack is asked about a profile when one of them is new ([`to_check`]), until one has a sign-in
+/// that is not in `before`; the profiles asked about then are given. A cookie file that can't be read (being
+/// written) is read again at the next tick; a profile Slack could not answer about is asked again after
+/// [`RETRY_AFTER`], or sooner when a `d` cookie comes. A Chrome-family profile whose browser has no key is left out.
 async fn look_for(before: &Baseline, keys: &Keys) -> Vec<Group> {
-    let mut stamps: HashMap<PathBuf, Option<SystemTime>> = login_import::browser_profiles().iter().map(|p| (p.dir.clone(), login_import::stamp(p))).collect();
+    let mut watched: HashMap<PathBuf, Watched> = HashMap::new();
+    for p in login_import::browser_profiles().into_iter().filter(|p| keys.has(p)) {
+        let stamp = login_import::stamp(&p);
+        let hashes = login_import::d_hashes(&p, keys).await.ok();
+        // Not read: read at the next tick.
+        let stamp = if hashes.is_some() { stamp } else { None };
+        watched.insert(p.dir.clone(), Watched { stamp, hashes, retry: None });
+    }
     let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + TICK, TICK);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tick.tick().await;
-        let changed: Vec<(BrowserProfile, Option<SystemTime>)> = login_import::browser_profiles()
-            .into_iter()
-            .map(|p| {
-                let stamp = login_import::stamp(&p);
-                (p, stamp)
-            })
-            .filter(|(p, stamp)| stamps.get(&p.dir) != Some(stamp))
-            .collect();
-        if changed.is_empty() {
+        let now = tokio::time::Instant::now();
+        let mut ask = Vec::new();
+        for p in login_import::browser_profiles().into_iter().filter(|p| keys.has(p)) {
+            let stamp = login_import::stamp(&p);
+            let w = watched.entry(p.dir.clone()).or_default();
+            let mut asking = w.retry.is_some_and(|at| now >= at);
+            if w.stamp != stamp {
+                match login_import::d_hashes(&p, keys).await {
+                    Ok(hashes) => {
+                        asking |= to_check(w.hashes.as_ref(), &hashes);
+                        (w.stamp, w.hashes) = (stamp, Some(hashes));
+                    }
+                    Err(e) => tracing::debug!("{}: cookies not read this time: {e:#}", p.label),
+                }
+            }
+            if asking {
+                w.retry = None;
+                ask.push(p);
+            }
+        }
+        if ask.is_empty() {
             continue;
         }
-        let at: HashMap<PathBuf, Option<SystemTime>> = changed.iter().map(|(p, stamp)| (p.dir.clone(), *stamp)).collect();
-        let groups: Vec<Group> = login_import::discover_with_keys(changed.into_iter().map(|(p, _)| p).collect(), keys).await.into_iter().filter(|g| g.problem.is_none()).collect();
-        for g in &groups {
-            stamps.insert(g.profile.dir.clone(), at.get(&g.profile.dir).copied().flatten());
+        for p in &ask {
+            tracing::debug!("{}: a new d cookie — checking it with Slack", p.label);
+        }
+        let mut groups = Vec::new();
+        for g in login_import::discover_with_keys(ask, keys).await {
+            match &g.problem {
+                Some(problem) => {
+                    tracing::debug!("{}: {problem} — asking again in {} s", g.profile.label, RETRY_AFTER.as_secs());
+                    if let Some(w) = watched.get_mut(&g.profile.dir) {
+                        w.retry = Some(now + RETRY_AFTER);
+                    }
+                }
+                None => groups.push(g),
+            }
         }
         if !new_ones(before, &groups).is_empty() {
             return groups;
@@ -176,7 +226,8 @@ async fn look_for(before: &Baseline, keys: &Keys) -> Vec<Group> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::login_import::{BrowserProfile, Candidate, Group, Source};
+    use crate::login_import::{self, BrowserProfile, Candidate, Group, Source};
+    use std::collections::HashSet;
     use slack_core::session::{LoggedInTeam, SessionSource, WorkspaceSession};
 
     /// A candidate of team `team` signed in as `user` with the cookie `cookie`, or signed out (`None`).
@@ -259,6 +310,38 @@ mod tests {
         }));
         assert!(r.is_err());
         assert!(restored.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    fn hashes(cookies: &[&str]) -> HashSet<u64> {
+        cookies.iter().map(|c| login_import::cookie_hash(c)).collect()
+    }
+
+    #[test]
+    fn slack_is_asked_only_when_a_d_cookie_comes() {
+        let before = hashes(&["xoxd-a", "xoxd-b"]);
+        // The file was written (another site's cookie, a visit), the d cookies are the same: nothing to ask.
+        assert!(!to_check(Some(&before), &hashes(&["xoxd-b", "xoxd-a"])));
+        // One went (signed out): nothing new to ask about either.
+        assert!(!to_check(Some(&before), &hashes(&["xoxd-a"])));
+        // A new one: asked.
+        assert!(to_check(Some(&before), &hashes(&["xoxd-a", "xoxd-c"])));
+        assert!(to_check(Some(&HashSet::new()), &hashes(&["xoxd-c"])));
+        // A profile klack has not read before: asked when it has a d cookie, not when it has none.
+        assert!(to_check(None, &hashes(&["xoxd-a"])));
+        assert!(!to_check(None, &HashSet::new()));
+    }
+
+    #[test]
+    fn a_slack_problem_is_retried_after_a_while_not_every_tick() {
+        assert!(RETRY_AFTER >= Duration::from_secs(30));
+        assert!(RETRY_AFTER > TICK * 10);
+    }
+
+    #[test]
+    fn the_seen_cookie_is_the_watched_hash() {
+        let g = group("/p1", vec![candidate("T0000000001", "Acme", Some(("U0000000001", "xoxd-x")))]);
+        let seen: Vec<u64> = baseline(&[g]).0.into_iter().map(|s| s.cookie).collect();
+        assert_eq!(seen, [login_import::cookie_hash("xoxd-x")]);
     }
 
     #[test]
