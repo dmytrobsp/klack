@@ -13,7 +13,7 @@ const BODY_MAX: usize = 300;
 pub fn notification(ws: &Workspace, channel: &str, m: &Message, viewing: bool, now: f64) -> Option<(String, String)> {
     let from_me = m.user.as_deref() == Some(ws.self_id.as_str());
     let system = m.subtype.as_deref().is_some_and(|s| !matches!(s, "thread_broadcast" | "file_share" | "bot_message" | "me_message"));
-    if from_me || system || m.hidden || viewing || ws.muted.contains(channel) || ws.dnd.active(now) {
+    if from_me || system || m.hidden || viewing || ws.muted.contains(channel) || ws.dnd_active(now) {
         return None;
     }
     let conv = ws.conversations.get(channel);
@@ -55,7 +55,7 @@ pub fn notification(ws: &Workspace, channel: &str, m: &Message, viewing: bool, n
 /// there); None for channels, muted conversations, DND, or a huddle we are already in.
 pub fn huddle_notification(ws: &Workspace, channel: &str, user: &str, in_it: bool, now: f64, join_key: &str) -> Option<(String, String)> {
     let conv = ws.conversations.get(channel)?;
-    if in_it || user == ws.self_id || !conv.is_dm() || ws.muted.contains(channel) || ws.dnd.active(now) {
+    if in_it || user == ws.self_id || !conv.is_dm() || ws.muted.contains(channel) || ws.dnd_active(now) {
         return None;
     }
     let who = ws.user_name(user);

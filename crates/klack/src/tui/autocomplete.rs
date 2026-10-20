@@ -66,7 +66,7 @@ pub fn suggestions(ws: &Workspace, conversation: Option<&str>, trigger: &Trigger
         Trigger::Command(q) => {
             let q = q.to_lowercase();
             // Plain `/dnd` says what it does now.
-            let paused = ws.dnd.active(super::clock::now().timestamp() as f64);
+            let paused = ws.dnd_active(super::clock::now().timestamp() as f64);
             let own = super::commands::OWN.iter().map(|&(name, usage, desc)| (name.to_string(), usage.to_string(), if name == "/dnd" { super::commands::dnd_doing(paused) } else { desc }.to_string()));
             let slack = ws.slack_commands.iter().filter(|c| !super::commands::OWN.iter().any(|(name, ..)| *name == c.name)).map(|c| (c.name.clone(), c.usage.clone(), c.desc.clone()));
             let mut out: Vec<(u8, Suggestion)> = own

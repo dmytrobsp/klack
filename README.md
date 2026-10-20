@@ -68,7 +68,7 @@ takes the messages' place until you close it), the composer below, and a status
 line at the bottom: on the left a pill saying which mode you are in (NORMAL, INSERT, or the open
 dialog: JUMP, SEARCH, PREFS, …), then the unread and mention counts, other workspaces, your
 status, and a dot for your presence as in Slack (green `● active`, dim `○ away`; "connecting…" after it while
-the connection is down) — a note or a ringing huddle takes their place; on the right
+the connection is down, a dim `…` when the line is at its narrowest) — a note or a ringing huddle takes their place; on the right
 the keys of a sequence under way (`␣h`, `^␣h` for Ctrl+Space) and the hints of where you are, ending
 in `? help` (`↑/↓ move · Enter thread · i type · ␣ actions · ? help`). A thumb on a pane's right border shows where you are when it scrolls. A conversation
 opened with unread messages has a red "new" line above the first of them; while you read further
@@ -119,7 +119,8 @@ something — is behind the **leader**, `Space`. **INSERT** is typing in the com
 `i` (or Enter in the sidebar) starts it, Esc leaves it, and the status bar pill says which mode you
 are in. In **DIALOG** (jump to, search, preferences, menus, pickers, …) the dialog's keys are shown
 at the bottom. While you type, or in a dialog, Space is a space, so the leader there is
-`Ctrl+Space`.
+`Ctrl+Space`. klack starts in NORMAL on the messages of the conversation you were last in, and
+opens the thread again if you quit with one open.
 
 Press the leader and wait (0.4 s) and the **which-key** panel opens in a corner with what each next
 key does; a wrong key or Esc cancels. It follows where you are: on a message it lists the message's
@@ -187,6 +188,7 @@ Typing (INSERT):
 | Esc | cancel an edit, else leave the box (back to NORMAL) |
 | Ctrl+V | paste from the clipboard: text is typed in; a picture (a screenshot) or files copied in a file manager are attached above the box (✕, or Backspace in an empty box, removes one) and Enter sends them with your text — or on their own — as one message. Your terminal's own paste (Ctrl+Shift+V) only carries text, and over SSH there is no clipboard to read |
 | `Ctrl+Space` | the leader while you type: Ctrl+Space then `h` and so on, as `␣h` elsewhere |
+| `Ctrl+Space x` · `Ctrl+Space Backspace` | clear the box for good: the text, attachments and mentions (an edit in progress is cancelled, as Esc does) |
 | `/` (first in the box) · @ # : | command (klack's own and Slack's, with what they take; a command typed out in full runs on Enter) and its fixed choices (`/dnd 30m`…`off`, `/dnd schedule` kinds and hours, `/status clear` and `… for today`, `/section rename\|delete`, `/workspace` names, `/snippet` languages), mention, channel, emoji autocomplete |
 | `/status [:emoji:] [text] [for 30m\|2h\|today]` · `/status clear` | set or clear your status |
 | `/away` · `/active` · `/dnd` · `/dnd 30m` · `/dnd off` | appear away / active · plain `/dnd` pauses notifications for 30 minutes, or resumes them when paused · pause for a time · resume (ends a pause and the current quiet hours of your notification schedule; the schedule stays) |
@@ -310,7 +312,7 @@ on Windows only from an SSH session, where `gdigrab` cannot capture (no desktop)
 
 | Variable | |
 |---|---|
-| (F6 or `/prefs`) | preferences: theme, compact list, thumbnails, profile pictures, emoji as names, custom emoji as pictures, 12/24 h clock, date format, time zone, language, desktop notifications and sound, microphone and speaker, volumes, microphone gain, speaking threshold, noise suppression, echo cancellation — saved in `settings.toml` next to `keys.toml` |
+| (F6 or `/prefs`) | preferences: availability (status, away, Notifications — on or paused until when; Enter pauses for 30 minutes or resumes, + / - change a pause's length — and the notification schedule: off, every day, weekdays or custom, with the hours you receive notifications in, per day for custom: hours, receive all day or paused all day; kept on Slack), theme, compact list, thumbnails, profile pictures, emoji as names, custom emoji as pictures, 12/24 h clock, date format, time zone, language, desktop notifications and sound, microphone and speaker, volumes, microphone gain, speaking threshold, noise suppression, echo cancellation — saved in `settings.toml` next to `keys.toml` |
 | `KLACK_LOG` | log filter, e.g. `klack=debug` (log file: `~/.cache/klack/<profile>/klack.log`) |
 | `KLACK_DOWNLOAD_DIR` | where `␣s` saves attachments first, over F6 → Messages & media → Save files to (default: your downloads folder) |
 | `KLACK_OPEN_WITH` | the program `␣o` opens links with, given the address (default: the system's opener — `xdg-open`, `open`, Windows' URL handler); only web and mail links are opened |

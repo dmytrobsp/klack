@@ -106,7 +106,7 @@ pub fn availability(ws: &Workspace, now: i64) -> String {
             parts.push(format!("{emoji} {}", p.status_text).trim().to_string());
         }
     }
-    if let Some(t) = ws.dnd.until(now as f64) {
+    if let Some(t) = ws.dnd_until(now as f64) {
         parts.push(match super::clock::until_label(t as i64, now, ws.settings.time_format()) {
             Some(label) => format!("🔕 until {label}"),
             None => "🔕".into(),

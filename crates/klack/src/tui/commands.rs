@@ -275,8 +275,8 @@ pub fn parse(text: &str, mrkdwn: &str) -> Option<Result<Command, String>> {
         "/away" if rest.is_empty() => Ok(Command::Away(true)),
         "/active" | "/back" if rest.is_empty() => Ok(Command::Away(false)),
         "/dnd" if rest.is_empty() => Ok(Command::Dnd(DndAction::Toggle)),
-        "/dnd" if rest == "off" => Ok(Command::Dnd(DndAction::Resume)),
-        "/dnd" if rest.split_whitespace().next() == Some("schedule") => parse_schedule(&rest["schedule".len()..]),
+        "/dnd" if rest.eq_ignore_ascii_case("off") => Ok(Command::Dnd(DndAction::Resume)),
+        "/dnd" if rest.split_whitespace().next().is_some_and(|w| w.eq_ignore_ascii_case("schedule")) => parse_schedule(&rest["schedule".len()..]),
         "/dnd" => match minutes(rest) {
             Some(m) => Ok(Command::Dnd(DndAction::Pause(m))),
             None => Err("usage: /dnd (pause 30 min, or resume) · /dnd 30m|2h|1d · /dnd off".into()),
@@ -402,6 +402,9 @@ mod tests {
         assert_eq!(edits("/dnd schedule weekdays 22:00 - 08:30"), Ok(Some(vec![Days(Weekdays), Range("22:00".into(), "8:30".into())])), "as Slack writes them");
         assert_eq!(edits("/dnd schedule Weekdays 10:00–18:00"), Ok(Some(vec![Days(Weekdays), Range("10:00".into(), "18:00".into())])), "any case, an en dash");
         assert_eq!(edits("/dnd schedule weekdays"), Ok(Some(vec![Days(Weekdays)])), "the hours as they are");
+        assert_eq!(edits("/dnd Schedule off"), Ok(Some(vec![Days(Off)])), "the word in any case too");
+        assert_eq!(edits("/dnd SCHEDULE"), Ok(None));
+        assert_eq!(parse("/dnd Off"), Some(Ok(Command::Dnd(DndAction::Resume))));
         assert!(edits("/dnd schedule weekdays 25:00-8:00").unwrap_err().contains("time of day"));
         assert!(edits("/dnd schedule every day 9:00").is_err());
         assert!(edits("/dnd schedule every day 9:00-9:00").is_err(), "no hours at all");

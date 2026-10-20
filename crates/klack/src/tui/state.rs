@@ -266,7 +266,7 @@ pub struct Dnd {
     /// The notification schedule (from the prefs), to tell a quiet period longer than a day
     /// from Slack's "next start" of a daily one.
     pub schedule: Option<Schedule>,
-    /// The account's time zone, which the schedule is in (None: klack's).
+    /// The account's time zone from the boot (None: not given; see `Workspace::account_zone`).
     pub zone: Option<chrono_tz::Tz>,
 }
 
@@ -294,8 +294,13 @@ impl Dnd {
     /// When notifications come back if they are paused now: the end of the snooze or of the
     /// scheduled quiet period, whichever runs longer when one runs into the other.
     pub fn until(&self, now: f64) -> Option<f64> {
+        self.until_in(now, self.zone)
+    }
+
+    /// `until` with the schedule in `zone` (None: klack's).
+    pub fn until_in(&self, now: f64, zone: Option<chrono_tz::Tz>) -> Option<f64> {
         const DAY: f64 = 86_400.0;
-        let zone = self.zone.or_else(super::clock::zone);
+        let zone = zone.or_else(super::clock::zone);
         // A window longer than a day is one quiet period when the schedule is quiet all through it
         // (a custom day paused all day); otherwise it is Slack's report of a daily schedule, and
         // the window ending at `end` starts at `start`'s time of day (local time, so not an hour
@@ -572,6 +577,27 @@ impl Workspace {
         // The most recently active first, as Slack does; never-active ones by name at the end.
         dms.sort_by(|a, b| self.activity(&b.id).total_cmp(&self.activity(&a.id)).then_with(|| self.conversation_label(a).to_lowercase().cmp(&self.conversation_label(b).to_lowercase())));
         (channels.into_iter().map(|c| c.id.clone()).collect(), dms.into_iter().map(|c| c.id.clone()).collect())
+    }
+
+    /// The account's time zone, which the schedule is in: the boot's (kept up to date by your
+    /// own `user_change`), else your profile's (None: klack's).
+    pub fn account_zone(&self) -> Option<chrono_tz::Tz> {
+        self.dnd.zone.or_else(|| self.users.get(&self.self_id)?.tz.as_deref()?.parse().ok())
+    }
+
+    /// `Dnd::until` in the account's zone.
+    pub fn dnd_until(&self, now: f64) -> Option<f64> {
+        self.dnd.until_in(now, self.account_zone())
+    }
+
+    /// Notifications are paused now (in the account's zone).
+    pub fn dnd_active(&self, now: f64) -> bool {
+        self.dnd_until(now).is_some()
+    }
+
+    /// `Dnd::resume` in the account's zone.
+    pub fn dnd_resume(&self, now: f64) -> Resume {
+        Dnd { zone: self.account_zone(), ..self.dnd.clone() }.resume(now)
     }
 
     /// Apply `client.userBoot` (channels, IMs, DND).
@@ -928,6 +954,38 @@ mod tests {
         assert_eq!(ws.dnd.schedule.as_ref().map(|s| s.days), Some(slack_core::dnd::ScheduleDays::Custom));
         ws.dnd.set_info(&info);
         assert_eq!(ws.dnd.until(1792486800.0), Some(1792558800.0));
+    }
+
+    #[test]
+    fn the_account_zone_falls_back_to_your_profile() {
+        use slack_core::types::User;
+        // Tuesday paused all day in a custom schedule: quiet at Tue 12:00 in Jerusalem, but read
+        // in New York the period starts on a Monday afternoon with notifications, so it isn't one.
+        let info = serde_json::json!({"dnd_enabled":true,"next_dnd_start_ts":1792443600,"next_dnd_end_ts":1792558800,"snooze_enabled":false});
+        let prefs = serde_json::json!({"dnd_enabled": true, "dnd_days": "custom", "dnd_enabled_tuesday": "all_day", "dnd_start_hour": "17:00", "dnd_end_hour": "9:00"});
+        let me = |tz: &str| User { id: "UME".into(), tz: Some(tz.into()), ..Default::default() };
+        let (jerusalem, new_york): (chrono_tz::Tz, chrono_tz::Tz) = ("Asia/Jerusalem".parse().unwrap(), "America/New_York".parse().unwrap());
+        let mut ws = Workspace { self_id: "UME".into(), ..Default::default() };
+        ws.users.insert("UME".into(), me("Asia/Jerusalem"));
+        ws.apply_boot(&serde_json::json!({"self": {}, "dnd": info, "prefs": prefs}));
+        assert_eq!(ws.account_zone(), Some(jerusalem), "no zone in the boot: your profile's");
+        assert_eq!(ws.dnd_until(1792486800.0), Some(1792558800.0));
+        assert_eq!(crate::tui::prefs::zone_note(ws.account_zone(), Some(new_york), 1_800_000_000), " (Asia/Jerusalem)");
+        ws.users.insert("UME".into(), me("America/New_York"));
+        assert_eq!(ws.account_zone(), Some(new_york));
+        assert_eq!(ws.dnd_until(1792486800.0), None, "read in your profile's zone");
+        // The boot's zone, when it has one, is used.
+        ws.apply_boot(&serde_json::json!({"self": {"tz": "Asia/Jerusalem"}, "dnd": info, "prefs": prefs}));
+        assert_eq!(ws.account_zone(), Some(jerusalem));
+        assert_eq!(ws.dnd_until(1792486800.0), Some(1792558800.0));
+        assert!(ws.dnd_active(1792486800.0));
+        // Your own zone changed during the session (`user_change`): followed.
+        crate::tui::live::apply(&mut ws, &serde_json::json!({"type": "user_change", "user": {"id": "UME", "name": "me", "tz": "America/New_York"}}), None);
+        assert_eq!(ws.account_zone(), Some(new_york));
+        assert_eq!(ws.dnd_until(1792486800.0), None);
+        // Someone else's change is theirs.
+        crate::tui::live::apply(&mut ws, &serde_json::json!({"type": "user_change", "user": {"id": "U2", "name": "b", "tz": "Asia/Jerusalem"}}), None);
+        assert_eq!(ws.account_zone(), Some(new_york));
     }
 
     #[test]

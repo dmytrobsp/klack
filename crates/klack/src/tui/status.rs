@@ -27,7 +27,7 @@ pub struct Info {
     pub paused: bool,
     /// You appear away (the dot is dim).
     pub away: bool,
-    /// Connected; while not, the info says "connecting…".
+    /// Connected; while not, the info says "connecting…" (at the barest a dim `…` after the dot).
     pub live: bool,
     /// A status message or the ringing text; takes the info's place.
     pub note: Option<String>,
@@ -106,9 +106,9 @@ fn info_spans(info: &Info, level: u8, note_room: Option<usize>) -> Vec<Span<'sta
         _ if info.paused => vec![Span::raw("🔕 "), dot],
         _ => vec![dot],
     };
-    // The connection shows only while it is down.
-    if !info.live && level < 2 {
-        out.push(Span::styled(if level == 0 { " · connecting…" } else { " connecting…" }, dim));
+    // The connection shows only while it is down; at the barest as a dim `…` after the dot.
+    if !info.live {
+        out.push(Span::styled(match level { 0 => " · connecting…", 1 => " connecting…", _ => "…" }, dim));
     }
     out
 }
@@ -322,5 +322,19 @@ mod tests {
         assert!(plain(&line(Pill::Normal, &away, "␣", &hints(), 80)).contains("3 · @1 ○"));
         let offline = Info { live: false, ..info() };
         assert!(dot(&offline, 80).content.starts_with('●'), "the connection doesn't dim your presence");
+    }
+
+    #[test]
+    fn a_dropped_connection_shows_at_the_narrowest() {
+        let p = crate::tui::theme::p();
+        let offline = Info { live: false, ..info() };
+        for w in [24, 18] {
+            let l = line(Pill::Normal, &offline, "␣", &hints(), w);
+            let s = plain(&l);
+            assert_eq!(s.width(), w as usize, "{s:?}");
+            assert!(s.contains("●…") && !s.contains("connecting"), "at {w}: {s:?}");
+            assert!(l.spans.iter().any(|sp| sp.content == "…" && sp.style.fg == Some(p.dim)), "dim: {l:?}");
+            assert!(!plain(&line(Pill::Normal, &info(), "␣", &hints(), w)).contains('…'), "connected: no mark at {w}");
+        }
     }
 }

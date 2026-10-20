@@ -309,6 +309,10 @@ pub fn apply(ws: &mut Workspace, ev: &Value, current: Option<&str>) -> Effects {
         }
         "user_change" | "team_join" => {
             if let Ok(u) = serde_json::from_value::<User>(ev["user"].clone()) {
+                // Your own zone is the schedule's.
+                if let Some(zone) = u.tz.as_deref().and_then(|z| z.parse().ok()).filter(|_| u.id == ws.self_id) {
+                    ws.dnd.zone = Some(zone);
+                }
                 ws.users.insert(u.id.clone(), u);
             }
         }

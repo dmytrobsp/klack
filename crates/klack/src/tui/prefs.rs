@@ -73,7 +73,7 @@ pub enum Field {
     Schedule,
     /// Slack: every day / weekdays, the hours notifications come through.
     ScheduleHours,
-    /// Slack: a custom schedule's day (0 = Monday): its hours, all day or none.
+    /// Slack: a custom schedule's day (0 = Monday): its hours, receive all day or paused all day.
     ScheduleDay(usize),
     Input,
     Output,
@@ -293,7 +293,7 @@ impl Field {
             Field::Away => yes(ws.presence.get(&ws.self_id) == Some(&false)),
             Field::Notifications => {
                 let now = super::clock::now().timestamp();
-                match ws.dnd.until(now as f64).and_then(|t| super::clock::until_label(t as i64, now, s.time_format())) {
+                match ws.dnd_until(now as f64).and_then(|t| super::clock::until_label(t as i64, now, s.time_format())) {
                     Some(label) => format!("paused until {label}"),
                     None => "on".into(),
                 }
@@ -313,8 +313,8 @@ impl Field {
             Field::ScheduleHours => ws.dnd.schedule.as_ref().map(|sch| format!("from {} to {}{}", clock(&sch.range.0, s.time_format()), clock(&sch.range.1, s.time_format()), schedule_zone(ws))).unwrap_or_default(),
             Field::ScheduleDay(i) => match ws.dnd.schedule.as_ref().and_then(|sch| sch.per_day.get(i)) {
                 Some(DayHours::Between(from, to)) => format!("{} to {}{}", clock(from, s.time_format()), clock(to, s.time_format()), schedule_zone(ws)),
-                Some(DayHours::AllDay) => "all day".into(),
-                Some(DayHours::Never) => "none".into(),
+                Some(DayHours::AllDay) => "receive all day".into(),
+                Some(DayHours::Never) => "paused all day".into(),
                 Some(DayHours::Unknown(v)) => format!("{v:?}: {UNKNOWN_SCHEDULE}"),
                 None => String::new(),
             },
@@ -710,7 +710,7 @@ impl Prefs {
                 let day = schedule.per_day.get(i)?;
                 // Back to hours, a day gets the every-day hours.
                 let hours = || DayHours::Between(schedule.range.0.clone(), schedule.range.1.clone());
-                // Hours → all day → none → hours.
+                // Hours → receive all day → paused all day → hours.
                 let (next, before) = match day {
                     DayHours::Between(..) => (DayHours::AllDay, DayHours::Never),
                     DayHours::AllDay => (DayHours::Never, hours()),
@@ -720,12 +720,13 @@ impl Prefs {
                 let hours = match (step, typed, day) {
                     (Some(true), ..) => next,
                     (Some(false), ..) => before,
-                    (None, Some(text), _) => match text.trim().to_lowercase().as_str() {
-                        "all day" => DayHours::AllDay,
-                        "none" => DayHours::Never,
+                    // The words shown, or the earlier "all day" / "none".
+                    (None, Some(text), _) => match text.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase().as_str() {
+                        "receive all day" | "all day" => DayHours::AllDay,
+                        "paused all day" | "none" => DayHours::Never,
                         text => match super::commands::receive_hours(text) {
                             Ok((from, to)) => DayHours::Between(from, to),
-                            Err(e) => return Some(Err(format!("{e} (or all day, or none)"))),
+                            Err(e) => return Some(Err(format!("{e} (or receive all day, or paused all day)"))),
                         },
                     },
                     (None, None, DayHours::Between(from, to)) => {
@@ -956,7 +957,7 @@ impl Prefs {
             },
             Field::Away => Some(SlackChange::Command(if ws.presence.get(&ws.self_id) == Some(&false) { "/active" } else { "/away" }.into())),
             // Like ␣an: pause 30 minutes, or resume whatever pauses.
-            Field::Notifications => Some(SlackChange::Command(if ws.dnd.active(super::clock::now().timestamp() as f64) { "/dnd off".into() } else { "/dnd 30m".into() })),
+            Field::Notifications => Some(SlackChange::Command(if ws.dnd_active(super::clock::now().timestamp() as f64) { "/dnd off".into() } else { "/dnd 30m".into() })),
             Field::Schedule | Field::ScheduleHours | Field::ScheduleDay(_) => match self.schedule_change(ws, field, None) {
                 Some(Ok(edits)) => Some(SlackChange::Schedule(edits)),
                 Some(Err(e)) => {
@@ -980,12 +981,17 @@ impl Prefs {
     }
 
     /// + / - on the Notifications row: the command for the next longer or shorter pause (30 min, 1 h,
-    /// 2 h, 8 h) while a snooze runs; None otherwise (a scheduled period has no length to change).
-    pub fn pause_step(ws: &Workspace, up: bool) -> Option<String> {
+    /// 2 h, 8 h) while a snooze runs; during a scheduled period alone (it has no length to change)
+    /// a note saying so; None otherwise.
+    pub fn pause_step(ws: &Workspace, up: bool) -> Option<Result<String, String>> {
         let now = super::clock::now().timestamp() as f64;
-        let left = ((ws.dnd.snooze_until.filter(|t| *t > now)? - now) / 60.0).round() as u64;
+        let Some(snooze) = ws.dnd.snooze_until.filter(|t| *t > now) else {
+            let until = ws.dnd_until(now).and_then(|t| super::clock::until_label(t as i64, now as i64, ws.settings.time_format()))?;
+            return Some(Err(format!("paused by your schedule until {until} — Enter resumes")));
+        };
+        let left = ((snooze - now) / 60.0).round() as u64;
         let next = if up { PAUSES.iter().find(|m| **m > left) } else { PAUSES.iter().rev().find(|m| **m < left) };
-        next.map(|m| format!("/dnd {m}m"))
+        next.map(|m| Ok(format!("/dnd {m}m")))
     }
 
     /// Whether the selected field is kept on Slack or in keys.toml (nothing to save in settings.toml).
@@ -1123,7 +1129,7 @@ impl Prefs {
         let mut hints: Vec<String> = fixed.iter().map(|h| h.to_string()).collect();
         if let Some(sch) = ws.dnd.schedule.as_ref().filter(|s| self.availability_shown() && s.days == ScheduleDays::Custom) {
             let range = format!("{}-{}", sch.range.0, sch.range.1);
-            hints.push(format!("A day: Enter edits its hours (or type all day / none); + / - go hours · all day (no quiet hours) · none (paused all day). Back to hours, a day gets the every-day ones ({range})."));
+            hints.push(format!("A day: Enter edits its hours (or type receive all day / paused all day); + / - go hours · receive all day (no quiet hours) · paused all day. Back to hours, a day gets the every-day ones ({range})."));
         }
         let shown = rows.len() as u16;
         let rows_shown = rows.len();
@@ -1155,7 +1161,7 @@ pub fn zone_note(account: Option<chrono_tz::Tz>, klack: Option<chrono_tz::Tz>, n
 
 /// `zone_note` for the workspace's account and klack's zone now.
 pub fn schedule_zone(ws: &Workspace) -> String {
-    zone_note(ws.dnd.zone, super::clock::zone(), super::clock::now().timestamp())
+    zone_note(ws.account_zone(), super::clock::zone(), super::clock::now().timestamp())
 }
 
 /// The schedule in words, its times in `time_format` followed by `zone` (see `zone_note`).
@@ -1409,21 +1415,28 @@ mod tests {
         assert_eq!(value(Field::Schedule, &ws), "off");
         assert_eq!(p.change(&mut ws, None, &keys), sent(vec![Days(EveryDay)]));
         assert_eq!(p.schedule_change(&ws, Field::Schedule, Some(false)), Some(Ok(vec![Days(Custom)])));
-        // Custom: a row per day, Monday first: hours, "all day" (no quiet hours) or "none" (paused all day).
+        // Custom: a row per day, Monday first: hours, "receive all day" (no quiet hours) or "paused all day".
         ws.dnd.schedule.as_mut().unwrap().days = Custom;
         assert_eq!(rows(&mut p, &ws)[4..], (0..7).map(Field::ScheduleDay).collect::<Vec<_>>());
         assert_eq!(Field::ScheduleDay(0).label(), "Monday");
-        assert_eq!([0, 5, 6].map(|d| value(Field::ScheduleDay(d), &ws)), ["08:00 to 22:00", "none", "all day"]);
-        // Enter on a day with hours edits them; "all day" / "none" may be typed instead.
+        assert_eq!([0, 5, 6].map(|d| value(Field::ScheduleDay(d), &ws)), ["08:00 to 22:00", "paused all day", "receive all day"]);
+        // Enter on a day with hours edits them; "receive all day" / "paused all day" may be typed instead (or all day / none).
         p.selected = 4;
         assert_eq!((p.change(&mut ws, None, &keys), p.editing.as_deref()), (None, Some("8:00-22:00")));
         p.editing = Some("None".into());
         assert_eq!(p.change(&mut ws, None, &keys), sent(vec![Day(0, DayHours::Never)]));
         p.editing = Some("all day".into());
         assert_eq!(p.change(&mut ws, None, &keys), sent(vec![Day(0, DayHours::AllDay)]));
+        p.editing = Some("Paused all day".into());
+        assert_eq!(p.change(&mut ws, None, &keys), sent(vec![Day(0, DayHours::Never)]));
+        p.editing = Some("receive all day".into());
+        assert_eq!(p.change(&mut ws, None, &keys), sent(vec![Day(0, DayHours::AllDay)]));
+        p.editing = Some("sometimes".into());
+        assert_eq!(p.change(&mut ws, None, &keys), None);
+        assert!(matches!(p.saved.take(), Some(Err(e)) if e.contains("receive all day") && e.contains("paused all day")));
         p.editing = Some("7:00-9:00".into());
         assert_eq!(p.change(&mut ws, None, &keys), sent(vec![Day(0, DayHours::Between("7:00".into(), "9:00".into()))]));
-        // Enter on "none" / "all day" steps on (hours → all day → none → hours); back to hours, a
+        // Enter on "paused all day" / "receive all day" steps on (hours → receive all day → paused all day → hours); back to hours, a
         // day gets the every-day hours.
         p.selected = 9;
         assert_eq!(p.change(&mut ws, None, &keys), sent(vec![Day(5, DayHours::Between("9:00".into(), "17:00".into()))]));
@@ -1515,14 +1528,16 @@ mod tests {
             ws.dnd = crate::tui::state::Dnd { snooze_until: Some(now + minutes * 60.0), ..Default::default() };
             Prefs::pause_step(ws, up)
         };
-        assert_eq!(step(&mut ws, 29.6, true), Some("/dnd 60m".into()));
-        assert_eq!(step(&mut ws, 60.0, true), Some("/dnd 120m".into()));
-        assert_eq!(step(&mut ws, 100.0, true), Some("/dnd 120m".into()), "the next length above");
-        assert_eq!(step(&mut ws, 120.0, false), Some("/dnd 60m".into()));
+        assert_eq!(step(&mut ws, 29.6, true), Some(Ok("/dnd 60m".into())));
+        assert_eq!(step(&mut ws, 60.0, true), Some(Ok("/dnd 120m".into())));
+        assert_eq!(step(&mut ws, 100.0, true), Some(Ok("/dnd 120m".into())), "the next length above");
+        assert_eq!(step(&mut ws, 120.0, false), Some(Ok("/dnd 60m".into())));
         assert_eq!(step(&mut ws, 480.0, true), None, "the longest stays");
         assert_eq!(step(&mut ws, 30.0, false), None, "the shortest stays: - never resumes");
         ws.dnd = crate::tui::state::Dnd { window: Some((now - 600.0, now + 600.0)), ..Default::default() };
-        assert_eq!(Prefs::pause_step(&ws, true), None, "a scheduled period has no length to step");
+        let until = crate::tui::clock::until_label((now + 600.0) as i64, now as i64, ws.settings.time_format()).unwrap();
+        assert_eq!(Prefs::pause_step(&ws, true), Some(Err(format!("paused by your schedule until {until} — Enter resumes"))), "a scheduled period has no length to step: said");
+        assert_eq!(Prefs::pause_step(&ws, false), Some(Err(format!("paused by your schedule until {until} — Enter resumes"))));
         ws.dnd = Default::default();
         assert_eq!(Prefs::pause_step(&ws, true), None, "not paused: nothing to step");
         // The value reads as on / paused until.

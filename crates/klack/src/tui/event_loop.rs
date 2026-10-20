@@ -293,10 +293,13 @@ fn prefilled(text: &str, editing: bool, command: &str, wrap: Wrap) -> Result<(St
 }
 
 /// Whether a key press clears the status note: a command or the start/end of a sequence does,
-/// plain typing (a key bound to nothing outside a sequence) does not. It clears before the
+/// plain typing (a key bound to nothing outside a sequence) and editing in the message box
+/// (cursor moves, deleting, a new line, pasting, formatting) do not. It clears before the
 /// action runs, so a note the action sets survives.
 fn clears_note(resolved: &Resolved, in_sequence: bool) -> bool {
+    use super::keymap::Action::*;
     match resolved {
+        Resolved::Action(Context::Composer, Newline | Bold | Italic | Strike | Code | DeleteWord | DeleteLine | LineStart | LineEnd | WordLeft | WordRight | Left | Right | Up | Down | Backspace | DeleteForward | Paste) => false,
         Resolved::Action(..) | Resolved::Pending => true,
         Resolved::None => in_sequence,
     }
@@ -664,8 +667,8 @@ impl App {
             Command::Dnd(action) => {
                 use super::commands::DndAction;
                 let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64();
-                let action = action.decided(self.ws.dnd.active(now));
-                let resume = self.ws.dnd.resume(now);
+                let action = action.decided(self.ws.dnd_active(now));
+                let resume = self.ws.dnd_resume(now);
                 let (client, tx) = (self.client.clone(), self.net.clone());
                 tokio::spawn(async move {
                     let done = async {
@@ -1803,8 +1806,10 @@ impl App {
         let Some(p) = self.prefs.as_mut() else { return };
         let Some(field) = p.selected_field(&self.keys) else { return };
         if field == super::prefs::Field::Notifications {
-            if let Some(command) = super::prefs::Prefs::pause_step(&self.ws, up) {
-                self.run_text(&command);
+            match super::prefs::Prefs::pause_step(&self.ws, up) {
+                Some(Ok(command)) => self.run_text(&command),
+                Some(Err(note)) => self.status = note,
+                None => {}
             }
             return;
         }
@@ -1974,11 +1979,12 @@ impl App {
     /// Change the notification schedule: shown at once, then written after any earlier change
     /// still on its way (`ScheduleQueue`).
     fn edit_schedule(&mut self, edits: Vec<slack_core::dnd::ScheduleEdit>) {
+        let before = self.ws.dnd.schedule.clone();
         if let Some(s) = self.ws.dnd.schedule.as_ref().and_then(|s| s.edited(&edits).ok()) {
             self.ws.dnd.schedule = Some(s);
         }
         self.status = "changing the notification schedule…".into();
-        if let Some(edits) = self.schedule_writes.push(edits) {
+        if let Some(edits) = self.schedule_writes.push(edits, before.as_ref()) {
             self.write_schedule(edits);
         }
     }
@@ -2572,7 +2578,9 @@ impl App {
     }
 
     /// A left click in the open details (false: not on a tab or row). A tab switches to it; a
-    /// member or pin row is selected and acted on as Enter does.
+    /// member or pin row is selected and acted on as Enter does. A row's click is remembered: the
+    /// second click of a double-click would otherwise close the profile card it opened (the card
+    /// doesn't cover the member names) or act under the pin's jump.
     fn click_details(&mut self, column: u16, row: u16) -> bool {
         let Some(d) = self.details.as_mut() else { return false };
         if let Some(n) = d.tab_at(column, row) {
@@ -2581,11 +2589,8 @@ impl App {
         }
         let Some(n) = d.row_at(column, row) else { return false };
         d.selected = n;
-        let pin = d.tab == super::details::Tab::Pins;
         self.details_enter();
-        if pin {
-            self.closing_click = Some((std::time::Instant::now(), column, row));
-        }
+        self.closing_click = Some((std::time::Instant::now(), column, row));
         true
     }
 
@@ -2841,7 +2846,7 @@ impl App {
             None => !self.offered(contexts, mode, &[prefix, &[c.key]].concat()).is_empty(),
         });
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64();
-        self.keys.follow_state(&mut children, self.ws.dnd.active(now));
+        self.keys.follow_state(&mut children, self.ws.dnd_active(now));
         children
     }
 
@@ -3997,15 +4002,21 @@ fn handle_main(app: &mut App, ev: Event) -> bool {
 struct ScheduleQueue {
     busy: bool,
     waiting: std::collections::VecDeque<Vec<slack_core::dnd::ScheduleEdit>>,
+    /// Slack's copy as last known (when the queue went busy, then as each write read it back):
+    /// shown again when a write fails and Slack can't be asked.
+    known: Option<slack_core::dnd::Schedule>,
 }
 
 impl ScheduleQueue {
-    /// Edits made: returned to be written now, or kept (None) while a write is in flight.
-    fn push(&mut self, edits: Vec<slack_core::dnd::ScheduleEdit>) -> Option<Vec<slack_core::dnd::ScheduleEdit>> {
+    /// Edits made, `shown` the schedule before them: returned to be written now, or kept (None)
+    /// while a write is in flight.
+    fn push(&mut self, edits: Vec<slack_core::dnd::ScheduleEdit>, shown: Option<&slack_core::dnd::Schedule>) -> Option<Vec<slack_core::dnd::ScheduleEdit>> {
         if self.busy {
             self.waiting.push_back(edits);
             return None;
         }
+        // Nothing in flight: what is shown is Slack's copy.
+        self.known = shown.cloned();
         self.busy = true;
         Some(edits)
     }
@@ -4019,6 +4030,16 @@ impl ScheduleQueue {
         let next = self.waiting.pop_front();
         self.busy = next.is_some();
         next
+    }
+
+    /// Slack's copy was read back after a write.
+    fn read(&mut self, slack: Option<&slack_core::dnd::Schedule>) {
+        self.known = slack.cloned();
+    }
+
+    /// Slack's copy as last known.
+    fn last_read(&self) -> Option<&slack_core::dnd::Schedule> {
+        self.known.as_ref()
     }
 
     /// The edits waiting their turn, in order.
@@ -4541,10 +4562,14 @@ fn handle_net(app: &mut App, msg: Net) {
                 app.ws.dnd.set_info(v);
                 app.dnd_refreshing = app.ws.dnd.stale(now);
             }
-            // Slack's copy, then the changes still waiting shown on top of it.
+            // Slack's copy (when it couldn't be read after a failure, the last one known), then the
+            // changes still waiting shown on top of it.
             if let Some(prefs) = &prefs {
                 let dnd: serde_json::Map<String, Value> = prefs.as_object().into_iter().flatten().filter(|(k, _)| k.starts_with("dnd_")).map(|(k, v)| (k.clone(), v.clone())).collect();
                 app.ws.apply_prefs(&Value::Object(dnd));
+                app.schedule_writes.read(app.ws.dnd.schedule.as_ref());
+            } else if error.is_some() {
+                app.ws.dnd.schedule = app.schedule_writes.last_read().cloned();
             }
             let dropped = if error.is_some() { app.schedule_writes.waiting().count() } else { 0 };
             let next = app.schedule_writes.done(error.is_none());
@@ -4569,7 +4594,7 @@ fn handle_net(app: &mut App, msg: Net) {
                     // The note once the last change is written.
                     if next.is_none() {
                         let format = app.ws.settings.time_format();
-                        let until = info.and_then(|_| app.ws.dnd.until(now)).and_then(|t| super::clock::until_label(t as i64, now as i64, format));
+                        let until = info.and_then(|_| app.ws.dnd_until(now)).and_then(|t| super::clock::until_label(t as i64, now as i64, format));
                         app.status = schedule_note(super::prefs::describe_schedule(app.ws.dnd.schedule.as_ref(), format, &super::prefs::schedule_zone(&app.ws)), until);
                     }
                 }
@@ -4587,7 +4612,7 @@ fn handle_net(app: &mut App, msg: Net) {
             app.status = match error {
                 Some(e) => format!("{} failed: {e}", if resumed { "resuming notifications" } else { "pausing notifications" }),
                 None => {
-                    let until = info.and_then(|_| app.ws.dnd.until(now)).and_then(|t| super::clock::until_label(t as i64, now as i64, app.ws.settings.time_format()));
+                    let until = info.and_then(|_| app.ws.dnd_until(now)).and_then(|t| super::clock::until_label(t as i64, now as i64, app.ws.settings.time_format()));
                     dnd_note(resumed, until)
                 }
             };
@@ -4913,7 +4938,7 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         mentions,
         others: super::others::label(&app.others.lock().unwrap_or_else(|e| e.into_inner()), app.workspace),
         availability: super::profile::availability(&app.ws, chrono::Utc::now().timestamp()),
-        paused: app.ws.dnd.active(chrono::Utc::now().timestamp() as f64),
+        paused: app.ws.dnd_active(chrono::Utc::now().timestamp() as f64),
         away: app.ws.presence.get(&app.ws.self_id) == Some(&false),
         live: app.connected,
         note,
@@ -5269,6 +5294,14 @@ mod tests {
         assert!(clears_note(&Resolved::Pending, false), "the leader");
         assert!(clears_note(&Resolved::None, true), "ends a sequence with its own note");
         assert!(!clears_note(&Resolved::None, false), "typing");
+        // Editing in the message box is typing too; sending, leaving and clearing the box are commands.
+        for a in [Action::Backspace, Action::Left, Action::Right, Action::Up, Action::Down, Action::WordLeft, Action::LineEnd, Action::DeleteWord, Action::DeleteForward, Action::Newline, Action::Paste, Action::Bold, Action::Code] {
+            assert!(!clears_note(&Resolved::Action(Context::Composer, a), false), "{a:?}");
+        }
+        for a in [Action::Send, Action::Leave, Action::ClearBox] {
+            assert!(clears_note(&Resolved::Action(Context::Composer, a), false), "{a:?}");
+        }
+        assert!(clears_note(&Resolved::Action(Context::Messages, Action::Up), false), "moving in the messages is a command");
         use super::note_clears;
         assert!(note_clears("left #general") && note_clears(""));
         assert!(!note_clears("uploading notes.txt…") && !note_clears("posting notes…"), "work still going on keeps its note");
@@ -5339,18 +5372,37 @@ mod tests {
     fn schedule_writes_go_in_order() {
         use slack_core::dnd::{ScheduleDays::*, ScheduleEdit::*};
         let mut q = super::ScheduleQueue::default();
-        assert_eq!(q.push(vec![Days(EveryDay)]), Some(vec![Days(EveryDay)]), "nothing in flight: written at once");
-        assert_eq!(q.push(vec![Days(Weekdays)]), None, "one in flight: it waits");
-        assert_eq!(q.push(vec![Days(Custom)]), None);
+        assert_eq!(q.push(vec![Days(EveryDay)], None), Some(vec![Days(EveryDay)]), "nothing in flight: written at once");
+        assert_eq!(q.push(vec![Days(Weekdays)], None), None, "one in flight: it waits");
+        assert_eq!(q.push(vec![Days(Custom)], None), None);
         assert_eq!(q.waiting().cloned().collect::<Vec<_>>(), [vec![Days(Weekdays)], vec![Days(Custom)]]);
         assert_eq!(q.done(true), Some(vec![Days(Weekdays)]), "then each in the order made");
         assert_eq!(q.done(true), Some(vec![Days(Custom)]));
         assert_eq!(q.done(true), None);
-        assert_eq!(q.push(vec![Days(Off)]), Some(vec![Days(Off)]), "idle again");
-        assert_eq!(q.push(vec![Days(EveryDay)]), None);
+        assert_eq!(q.push(vec![Days(Off)], None), Some(vec![Days(Off)]), "idle again");
+        assert_eq!(q.push(vec![Days(EveryDay)], None), None);
         assert_eq!(q.done(false), None, "after a failure what waits (made on top of it) is dropped");
         assert_eq!(q.waiting().count(), 0);
-        assert_eq!(q.push(vec![Days(Off)]), Some(vec![Days(Off)]));
+        assert_eq!(q.push(vec![Days(Off)], None), Some(vec![Days(Off)]));
+    }
+
+    #[test]
+    fn a_failed_write_shows_slacks_copy_again() {
+        use slack_core::dnd::{Schedule, ScheduleDays::*, ScheduleEdit::*};
+        let weekdays = Schedule::from_prefs(&serde_json::json!({"dnd_enabled": true, "dnd_days": "weekdays", "dnd_end_hour": "10:00", "dnd_start_hour": "18:00"}));
+        let every_day = Schedule { days: EveryDay, ..weekdays.clone() };
+        let mut q = super::ScheduleQueue::default();
+        assert_eq!(q.push(vec![Days(EveryDay)], Some(&weekdays)), Some(vec![Days(EveryDay)]));
+        assert_eq!(q.last_read(), Some(&weekdays), "Slack's copy when the queue went busy");
+        assert_eq!(q.push(vec![Days(Custom)], Some(&every_day)), None);
+        assert_eq!(q.last_read(), Some(&weekdays), "edits shown on top of it don't count");
+        // A write answered: Slack's copy read back is the one to show if a later write fails unread.
+        q.read(Some(&every_day));
+        assert_eq!(q.done(true), Some(vec![Days(Custom)]));
+        assert_eq!(q.last_read(), Some(&every_day));
+        assert_eq!(q.done(false), None);
+        assert_eq!(q.push(vec![Days(Off)], None), Some(vec![Days(Off)]));
+        assert_eq!(q.last_read(), None, "not known: nothing was shown");
     }
 
     #[test]

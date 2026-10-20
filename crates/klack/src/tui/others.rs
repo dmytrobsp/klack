@@ -196,7 +196,7 @@ async fn watch_hidden(index: usize, client: &Client, label: &str, shown: &Atomic
         };
         let Some(((title, body), target)) = note else {
             if let Some((channel, _)) = &fx.incoming {
-                tracing::debug!(workspace = index + 1, channel, dnd = ws.dnd.active(now), "message from another workspace: no notification");
+                tracing::debug!(workspace = index + 1, channel, dnd = ws.dnd_active(now), "message from another workspace: no notification");
             }
             continue;
         };
