@@ -212,6 +212,10 @@ struct App {
     seeking: Option<(String, String)>,
     /// A link (or a notification) started the seek: a message that isn't there says so.
     seek_from_link: bool,
+    /// The link's hit, selected once the seek finds its message (never when it is missing).
+    seek_hit: Option<super::search::Hit>,
+    /// The seek fetched the conversation's newest page again (once, before saying a newer message is missing).
+    seek_refreshed: bool,
     /// A thread reply a link leads to (channel, parent, reply): said to be missing once the thread is in without it.
     link_reply: Option<(String, String, String)>,
     /// A huddle invitation ringing now.
@@ -1506,7 +1510,7 @@ impl App {
     /// `open_hit`; `from_link`: a link (or a notification) leads there, so a missing message says so.
     fn open_hit_from(&mut self, hit: super::search::Hit, from_link: bool) {
         self.seek_from_link = from_link;
-        self.link_reply = None;
+        (self.seek_hit, self.seek_refreshed, self.link_reply) = (None, false, None);
         if self.current.as_deref() == Some(hit.channel.as_str()) {
             self.show_hit(hit);
         } else {
@@ -1519,7 +1523,17 @@ impl App {
     fn show_hit(&mut self, hit: super::search::Hit) {
         let top = hit.thread_ts.clone().unwrap_or_else(|| hit.ts.clone());
         self.seeking = Some((hit.channel.clone(), top));
-        self.continue_seek();
+        let seek = self.continue_seek();
+        if select_now(self.seek_from_link, seek) {
+            self.select_hit(hit);
+        } else if seek.is_none_or(|s| matches!(s, Seek::More | Seek::Refresh)) {
+            // A link's message: selected once the seek finds it.
+            self.seek_hit = Some(hit);
+        }
+    }
+
+    /// Select a hit's message (the reply in its open thread).
+    fn select_hit(&mut self, hit: super::search::Hit) {
         match hit.thread_ts {
             Some(parent) => {
                 self.messages.selected = Some(parent.clone());
@@ -1539,54 +1553,75 @@ impl App {
 
     /// Page the history back until the message being sought is loaded (the selection then
     /// shows it); stop at the beginning of the conversation or when it is no longer shown.
-    fn continue_seek(&mut self) {
-        let Some((channel, ts)) = self.seeking.clone() else { return };
+    /// What it did: None while it waits for the history (or has nothing to seek).
+    fn continue_seek(&mut self) -> Option<Seek> {
+        let (channel, ts) = self.seeking.clone()?;
         if self.current.as_deref() != Some(channel.as_str()) {
             // Not shown yet (the conversation is being switched to) or left: wait, or drop it.
             if self.pending_hit.is_none() {
                 self.seeking = None;
+                self.seek_hit = None;
             }
-            return;
+            return None;
         }
-        let Some(tl) = self.ws.timelines.get(&channel) else { return };
+        let tl = self.ws.timelines.get(&channel)?;
         if !tl.loaded || tl.loading {
-            return;
+            return None;
         }
         let found = tl.index_of(&ts).is_some();
         let older = tl.messages.first().is_some_and(|m| seek_older(&ts, &m.ts));
+        let newer = tl.messages.last().is_none_or(|m| seek_older(&m.ts, &ts));
         let (has_more, n) = (tl.has_more, tl.messages.len());
-        match seek_step(found, older, has_more, self.seek_from_link) {
+        let step = seek_step(Sought { found, older, newer, has_more }, self.seek_from_link, self.seek_refreshed);
+        match step {
             Seek::Done => {
                 self.seeking = None;
                 if self.status.starts_with("looking for the message") {
                     self.status.clear();
+                }
+                if let Some(hit) = self.seek_hit.take() {
+                    self.select_hit(hit);
                 }
             }
             Seek::More => {
                 self.status = format!("looking for the message… ({n} loaded)");
                 self.load_history(&channel, true);
             }
+            Seek::Refresh => {
+                self.seek_refreshed = true;
+                self.status = format!("looking for the message… ({n} loaded)");
+                self.refresh_history(&channel);
+            }
             Seek::Missing(note) => {
-                self.seeking = None;
+                // A link's message was never selected: the conversation stays as it is.
+                (self.seeking, self.seek_hit, self.link_reply) = (None, None, None);
                 self.status = note.into();
-                if self.seek_from_link {
-                    // Stay in the conversation, on nothing that isn't there.
-                    self.link_reply = None;
-                    if self.messages.selected.as_deref() == Some(ts.as_str()) {
-                        self.messages.selected = None;
-                    }
-                    if self.thread.as_ref().is_some_and(|(c, t)| *c == channel && *t == ts) {
-                        self.close_thread();
-                    }
-                }
             }
         }
+        Some(step)
+    }
+
+    /// Fetch the newest page of `channel` again, though its history is loaded (merged with what is there).
+    fn refresh_history(&mut self, channel: &str) {
+        let tl = self.ws.timelines.entry(channel.to_string()).or_default();
+        if tl.loading {
+            return;
+        }
+        tl.loading = true;
+        let (client, tx, channel) = (self.client.clone(), self.net.clone(), channel.to_string());
+        tokio::spawn(async move {
+            let msg = match client.history(&channel, None, 50).await {
+                Ok(page) => Net::History { channel, page, older: false },
+                Err(e) => Net::Error(format!("history failed: {e}")),
+            };
+            let _ = tx.send(msg);
+        });
     }
 
     /// Esc in the messages pane: stop paging back for a message.
     fn stop_seek(&mut self) {
         if self.seeking.take().is_some() {
-            self.pending_hit = None;
+            (self.pending_hit, self.seek_hit, self.link_reply) = (None, None, None);
             self.status = "stopped looking for the message".into();
         }
     }
@@ -3245,18 +3280,38 @@ const LINK_GONE: &str = "that message isn't there any more, or you can't see it"
 
 /// What a seek does once the history has come: stop there (the message is loaded, or a search's is newer than the
 /// oldest loaded), page further back, or stop and say the message is missing.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Seek {
     Done,
     More,
+    /// Fetch the newest page again first (what is loaded may be from a while ago).
+    Refresh,
     Missing(&'static str),
 }
 
-/// The stop rule of a seek: the message is `found` in what is loaded, or `older` than all of it with `has_more` to
-/// page; `from_link`: a link started it (a search's hit newer than the loaded history is left alone).
-fn seek_step(found: bool, older: bool, has_more: bool, from_link: bool) -> Seek {
+/// What is loaded of a conversation, for the message sought: it is `found`, `older` than all of it (`has_more` to
+/// page) or `newer` than all of it (or nothing is loaded).
+#[derive(Debug, Clone, Copy)]
+struct Sought {
+    found: bool,
+    older: bool,
+    newer: bool,
+    has_more: bool,
+}
+
+/// Whether a hit's message is selected (and its thread opened) now, `seek` what its seek did first (None: waiting
+/// for the history): a search's at once, as always; a link's only once it is found.
+fn select_now(from_link: bool, seek: Option<Seek>) -> bool {
+    !from_link || seek == Some(Seek::Done)
+}
+
+/// The stop rule of a seek, from what is loaded; `from_link`: a link started it (a search's hit newer than the
+/// loaded history is left alone); `refreshed`: the newest page was fetched again since it started.
+fn seek_step(sought: Sought, from_link: bool, refreshed: bool) -> Seek {
+    let Sought { found, older, newer, has_more } = sought;
     match (found, older, has_more) {
         (true, _, _) => Seek::Done,
+        (false, false, _) if from_link && newer && !refreshed => Seek::Refresh,
         (false, false, _) if from_link => Seek::Missing(LINK_GONE),
         (false, false, _) => Seek::Done,
         (false, true, true) => Seek::More,
@@ -3525,6 +3580,8 @@ async fn run_workspace(
         ringing: None,
         seeking: None,
         seek_from_link: false,
+        seek_hit: None,
+        seek_refreshed: false,
         link_reply: None,
         drafts: super::drafts::load(&client.session.team_id, &client.session.user_id),
         player: None,
@@ -5806,18 +5863,36 @@ mod tests {
 
     #[test]
     fn a_seek_that_reaches_the_start_says_so() {
-        use super::{LINK_GONE, Seek, seek_step};
-        // (found, older than the loaded history, more history to page, started by a link)
-        assert_eq!(seek_step(true, false, true, true), Seek::Done);
-        assert_eq!(seek_step(false, true, true, true), Seek::More, "far back: paged for");
-        assert_eq!(seek_step(false, true, false, true), Seek::Missing(LINK_GONE), "the start of the history");
-        assert_eq!(seek_step(false, false, true, true), Seek::Missing(LINK_GONE), "deleted: inside what is loaded, not there");
+        use super::{LINK_GONE, Seek, Sought, seek_step};
+        let s = |found, older, newer, has_more| Sought { found, older, newer, has_more };
+        // (what is loaded; started by a link; the newest page fetched again since)
+        assert_eq!(seek_step(s(true, false, false, true), true, false), Seek::Done);
+        assert_eq!(seek_step(s(false, true, false, true), true, false), Seek::More, "far back: paged for");
+        assert_eq!(seek_step(s(false, true, false, false), true, false), Seek::Missing(LINK_GONE), "the start of the history");
+        assert_eq!(seek_step(s(false, false, false, true), true, false), Seek::Missing(LINK_GONE), "deleted: inside what is loaded, not there");
         assert_eq!(LINK_GONE, "that message isn't there any more, or you can't see it");
+        // Newer than anything loaded (a timeline loaded a while ago): the newest page is fetched once before judging.
+        assert_eq!(seek_step(s(false, false, true, true), true, false), Seek::Refresh);
+        assert_eq!(seek_step(s(false, false, true, true), true, true), Seek::Missing(LINK_GONE), "still not there");
+        assert_eq!(seek_step(s(true, false, false, true), true, true), Seek::Done);
         // Search behaves as before.
-        assert_eq!(seek_step(true, false, true, false), Seek::Done);
-        assert_eq!(seek_step(false, false, true, false), Seek::Done);
-        assert_eq!(seek_step(false, true, true, false), Seek::More);
-        assert_eq!(seek_step(false, true, false, false), Seek::Missing("that message is no longer in this conversation's history"));
+        assert_eq!(seek_step(s(true, false, false, true), false, false), Seek::Done);
+        assert_eq!(seek_step(s(false, false, false, true), false, false), Seek::Done);
+        assert_eq!(seek_step(s(false, false, true, true), false, false), Seek::Done);
+        assert_eq!(seek_step(s(false, true, false, true), false, false), Seek::More);
+        assert_eq!(seek_step(s(false, true, false, false), false, false), Seek::Missing("that message is no longer in this conversation's history"));
+    }
+
+    #[test]
+    fn a_link_selects_its_message_only_once_found() {
+        use super::{LINK_GONE, Seek, select_now};
+        for seek in [None, Some(Seek::More), Some(Seek::Done), Some(Seek::Missing("that message is no longer in this conversation's history"))] {
+            assert!(select_now(false, seek), "a search hit: at once, as before ({seek:?})");
+        }
+        assert!(select_now(true, Some(Seek::Done)), "found");
+        for seek in [None, Some(Seek::More), Some(Seek::Refresh), Some(Seek::Missing(LINK_GONE))] {
+            assert!(!select_now(true, seek), "a link's: not before it is found, never when missing ({seek:?})");
+        }
     }
 
     #[test]

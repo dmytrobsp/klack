@@ -168,6 +168,10 @@ impl MessagePane {
 
     /// The link into the profile's workspaces drawn at a terminal position.
     pub fn link_at(&self, column: u16, row: u16) -> Option<AppLink> {
+        // Only where the pane is drawn now (the thread or the huddle view may have taken its place since).
+        if !self.area.contains((column, row).into()) {
+            return None;
+        }
         self.links.iter().find(|(at, _)| at.contains((column, row).into())).map(|(_, link)| link.clone())
     }
 
@@ -1088,6 +1092,11 @@ mod tests {
         let (ex, ey) = cell("\x1b]8;;https://x.y/?a=1&b=2\x1b\\");
         assert_eq!(pane.link_at(ex, ey), None, "an external link opens in the browser");
         assert_eq!(pane.link_at(0, y), None, "the border");
+        // Not drawn this time (the thread or the huddle view in its place): nothing there to click.
+        let drawn = pane.area;
+        pane.area = Rect::default();
+        assert_eq!(pane.link_at(x, y), None, "a link from an earlier draw");
+        pane.area = drawn;
         // The URL under both is Slack's own, unescaped once.
         assert!(buf[(x, y)].symbol().contains(&format!("\x1b]8;;{url}\x1b\\")), "{:?}", buf[(x, y)].symbol());
         let lines = message_body(&here, &t.messages[0], 56, false, &|_, _| None).0;
