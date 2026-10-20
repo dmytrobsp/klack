@@ -91,9 +91,9 @@ pub struct MessagePane {
     shown: Option<String>,
     /// Message ts owning each visible row of the last draw (for clicks).
     rows: Vec<Option<String>>,
-    /// Where links were drawn at the last draw (for clicks and the hover note): the address and, for a link into the
-    /// profile's workspaces, where it goes.
-    links: Vec<(Rect, String, Option<AppLink>)>,
+    /// Where links were drawn at the last draw (for clicks and the hover note): the address, for a link into the
+    /// profile's workspaces where it goes, and whether its author is worth asking for.
+    links: Vec<(Rect, String, Option<AppLink>, bool)>,
     /// Thread mode: show the parent and every reply instead of top-level messages.
     pub thread: bool,
     /// Message under the mouse pointer.
@@ -167,9 +167,24 @@ impl MessagePane {
         self.rows.get((row - inner.y) as usize).cloned().flatten()
     }
 
-    /// The links into the profile's workspaces drawn now.
-    pub fn app_links(&self) -> impl Iterator<Item = &AppLink> {
-        self.links.iter().filter_map(|(_, _, app)| app.as_ref())
+    /// The links to messages drawn now whose author is worth asking for (their message's preview does not name them).
+    pub fn authors_wanted(&self) -> impl Iterator<Item = &AppLink> {
+        self.links.iter().filter(|l| l.3).filter_map(|(_, _, app, _)| app.as_ref())
+    }
+
+    #[cfg(test)]
+    pub fn app_links_drawn(&self) -> usize {
+        let mut drawn: Vec<&AppLink> = self.links.iter().filter_map(|l| l.2.as_ref()).collect();
+        drawn.dedup();
+        drawn.len()
+    }
+
+    /// The pane is not drawn now (the thread or the huddle view in its place, or the thread closed): nothing of it is on
+    /// screen for the mouse or the author lookups.
+    pub fn hide(&mut self) {
+        self.area = Rect::default();
+        self.links.clear();
+        self.hover = None;
     }
 
     /// The link into the profile's workspaces drawn at a terminal position.
@@ -184,7 +199,7 @@ impl MessagePane {
         if !self.area.contains((column, row).into()) {
             return None;
         }
-        self.links.iter().find(|(at, ..)| at.contains((column, row).into())).map(|(_, url, app)| (url.clone(), app.clone()))
+        self.links.iter().find(|(at, ..)| at.contains((column, row).into())).map(|(_, url, app, _)| (url.clone(), app.clone()))
     }
 
     /// Where a menu for a message opens: its first row on screen, past the gutter (the pane's
@@ -413,7 +428,7 @@ impl MessagePane {
                 let x = inner.x + spot.col;
                 let width = spot.width.min(inner.right().saturating_sub(x));
                 hyperlink(f.buffer_mut(), x, y, width, &spot.url);
-                self.links.push((Rect { x, y, width, height: 1 }, spot.url.clone(), spot.app));
+                self.links.push((Rect { x, y, width, height: 1 }, spot.url.clone(), spot.app, spot.wants_author));
             }
         }
         if let (Some(top), Some(bottom)) = (on_screen.first().and_then(index), on_screen.last().and_then(index)) {
@@ -621,6 +636,8 @@ pub struct LinkSpot {
     pub width: u16,
     pub url: String,
     pub app: Option<AppLink>,
+    /// A link to a message whose author is worth asking for.
+    pub wants_author: bool,
 }
 
 /// Where the links of the messages in `lines` (`owners`: whose each line is) are: the
@@ -647,13 +664,14 @@ pub fn link_spots(here: &Here, messages: &[Message], lines: &[Line], owners: &[O
                 }
             }
             let mut links = links.into_iter().map(|(url, shown, app)| (url, app, letters(&shown))).peekable();
+            let wants = |app: &Option<AppLink>| app.as_ref().is_some_and(|a| super::applink::wants_author(a, &here));
             'lines: for (k, line) in lines[n..end].iter().enumerate() {
                 let mut col = 0u16;
                 for span in &line.spans {
                     let width = unicode_width::UnicodeWidthStr::width(span.content.as_ref()) as u16;
                     if link_fg.contains(&span.style.fg) && span.style.add_modifier.contains(Modifier::UNDERLINED) {
                         let Some((url, app, left)) = links.peek_mut() else { break 'lines };
-                        out.push(LinkSpot { line: n + k, col, width, url: url.clone(), app: app.clone() });
+                        out.push(LinkSpot { line: n + k, col, width, url: url.clone(), app: app.clone(), wants_author: wants(app) });
                         *left = left.saturating_sub(letters(&span.content));
                         if *left == 0 {
                             links.next();
@@ -1736,5 +1754,34 @@ mod tests {
         let only_fallback = serde_json::json!({"fallback": "[a link preview]"});
         let m = Message { attachments: vec![only_fallback], ..msg("2.0", "U1", "") };
         assert!(plain(&message_body(&Here::alone(&ws), &m, 60, false, &|_, _| None).0).iter().any(|l| l.contains("[a link preview]")));
+    }
+
+    #[test]
+    fn only_links_drawn_without_a_preview_want_their_author() {
+        let mut ws = Workspace::default();
+        ws.conversations.insert("C1".into(), slack_core::types::Conversation { id: "C1".into(), name: "deploys".into(), is_channel: true, ..Default::default() });
+        let (bare, previewed) = ("https://acme.slack.com/archives/C1/p1729440000000100", "https://acme.slack.com/archives/C1/p1729440000000200");
+        let mut t = Timeline { loaded: true, ..Default::default() };
+        t.upsert(msg("1729440000.000500", "U2", &format!("see <{bare}>")));
+        let mut m = msg("1729440000.000600", "U2", &format!("and <{previewed}>"));
+        m.attachments = vec![serde_json::json!({"from_url": previewed, "author_name": "Bob", "is_msg_unfurl": true})];
+        t.upsert(m);
+        let workspaces = vec![("https://acme.slack.com/".to_string(), "T1".to_string())];
+        let names = vec!["acme".to_string()];
+        let authors = crate::tui::applink::Authors::new();
+        let here = Here { ws: &ws, workspaces: &workspaces, names: &names, shown: 0, authors: &authors, message: None };
+        let media = Media::with(ratatui_image::picker::Picker::halfblocks());
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(70, 12)).unwrap();
+        let mut pane = MessagePane::default();
+        terminal.draw(|f| pane.draw(f, f.area(), &here, "t", Some(&t), true, &media)).unwrap();
+        assert_eq!(pane.app_links_drawn(), 2, "both drawn");
+        let mut wanted: Vec<_> = pane.authors_wanted().cloned().collect();
+        wanted.dedup();
+        assert_eq!(wanted, [crate::tui::applink::parse(bare).unwrap()], "the previewed link names its author already");
+        // Hidden (the thread or the huddle view in its place, or the thread closed): nothing of it is drawn any more.
+        pane.hide();
+        assert_eq!(pane.authors_wanted().count(), 0);
+        assert_eq!(pane.app_links_drawn(), 0);
+        assert_eq!(pane.area, Rect::default());
     }
 }

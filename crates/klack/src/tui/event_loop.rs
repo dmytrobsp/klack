@@ -99,14 +99,16 @@ enum Net {
     SnippetText { id: String, result: Result<String, String> },
     /// A full-size image for the viewer.
     FullImage { id: String, result: Result<image::DynamicImage, String> },
-    /// A linked message's author (None: no such message, or no name for it).
-    LinkAuthor { channel: String, ts: String, message: Option<slack_core::types::Message> },
+    /// A linked message's author: Slack's answer (None: no such message), or why there is none (the request failed).
+    LinkAuthor { channel: String, ts: String, result: Result<Option<slack_core::types::Message>, String> },
     /// A thumbnail finished loading.
     Thumb { id: String, result: Result<ratatui_image::sliced::SlicedProtocol, String> },
     /// A permalink to copy.
     Permalink(String),
     /// An optimistic change failed: put the original message back.
     Restore { channel: String, message: slack_core::types::Message, error: String },
+    /// A history request failed: the conversation can be asked again.
+    HistoryFailed { channel: String, error: String },
     Error(String),
 }
 
@@ -357,7 +359,7 @@ impl App {
         tokio::spawn(async move {
             let msg = match client.history(&channel, latest.as_deref(), 50).await {
                 Ok(page) => Net::History { channel, page, older },
-                Err(e) => Net::Error(format!("history failed: {e}")),
+                Err(e) => Net::HistoryFailed { channel, error: e.to_string() },
             };
             let _ = tx.send(msg);
         });
@@ -1583,7 +1585,8 @@ impl App {
         match step {
             Seek::Done => {
                 self.seeking = None;
-                if self.status.starts_with("looking for the message") {
+                let seeking = super::i18n::tr(SEEKING);
+                if seeking.split("{}").next().is_some_and(|p| !p.is_empty() && self.status.starts_with(p)) {
                     self.status.clear();
                 }
                 if let Some(hit) = self.seek_hit.take() {
@@ -1591,18 +1594,18 @@ impl App {
                 }
             }
             Seek::More => {
-                self.status = format!("looking for the message… ({n} loaded)");
+                self.status = super::i18n::tr(SEEKING).replace("{}", &n.to_string());
                 self.load_history(&channel, true);
             }
             Seek::Refresh => {
                 self.seek_refreshed = true;
-                self.status = format!("looking for the message… ({n} loaded)");
+                self.status = super::i18n::tr(SEEKING).replace("{}", &n.to_string());
                 self.refresh_history(&channel);
             }
             Seek::Missing(note) => {
                 // A link's message was never selected: the conversation stays as it is.
                 (self.seeking, self.seek_hit, self.link_reply) = (None, None, None);
-                self.status = note.into();
+                self.status = super::i18n::tr(note).into_owned();
             }
         }
         Some(step)
@@ -1619,7 +1622,7 @@ impl App {
         tokio::spawn(async move {
             let msg = match client.history(&channel, None, 50).await {
                 Ok(page) => Net::History { channel, page, older: false },
-                Err(e) => Net::Error(format!("history failed: {e}")),
+                Err(e) => Net::HistoryFailed { channel, error: e.to_string() },
             };
             let _ = tx.send(msg);
         });
@@ -1629,7 +1632,7 @@ impl App {
     fn stop_seek(&mut self) {
         if self.seeking.take().is_some() {
             (self.pending_hit, self.seek_hit, self.link_reply) = (None, None, None);
-            self.status = "stopped looking for the message".into();
+            self.status = super::i18n::tr(SEEK_STOPPED).into_owned();
         }
     }
 
@@ -1640,7 +1643,7 @@ impl App {
         self.link_reply = None;
         if tl.index_of(&reply).is_none() && self.thread.as_ref().is_some_and(|(c, t)| *c == channel && *t == parent) {
             self.thread_pane.selected = None;
-            self.status = LINK_GONE.into();
+            self.status = super::i18n::tr(LINK_GONE).into_owned();
         }
     }
 
@@ -1706,7 +1709,7 @@ impl App {
         use super::open::Thing;
         let carrier = self.ws.timelines.values().chain(self.ws.threads.values()).flat_map(|t| t.messages.iter()).find(|m| m.files.iter().any(|f| f.id == id));
         let Some(files) = carrier.map(|m| m.files.clone()) else {
-            self.status = "klack can't show that file here".into();
+            self.status = super::i18n::tr(FILE_NOT_SHOWN).into_owned();
             return;
         };
         let Some(file) = files.iter().find(|f| f.id == id).cloned() else { return };
@@ -1720,7 +1723,7 @@ impl App {
         } else if file.is_snippet() {
             self.open_thing("", Thing::Snippet(file));
         } else {
-            self.status = "klack can't show that file here".into();
+            self.status = super::i18n::tr(FILE_NOT_SHOWN).into_owned();
         }
     }
 
@@ -3068,27 +3071,32 @@ impl App {
         });
     }
 
-    /// Ask for the authors of linked messages that were drawn without one (this workspace's links only), a few at a time.
+    /// Ask for the authors of linked messages that are drawn now without one (this workspace's links only), a few at a
+    /// time.
     fn request_authors(&mut self) {
         let shown = self.workspace;
         let wanted: Vec<_> = self
             .messages
-            .app_links()
-            .chain(self.thread_pane.app_links())
+            .authors_wanted()
+            .chain(self.thread_pane.authors_wanted())
             .filter(|l| super::applink::workspace_of(l, &self.addresses, shown) == Some(shown))
             .filter_map(|l| match &l.target {
                 super::applink::Target::Message { channel, ts, thread_ts } => Some((channel.clone(), ts.clone(), thread_ts.clone())),
                 _ => None,
             })
             .collect();
-        for (channel, ts, thread_ts) in wanted {
-            self.authors.want(&channel, &ts, thread_ts.as_deref());
+        for (channel, ts, thread_ts) in &wanted {
+            self.authors.want(channel, ts, thread_ts.as_deref());
         }
-        for (channel, ts, _) in self.authors.next_requests() {
+        for (channel, ts, _) in self.authors.next_requests(&wanted, std::time::Instant::now()) {
+            tracing::debug!("link author: conversations.replies for {channel} {ts}");
             let (client, tx) = (self.client.clone(), self.net.clone());
             tokio::spawn(async move {
-                let message = client.message_at(&channel, &ts).await.ok().flatten();
-                let _ = tx.send(Net::LinkAuthor { channel, ts, message });
+                let result = match client.message_at(&channel, &ts).await {
+                    Err(e) if slack_core::api::is_unanswered(&e) => Err(format!("{e:#}")),
+                    other => Ok(other.ok().flatten()),
+                };
+                let _ = tx.send(Net::LinkAuthor { channel, ts, result });
             });
         }
     }
@@ -3317,10 +3325,35 @@ fn thread_mark_target(t: &super::state::Timeline, parent: &str) -> Option<String
 /// How far ← / → jump in a video, in seconds.
 const SEEK_STEP: f64 = 10.0;
 
-/// Whether a message at `ts` lies before the oldest loaded one (`first`): Slack timestamps
-/// compare as numbers.
 /// The note when the message a link points to can't be found.
 const LINK_GONE: &str = "that message isn't there any more, or you can't see it";
+
+/// The note when a search's message is older than the conversation's history.
+const HISTORY_GONE: &str = "that message is no longer in this conversation's history";
+
+/// The note when the conversation a link points to can't be found.
+const CONVERSATION_GONE: &str = "that conversation isn't there any more, or you can't see it";
+
+/// The note while a seek pages back (`{}`: how many messages are loaded).
+const SEEKING: &str = "looking for the message… ({} loaded)";
+
+/// The note when Esc stops a seek.
+const SEEK_STOPPED: &str = "stopped looking for the message";
+
+/// The note when a file link's file is not one klack shows.
+const FILE_NOT_SHOWN: &str = "klack can't show that file here";
+
+/// The status notes of links into klack, for `ctl locale-template`.
+pub const LINK_NOTES: &[&str] = &[LINK_GONE, HISTORY_GONE, CONVERSATION_GONE, SEEKING, SEEK_STOPPED, FILE_NOT_SHOWN, super::applink::OPENS_IN_KLACK];
+
+/// A history request for a conversation (`tl`) failed: it may be asked again (no longer loading). The note to show:
+/// a link's seek in it (`seeking`) ends with its not-found note, anything else says what failed.
+fn history_failed(tl: Option<&mut super::state::Timeline>, seeking: bool, from_link: bool, error: &str) -> String {
+    if let Some(tl) = tl {
+        tl.loading = false;
+    }
+    if seeking && from_link { super::i18n::tr(LINK_GONE).into_owned() } else { format!("history failed: {error}") }
+}
 
 /// What a seek does once the history has come: stop there (the message is loaded, or a search's is newer than the
 /// oldest loaded), page further back, or stop and say the message is missing.
@@ -3360,7 +3393,7 @@ fn seek_step(sought: Sought, from_link: bool, refreshed: bool) -> Seek {
         (false, false, _) => Seek::Done,
         (false, true, true) => Seek::More,
         (false, true, false) if from_link => Seek::Missing(LINK_GONE),
-        (false, true, false) => Seek::Missing("that message is no longer in this conversation's history"),
+        (false, true, false) => Seek::Missing(HISTORY_GONE),
     }
 }
 
@@ -3372,6 +3405,8 @@ fn hit_of(target: super::applink::Target) -> Option<super::search::Hit> {
     }
 }
 
+/// Whether a message at `ts` lies before the oldest loaded one (`first`): Slack timestamps
+/// compare as numbers.
 fn seek_older(ts: &str, first: &str) -> bool {
     match (ts.parse::<f64>(), first.parse::<f64>()) {
         (Ok(a), Ok(b)) => a < b,
@@ -5021,10 +5056,16 @@ fn handle_net(app: &mut App, msg: Net) {
                 app.sidebar.rebuild(&app.ws);
             }
         }
-        Net::LinkAuthor { channel, ts, message } => {
-            let name = message.and_then(|m| super::applink::author_name(&app.ws, &m));
-            app.authors.finish(&channel, &ts, name);
-        }
+        Net::LinkAuthor { channel, ts, result } => match result {
+            Ok(message) => {
+                let name = message.and_then(|m| super::applink::author_name(&app.ws, &m));
+                app.authors.finish(&channel, &ts, name);
+            }
+            Err(e) => {
+                tracing::debug!("link author for {channel} {ts}: {e}");
+                app.authors.fail(&channel, &ts, std::time::Instant::now());
+            }
+        },
         Net::Replies { channel, ts, page } => {
             let tl = app.ws.threads.entry(super::state::thread_key(&channel, &ts)).or_default();
             for m in page.messages {
@@ -5045,10 +5086,11 @@ fn handle_net(app: &mut App, msg: Net) {
                 if let Err(e) = other {
                     tracing::debug!("conversations.info for a link: {e}");
                 }
-                app.status = match target {
-                    super::applink::Target::Conversation { .. } => "that conversation isn't there any more, or you can't see it".into(),
-                    _ => LINK_GONE.into(),
+                let note = match target {
+                    super::applink::Target::Conversation { .. } => CONVERSATION_GONE,
+                    _ => LINK_GONE,
                 };
+                app.status = super::i18n::tr(note).into_owned();
             }
         },
         Net::FileDone(message) => app.status = message,
@@ -5311,6 +5353,15 @@ fn handle_net(app: &mut App, msg: Net) {
             }
             app.status = error;
         }
+        Net::HistoryFailed { channel, error } => {
+            app.loading = false;
+            let seeking = app.seeking.as_ref().is_some_and(|(c, _)| *c == channel);
+            app.status = history_failed(app.ws.timelines.get_mut(&channel), seeking, app.seek_from_link, &error);
+            if seeking {
+                // The seek ends here (a link's message never selected), as when the message is missing.
+                (app.seeking, app.seek_hit, app.link_reply) = (None, None, None);
+            }
+        }
         Net::Error(e) => {
             app.loading = false;
             app.status = e;
@@ -5430,17 +5481,18 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         app.thread_pane.draw(f, pane, &here, &title, timeline, app.focus == Focus::Thread, &app.media);
         app.thread_composer_area = comp;
         draw_composer(f, comp, app, true);
+    } else {
+        // No thread drawn (closed, or none open): its links from an earlier draw are gone.
+        app.thread_pane.hide();
     }
 
     if alone {
         // Nothing of the message pane is on screen, so the mouse must not find it.
-        app.messages.area = Default::default();
-        app.messages.hover = None;
+        app.messages.hide();
         app.composer_area = Default::default();
     } else if let (Some(view), Some(call)) = (app.huddle_view.as_mut(), &app.call) {
         // Nothing of the message pane is on screen, so the mouse must not find it.
-        app.messages.area = Default::default();
-        app.messages.hover = None;
+        app.messages.hide();
         app.composer_area = Default::default();
         view.draw(f, main, call, &app.ws, &app.media);
     } else {
@@ -5909,6 +5961,18 @@ mod tests {
         for room in 14..70 {
             assert!(reply_title(true, "Alt+A", room).chars().count() <= room);
         }
+    }
+
+    #[test]
+    fn a_failed_history_request_can_be_made_again() {
+        use super::{LINK_GONE, history_failed};
+        let mut tl = crate::tui::state::Timeline { loading: true, loaded: true, ..Default::default() };
+        assert_eq!(history_failed(Some(&mut tl), true, true, "conversations.history: request failed"), LINK_GONE, "a link's seek ends with its note");
+        assert!(!tl.loading, "not loading any more: the conversation pages back again");
+        tl.loading = true;
+        assert_eq!(history_failed(Some(&mut tl), true, false, "conversations.history: ratelimited"), "history failed: conversations.history: ratelimited", "a search's says what failed");
+        assert!(!tl.loading);
+        assert_eq!(history_failed(None, false, true, "x"), "history failed: x", "not the conversation sought");
     }
 
     #[test]

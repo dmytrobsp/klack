@@ -25,6 +25,15 @@ pub fn is_signed_out(e: &anyhow::Error) -> bool {
     e.downcast_ref::<ApiError>().is_some_and(|a| ["invalid_auth", "not_authed", "token_revoked", "account_inactive"].contains(&a.error.as_str()))
 }
 
+/// Whether `e` says nothing about what was asked for: the request failed (the network, rate limits, Slack's own
+/// trouble) or the session has ended, as opposed to Slack's answer about it (`channel_not_found`, `thread_not_found`, …).
+pub fn is_unanswered(e: &anyhow::Error) -> bool {
+    match e.downcast_ref::<ApiError>() {
+        Some(a) => is_signed_out(e) || ["ratelimited", "internal_error", "fatal_error", "service_unavailable", "request_timeout"].contains(&a.error.as_str()),
+        None => true,
+    }
+}
+
 /// Whether Slack has answered that a client's session has ended, shared by the client's clones.
 #[derive(Clone, Default)]
 struct SignedOutFlag(Arc<AtomicBool>);
@@ -642,6 +651,18 @@ mod tests {
         assert!(super::is_signed_out(&api("invalid_auth").context("client.userBoot")));
         assert!(!super::is_signed_out(&api("ratelimited")));
         assert!(!super::is_signed_out(&anyhow::anyhow!("error sending request for url (https://acme.slack.com/api/auth.test): connection refused")));
+    }
+
+    #[test]
+    fn unanswered_is_told_from_an_answer() {
+        let api = |error: &str| anyhow::Error::from(super::ApiError { method: "conversations.replies".into(), error: error.into() });
+        for e in [api("ratelimited"), api("internal_error"), api("fatal_error"), api("service_unavailable"), api("request_timeout"), api("invalid_auth"), anyhow::anyhow!("conversations.replies: request failed"), anyhow::anyhow!("conversations.replies: still rate limited after retries")] {
+            assert!(super::is_unanswered(&e), "{e}");
+        }
+        for error in ["thread_not_found", "channel_not_found", "not_in_channel", "message_not_found"] {
+            assert!(!super::is_unanswered(&api(error)), "Slack's answer: {error}");
+        }
+        assert!(!super::is_unanswered(&api("channel_not_found").context("a link")), "under a context line too");
     }
 
     #[test]

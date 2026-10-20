@@ -50,6 +50,9 @@ pub struct Menu {
 /// Longest line of an opener (a long address is cut).
 const OPENER_WIDTH: usize = 72;
 
+/// The open menu's headings: links into klack, other links, files.
+pub const OPENER_HEADINGS: [&str; 3] = ["In klack", "In the browser", "Files"];
+
 /// What a message offers, so its menu shows only what applies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Offers {
@@ -148,12 +151,18 @@ impl Menu {
 
     /// A list of what message `ts` holds (`labels` beside `things`), to open one.
     pub fn opener(thread: bool, ts: String, things: Vec<super::open::Thing>, labels: Vec<String>, at: (u16, u16)) -> Menu {
-        // With links into klack among the things (they come first): "In klack", then "In the browser".
+        // With links into klack among the things (they come first): "In klack", then "In the browser", then "Files"
+        // (they open in klack's viewers).
         let grouped = things.iter().any(super::open::Thing::in_app);
+        let heading = |t: &super::open::Thing| match t {
+            super::open::Thing::Link { app: Some(_), .. } => OPENER_HEADINGS[0],
+            super::open::Thing::Link { .. } => OPENER_HEADINGS[1],
+            _ => OPENER_HEADINGS[2],
+        };
         let mut items = Vec::new();
         for (n, l) in labels.into_iter().enumerate() {
-            if grouped && (n == 0 || (things[n - 1].in_app() && !things[n].in_app())) {
-                items.push((Item::Heading, if things[n].in_app() { "In klack" } else { "In the browser" }.to_string(), String::new()));
+            if grouped && (n == 0 || heading(&things[n - 1]) != heading(&things[n])) {
+                items.push((Item::Heading, super::i18n::tr(heading(&things[n])).into_owned(), String::new()));
             }
             let l = if l.chars().count() > OPENER_WIDTH { l.chars().take(OPENER_WIDTH - 1).chain(['…']).collect() } else { l };
             items.push((Item::Thing(n), l, String::new()));

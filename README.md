@@ -208,7 +208,7 @@ After `Space` (written `␣`), on a **message**:
 |---|---|
 | `␣r` `␣e` `␣d` | react · edit · delete (the reaction picker also shows who reacted: `remove · you, alice`) |
 | `␣y` `␣Y` | copy the text · copy a link to the message |
-| `␣o` | open what the message holds — a link in your browser, a picture, a video (Space pauses, ← / → jump 10 s), a snippet; with several, a list to pick from |
+| `␣o` | open what the message holds — a link (one into your Slack opens in klack, others in your browser), a picture, a video (Space pauses, ← / → jump 10 s), a snippet; with several, a list to pick from |
 | `␣s` | save files (a dialog: Space / `a` pick which, Tab changes the folder for this save, Enter saves) |
 | `␣p` `␣u` `␣m` | pin · profile card of the author (←/→: people the message mentions; Enter messages them, `␣hp` starts a huddle) · the message's menu, as a right-click opens it |
 | `␣U` | mark unread from this message (the conversation is unread again from here; klack leaves it so until you switch away and back) |
@@ -274,8 +274,8 @@ workspaces is shown as `↪ <label>` (for a message, `› message from <author>`
 looked it up) in a colour of its own (`app_link` in the theme). A plain click opens it in klack: a
 link into another workspace of the profile switches to it first, and a link to something klack
 cannot find says so in the status bar. Hovering a link names where it goes. `␣o` lists "In klack"
-first, then "In the browser"; Ctrl+Shift+click (kitty) still opens the link in the browser. Links to
-other places open in the browser as before.
+first, then "In the browser", then "Files"; Ctrl+Shift+click (kitty) still opens the link in the
+browser. Links to other places open in the browser as before.
 
 ### Rebinding keys
 

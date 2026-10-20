@@ -161,18 +161,17 @@ fn text_style(s: format::Style) -> Style {
 
 /// What a link shows: its label or its address; a link into the profile's workspaces `↪ ` and where it goes
 /// (or the author's label for it), with where that is.
+/// Characters that reorder text are taken out.
 fn link_shown(here: &Here, url: &str, label: Option<&str>) -> (String, Option<AppLink>) {
     let label = label.filter(|l| !l.is_empty());
-    // Slack's own label for a pasted link is the address itself (in blocks the address has `&amp;` where the label
-    // has `&`): not the author's words.
-    let bare = |s: &str| format::unescape(s.trim()).trim_start_matches("https://").trim_start_matches("http://").to_string();
-    let own = label.filter(|l| bare(l) != bare(url));
+    // Slack's own label for a pasted link is the address itself: not the author's words.
+    let own = label.and_then(|l| super::applink::own_words(url, l));
     if let Some(app) = super::applink::parse(url) {
         if let Some(shown) = super::applink::label(&app, here, own) {
             return (format!("↪ {shown}"), Some(app));
         }
     }
-    (label.map(str::to_string).unwrap_or_else(|| url.trim_start_matches("mailto:").to_string()), None)
+    (super::applink::without_bidi(label.unwrap_or_else(|| url.trim_start_matches("mailto:"))), None)
 }
 
 /// Spans for one inline element.
@@ -393,6 +392,21 @@ mod tests {
         assert_eq!(emoji(&ws, "+1", None), "👍");
         assert_eq!(emoji(&ws, "x", Some("1f44b")), "👋");
         assert_eq!(emoji(&ws, "partyparrot", None), ":partyparrot:");
+    }
+
+    #[test]
+    fn a_link_s_label() {
+        let mut ws = Workspace::default();
+        ws.conversations.insert("C1".into(), slack_core::types::Conversation { id: "C1".into(), name: "backend".into(), is_channel: true, ..Default::default() });
+        let workspaces = vec![("https://acme.slack.com/".to_string(), "T1".to_string())];
+        let names = vec!["acme".to_string()];
+        let authors = super::super::applink::Authors::new();
+        let here = Here { ws: &ws, workspaces: &workspaces, names: &names, shown: 0, authors: &authors, message: None };
+        let shown = |url: &str, label: Option<&str>| link_shown(&here, url, label).0;
+        assert_eq!(shown("http://acme.slack.com/archives/C1", Some("acme.slack.com/archives/C1")), "↪ #backend", "the address as its label: not the author's words");
+        assert_eq!(shown("https://acme.slack.com/archives/C1", Some("the fix")), "↪ the fix");
+        assert_eq!(shown("https://x.y/", Some("a\u{202E}b\u{2066}c")), "abc", "no reordering characters in an outside link's label");
+        assert_eq!(shown("https://acme.slack.com/archives/C1", Some("\u{202E}xif")), "↪ xif");
     }
 
     #[test]

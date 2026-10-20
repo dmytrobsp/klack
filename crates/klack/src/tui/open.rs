@@ -33,7 +33,7 @@ pub fn things(m: &Message, here: Option<&Here>) -> Vec<Thing> {
         };
         for i in items {
             if let Inline::Link { url, label, .. } = i {
-                add_link(&mut out, url, label.clone().filter(|l| !l.is_empty() && l != url), here);
+                add_link(&mut out, url, label.as_deref().and_then(|l| applink::own_words(url, l)).map(str::to_string), here);
             }
         }
     }
@@ -189,6 +189,7 @@ mod tests {
                 (Item::Thing(1), "↪ #backend"),
                 (Item::Heading, "In the browser"),
                 (Item::Thing(2), "🔗 docs.acme.dev/x"),
+                (Item::Heading, "Files"),
                 (Item::Thing(3), "🖼\u{fe0f} one.png")
             ]
         );
@@ -206,6 +207,15 @@ mod tests {
         // A message with one thing that is an in-app link: that thing opens at once.
         let single = things(&Message { text: format!("<{reply}|>"), ..Default::default() }, Some(&here));
         assert!(matches!(single.as_slice(), [t] if t.in_app()));
+        // The address as its label is not the author's words (the same rule as the message draws).
+        let bare = Message { text: "<http://acme.slack.com/archives/C1|acme.slack.com/archives/C1>".into(), ..Default::default() };
+        let got = things(&bare, Some(&here));
+        assert_eq!(got.iter().map(|t| label(t, &bare, &here)).collect::<Vec<_>>(), ["↪ #backend"]);
+        // Files only, after links into klack: no "In the browser".
+        let files = Message { text: "<https://acme.slack.com/archives/C1>".into(), files: vec![File { id: "F2".into(), name: "two.png".into(), mimetype: "image/png".into(), ..Default::default() }], ..Default::default() };
+        let got = things(&files, Some(&here));
+        let rows: Vec<String> = Menu::opener(false, "1.0".into(), got, vec!["a".into(), "b".into()], (0, 0)).items.iter().map(|i| i.1.clone()).collect();
+        assert_eq!(rows, ["In klack", "a", "Files", "b"]);
         // Another workspace's link is an outside one.
         let other = things(&Message { text: "<https://other.slack.com/archives/C9>".into(), ..Default::default() }, Some(&here));
         assert!(!other[0].in_app());

@@ -154,19 +154,28 @@ enum Author {
 /// How many authors are asked for at once.
 pub const AUTHORS_IN_FLIGHT: usize = 3;
 
+/// How many links wait for a turn at most: beyond that the one drawn longest ago is dropped (asked for again when it
+/// is drawn again).
+pub const AUTHORS_QUEUED: usize = 20;
+
+/// How long nothing is asked after a request failed (the network, or Slack's rate limits).
+pub const AUTHORS_PAUSE: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Who wrote linked messages, by channel, then ts (looked up by `&str`, as it is on the draw path): what a link to a
-/// message is labelled with. Each link is asked for once per run, a few at a time.
+/// message is labelled with. Only links on screen are asked for, a few at a time, each once per run when Slack answers.
 #[derive(Debug, Default)]
 pub struct Authors {
     by_channel: std::collections::HashMap<String, std::collections::HashMap<String, Author>>,
-    /// (channel, ts, thread_ts) waiting for a turn.
+    /// (channel, ts, thread_ts) waiting for a turn, the one drawn longest ago first.
     queue: std::collections::VecDeque<(String, String, Option<String>)>,
     in_flight: usize,
+    /// Nothing is asked before this (a request failed).
+    paused_until: Option<std::time::Instant>,
 }
 
 impl Authors {
     pub fn new() -> Authors {
-        Authors { by_channel: Default::default(), queue: Default::default(), in_flight: 0 }
+        Authors::default()
     }
 
     pub fn get(&self, channel: &str, ts: &str) -> Option<&str> {
@@ -176,31 +185,74 @@ impl Authors {
         }
     }
 
-    /// A link to this message is on screen: queue it unless it was asked for already.
+    /// A link to this message is on screen: queue it unless it was asked for already (a queued one moves to the back,
+    /// as drawn last).
     pub fn want(&mut self, channel: &str, ts: &str, thread_ts: Option<&str>) {
-        if self.by_channel.get(channel).is_some_and(|m| m.contains_key(ts)) {
-            return;
+        match self.by_channel.get(channel).and_then(|m| m.get(ts)) {
+            Some(Author::Pending) => {
+                if let Some(entry) = self.queue.iter().position(|(c, t, _)| c == channel && t == ts).and_then(|at| self.queue.remove(at)) {
+                    self.queue.push_back(entry);
+                }
+            }
+            Some(_) => {}
+            None => {
+                self.by_channel.entry(channel.to_string()).or_default().insert(ts.to_string(), Author::Pending);
+                self.queue.push_back((channel.to_string(), ts.to_string(), thread_ts.map(str::to_string)));
+                while self.queue.len() > AUTHORS_QUEUED {
+                    if let Some((c, t, _)) = self.queue.pop_front() {
+                        self.forget(&c, &t);
+                    }
+                }
+            }
         }
-        self.by_channel.entry(channel.to_string()).or_default().insert(ts.to_string(), Author::Pending);
-        self.queue.push_back((channel.to_string(), ts.to_string(), thread_ts.map(str::to_string)));
     }
 
-    /// The links to ask for now: queued ones, up to the limit in flight.
-    pub fn next_requests(&mut self) -> Vec<(String, String, Option<String>)> {
+    /// The links to ask for now: queued ones that are `drawn` this frame ((channel, ts, thread_ts) each), up to the
+    /// limit in flight; the rest stay queued. None while paused after a failure.
+    pub fn next_requests(&mut self, drawn: &[(String, String, Option<String>)], now: std::time::Instant) -> Vec<(String, String, Option<String>)> {
         let mut out = Vec::new();
-        while self.in_flight < AUTHORS_IN_FLIGHT {
-            let Some(r) = self.queue.pop_front() else { break };
-            self.in_flight += 1;
-            out.push(r);
+        if self.paused_until.is_some_and(|until| now < until) {
+            return out;
+        }
+        let mut n = 0;
+        while self.in_flight < AUTHORS_IN_FLIGHT && n < self.queue.len() {
+            let (c, t, _) = &self.queue[n];
+            if !drawn.iter().any(|(dc, dt, _)| dc == c && dt == t) {
+                n += 1;
+                continue;
+            }
+            if let Some(r) = self.queue.remove(n) {
+                self.in_flight += 1;
+                out.push(r);
+            }
         }
         out
     }
 
-    /// The answer for a link (None: no such message, or no name for it).
+    /// Slack's answer for a link (None: no such message, or no name for it).
     pub fn finish(&mut self, channel: &str, ts: &str, name: Option<String>) {
         self.in_flight = self.in_flight.saturating_sub(1);
         let state = name.filter(|n| !n.is_empty()).map_or(Author::Missing, Author::Known);
         self.by_channel.entry(channel.to_string()).or_default().insert(ts.to_string(), state);
+    }
+
+    /// Asking for a link failed (the network, or Slack's rate limits): not known either way, so it is asked for again
+    /// when it is drawn, after a pause.
+    pub fn fail(&mut self, channel: &str, ts: &str, now: std::time::Instant) {
+        self.in_flight = self.in_flight.saturating_sub(1);
+        self.paused_until = Some(now + AUTHORS_PAUSE);
+        if self.by_channel.get(channel).and_then(|m| m.get(ts)) == Some(&Author::Pending) {
+            self.forget(channel, ts);
+        }
+    }
+
+    fn forget(&mut self, channel: &str, ts: &str) {
+        if let Some(m) = self.by_channel.get_mut(channel) {
+            m.remove(ts);
+            if m.is_empty() {
+                self.by_channel.remove(channel);
+            }
+        }
     }
 
     #[cfg(test)]
@@ -209,11 +261,30 @@ impl Authors {
     }
 }
 
+/// Whether the author of the message `link` points to is worth asking Slack for: a link to a message whose own
+/// message's link preview does not name them already (`here.message`: the message the link is in).
+pub fn wants_author(link: &AppLink, here: &Here) -> bool {
+    matches!(link.target, Target::Message { .. }) && preview_author(here, link).is_none()
+}
+
+/// The author's own words for a link, `label`, unless it is only the address again (Slack's label for a pasted link;
+/// in blocks the address has `&amp;` where the label has `&`), or empty.
+pub fn own_words<'a>(url: &str, label: &'a str) -> Option<&'a str> {
+    let bare = |s: &str| slack_core::format::unescape(s.trim()).trim_start_matches("https://").trim_start_matches("http://").to_string();
+    (!label.trim().is_empty() && bare(label) != bare(url)).then_some(label)
+}
+
+/// `s` without the characters that reorder text (bidi embeddings, overrides, isolates and marks), so a name or label
+/// can't make what follows it read backwards.
+pub fn without_bidi(s: &str) -> String {
+    s.chars().filter(|c| !matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{200E}' | '\u{200F}')).collect()
+}
+
 /// The name of whoever wrote `m`, when this workspace knows it (never an id).
 pub fn author_name(ws: &Workspace, m: &Message) -> Option<String> {
-    let named = |n: &str| Some(n.trim().to_string()).filter(|n| !n.is_empty());
+    let named = |n: &str| Some(without_bidi(n).trim().to_string()).filter(|n| !n.is_empty());
     match m.user.as_deref() {
-        Some(u) => known_user(ws, u),
+        Some(u) => known_user(ws, u).and_then(|n| named(&n)),
         None => m.bot_profile.as_ref().and_then(|b| b["name"].as_str()).and_then(named).or_else(|| m.username.as_deref().and_then(named)),
     }
 }
@@ -246,19 +317,27 @@ impl<'a> Here<'a> {
     }
 }
 
+/// The hover note of an in-app link (`{}`: where it goes).
+pub const OPENS_IN_KLACK: &str = "opens {} in klack";
+
 /// The status line's note while the mouse is over a link: where an in-app one goes, or the address of an outside one.
 pub fn hover_note(url: &str, app: Option<&AppLink>, here: &Here) -> String {
     match app.and_then(|a| label(a, here, None)) {
-        Some(readable) => format!("↪ opens {readable} in klack"),
-        None => url.trim_start_matches("https://").trim_start_matches("http://").trim_start_matches("mailto:").to_string(),
+        Some(readable) => format!("↪ {}", super::i18n::tr(OPENS_IN_KLACK).replace("{}", &readable)),
+        None => without_bidi(url.trim_start_matches("https://").trim_start_matches("http://").trim_start_matches("mailto:")),
     }
 }
 
 /// What a link into the profile's workspaces is shown as (after `↪ `): the author's own words for it
 /// (`author_text`), else where it goes (`#deploys › message from Bob`); None when it is not in-app.
+/// Characters that reorder text are taken out.
 pub fn label(link: &AppLink, here: &Here, author_text: Option<&str>) -> Option<String> {
+    readable(link, here, author_text).map(|l| without_bidi(&l))
+}
+
+fn readable(link: &AppLink, here: &Here, author_text: Option<&str>) -> Option<String> {
     let at = workspace_of(link, here.workspaces, here.shown)?;
-    if let Some(words) = author_text.map(str::trim).filter(|w| !w.is_empty()) {
+    if let Some(words) = author_text.map(str::trim).filter(|w| !without_bidi(w).trim().is_empty()) {
         return Some(words.to_string());
     }
     let ws = here.ws;
@@ -475,19 +554,26 @@ mod tests {
         assert_eq!(l("https://acme.slack.com/archives/C1", &Here::alone(&ws)), None);
     }
 
+    fn drawn(links: &[&str]) -> Vec<(String, String, Option<String>)> {
+        links.iter().map(|ts| ("C1".to_string(), ts.to_string(), None)).collect()
+    }
+
     #[test]
     fn authors_are_fetched_once_and_few_at_a_time() {
+        let now = std::time::Instant::now();
         let mut a = Authors::new();
+        let all: Vec<String> = (0..10).map(|i| format!("1.{i}")).collect();
+        let on_screen = drawn(&all.iter().map(String::as_str).collect::<Vec<_>>());
         for i in 0..10 {
             a.want("C1", &format!("1.{i}"), None);
             a.want("C1", &format!("1.{i}"), None);
         }
-        let first = a.next_requests();
+        let first = a.next_requests(&on_screen, now);
         assert_eq!(first.len(), 3);
-        assert!(a.next_requests().is_empty(), "three in flight: the rest wait");
+        assert!(a.next_requests(&on_screen, now).is_empty(), "three in flight: the rest wait");
         a.finish("C1", &first[0].1, Some("Bob".into()));
         assert_eq!(a.get("C1", &first[0].1), Some("Bob"));
-        let more = a.next_requests();
+        let more = a.next_requests(&on_screen, now);
         assert_eq!(more.len(), 1);
         assert!(!first.contains(&more[0]));
         // Asked for once per run: an answered or missing link is never queued again.
@@ -497,11 +583,116 @@ mod tests {
         let mut seen: Vec<_> = first.iter().chain(&more).map(|r| r.1.clone()).collect();
         while a.in_flight > 0 {
             a.finish("C1", "x", None);
-            seen.extend(a.next_requests().into_iter().map(|r| r.1));
+            seen.extend(a.next_requests(&on_screen, now).into_iter().map(|r| r.1));
         }
         seen.sort();
         seen.dedup();
         assert_eq!(seen.len(), 10, "each of the ten asked exactly once");
+    }
+
+    #[test]
+    fn only_links_on_screen_are_asked_for() {
+        let now = std::time::Instant::now();
+        let mut a = Authors::new();
+        for ts in ["1.1", "1.2", "1.3", "1.4"] {
+            a.want("C1", ts, None);
+        }
+        // Scrolled away: they stay queued, never sent.
+        assert!(a.next_requests(&[], now).is_empty(), "nothing on screen: nothing asked");
+        let asked = a.next_requests(&drawn(&["1.3"]), now);
+        assert_eq!(asked.iter().map(|r| r.1.as_str()).collect::<Vec<_>>(), ["1.3"], "only the one drawn now");
+        assert!(a.next_requests(&drawn(&["1.3"]), now).is_empty(), "asked once");
+        // Drawn again later: its turn comes.
+        assert_eq!(a.next_requests(&drawn(&["1.1", "1.4"]), now).len(), 2);
+    }
+
+    #[test]
+    fn the_queue_is_capped() {
+        let now = std::time::Instant::now();
+        let mut a = Authors::new();
+        let ts = |i: usize| format!("2.{i:03}");
+        for i in 0..AUTHORS_QUEUED + 5 {
+            a.want("C1", &ts(i), None);
+        }
+        assert_eq!(a.queue.len(), AUTHORS_QUEUED);
+        assert!(a.next_requests(&drawn(&[&ts(0), &ts(4)]), now).is_empty(), "the oldest were dropped");
+        assert_eq!(a.next_requests(&drawn(&[&ts(5)]), now).len(), 1, "the newer kept");
+        // A dropped one is unknown again: wanted when drawn again.
+        a.want("C1", &ts(0), None);
+        assert_eq!(a.next_requests(&drawn(&[&ts(0)]), now).len(), 1);
+        // One drawn again moves to the back, so it outlives those drawn before it.
+        let mut b = Authors::new();
+        for i in 0..AUTHORS_QUEUED {
+            b.want("C1", &ts(i), None);
+        }
+        b.want("C1", &ts(0), None);
+        b.want("C1", &ts(100), None);
+        assert_eq!(b.next_requests(&drawn(&[&ts(0), &ts(1)]), now).iter().map(|r| r.1.clone()).collect::<Vec<_>>(), [ts(0)], "1 was the oldest drawn");
+    }
+
+    #[test]
+    fn a_failed_request_is_asked_again_later() {
+        let now = std::time::Instant::now();
+        let mut a = Authors::new();
+        a.want("C1", "1.1", None);
+        a.want("C1", "1.2", None);
+        let asked = a.next_requests(&drawn(&["1.1"]), now);
+        assert_eq!(asked.len(), 1);
+        a.fail("C1", "1.1", now);
+        assert_eq!(a.in_flight, 0);
+        assert_eq!(a.get("C1", "1.1"), None);
+        a.want("C1", "1.1", None);
+        assert!(a.next_requests(&drawn(&["1.1", "1.2"]), now).is_empty(), "a pause after a failure");
+        let later = now + AUTHORS_PAUSE;
+        assert_eq!(a.next_requests(&drawn(&["1.1"]), later).len(), 1, "unknown again, not missing: wanted again");
+        // Slack's own answer that there is no such message is kept.
+        a.finish("C1", "1.1", None);
+        a.want("C1", "1.1", None);
+        assert!(a.next_requests(&drawn(&["1.1"]), later).is_empty());
+    }
+
+    #[test]
+    fn a_previewed_link_never_wants_its_author() {
+        let ws = Workspace::default();
+        let workspaces = vec![("https://acme.slack.com/".to_string(), "T1".to_string())];
+        let names = vec!["acme".to_string()];
+        let authors = Authors::new();
+        let here = Here { ws: &ws, workspaces: &workspaces, names: &names, shown: 0, authors: &authors, message: None };
+        let url = "https://acme.slack.com/archives/C1/p1729440000000500";
+        let link = parse(url).unwrap();
+        let mut m = Message { ts: "9.0".into(), text: format!("<{url}>"), ..Default::default() };
+        assert!(wants_author(&link, &here.of(&m)), "no preview: asked for");
+        m.attachments = vec![serde_json::json!({"from_url": url, "author_name": "Bob", "is_msg_unfurl": true})];
+        assert!(!wants_author(&link, &here.of(&m)), "the preview names the author");
+        assert!(!wants_author(&parse("https://acme.slack.com/archives/C1").unwrap(), &here), "a conversation has no author");
+    }
+
+    #[test]
+    fn the_author_s_own_words() {
+        assert_eq!(own_words("http://acme.slack.com/archives/C1", "acme.slack.com/archives/C1"), None, "the address again, without its scheme");
+        assert_eq!(own_words("https://x.y/?a=1&amp;b=2", "https://x.y/?a=1&b=2"), None, "escaped once in blocks");
+        assert_eq!(own_words("https://x.y/a", " "), None);
+        assert_eq!(own_words("https://x.y/a", "the fix"), Some("the fix"));
+    }
+
+    #[test]
+    fn bidi_controls_are_taken_out() {
+        assert_eq!(without_bidi("a\u{202E}b\u{2066}c\u{2069}d\u{200F}e\u{200E}f\u{202A}"), "abcdef");
+        let mut ws = Workspace::default();
+        ws.users.insert("U1".into(), slack_core::types::User { id: "U1".into(), name: "e\u{202E}vil".into(), ..Default::default() });
+        let m = Message { user: Some("U1".into()), ..Default::default() };
+        assert_eq!(author_name(&ws, &m).as_deref(), Some("evil"));
+        let bot = Message { username: Some("\u{2067}bot".into()), ..Default::default() };
+        assert_eq!(author_name(&ws, &bot).as_deref(), Some("bot"));
+        let workspaces = vec![("https://acme.slack.com/".to_string(), "T1".to_string())];
+        let names = vec!["acme".to_string()];
+        let mut authors = Authors::new();
+        authors.insert("C1", "1729440000.000200", "C\u{202E}y");
+        let here = Here { ws: &ws, workspaces: &workspaces, names: &names, shown: 0, authors: &authors, message: None };
+        let link = parse("https://acme.slack.com/archives/C1/p1729440000000200").unwrap();
+        assert_eq!(label(&link, &here, None).as_deref(), Some("a channel › message from Cy"));
+        assert_eq!(label(&link, &here, Some("\u{202E}xif eht")).as_deref(), Some("xif eht"), "the author's words too");
+        assert_eq!(hover_note("https://x.y/\u{202E}a", None, &here), "x.y/a");
     }
 
     #[test]
@@ -511,13 +702,14 @@ mod tests {
         let names = vec!["acme".to_string()];
         let link = parse("https://acme.slack.com/archives/C1/p1729440000000200").unwrap();
         let mut authors = Authors::new();
+        let on_screen = vec![("C1".to_string(), "1729440000.000200".to_string(), None)];
         authors.want("C1", "1729440000.000200", None);
-        authors.next_requests();
+        authors.next_requests(&on_screen, std::time::Instant::now());
         authors.finish("C1", "1729440000.000200", None);
         let here = Here { ws: &ws, workspaces: &workspaces, names: &names, shown: 0, authors: &authors, message: None };
         assert_eq!(label(&link, &here, None).as_deref(), Some("a channel › message"));
         authors.want("C1", "1729440000.000200", None);
-        assert!(authors.next_requests().is_empty(), "a missing message is not asked for again");
+        assert!(authors.next_requests(&on_screen, std::time::Instant::now()).is_empty(), "a missing message is not asked for again");
     }
 
     #[test]
