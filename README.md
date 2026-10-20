@@ -87,17 +87,32 @@ one under the cursor), `/` filters, a click marks a row, Esc in the list leaves 
 Workspaces a browser is signed out of are shown dim with the reason; ones already in the profile say
 `already signed in` (picking one refreshes it). The last row, `another workspace, or sign in another
 way…`, asks for the workspace (`acme` — `.slack.com` is filled in — or a link pasted from the browser)
-and how to sign in to it: a browser profile signed in there, a code from your email, your browser, or the `d` cookie
-by hand. Esc at those questions skips only that workspace: rows marked together with `another
-workspace…` are still signed in to and saved. Each workspace ends in one line: `✓ Signed in to Acme as
+and how to sign in to it. Esc at those questions skips only that workspace: rows marked together with
+`another workspace…` are still signed in to and saved. Nothing is signed out anywhere, and klack never opens
+a browser itself.
+
+After the browsers come three ways, for any workspace (also from the `another workspace…` row):
+
+- **With a code from your email:** klack shows a QR code and a link (`app.slack.com/get-started?email=…`,
+  your address filled in) for your phone or any browser. There Slack sends you a code (this step needs
+  Slack's captcha, so only a real browser can do it). Type the code into the `___-___` prompt; klack confirms
+  it with Slack itself and lists the workspaces of that address. Workspaces that need two-factor or SSO are
+  shown dim ("needs your browser (two-factor)") — use the browser way for those.
+- **In your browser:** klack prints a link; open it in whichever browser and profile you like and sign in.
+  klack watches the browser profiles (read only) and, when one gets a new Slack session, offers it. On
+  Windows, Chrome cannot be watched (app-bound encryption); the row says so and points to Firefox or the code.
+- **Paste a cookie:** the `d` cookie by hand.
+
+`klack auth login --email you@example.com` goes straight to the code way with the address filled in.
+Each workspace ends in one line: `✓ Signed in to Acme as
 you — profile default saved.`
 
 For scripts (nothing is asked without a terminal):
 
 - **Several ways for one workspace:** `klack auth login --workspace acme.slack.com` in a terminal lists the
   browsers signed in to it, then a code from your email, your browser and a pasted cookie (that workspace
-  is marked in each list). Without a terminal the `d` cookie is read (below). The old throwaway browser
-  window is gone.
+  is marked in each list). Without a terminal the `d` cookie is read (below): `--cookie` or
+  `$KLACK_COOKIE_D`, with `--workspace`. There is no browser window and no `--no-browser`.
 - **From the browser you already use:** `klack auth login --workspace acme.slack.com --from-browser
   firefox` (or `chrome`) takes the session from a browser you are signed in to Slack with. Its cookie
   database is copied and read, never changed; Chrome's (and Chromium's, Edge's, Brave's) cookies are
@@ -116,7 +131,7 @@ For scripts (nothing is asked without a terminal):
   emails you (the link is printed; the code is read from standard input).
 
 Sessions are saved per profile in `~/.config/klack/<profile>/session.json` (owner-only
-permissions), each with where it came from (which browser profile, the window, or a cookie — names
+permissions), each with where it came from (which browser profile, an email code, or a cookie — names
 only, nothing secret). One profile may hold two accounts of the same workspace.
 
 - `klack auth status` — each workspace of the profile, who you are there, where the session came from

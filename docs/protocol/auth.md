@@ -37,4 +37,25 @@ DevTools protocol; values never logged):
 4. `signin.confirmCode email= code= domain=` → then a magic-login link (`/z-app-…`, `/magic-login/…`)
    sets the session cookie in the browser.
 
-So an emailed-code sign-in cannot be done without a browser (the captcha); `klack auth login` opens one (J1).
+Sending the code needs a browser (the captcha), but confirming it does not: see the next section.
+
+## Email-code sign-in without a browser (verified 2026-10-20, Y)
+
+The code can be sent from any device (a phone's browser, at `https://app.slack.com/get-started?email=<the email>#/createnew`,
+because on a phone `slack.com/signin` redirects to the app download page) and confirmed by klack over plain HTTP.
+All calls are `POST https://slack.com/api/<method>?_x_id=noversion-<unix time>` with a `multipart/form-data` body,
+one cookie jar throughout and a browser `User-Agent`:
+
+1. `GET https://slack.com/signin` sets the cookies `b`, `ui`, `x`.
+2. `signin.confirmCode email code` (the code without its dash) replies `{ok, has_workspace}` and sets `ec`.
+   Only sending the code needs the captcha, which happens on the phone; confirming is not tied to the device
+   that asked.
+3. `signin.findWorkspaces email reason=get_started_workspaces` replies with `current_teams`: a list with one
+   entry per email address, each holding `email` and `teams`, where every team has `id`, `name`, `url`,
+   `domain`, `associated_user`, `magic_login_url`, `sso_required`, `two_factor_required`, `is_logged_out` and
+   more. `current_orgs` is assumed to have the same shape (not verified).
+4. `GET` the team's `magic_login_url`, following redirects (app.slack.com, the workspace, slack.com), sets `d`.
+5. The usual `/customize/emoji` page gives the `xoxc` token, and `auth.test` checks it.
+
+Teams that need SSO or two-factor cannot be signed in this way; klack shows them dim. Errors seen in Slack's
+page code for step 2: `no_email, no_code, failed, expired, ratelimited, magic_login_failed, captcha_failed`.

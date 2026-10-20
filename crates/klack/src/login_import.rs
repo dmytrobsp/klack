@@ -58,7 +58,7 @@ pub struct Group {
 const STEP_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Why `--from-browser chrome` does not work on Windows.
-const CHROME_ON_WINDOWS: &str = "Chrome's cookies cannot be read on this system (app-bound encryption): use `klack auth login` (browser window) or Firefox";
+const CHROME_ON_WINDOWS: &str = "Chrome's cookies cannot be read on this system (app-bound encryption): use Firefox, or sign in with `klack auth login` by a code from your email or a pasted cookie";
 
 /// The files a profile's cookies are kept in.
 const FIREFOX_DB: &[&str] = &["cookies.sqlite"];

@@ -32,9 +32,10 @@ the reverse-engineered endpoints are documented in `docs/protocol/` (sign-in, se
 
 ## Auth
 
-`klack auth login` gets the browser's `d` cookie — from a browser profile signed in to Slack, a new
-browser window, or by hand (`klack auth login --workspace URL` with `--cookie`, `$KLACK_COOKIE_D` or
-`--no-browser` for a prompt); with it the `xoxc` token is fetched from a server-rendered workspace page
+`klack auth login` gets the browser's `d` cookie — from a browser profile signed in to Slack, from the browser
+profiles it watches while you sign in with a link it prints, from an emailed code that klack confirms itself
+(`signin.confirmCode`; only sending the code needs a browser's captcha), or by hand (`klack auth login
+--workspace URL` with `--cookie`, `$KLACK_COOKIE_D` or a prompt); with it the `xoxc` token is fetched from a server-rendered workspace page
 (`/customize/emoji` embeds `"api_token"`), then checked with `auth.test` (`docs/protocol/auth.md`).
 
 (The desktop magic-link flow, `auth.loginMagicBulk`, was planned but is not implemented.)
