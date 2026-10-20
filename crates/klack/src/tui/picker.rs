@@ -22,6 +22,8 @@ pub struct Candidate {
     pub mine: bool,
     pub on_message: bool,
     pub count: u64,
+    /// Who reacted (user ids), yours first; empty for an emoji not on the message.
+    pub users: Vec<String>,
 }
 
 /// A reaction already on the message the picker is for.
@@ -30,6 +32,25 @@ struct Present {
     name: String,
     count: u64,
     mine: bool,
+    /// Who reacted, in Slack's order (may hold fewer than `count` on a big reaction).
+    users: Vec<String>,
+}
+
+/// "you, alice, +2": the people that fit in `width` columns, yours first; the rest as "+N" (of `total`).
+fn people_line(names: &[String], total: u64, width: usize) -> String {
+    let w = |s: &str| s.chars().count();
+    for k in (0..=names.len()).rev() {
+        let rest = total.saturating_sub(k as u64);
+        let mut parts: Vec<String> = names[..k].to_vec();
+        if rest > 0 {
+            parts.push(format!("+{rest}"));
+        }
+        let text = parts.join(", ");
+        if w(&text) <= width && !text.is_empty() {
+            return text;
+        }
+    }
+    String::new()
 }
 
 #[derive(Debug, Default)]
@@ -58,7 +79,7 @@ impl EmojiPicker {
             for r in self.present.iter().filter(|r| r.mine == mine && r.name.contains(&q)) {
                 let glyph = super::text::glyph(custom, &r.name).unwrap_or_else(|| "  ".into());
                 let base = r.name.split("::").next().unwrap_or_default();
-                out.push(Candidate { name: r.name.clone(), glyph, custom: custom.contains_key(base), mine, on_message: true, count: r.count });
+                out.push(Candidate { name: r.name.clone(), glyph, custom: custom.contains_key(base), mine, on_message: true, count: r.count, users: r.users.clone() });
             }
         }
         let mut seen: HashSet<String> = out.iter().map(|c| c.name.clone()).collect();
@@ -73,7 +94,7 @@ impl EmojiPicker {
         if q.is_empty() {
             for name in FAVOURITES {
                 if let Some(e) = emojis::get_by_shortcode(name) {
-                    out.push((0, Candidate { name: name.to_string(), glyph: e.as_str().to_string(), custom: false, mine: false, on_message: false, count: 0 }));
+                    out.push((0, Candidate { name: name.to_string(), glyph: e.as_str().to_string(), custom: false, mine: false, on_message: false, count: 0, users: vec![] }));
                 }
             }
             return out.into_iter().map(|(_, c)| c).collect();
@@ -89,7 +110,7 @@ impl EmojiPicker {
                 } else {
                     continue;
                 };
-                out.push((rank, Candidate { name: code.to_string(), glyph: e.as_str().to_string(), custom: false, mine: false, on_message: false, count: 0 }));
+                out.push((rank, Candidate { name: code.to_string(), glyph: e.as_str().to_string(), custom: false, mine: false, on_message: false, count: 0, users: vec![] }));
             }
         }
         for name in custom.keys() {
@@ -103,7 +124,7 @@ impl EmojiPicker {
                 continue;
             };
             let glyph = super::text::custom_glyph(custom, name).unwrap_or_else(|| "  ".into());
-            out.push((rank, Candidate { name: name.clone(), glyph, custom: true, mine: false, on_message: false, count: 0 }));
+            out.push((rank, Candidate { name: name.clone(), glyph, custom: true, mine: false, on_message: false, count: 0, users: vec![] }));
         }
         out.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.name.len().cmp(&b.1.name.len())).then(a.1.name.cmp(&b.1.name)));
         out.dedup_by(|a, b| a.1.name == b.1.name);
@@ -120,7 +141,7 @@ impl EmojiPicker {
 
     /// A picker for a message with `reactions`; `me` is your user id.
     pub fn for_message(reactions: &[slack_core::types::Reaction], me: &str) -> EmojiPicker {
-        let present = reactions.iter().map(|r| Present { name: r.name.clone(), count: r.count, mine: r.users.iter().any(|u| u == me) }).collect();
+        let present = reactions.iter().map(|r| Present { name: r.name.clone(), count: r.count, mine: r.users.iter().any(|u| u == me), users: r.users.iter().filter(|u| *u == me).chain(r.users.iter().filter(|u| *u != me)).cloned().collect() }).collect();
         EmojiPicker { present, ..Default::default() }
     }
 
@@ -139,7 +160,8 @@ impl EmojiPicker {
         self.hover = self.row_at(column, row);
     }
 
-    pub fn draw(&mut self, f: &mut Frame, area: Rect, custom: &HashMap<String, String>) {
+    /// `name` gives a user's display name; `me` is your user id.
+    pub fn draw(&mut self, f: &mut Frame, area: Rect, custom: &HashMap<String, String>, me: &str, name: &dyn Fn(&str) -> String) {
         let [popup] = Layout::horizontal([Constraint::Length(44)]).flex(Flex::Center).areas(area);
         let [popup] = Layout::vertical([Constraint::Length(16)]).flex(Flex::Center).areas(popup);
         self.area = popup;
@@ -164,7 +186,16 @@ impl EmojiPicker {
                 let pal = super::theme::p();
                 let mark = if c.mine { Span::styled("✓", Style::default().fg(pal.accent).add_modifier(Modifier::BOLD)) } else { Span::raw(" ") };
                 let mut spans = vec![mark, Span::raw(format!("{} ", c.glyph)), Span::styled(format!(":{}:", c.name), Style::default().fg(if c.mine { pal.accent } else { pal.dim }))];
-                let hint = if c.mine { super::i18n::tr("remove").into_owned() } else if c.on_message { format!("· {}", c.count) } else { String::new() };
+                let lead = if c.mine { super::i18n::tr("remove").into_owned() } else if c.on_message { format!("· {}", c.count) } else { String::new() };
+                let mut hint = lead;
+                if c.on_message && !c.users.is_empty() {
+                    let names: Vec<String> = c.users.iter().map(|u| if u == me { "you".to_string() } else { name(u) }).collect();
+                    let room = (list.width as usize).saturating_sub(spans.iter().map(|s| s.width()).sum::<usize>() + hint.chars().count() + 4);
+                    let people = people_line(&names, c.count, room);
+                    if !people.is_empty() {
+                        hint = format!("{hint} · {people}");
+                    }
+                }
                 if !hint.is_empty() {
                     let used: usize = spans.iter().map(|s| s.width()).sum::<usize>() + hint.chars().count();
                     spans.push(Span::raw(" ".repeat((list.width as usize).saturating_sub(used + 1).max(1))));
@@ -188,7 +219,7 @@ mod tests {
     fn clicks_find_the_emoji() {
         let mut p = EmojiPicker::default();
         let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 30)).unwrap();
-        terminal.draw(|f| p.draw(f, f.area(), &HashMap::new())).unwrap();
+        terminal.draw(|f| p.draw(f, f.area(), &HashMap::new(), "U1", &|u| u.to_string())).unwrap();
         // 44×16 centred: rows 7–22, the border, the search row, then the list from row 9.
         assert_eq!(p.area, Rect::new(8, 7, 44, 16));
         assert_eq!((p.row_at(20, 9), p.row_at(20, 10), p.row_at(20, 8), p.row_at(2, 9)), (Some(0), Some(1), None, None));
@@ -197,7 +228,7 @@ mod tests {
         // Thirteen rows of list: with the 21st selected, the list starts at the 9th.
         p.query = "e".into();
         p.selected = 20;
-        terminal.draw(|f| p.draw(f, f.area(), &HashMap::new())).unwrap();
+        terminal.draw(|f| p.draw(f, f.area(), &HashMap::new(), "U1", &|u| u.to_string())).unwrap();
         assert_eq!(p.row_at(20, 9), Some(8), "a scrolled list counts from the first row shown");
     }
 
@@ -252,14 +283,32 @@ mod tests {
     fn yours_are_marked_in_the_list() {
         let mut p = EmojiPicker::for_message(&on_message(), "U1");
         let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 30)).unwrap();
-        terminal.draw(|f| p.draw(f, f.area(), &HashMap::new())).unwrap();
+        terminal.draw(|f| p.draw(f, f.area(), &HashMap::new(), "U1", &|u| u.to_string())).unwrap();
         let buf = terminal.backend().buffer();
         let row = |y: u16| (9..51).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>();
         // The list starts at row 9, column 9 (inside the border of the 44-wide popup at column 8).
-        assert!(row(9).starts_with("✓") && row(9).contains(":tada:") && row(9).trim_end().ends_with("remove"), "{:?}", row(9));
+        assert!(row(9).starts_with("✓") && row(9).contains(":tada:") && row(9).trim_end().ends_with("remove · you, U2"), "{:?}", row(9));
         assert_eq!(buf[(9, 9)].fg, crate::tui::theme::p().accent, "the mark is in the accent colour");
-        assert!(row(11).starts_with(" ") && row(11).contains(":eyes:") && row(11).trim_end().ends_with("· 1"), "{:?}", row(11));
+        assert!(row(11).starts_with(" ") && row(11).contains(":eyes:") && row(11).trim_end().ends_with("· 1 · U2"), "{:?}", row(11));
         assert!(!row(13).contains("remove") && !row(13).contains('·'), "a favourite has no hint: {:?}", row(13));
+    }
+
+    #[test]
+    fn picker_shows_who_reacted() {
+        let r = |name: &str, users: &[&str], count: u64| slack_core::types::Reaction { name: name.into(), users: users.iter().map(|u| u.to_string()).collect(), count };
+        let reactions = vec![r("tada", &["U2", "U1", "U9"], 3), r("eyes", &["U2", "U3", "U4", "U5", "U6", "U8"], 12), r("fire", &["U7"], 1)];
+        let names = |u: &str| match u { "U2" => "alice".to_string(), "U3" => "bob".to_string(), o => o.to_string() };
+        let mut p = EmojiPicker::for_message(&reactions, "U1");
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 30)).unwrap();
+        terminal.draw(|f| p.draw(f, f.area(), &HashMap::new(), "U1", &names)).unwrap();
+        let buf = terminal.backend().buffer();
+        let row = |y: u16| (9..51).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>().trim_end().to_string();
+        assert!(row(9).contains(":tada:") && row(9).ends_with("remove · you, alice, U9"), "you first, then Slack's order, an unknown user by id: {:?}", row(9));
+        assert!(row(10).contains(":eyes:") && row(10).ends_with("· 12 · alice, bob, U4, U5, +8"), "narrow: cut with +N: {:?}", row(10));
+        assert!(row(11).contains(":fire:") && row(11).ends_with("· 1 · U7"), "{:?}", row(11));
+        assert_eq!(people_line(&["you".into(), "alice".into(), "bob".into()], 3, 9), "you, +2");
+        assert_eq!(people_line(&["you".into()], 1, 1), "");
+        assert_eq!(people_line(&["a".into()], 5, 20), "a, +4", "users fewer than the count");
     }
 
     #[test]
@@ -275,7 +324,7 @@ mod tests {
     fn hover_follows_the_pointer_and_leaves_the_selection() {
         let mut p = EmojiPicker::default();
         let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 30)).unwrap();
-        terminal.draw(|f| p.draw(f, f.area(), &HashMap::new())).unwrap();
+        terminal.draw(|f| p.draw(f, f.area(), &HashMap::new(), "U1", &|u| u.to_string())).unwrap();
         p.hover_at(20, 10);
         assert_eq!((p.hover, p.selected), (Some(1), 0));
         p.hover_at(20, 8);

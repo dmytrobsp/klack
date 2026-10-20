@@ -5133,7 +5133,7 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         super::autocomplete::draw(f, if c.thread { app.thread_composer_area } else { app.composer_area }, c);
     }
     if let Some((picker, _, _)) = app.picker.as_mut() {
-        picker.draw(f, main, &app.ws.custom_emoji);
+        picker.draw(f, main, &app.ws.custom_emoji, &app.ws.self_id, &|u| app.ws.user_name(u));
     }
     let question = match &app.confirm {
         Some(Confirm::Delete { .. }) => Some("Delete this message?".to_string()),
