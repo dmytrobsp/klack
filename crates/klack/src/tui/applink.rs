@@ -188,6 +188,14 @@ impl<'a> Here<'a> {
     }
 }
 
+/// The status line's note while the mouse is over a link: where an in-app one goes, or the address of an outside one.
+pub fn hover_note(url: &str, app: Option<&AppLink>, here: &Here) -> String {
+    match app.and_then(|a| label(a, here, None)) {
+        Some(readable) => format!("↪ opens {readable} in klack"),
+        None => url.trim_start_matches("https://").trim_start_matches("http://").trim_start_matches("mailto:").to_string(),
+    }
+}
+
 /// What a link into the profile's workspaces is shown as (after `↪ `): the author's own words for it
 /// (`author_text`), else where it goes (`#deploys › message from Bob`); None when it is not in-app.
 pub fn label(link: &AppLink, here: &Here, author_text: Option<&str>) -> Option<String> {

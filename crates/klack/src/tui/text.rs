@@ -190,7 +190,7 @@ pub fn inline_spans(here: &Here, i: &Inline) -> Vec<Span<'static>> {
         Inline::Usergroup { id, handle } => vec![Span::styled(handle.clone().unwrap_or_else(|| format!("@{id}")), mention)],
         Inline::Link { url, label, style } => {
             let (shown, app) = link_shown(here, url, label.as_deref());
-            let fg = if app.is_some() { super::theme::p().accent } else { super::theme::p().link };
+            let fg = if app.is_some() { super::theme::p().app_link } else { super::theme::p().link };
             vec![Span::styled(shown, text_style(*style).fg(fg).add_modifier(Modifier::UNDERLINED))]
         }
         Inline::Emoji { name, unicode } => vec![Span::raw(emoji_cell(ws, name, unicode.as_deref()))],

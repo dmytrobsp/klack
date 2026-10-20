@@ -279,6 +279,8 @@ struct App {
     /// Conversation currently shown in the message pane.
     current: Option<String>,
     status: String,
+    /// What the link under the mouse pointer does (the status line shows it while nothing else is said).
+    link_note: Option<String>,
     /// The status as last seen and since when, to clear it after [`STATUS_TTL`].
     status_shown: (String, std::time::Instant),
     loading: bool,
@@ -1129,7 +1131,7 @@ impl App {
                     self.open_thing(&ts, thing);
                 }
             }
-            (_, Item::Thing(_)) | (Target::Opener { .. }, _) => {}
+            (_, Item::Thing(_) | Item::Heading) | (Target::Opener { .. }, _) => {}
             (_, Item::Details) => self.open_details(),
             (_, Item::Leave) => {
                 if let Some(id) = self.current.clone() {
@@ -1715,6 +1717,13 @@ impl App {
         } else {
             self.status = "klack can't show that file here".into();
         }
+    }
+
+    /// The hover note for the link drawn at a terminal position (the thread pane, then the messages), if any.
+    fn link_note_at(&self, column: u16, row: u16) -> Option<String> {
+        let (url, app) = self.thread.as_ref().and_then(|_| self.thread_pane.link_under(column, row)).or_else(|| self.messages.link_under(column, row))?;
+        let here = super::applink::Here { ws: &self.ws, workspaces: &self.addresses, names: &self.workspaces, shown: self.workspace, authors: &self.authors, message: None };
+        Some(super::applink::hover_note(&url, app.as_ref(), &here))
     }
 
     /// The link into the profile's workspaces drawn at a terminal position (the thread pane, then the messages).
@@ -2459,6 +2468,7 @@ impl App {
 
     /// Forget the hovered row of the sidebar and the message panes.
     fn clear_main_hover(&mut self) {
+        self.link_note = None;
         self.sidebar.hover = None;
         self.messages.hover = None;
         self.thread_pane.hover = None;
@@ -2980,19 +2990,23 @@ impl App {
     /// `o` on message `ts`: open what it holds — at once when it is one thing, else from a
     /// list of them beside the message.
     fn open_things(&mut self, ts: &str, thread: bool) {
+        let here = super::applink::Here { ws: &self.ws, workspaces: &self.addresses, names: &self.workspaces, shown: self.workspace, authors: &self.authors, message: None };
         let Some(m) = self.current.as_deref().and_then(|c| self.ws.find_message(c, ts)) else { return };
-        let things = super::open::things(m);
-        match things.as_slice() {
-            [] => self.status = "nothing to open in this message".into(),
-            [one] => {
-                let one = one.clone();
-                self.open_thing(ts, one);
-            }
+        let things = super::open::things(m, Some(&here));
+        let here = here.of(m);
+        let opened = match things.as_slice() {
+            [] => None,
+            [one] => Some(Err(one.clone())),
             _ => {
-                let labels = things.iter().map(|t| super::open::label(t, m)).collect();
+                let labels = things.iter().map(|t| super::open::label(t, m, &here)).collect();
                 let at = if thread { self.thread_pane.spot(ts) } else { self.messages.spot(ts) };
-                self.menu = Some(super::menu::Menu::opener(thread, ts.to_string(), things, labels, at));
+                Some(Ok(super::menu::Menu::opener(thread, ts.to_string(), things, labels, at)))
             }
+        };
+        match opened {
+            None => self.status = "nothing to open in this message".into(),
+            Some(Err(one)) => self.open_thing(ts, one),
+            Some(Ok(menu)) => self.menu = Some(menu),
         }
     }
 
@@ -3001,6 +3015,7 @@ impl App {
     fn open_thing(&mut self, ts: &str, thing: super::open::Thing) {
         use super::open::Thing;
         match thing {
+            Thing::Link { app: Some(link), .. } => self.open_app_link(&link),
             Thing::Link { url, .. } => {
                 self.status = match super::open::open_url(&url) {
                     Ok(()) => format!("opened {url}"),
@@ -3621,6 +3636,7 @@ async fn run_workspace(
         messages: MessagePane::default(),
         current: None,
         status: "loading workspace…".into(),
+        link_note: None,
         status_shown: (String::new(), std::time::Instant::now()),
         loading: true,
     };
@@ -3867,6 +3883,7 @@ fn handle_dialog(app: &mut App, ev: &Event) -> bool {
             }
         }
         Event::Mouse(m) if app.menu.is_some() && matches!(m.kind, MouseEventKind::Moved | MouseEventKind::Down(_)) => {
+            app.link_note = None;
             let hit = app.menu.as_ref().and_then(|menu| menu.item_at(m.column, m.row));
             match (m.kind, hit) {
                 (MouseEventKind::Moved, Some(n)) => {
@@ -4382,6 +4399,7 @@ fn handle_main(app: &mut App, ev: Event) -> bool {
             app.sidebar.hover = app.sidebar.hover_at(c, r);
             app.messages.hover = app.messages.message_at(c, r);
             app.thread_pane.hover = if app.thread.is_some() { app.thread_pane.message_at(c, r) } else { None };
+            app.link_note = app.link_note_at(c, r);
         }
         Event::Mouse(m) if m.kind == MouseEventKind::Down(MouseButton::Right) => app.open_menu(m.column, m.row),
         Event::Mouse(m) => match m.kind {
@@ -5508,7 +5526,8 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         let key = |a| app.keys.first_shown_in(app.mode(), Context::Global, a).unwrap_or_default();
         format!("📞 {} invites you to a huddle · {} join · {} decline", app.ws.user_name(&ring.user), key(Action::Huddle), key(Action::DeclineHuddle))
     });
-    let note = shown_note(ringing, app.signed_out_note.as_deref(), &app.status);
+    // The hover note only fills a silent status line: a real message, whenever it came, stays.
+    let note = shown_note(ringing, app.signed_out_note.as_deref(), &app.status).or_else(|| app.link_note.clone());
     let info = super::status::Info {
         unread,
         mentions,

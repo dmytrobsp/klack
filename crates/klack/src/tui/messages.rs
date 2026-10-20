@@ -91,8 +91,9 @@ pub struct MessagePane {
     shown: Option<String>,
     /// Message ts owning each visible row of the last draw (for clicks).
     rows: Vec<Option<String>>,
-    /// Where links into the profile's workspaces were drawn at the last draw (for clicks).
-    links: Vec<(Rect, AppLink)>,
+    /// Where links were drawn at the last draw (for clicks and the hover note): the address and, for a link into the
+    /// profile's workspaces, where it goes.
+    links: Vec<(Rect, String, Option<AppLink>)>,
     /// Thread mode: show the parent and every reply instead of top-level messages.
     pub thread: bool,
     /// Message under the mouse pointer.
@@ -168,11 +169,17 @@ impl MessagePane {
 
     /// The link into the profile's workspaces drawn at a terminal position.
     pub fn link_at(&self, column: u16, row: u16) -> Option<AppLink> {
+        self.link_under(column, row).and_then(|(_, app)| app)
+    }
+
+    /// Any link drawn at a terminal position: its address and where it goes in klack (for a link into the profile's
+    /// workspaces).
+    pub fn link_under(&self, column: u16, row: u16) -> Option<(String, Option<AppLink>)> {
         // Only where the pane is drawn now (the thread or the huddle view may have taken its place since).
         if !self.area.contains((column, row).into()) {
             return None;
         }
-        self.links.iter().find(|(at, _)| at.contains((column, row).into())).map(|(_, link)| link.clone())
+        self.links.iter().find(|(at, ..)| at.contains((column, row).into())).map(|(_, url, app)| (url.clone(), app.clone()))
     }
 
     /// Where a menu for a message opens: its first row on screen, past the gutter (the pane's
@@ -401,9 +408,7 @@ impl MessagePane {
                 let x = inner.x + spot.col;
                 let width = spot.width.min(inner.right().saturating_sub(x));
                 hyperlink(f.buffer_mut(), x, y, width, &spot.url);
-                if let Some(link) = spot.app {
-                    self.links.push((Rect { x, y, width, height: 1 }, link));
-                }
+                self.links.push((Rect { x, y, width, height: 1 }, spot.url.clone(), spot.app));
             }
         }
         if let (Some(top), Some(bottom)) = (on_screen.first().and_then(index), on_screen.last().and_then(index)) {
@@ -614,11 +619,11 @@ pub struct LinkSpot {
 }
 
 /// Where the links of the messages in `lines` (`owners`: whose each line is) are: the
-/// underlined link pieces of each message (in the link colour, or the accent for links into the profile's
+/// underlined link pieces of each message (in the link colour, or the app-link colour for links into the profile's
 /// workspaces), matched in order to the links its text and its attachments' text hold (a wrapped link is several
 /// pieces).
 pub fn link_spots(here: &Here, messages: &[Message], lines: &[Line], owners: &[Option<String>]) -> Vec<LinkSpot> {
-    let link_fg = [Some(super::theme::p().link), Some(super::theme::p().accent)];
+    let link_fg = [Some(super::theme::p().link), Some(super::theme::p().app_link)];
     let letters = |s: &str| s.chars().filter(|c| !c.is_whitespace()).count();
     let mut out = Vec::new();
     let mut n = 0;
@@ -1045,7 +1050,7 @@ mod tests {
         let (lines, _) = message_body(&here, &m, 12, false, &|_, _| None);
         assert_eq!(plain(&lines), ["see ↪ ", "#deploys › ", "message and ", "https://x.y ", "then ↪ the ", "fix"], "the label wraps; the URL is not shown");
         let accent = lines[1].spans.iter().find(|s| s.content.contains("deploys")).unwrap().style;
-        assert_eq!((accent.fg, accent.add_modifier.contains(Modifier::UNDERLINED)), (Some(crate::tui::theme::p().accent), true), "in the accent colour, underlined");
+        assert_eq!((accent.fg, accent.add_modifier.contains(Modifier::UNDERLINED)), (Some(crate::tui::theme::p().app_link), true), "in the app-link colour, underlined");
         let external = lines[3].spans[0].style;
         assert_eq!((external.fg, external.add_modifier.contains(Modifier::UNDERLINED)), (Some(crate::tui::theme::p().link), true), "an external link as before");
         let owners = vec![Some("1.0".to_string()); lines.len()];
@@ -1064,6 +1069,31 @@ mod tests {
         let block = serde_json::json!([{"type": "rich_text", "elements": [{"type": "rich_text_section", "elements": [{"type": "link", "url": pasted.replace('&', "&amp;"), "text": pasted}]}]}]);
         let m = Message { blocks: serde_json::from_value(block).unwrap(), ..msg("2.0", "U2", "") };
         assert_eq!(plain(&message_body(&here, &m, 60, false, &|_, _| None).0), ["↪ #deploys › thread reply"]);
+    }
+
+    #[test]
+    fn hovering_a_link_names_where_it_goes() {
+        let mut ws = Workspace::default();
+        ws.conversations.insert("C1".into(), slack_core::types::Conversation { id: "C1".into(), name: "backend".into(), is_channel: true, ..Default::default() });
+        let url = "https://acme.slack.com/archives/C1/p1729440000123456?thread_ts=1729440000.000100&cid=C1";
+        let mut t = Timeline { loaded: true, ..Default::default() };
+        t.upsert(msg("1729440000.000500", "U2", &format!("see <{}|> or <https://x.y/a?b=2>", url.replace('&', "&amp;"))));
+        let workspaces = vec![("https://acme.slack.com/".to_string(), "T1".to_string())];
+        let names = vec!["acme".to_string()];
+        let authors = crate::tui::applink::Authors::new();
+        let here = Here { ws: &ws, workspaces: &workspaces, names: &names, shown: 0, authors: &authors, message: None };
+        let media = Media::with(ratatui_image::picker::Picker::halfblocks());
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 8)).unwrap();
+        let mut pane = MessagePane::default();
+        terminal.draw(|f| pane.draw(f, f.area(), &here, "t", Some(&t), true, &media)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let cell = |what: &str| (0..buf.area.height).flat_map(|y| (0..buf.area.width).map(move |x| (x, y))).find(|&(x, y)| buf[(x, y)].symbol().contains(what)).unwrap_or_else(|| panic!("{what} is drawn"));
+        let note = |c: (u16, u16)| pane.link_under(c.0, c.1).map(|(url, app)| crate::tui::applink::hover_note(&url, app.as_ref(), &here));
+        let (x, y) = cell("↪");
+        assert_eq!(note((x + 3, y)).as_deref(), Some("↪ opens #backend › thread reply in klack"), "an in-app link says where it goes");
+        let (ex, ey) = cell("\x1b]8;;https://x.y/a?b=2\x1b\\");
+        assert_eq!(note((ex, ey)).as_deref(), Some("x.y/a?b=2"), "an outside link its address, without https://");
+        assert_eq!(note((x - 2, y)), None, "off the link: no note, so the status line is clear again");
     }
 
     #[test]

@@ -29,6 +29,8 @@ pub struct Palette {
     pub own: Color,
     pub mention: Color,
     pub link: Color,
+    /// Links into your own Slack, which klack opens itself.
+    pub app_link: Color,
     pub code_fg: Color,
     pub code_bg: Color,
     pub quote_bar: Color,
@@ -61,6 +63,7 @@ pub const DARK: Palette = Palette {
     own: rgb(0x2bac76),
     mention: rgb(0x1d9bd1),
     link: rgb(0x5da9f6),
+    app_link: rgb(0x3fc9a5),
     code_fg: rgb(0xe8912d),
     code_bg: rgb(0x2b2f3a),
     quote_bar: rgb(0x6e6e6e),
@@ -86,6 +89,7 @@ pub const LIGHT: Palette = Palette {
     own: rgb(0x007a5a),
     mention: rgb(0x1264a3),
     link: rgb(0x0b4c8c),
+    app_link: rgb(0x7b1fa2),
     code_fg: rgb(0xb3361e),
     code_bg: rgb(0xeeeeee),
     quote_bar: rgb(0x9e9e9e),
@@ -111,6 +115,7 @@ pub const TERMINAL: Palette = Palette {
     own: Color::Green,
     mention: Color::Cyan,
     link: Color::Blue,
+    app_link: Color::Green,
     code_fg: Color::Yellow,
     code_bg: Color::Reset,
     quote_bar: Color::DarkGray,
@@ -209,7 +214,7 @@ pub fn parse(name: &str, text: &str) -> Result<Palette, String> {
     Ok(p)
 }
 
-const FIELDS: [&str; 17] = ["accent", "selection", "hover", "dim", "strong", "read", "good", "danger", "own", "mention", "link", "code_fg", "code_bg", "quote_bar", "badge_fg", "badge_bg", "pin"];
+const FIELDS: [&str; 18] = ["accent", "selection", "hover", "dim", "strong", "read", "good", "danger", "own", "mention", "link", "app_link", "code_fg", "code_bg", "quote_bar", "badge_fg", "badge_bg", "pin"];
 
 fn field<'a>(p: &'a mut Palette, key: &str) -> Option<&'a mut Color> {
     Some(match key {
@@ -224,6 +229,7 @@ fn field<'a>(p: &'a mut Palette, key: &str) -> Option<&'a mut Color> {
         "own" => &mut p.own,
         "mention" => &mut p.mention,
         "link" => &mut p.link,
+        "app_link" => &mut p.app_link,
         "code_fg" => &mut p.code_fg,
         "code_bg" => &mut p.code_bg,
         "quote_bar" => &mut p.quote_bar,
@@ -264,6 +270,24 @@ mod tests {
         assert_eq!(by_name("light").name, "light");
         assert_eq!(by_name("nope").name, "dark");
         assert_eq!(DARK.accent, Color::Rgb(0x61, 0xaf, 0xef), "the dark theme keeps the original colours");
+    }
+
+    #[test]
+    fn links_into_your_slack_have_their_own_colour() {
+        let rgb3 = |c: Color| match c {
+            Color::Rgb(r, g, b) => (r as i32, g as i32, b as i32),
+            _ => (0, 0, 0),
+        };
+        let (r, g, b) = rgb3(DARK.app_link);
+        assert!(g > r && g > b, "dark: a green-teal");
+        let (r, g, b) = rgb3(LIGHT.app_link);
+        assert!(r > g && b > g, "light: a purple");
+        for t in ALL {
+            assert_ne!(t.app_link, t.link, "{}", t.name);
+            assert_ne!(t.app_link, t.accent, "{}", t.name);
+        }
+        assert_eq!(parse("x", "app_link = \"#102030\"").unwrap().app_link, Color::Rgb(0x10, 0x20, 0x30), "a theme file sets it");
+        assert!(template("dark").unwrap().contains("app_link = \"#3fc9a5\""), "and the template lists it");
     }
 
     #[test]

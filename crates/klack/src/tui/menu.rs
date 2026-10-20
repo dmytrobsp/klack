@@ -28,6 +28,8 @@ pub enum Item {
     Leave,
     /// Open the menu's `n`th thing.
     Thing(usize),
+    /// A title between groups of an opener's rows, which nothing selects.
+    Heading,
 }
 
 pub struct Menu {
@@ -63,7 +65,7 @@ pub struct Offers {
 
 impl Offers {
     pub fn of(m: &slack_core::types::Message, self_id: &str) -> Offers {
-        Offers { own: m.user.as_deref() == Some(self_id), open: !super::open::things(m).is_empty(), save: !m.files.is_empty(), text: !m.text.trim().is_empty() }
+        Offers { own: m.user.as_deref() == Some(self_id), open: !super::open::things(m, None).is_empty(), save: !m.files.is_empty(), text: !m.text.trim().is_empty() }
     }
 
     /// Whether a messages action makes sense on the message (edit / delete yours, open, save
@@ -146,15 +148,18 @@ impl Menu {
 
     /// A list of what message `ts` holds (`labels` beside `things`), to open one.
     pub fn opener(thread: bool, ts: String, things: Vec<super::open::Thing>, labels: Vec<String>, at: (u16, u16)) -> Menu {
-        let items = labels
-            .into_iter()
-            .enumerate()
-            .map(|(n, l)| {
-                let l = if l.chars().count() > OPENER_WIDTH { l.chars().take(OPENER_WIDTH - 1).chain(['…']).collect() } else { l };
-                (Item::Thing(n), l, String::new())
-            })
-            .collect();
-        Menu { target: Target::Opener { thread, ts }, run_keys: vec![None; things.len()], items, selected: 0, at, area: Rect::default(), things }
+        // With links into klack among the things (they come first): "In klack", then "In the browser".
+        let grouped = things.iter().any(super::open::Thing::in_app);
+        let mut items = Vec::new();
+        for (n, l) in labels.into_iter().enumerate() {
+            if grouped && (n == 0 || (things[n - 1].in_app() && !things[n].in_app())) {
+                items.push((Item::Heading, if things[n].in_app() { "In klack" } else { "In the browser" }.to_string(), String::new()));
+            }
+            let l = if l.chars().count() > OPENER_WIDTH { l.chars().take(OPENER_WIDTH - 1).chain(['…']).collect() } else { l };
+            items.push((Item::Thing(n), l, String::new()));
+        }
+        let selected = items.iter().position(|i| i.0 != Item::Heading).unwrap_or(0);
+        Menu { target: Target::Opener { thread, ts }, run_keys: vec![None; items.len()], items, selected, at, area: Rect::default(), things }
     }
 
     /// The item `key` runs in the open menu, if any.
@@ -163,13 +168,19 @@ impl Menu {
     }
 
     pub fn move_by(&mut self, delta: isize) {
-        self.selected = (self.selected as isize + delta).clamp(0, self.items.len() as isize - 1) as usize;
+        let target = (self.selected as isize + delta).clamp(0, self.items.len() as isize - 1);
+        // A heading is stepped over: on to the next row that way, or back to the nearest one when the end is a heading.
+        let row = |n: &isize| self.items.get(*n as usize).is_some_and(|i| n >= &0 && i.0 != Item::Heading);
+        let dir = if delta < 0 { -1 } else { 1 };
+        if let Some(next) = (0..self.items.len() as isize).map(|k| target + dir * k).find(row).or_else(|| (0..self.items.len() as isize).map(|k| target - dir * k).find(row)) {
+            self.selected = next as usize;
+        }
     }
 
     /// The item drawn at a terminal position.
     pub fn item_at(&self, column: u16, row: u16) -> Option<usize> {
         let inner = self.area.inner(ratatui::layout::Margin { horizontal: 1, vertical: 1 });
-        inner.contains((column, row).into()).then(|| (row - inner.y) as usize).filter(|n| *n < self.items.len())
+        inner.contains((column, row).into()).then(|| (row - inner.y) as usize).filter(|n| self.items.get(*n).is_some_and(|i| i.0 != Item::Heading))
     }
 
     pub fn chosen(&self) -> Option<Item> {
@@ -191,7 +202,10 @@ impl Menu {
             .items
             .iter()
             .enumerate()
-            .map(|(n, (_, label, key))| {
+            .map(|(n, (item, label, key))| {
+                if *item == Item::Heading {
+                    return Line::from(Span::styled(format!(" {label}"), Style::default().fg(p.dim).add_modifier(Modifier::BOLD)));
+                }
                 let pad = " ".repeat(label_w - unicode_width::UnicodeWidthStr::width(label.as_str()));
                 let line = Line::from(vec![Span::raw(format!(" {label}{pad} ")), Span::styled(format!("{key:>key_w$} "), Style::default().fg(p.dim))]);
                 if n == self.selected { line.style(Style::default().bg(p.selection).add_modifier(Modifier::BOLD)) } else { line }
