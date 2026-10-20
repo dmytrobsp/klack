@@ -1251,6 +1251,13 @@ impl Keymap {
         self.keys.iter().find(|((c, n), _)| *c == context && *n == name).map(|(_, seqs)| seqs.iter().filter(|s| pressable(leader, s)).map(|s| self.label_with(leader, s)).collect::<Vec<_>>().join(" / ")).unwrap_or_default()
     }
 
+    /// The keys an action has by default, as [`Keymap::keys_label`] shows them.
+    pub fn default_label(&self, context: Context, name: &str) -> String {
+        let leader = self.leader_in(context);
+        let Some(info) = ACTIONS.iter().find(|a| a.context == context && a.name == name) else { return String::new() };
+        self.defaults(info).iter().filter(|s| pressable(leader, s)).map(|s| self.label_with(leader, s)).collect::<Vec<_>>().join(" / ")
+    }
+
     /// The first sequence of an action that can be pressed in its context.
     fn first_sequence(&self, context: Context, action: Action) -> Option<&Vec<Key>> {
         self.first_pressable(context, action, self.leader_in(context))

@@ -1120,7 +1120,7 @@ impl Prefs {
         // The selected item's help under a blank row, indented like the rows; too little room: none.
         let below = Rect { x: right.x + 1, y: list_area.y + shown + 1, width: right.width.saturating_sub(1), height: list_area.height.saturating_sub(shown + 1) };
         if let Some(field) = fields.get(self.selected) {
-            let help = super::prefs_help::help(*field, ws, keys);
+            let help = if keys_shown && self.filter_focused { super::prefs_help::filter_help(keys) } else { super::prefs_help::help(*field, ws, keys) };
             if let Some(height) = super::prefs_help::box_height(&help, below.width, below.height) {
                 super::prefs_help::draw(f, Rect { height, ..below }, &help);
             }

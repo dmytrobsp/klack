@@ -43,6 +43,20 @@ pub fn help(field: Field, ws: &Workspace, keys: &Keymap) -> Help {
     build(field, ws, keys, &|s| super::i18n::tr(s).into_owned())
 }
 
+/// The help shown while the Keys filter has the focus.
+pub fn filter_help(keys: &Keymap) -> Help {
+    build_filter(keys, &|s| super::i18n::tr(s).into_owned())
+}
+
+fn build_filter(keys: &Keymap, tr: &dyn Fn(&'static str) -> String) -> Help {
+    let mut b = Builder { tr, keys, lines: Vec::new() };
+    b.text("Matches names, descriptions and keys, in any case.");
+    let (keep, clear) = (b.key_of(Action::Open), b.key_of(Action::Close));
+    b.key(keep, "keep the filter and go back to the list");
+    b.key(clear, "clear the filter and go back to the list");
+    Help { title: tr("filter"), lines: b.lines }
+}
+
 /// Every sentence the helps say, as `tr` takes them (for `ctl locale-template`).
 pub fn strings() -> Vec<&'static str> {
     let seen = std::cell::RefCell::new(Vec::<&'static str>::new());
@@ -50,6 +64,10 @@ pub fn strings() -> Vec<&'static str> {
     let mut fields: Vec<Field> = CATEGORIES.iter().flat_map(|c| c.1.iter().copied()).chain(KEYS_SETTINGS.iter().copied()).collect();
     fields.extend([Field::ScheduleHours, Field::GroupHeader(0), Field::Binding(0)]);
     fields.extend((0..7).map(Field::ScheduleDay));
+    build_filter(&keys, &|s| {
+        seen.borrow_mut().push(s);
+        s.to_string()
+    });
     for field in fields {
         build(field, &ws, &keys, &|s| {
             seen.borrow_mut().push(s);
@@ -86,6 +104,12 @@ impl Builder<'_> {
         self
     }
 
+    /// A fact about the item: its name is translated, its meaning is already text.
+    fn fact(&mut self, name: &'static str, meaning: String) -> &mut Self {
+        self.lines.push(HelpLine::Value { name: (self.tr)(name), meaning });
+        self
+    }
+
     fn key(&mut self, keys: String, does: &'static str) -> &mut Self {
         self.lines.push(HelpLine::Key { keys, does: (self.tr)(does) });
         self
@@ -116,6 +140,8 @@ impl Builder<'_> {
 
 fn build(field: Field, _ws: &Workspace, keys: &Keymap, tr: &dyn Fn(&'static str) -> String) -> Help {
     let mut b = Builder { tr, keys, lines: Vec::new() };
+    // The title of a row drawn from the keys tree (its own label), else the field's.
+    let mut title = None;
     match field {
         // Availability
         Field::Status => {
@@ -329,15 +355,34 @@ fn build(field: Field, _ws: &Workspace, keys: &Keymap, tr: &dyn Fn(&'static str)
             b.text("The leader while typing a message and in dialogs, where plain keys type text.").blank();
             leader_keys(&mut b);
         }
-        // Placeholders until the Keys rows get their own help.
-        Field::GroupHeader(_) => {
-            b.text("A group of keys.");
+        Field::GroupHeader(n) => {
+            b.text("Keys that start the same way.");
+            let (rename, icon) = (b.key_of(Action::Open), b.key_of(Action::EditIcon));
+            b.key(rename, "rename it, Enter again saves (empty: the default)");
+            b.key(icon, "change its icon, Enter again saves (empty: the default)");
+            title = super::keymap::keys_tree(keys).into_iter().nth(n).map(|s| s.title);
         }
-        Field::Binding(_) => {
-            b.text("The keys for this action.");
+        Field::Binding(i) => {
+            let info = &super::keymap::ACTIONS[i];
+            b.text(info.description).blank();
+            let works = if info.context == Context::Global { format!("{} (Global)", tr("everywhere")) } else { tr(info.context.title()) };
+            b.fact("Works", works);
+            let now = keys.keys_label(info.context, info.name);
+            b.fact("Keys", if now.is_empty() { tr("(unbound)") } else { now.clone() });
+            let default = keys.default_label(info.context, info.name);
+            if default != now {
+                b.fact("Default", default);
+            }
+            b.lines.push(HelpLine::Value { name: "keys.toml".into(), meaning: info.name.into() });
+            b.blank();
+            let (open, unbind, reset) = (b.key_of(Action::Open), b.key_of(Action::Unbind), b.key_of(Action::Reset));
+            b.key(open, "record new keys (until a 1 s pause; any key counts)");
+            b.key(unbind, "remove its keys");
+            b.key(reset, "back to the default keys");
+            title = super::keymap::keys_tree(keys).into_iter().flat_map(|s| s.rows).find(|r| r.info == i).map(|r| r.label);
         }
     }
-    Help { title: field.label(), lines: b.lines }
+    Help { title: title.unwrap_or_else(|| field.label()), lines: b.lines }
 }
 
 /// How to record, remove or reset a leader.
@@ -571,5 +616,62 @@ mod tests {
         };
         assert!(strings().iter().any(|s| *s == first), "{first}");
         assert!(crate::tui::prefs::translatable().contains(&first));
+    }
+
+    fn jump_to() -> usize {
+        crate::tui::keymap::ACTIONS.iter().position(|a| a.context == Context::Global && a.name == "jump_to").unwrap()
+    }
+
+    fn value_of<'a>(h: &'a Help, name: &str) -> Option<&'a str> {
+        h.lines.iter().find_map(|l| match l { HelpLine::Value { name: n, meaning } if n == name => Some(meaning.as_str()), _ => None })
+    }
+
+    fn key_does<'a>(h: &'a Help, keys: &str) -> Option<&'a str> {
+        h.lines.iter().find_map(|l| match l { HelpLine::Key { keys: k, does } if k == keys => Some(does.as_str()), _ => None })
+    }
+
+    #[test]
+    fn a_binding_says_where_it_works_and_its_keys() {
+        let map = keys();
+        let i = jump_to();
+        let h = help(Field::Binding(i), &Workspace::default(), &map);
+        let info = &crate::tui::keymap::ACTIONS[i];
+        assert!(h.lines.contains(&HelpLine::Text(info.description.to_string())), "{h:?}");
+        assert_eq!(value_of(&h, "Works"), Some("everywhere (Global)"));
+        assert_eq!(value_of(&h, "Keys"), Some(map.keys_label(Context::Global, "jump_to").as_str()));
+        assert_eq!(value_of(&h, "keys.toml"), Some("jump_to"));
+        assert_eq!(key_lines(&h), ["Enter", "Delete", "r"]);
+        let other = crate::tui::keymap::ACTIONS.iter().position(|a| a.context == Context::Sidebar).unwrap();
+        let h = help(Field::Binding(other), &Workspace::default(), &map);
+        assert_eq!(value_of(&h, "Works"), Some(Context::Sidebar.title()));
+    }
+
+    #[test]
+    fn the_default_shows_only_when_changed() {
+        let i = jump_to();
+        let h = help(Field::Binding(i), &Workspace::default(), &keys());
+        assert_eq!(value_of(&h, "Default"), None);
+        let (rebound, warnings) = Keymap::load("[global]\njump_to = \"ctrl+g\"\n");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let h = help(Field::Binding(i), &Workspace::default(), &rebound);
+        assert_eq!(value_of(&h, "Keys"), Some("Ctrl+G"));
+        assert_eq!(value_of(&h, "Default"), Some(keys().keys_label(Context::Global, "jump_to").as_str()));
+    }
+
+    #[test]
+    fn a_group_row_says_how_to_rename() {
+        let h = help(Field::GroupHeader(0), &Workspace::default(), &keys());
+        assert_eq!(key_lines(&h), ["Enter", "i"]);
+        assert!(key_does(&h, "Enter").unwrap().contains("rename") && key_does(&h, "i").unwrap().contains("icon"), "{h:?}");
+        assert!(texts(&h) >= 1);
+    }
+
+    #[test]
+    fn the_filter_explains_itself() {
+        let h = filter_help(&keys());
+        assert_eq!(key_lines(&h), ["Enter", "Esc"]);
+        assert!(key_does(&h, "Enter").unwrap().contains("keep") && key_does(&h, "Esc").unwrap().contains("clear"), "{h:?}");
+        assert!(texts(&h) >= 1);
+        assert!(strings().iter().any(|s| matches!(&h.lines[0], HelpLine::Text(t) if t == *s)), "listed for translation");
     }
 }
