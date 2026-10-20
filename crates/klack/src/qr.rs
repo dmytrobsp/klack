@@ -23,7 +23,7 @@ pub fn modules(text: &str) -> Vec<Vec<bool>> {
 }
 
 /// One terminal line per two module rows: `▀` with the top module as foreground and the bottom as background, dark
-/// as black and light as bright white, so it scans on dark themes too. An odd last row is padded with light.
+/// as 24-bit black and light as 24-bit white (not palette colours, which follow the theme), so it scans on dark themes too. An odd last row is padded with light.
 pub fn half_blocks(modules: &[Vec<bool>]) -> Vec<String> {
     let mut lines = Vec::new();
     for pair in modules.chunks(2) {
@@ -31,8 +31,8 @@ pub fn half_blocks(modules: &[Vec<bool>]) -> Vec<String> {
         for x in 0..pair[0].len() {
             let top = pair[0][x];
             let bottom = pair.get(1).is_some_and(|r| r[x]);
-            line.push_str(if top { "\x1b[30m" } else { "\x1b[97m" });
-            line.push_str(if bottom { "\x1b[40m" } else { "\x1b[107m" });
+            line.push_str(if top { "\x1b[38;2;0;0;0m" } else { "\x1b[38;2;255;255;255m" });
+            line.push_str(if bottom { "\x1b[48;2;0;0;0m" } else { "\x1b[48;2;255;255;255m" });
             line.push('▀');
         }
         line.push_str("\x1b[0m");
@@ -121,10 +121,10 @@ mod tests {
     #[test]
     fn two_rows_make_one_line() {
         let l = half_blocks(&[vec![true, false], vec![false, true]]);
-        assert_eq!(l, vec!["\x1b[30m\x1b[107m▀\x1b[97m\x1b[40m▀\x1b[0m".to_string()]);
+        assert_eq!(l, vec!["\x1b[38;2;0;0;0m\x1b[48;2;255;255;255m▀\x1b[38;2;255;255;255m\x1b[48;2;0;0;0m▀\x1b[0m".to_string()]);
         let l = half_blocks(&[vec![true], vec![true], vec![true]]);
         assert_eq!(l.len(), 2);
-        assert_eq!(l[1], "\x1b[30m\x1b[107m▀\x1b[0m");
+        assert_eq!(l[1], "\x1b[38;2;0;0;0m\x1b[48;2;255;255;255m▀\x1b[0m");
     }
 
     #[test]
