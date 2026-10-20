@@ -267,6 +267,16 @@ klack never sees it, rebind `insert_leader` in F6 → Keys.
 If you miss a single key: single letters and F-keys moved behind `Space`, and every one of them can
 be put back on a key of its own (see below). `klack ctl keys-template` prints every action with its keys.
 
+### Links into your Slack
+
+A link to a channel, a message, a thread reply, a person or a file in one of your profile's
+workspaces is shown as `↪ <label>` (for a message, `› message from <author>` once klack has
+looked it up) in a colour of its own (`app_link` in the theme). A plain click opens it in klack: a
+link into another workspace of the profile switches to it first, and a link to something klack
+cannot find says so in the status bar. Hovering a link names where it goes. `␣o` lists "In klack"
+first, then "In the browser"; Ctrl+Shift+click (kitty) still opens the link in the browser. Links to
+other places open in the browser as before.
+
 ### Rebinding keys
 
 F6 → Keys lists every action under its group, with the which-key settings above them. `/` filters
@@ -388,7 +398,7 @@ Enter keeps it, Esc goes back (a theme file that does not load says why). A them
 a TOML file in `themes/` next to `settings.toml`: `base = "dark"` plus any colours to change
 (`"#ff8800"`, ANSI names such as `"light-red"`, or 0–255). Start from
 `klack ctl theme-template dark > sunset.toml`, edit it, and install it (checked first) with
-`klack ctl theme-import sunset.toml`; share themes by passing the file around.
+`klack ctl theme-import sunset.toml`; share themes by passing the file around. `link` is the colour of web links, `app_link` of links into your own Slack.
 
 To tell workspaces apart at a glance, F6 → Appearance → Theme for this workspace gives the
 workspace you are in a theme of its own (the same picker, with "(colour theme)" for none);
