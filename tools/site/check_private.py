@@ -2,6 +2,7 @@
 import html
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -9,6 +10,33 @@ SKIP_EXT = {".woff", ".woff2", ".ttf", ".otf", ".png", ".jpg", ".jpeg", ".gif", 
             ".ico", ".mp4", ".webm", ".ogg", ".mp3", ".wav", ".pdf", ".zip", ".gz"}
 _TAG = re.compile(r"<[^>]*>")
 _SEP = re.compile(r"[\s._-]+")
+
+
+# The repository's own public address may name its owner; the owner is read at run time, never written here.
+_GAP = "\x00"  # what an allowed address leaves behind: no separator, so nothing around it joins up
+
+
+def owner_from_remote(url):
+    """The GitHub owner in a remote URL (https, ssh or scp form); None for anything else."""
+    m = re.match(r"\s*(?:https?://|ssh://)?(?:[^@/\s]+@)?github\.com[:/]([A-Za-z0-9-]+)/", url or "")
+    return m.group(1) if m else None
+
+
+def allowed_forms(owner):
+    """Patterns of the allowed addresses: github.com/<owner>/klack (and any path after it),
+    <owner>.github.io/klack and <owner>.github.io. Case-insensitive."""
+    if not owner:
+        return ()
+    o = re.escape(owner)
+    end = r"(?![\w.-])"
+    return (re.compile(rf"(?<![\w.-])github\.com/{o}/klack{end}(?:[/?#][^\s\"'<>]*)?", re.I),
+            re.compile(rf"(?<![\w-]){o}\.github\.io(?:/klack{end})?{end}", re.I))
+
+
+def _allow(line, allow):
+    for pat in allow:
+        line = pat.sub(_GAP, line)
+    return line
 
 
 def _norm(s):
@@ -20,7 +48,7 @@ def _matches(line, keys):
     return [i for i, raw, nk in keys if raw in low or nk in nl]
 
 
-def scan_counted(root, forbidden):
+def scan_counted(root, forbidden, allow=()):
     """Return (hits, number of text files scanned). Paths are relative to root;
     a hit in a file NAME is reported as ("<name hidden>", 0, index)."""
     root = Path(root)
@@ -44,17 +72,26 @@ def scan_counted(root, forbidden):
         count += 1
         text = data.decode("utf-8", errors="replace")
         for n, line in enumerate(text.splitlines(), 1):
-            found = set(_matches(line, keys))
+            found = set(_matches(_allow(line, allow), keys))
             if "<" in line or "&" in line:
-                found |= set(_matches(html.unescape(_TAG.sub("", line)), keys))
+                found |= set(_matches(_allow(html.unescape(_TAG.sub("", line)), allow), keys))
             for i in sorted(found):
                 hits.append((rel, n, i))
     return hits, count
 
 
-def scan(root, forbidden):
+def scan(root, forbidden, allow=()):
     """Return [(path, line, index into forbidden)] for every hit."""
-    return scan_counted(root, forbidden)[0]
+    return scan_counted(root, forbidden, allow)[0]
+
+
+def _origin():
+    try:
+        r = subprocess.run(["git", "-C", str(Path(__file__).resolve().parent), "remote", "get-url", "origin"],
+                           capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return r.stdout if r.returncode == 0 else None
 
 
 def _load(path):
@@ -66,11 +103,20 @@ def _load(path):
     return out
 
 
-def main(argv=None):
-    argv = sys.argv[1:] if argv is None else argv
+def main(argv=None, remote=_origin):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    arg_owner = None
+    if "--allow-owner" in argv:
+        i = argv.index("--allow-owner")
+        if i + 1 >= len(argv):
+            print("usage: check_private.py <dir> [--allow-owner NAME]", file=sys.stderr)
+            return 2
+        arg_owner = argv[i + 1]
+        del argv[i:i + 2]
     if len(argv) != 1:
-        print("usage: check_private.py <dir>", file=sys.stderr)
+        print("usage: check_private.py <dir> [--allow-owner NAME]", file=sys.stderr)
         return 2
+    allow = allowed_forms(owner_from_remote(remote()) or arg_owner)
     lst = os.environ.get("KLACK_SITE_FORBIDDEN") or os.path.expanduser("~/.config/klack-site/forbidden.txt")
     if not os.path.isfile(lst):
         print("forbidden list missing: expected at " + lst, file=sys.stderr)
@@ -80,7 +126,7 @@ def main(argv=None):
         return 2
     try:
         forbidden = _load(lst)
-        hits, count = scan_counted(argv[0], forbidden)
+        hits, count = scan_counted(argv[0], forbidden, allow)
     except (OSError, UnicodeError):
         print("could not read the forbidden list or a site file", file=sys.stderr)
         return 2
