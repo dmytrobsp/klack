@@ -76,6 +76,15 @@ class RepoAddress(unittest.TestCase):
                 "alicesmith.github.io.evil.example\n")
         self.assertEqual(self.hits(text), [1, 2, 3, 4, 5, 6])
 
+    def test_what_follows_the_address_is_still_scanned(self):
+        text = ("https://github.com/alicesmith/klack/tree/Alice\n"
+                "https://github.com/alicesmith/klack?x=alicesmith\n"
+                "https://github.com/alicesmith/klack#alicesmith\n"
+                "<a href=\"https://github.com/alicesmith/klack/issues/1&amp;by=alicesmith\">x</a>\n"
+                "https://github.com/alicesmith/klack/blob/main/Alice%20Smith.md\n"
+                "https://alicesmith.github.io/klack/Alice\n")
+        self.assertEqual(self.hits(text), [1, 2, 3, 4, 5, 6])
+
     def test_nothing_is_allowed_without_an_owner(self):
         self.assertEqual(self.hits("https://github.com/alicesmith/klack\n", owner=None), [1])
 

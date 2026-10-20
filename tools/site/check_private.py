@@ -23,13 +23,13 @@ def owner_from_remote(url):
 
 
 def allowed_forms(owner):
-    """Patterns of the allowed addresses: github.com/<owner>/klack (and any path after it),
+    """Patterns of the allowed addresses, the bare prefixes only (whatever follows is scanned): github.com/<owner>/klack,
     <owner>.github.io/klack and <owner>.github.io. Case-insensitive."""
     if not owner:
         return ()
     o = re.escape(owner)
     end = r"(?![\w.-])"
-    return (re.compile(rf"(?<![\w.-])github\.com/{o}/klack{end}(?:[/?#][^\s\"'<>]*)?", re.I),
+    return (re.compile(rf"(?<![\w.-])github\.com/{o}/klack{end}", re.I),
             re.compile(rf"(?<![\w-]){o}\.github\.io(?:/klack{end})?{end}", re.I))
 
 

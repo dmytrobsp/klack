@@ -126,7 +126,7 @@ def fill_captures(html, captures):
     for region, name in CAPTURES.items():
         p = Path(captures) / f"{name}.html"
         if p.is_file():
-            html = fill(html, region, p.read_text().strip())
+            html = fill(html, region, p.read_text(encoding="utf-8").strip())
     return html
 
 
