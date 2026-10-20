@@ -22,7 +22,8 @@ before W starts; the rest of queue V comes after W.
 ## Part 1 — contextual help in F6
 
 ### What the user sees
-- The cursor's item (the selected row, not the hovered one — Claude's call) has its own help, in **a box under the
+- The cursor's item (the selected row, not the hovered one — Claude's call; hovering only highlights, as today; a
+  first click selects a row and so shows its help, a click on the selected row acts as Enter, as today) has its own help, in **a box under the
   list** (user: option A of the mockups), titled with the item's name, replacing today's dim per-category hint block
   (`fixed` / `hints` in `Prefs::draw`, crates/klack/src/tui/prefs.rs ~1112–1144). The rows keep the full width.
 - Each entry says (user): **what the option does**, **what its values mean** (a list when there are several), and
@@ -35,7 +36,9 @@ before W starts; the rest of queue V comes after W.
 - The keys named in a help are the user's **current** bindings (from the keymap, Preferences context), not defaults
   (Claude's call), so the text stays right after rebinding.
 - The box is rounded, dim-bordered, indented like the rows. When the list is long the box shrinks; a help that does
-  not fit is cut (last line ends in "…"); the rows are never covered (Claude's call). With no room at all, no box.
+  not fit is cut (last line ends in "…"); the rows are never covered (Claude's call). **Minimum height** (user): below
+  room for 3 lines of text plus the borders (or the whole help, if it is shorter — Claude's call on the number) the
+  box is not drawn at all.
 
 ### Which items get help
 - Every Field in every category, Keys' settings above the bindings included (which-key, leader, insert leader).
@@ -58,8 +61,8 @@ before W starts; the rest of queue V comes after W.
 ## Part 2 — `auth`: guided sign-in, status, logout
 
 ### Commands
-- `klack login` is replaced by **`klack auth login | logout | status`** (user). `klack login` is removed; typing it
-  prints one line pointing at `klack auth login` (Claude's call; no alias kept).
+- `klack login` is replaced by **`klack auth login | logout | status`** (user). `klack login` is **removed outright**
+  (user): no alias, no pointer; clap's usual "unrecognized subcommand" answer is all.
 - All act on `--profile` if given, else on the **default profile** (Part 3). Signing in under a new profile name
   creates that profile; there is no separate "create" (Claude's call).
 - The old flags stay on `auth login` for scripts (Claude's call): `--workspace URL`, `--cookie`, `--no-browser`,
@@ -107,8 +110,8 @@ before W starts; the rest of queue V comes after W.
      sign-in interception feature) — builder verifies which flags actually stop the prompt the user saw.
 5. Keys (user): ↑ ↓ and j k move (headings and dim rows are skipped), **Space marks several, Enter signs in to all
    marked** (or the cursor's row if none marked), `/` starts a filter and Esc drops it (only `/` filters — typing
-   letters would clash with j/k, user), Esc with no filter leaves the guide. A mouse click on a row moves the cursor
-   to it (Claude's call; a click toggling the mark is the builder's call).
+   letters would clash with j/k, user), Esc with no filter leaves the guide. A mouse click on a row **moves the cursor
+   to it and toggles its mark** (user), like Space; Enter then signs in to the marked ones.
 6. Drawn inline in the terminal (crossterm raw mode, ratatui's inline viewport or plain crossterm — builder's call; no
    new dependency); when done the list is erased and only result lines stay:
    `✓ Signed in to Acme Corp as Dmytro Dudnyk — profile default saved.` (one per workspace; a failure says why).
