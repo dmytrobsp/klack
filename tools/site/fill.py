@@ -1,0 +1,151 @@
+#!/usr/bin/env python3
+"""Fills the generated regions of site/index.html from data (stdlib only).
+
+    python3 tools/site/fill.py site [--fetch-release]
+"""
+import html as _html
+import json
+import os
+import re
+import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+REPO = "dmytrobsp/klack"
+ORDER = ["x86_64-linux", "aarch64-macos", "x86_64-macos", "x86_64-windows"]
+NAMES = {"x86_64-linux": "Linux", "aarch64-macos": "macOS · Apple Silicon",
+         "x86_64-macos": "macOS · Intel", "x86_64-windows": "Windows"}
+
+
+class ReleaseFetchError(Exception):
+    pass
+
+
+def fill(html, name, content):
+    start, end = f"<!-- fill:{name} -->", f"<!-- /fill:{name} -->"
+    i = html.find(start)
+    j = html.find(end, i + len(start)) if i >= 0 else -1
+    if i < 0 or j < 0:
+        raise KeyError(name)
+    return html[:i + len(start)] + content + html[j:]
+
+
+def fmt_size(n):
+    return f"{n / 1e6:.1f} MB"
+
+
+esc = lambda s: _html.escape(str(s), quote=True)
+
+
+def _find(release, platform):
+    return next((a for a in release["assets"] if a["platform"] == platform), None)
+
+
+def render_download_button(release):
+    lin = _find(release, "x86_64-linux") or release["assets"][0]
+    mac = _find(release, "aarch64-macos")
+    win = _find(release, "x86_64-windows")
+    link = lambda a, n: f'<a href="{esc(a["url"])}">{n}</a>' if a else n
+    return (f'<a class="dl" data-os="linux" href="{esc(lin["url"])}">DOWNLOAD FOR LINUX</a>'
+            f'<span class="dl-meta">v{esc(release["version"])} · {fmt_size(lin["size"])} · '
+            f'<span class="dl-others">{link(mac, "macOS")} · {link(win, "Windows")} · '
+            f'<a href="#get">all downloads</a></span></span>')
+
+
+def _plain(s):
+    s = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", s)
+    return s.replace("`", "").strip()
+
+
+def readme_needs(text):
+    out, inside = {}, False
+    for line in text.splitlines():
+        if line.startswith("## "):
+            inside = line.strip() == "## Install"
+            continue
+        if not inside or not line.startswith("|"):
+            continue
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) < 3:
+            continue
+        m = re.fullmatch(r"`?([\w.-]+)\.zip`?", cells[0])
+        if m:
+            out[m.group(1)] = (_plain(cells[1]), _plain(cells[2]))
+    return out
+
+
+def render_downloads(release, needs):
+    rank = lambda a: ORDER.index(a["platform"]) if a["platform"] in ORDER else len(ORDER)
+    rows = []
+    for a in sorted(release["assets"], key=rank):  # stable: unknown ones keep release order
+        runs, need = needs.get(a["platform"], ("", ""))
+        rows.append(f'<tr><th scope="row"><a href="{esc(a["url"])}">{esc(NAMES.get(a["platform"], a["platform"]))}</a>'
+                    f'<code>{esc(a["platform"])}.zip</code></th><td>{fmt_size(a["size"])}</td>'
+                    f'<td>{esc(runs)}</td><td>{esc(need)}</td></tr>')
+    return ('<table class="downloads"><thead><tr><th>Download</th><th>Size</th><th>Runs on</th><th>Needs</th></tr></thead>'
+            f'<tbody>{"".join(rows)}</tbody></table>'
+            f'<p class="sums"><a href="{esc(release["sums_url"])}">SHA256SUMS</a> · '
+            f'<a href="{esc(release["url"])}">release v{esc(release["version"])}</a></p>')
+
+
+def release_from_api(repo, token, urlopen=urllib.request.urlopen):
+    req = urllib.request.Request(f"https://api.github.com/repos/{repo}/releases/latest",
+                                 headers={"Accept": "application/vnd.github+json", "User-Agent": "klack-site"})
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
+    try:
+        with urlopen(req, timeout=20) as r:
+            data = json.loads(r.read().decode())
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        raise ReleaseFetchError(str(e)) from e
+    try:
+        version = data["tag_name"].lstrip("v")
+        assets, sums = [], None
+        for a in data["assets"]:
+            if a["name"] == "SHA256SUMS":
+                sums = a["browser_download_url"]
+                continue
+            m = re.fullmatch(rf"klack-{re.escape(version)}-(.+)\.zip", a["name"])
+            if m:
+                assets.append({"name": a["name"], "platform": m.group(1),
+                               "url": a["browser_download_url"], "size": a["size"]})
+        if not assets or not sums:
+            raise ReleaseFetchError("release has no zips or no SHA256SUMS")
+        return {"version": version, "url": data["html_url"], "sums_url": sums, "assets": assets}
+    except (KeyError, TypeError) as e:
+        raise ReleaseFetchError(f"unexpected reply: {e!r}") from e
+
+
+def fill_page(site, release=None, numbers=None, needs=None):
+    site = Path(site)
+    if release is None:
+        release = json.loads((site / "data/release.json").read_text())
+    if needs is None:
+        readme = site.resolve().parent / "README.md"
+        needs = readme_needs(readme.read_text()) if readme.exists() else {}
+    page = site / "index.html"
+    html = page.read_text()
+    html = fill(html, "download-button", render_download_button(release))
+    html = fill(html, "downloads", render_downloads(release, needs))
+    page.write_text(html)
+
+
+def main(argv, urlopen=urllib.request.urlopen, stderr=sys.stderr, readme=None):
+    args = [a for a in argv if not a.startswith("--")]
+    site = Path(args[0])
+    release = None
+    if "--fetch-release" in argv:
+        try:
+            release = release_from_api(REPO, os.environ.get("GITHUB_TOKEN"), urlopen=urlopen)
+            (site / "data/release.json").write_text(json.dumps(release, indent=2) + "\n")
+        except ReleaseFetchError as e:
+            print(f"release fetch failed: {e}; keeping site/data/release.json", file=stderr)
+            release = None
+    needs = readme_needs(Path(readme).read_text()) if readme else None
+    fill_page(site, release, needs=needs)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
