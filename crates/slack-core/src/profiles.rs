@@ -29,13 +29,23 @@ impl Dirs {
     }
 }
 
+/// Names next to the profiles that are klack's own (the default-profile file, `themes/` and
+/// `locales/` in the config folder, `login-browser/` in the cache folder), and Windows' device names.
+const RESERVED: &[&str] = &[
+    DEFAULT_FILE, "themes", "locales", "login-browser", "con", "nul", "aux", "prn", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+];
+
+/// What klack writes into a profile's cache folder.
+const CACHE_FILES: &[&str] = &["klack.log", "slacktui.log", LOCK_FILE];
+
 /// A profile name is a folder name: letters, digits, `-` and `_` only (no dots or slashes, so it
-/// can never point outside klack's folders), and not the name of the default-profile file.
+/// can never point outside klack's folders), and none of klack's own names next to the profiles
+/// in any case (file systems may ignore case).
 pub fn valid_name(name: &str) -> Result<()> {
     if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
         bail!("'{name}' is not a profile name: letters, digits, - and _ only");
     }
-    if name == DEFAULT_FILE {
+    if RESERVED.contains(&name.to_ascii_lowercase().as_str()) {
         bail!("'{name}' cannot be a profile name");
     }
     Ok(())
@@ -84,17 +94,38 @@ pub fn paths(d: &Dirs, name: &str) -> Vec<PathBuf> {
     [d.config.join(name), d.cache.join(name)].into_iter().filter(|p| p.symlink_metadata().is_ok()).collect()
 }
 
-/// Delete profile `name`'s folders and return them; refused while a klack runs on it. Drafts and
-/// the sidebar layout stay. When it was the default, `default` is the default again.
-pub fn remove(d: &Dirs, name: &str) -> Result<Vec<PathBuf>> {
+/// The folders `remove` would delete, or why it refuses. Only a profile is removed: its config
+/// folder holds `session.json`, or it has no config folder and its cache folder holds nothing but
+/// what klack writes there (the log, the lock) — left behind by a profile that never signed in.
+/// Refused while a klack runs on it.
+pub fn removable(d: &Dirs, name: &str) -> Result<Vec<PathBuf>> {
     valid_name(name)?;
     let gone = paths(d, name);
     if gone.is_empty() {
         bail!("no profile '{name}'");
     }
+    let (config, cache) = (d.config.join(name), d.cache.join(name));
+    let profile = if config.symlink_metadata().is_ok() {
+        config.join("session.json").is_file()
+    } else {
+        cache.symlink_metadata().is_ok_and(|m| m.is_dir())
+            && std::fs::read_dir(&cache).is_ok_and(|entries| {
+                entries.flatten().all(|e| e.file_type().is_ok_and(|t| t.is_file()) && e.file_name().to_str().is_some_and(|n| CACHE_FILES.contains(&n)))
+            })
+    };
+    if !profile {
+        bail!("'{name}' is not a profile (no sign-ins in {})", config.display());
+    }
     if is_running(d, name) {
         bail!("profile '{name}' is in use by a running klack — quit it first");
     }
+    Ok(gone)
+}
+
+/// Delete profile `name`'s folders and return them (see `removable` for what is refused). Drafts
+/// and the sidebar layout stay. When it was the default, `default` is the default again.
+pub fn remove(d: &Dirs, name: &str) -> Result<Vec<PathBuf>> {
+    let gone = removable(d, name)?;
     for path in &gone {
         // A symbolic link is removed itself, never what it points to.
         if path.symlink_metadata()?.is_dir() {
@@ -189,15 +220,20 @@ mod tests {
         three(&t);
         // A file next to the base that a bad name could reach.
         touch(&t.0.join("x/session.json"));
+        // klack's own folders and files next to the profiles, also in other cases (case-insensitive
+        // file systems), and Windows' device names.
+        touch(&t.1.config.join("themes/sunset.toml"));
+        touch(&t.1.config.join("locales/de.toml"));
+        touch(&t.1.cache.join("login-browser/klack-login-1/Cookies"));
         let before = tree(&t.0);
-        for name in ["", ".", "..", "../x", "a/b", "a\\b", "default-profile", "a b", "../config/a"] {
+        for name in ["", ".", "..", "../x", "a/b", "a\\b", "default-profile", "Default-Profile", "a b", "../config/a", "themes", "Themes", "locales", "login-browser", "con", "NUL", "aux", "prn", "com1", "COM9", "lpt1", "lpt9"] {
             assert!(valid_name(name).is_err(), "{name:?}");
             assert!(remove(&t.1, name).is_err(), "{name:?}");
             assert!(set_default(&t.1, name).is_err(), "{name:?}");
             assert!(paths(&t.1, name).is_empty(), "{name:?}");
         }
         assert_eq!(tree(&t.0), before);
-        for name in ["default", "a", "Work_2", "b-c"] {
+        for name in ["default", "a", "Work_2", "b-c", "com", "com10", "console"] {
             assert!(valid_name(name).is_ok(), "{name:?}");
         }
     }
@@ -236,6 +272,27 @@ mod tests {
         assert!(remove(&t.1, "a").is_err());
         assert!(remove(&t.1, "nope").is_err());
         assert!(!t.1.cache.join("a").exists() && !t.1.cache.join("nope").exists());
+    }
+
+    #[test]
+    fn only_profiles_are_removed() {
+        let t = Temp::new("notprofile");
+        three(&t);
+        // A config folder without sign-ins, and a cache folder holding something klack's profiles
+        // never write, are not profiles.
+        touch(&t.1.cache.join("stuff/picture.png"));
+        touch(&t.1.cache.join("c/klack.log"));
+        let before = tree(&t.0);
+        for name in ["c", "stuff"] {
+            let e = remove(&t.1, name).unwrap_err().to_string();
+            assert!(e.contains("not a profile"), "{name}: {e}");
+        }
+        assert_eq!(tree(&t.0), before);
+        // What a profile without sign-ins left behind in the cache (its log, its lock) goes.
+        touch(&t.1.cache.join("old/klack.log"));
+        touch(&t.1.cache.join("old/running.lock"));
+        assert_eq!(remove(&t.1, "old").unwrap(), [t.1.cache.join("old")]);
+        assert!(!t.1.cache.join("old").exists());
     }
 
     #[test]

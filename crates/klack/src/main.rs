@@ -195,14 +195,7 @@ fn profile_command(dirs: &Dirs, cmd: ProfileCmd) -> Result<()> {
             Ok(())
         }
         ProfileCmd::Remove { name, yes } => {
-            profiles::valid_name(&name)?;
-            let gone = profiles::paths(dirs, &name);
-            if gone.is_empty() {
-                anyhow::bail!("no profile '{name}'");
-            }
-            if profiles::is_running(dirs, &name) {
-                anyhow::bail!("profile '{name}' is in use by a running klack — quit it first");
-            }
+            let gone = profiles::removable(dirs, &name)?;
             eprintln!("This deletes (drafts and sidebar layout stay):");
             for path in &gone {
                 eprintln!("  {}", path.display());

@@ -128,6 +128,15 @@ impl Profile {
         Ok(serde_json::from_str(&text)?)
     }
 
+    /// Read a session file, or a new empty profile when there is none; a file that exists but
+    /// cannot be read is an error, so that saving does not replace its sessions.
+    pub fn read_or_new(path: &Path) -> Result<Self> {
+        if !path.exists() {
+            return Ok(Profile::default());
+        }
+        Self::read(path).with_context(|| format!("cannot read {}", path.display()))
+    }
+
     /// Read a session file (another profile's, for `klack profile list`).
     pub fn read(path: &Path) -> Result<Self> {
         Ok(serde_json::from_str(&std::fs::read_to_string(path)?)?)
@@ -144,12 +153,15 @@ impl Profile {
 
     /// Insert or replace the session of its account (team + user: one profile may hold two
     /// accounts of one workspace).
+    /// The account keeps its place, so the one started and the Alt+1…9 order stay.
     pub fn upsert(&mut self, ws: WorkspaceSession) {
-        self.workspaces.retain(|w| w.team_id != ws.team_id || w.user_id != ws.user_id);
         if self.default_team.is_none() {
             self.default_team = Some(ws.team_id.clone());
         }
-        self.workspaces.push(ws);
+        match self.workspaces.iter_mut().find(|w| w.team_id == ws.team_id && w.user_id == ws.user_id) {
+            Some(old) => *old = ws,
+            None => self.workspaces.push(ws),
+        }
     }
 
     /// Every account of the workspace `team` (its id or name).
@@ -317,6 +329,30 @@ mod tests {
         assert_eq!(p.default_team.as_deref(), Some("T0000000002"));
         assert!(p.remove("T0000000002", "U0000000001"));
         assert_eq!(p.default_team, None);
+    }
+
+    #[test]
+    fn signing_in_again_keeps_the_order() {
+        let mut p = Profile::default();
+        p.upsert(account("T0000000001", "acme", "U0000000001"));
+        p.upsert(account("T0000000001", "acme", "U0000000002"));
+        p.upsert(account("T0000000002", "other", "U0000000001"));
+        p.upsert(WorkspaceSession { source: Some(SessionSource::Cookie), ..account("T0000000001", "acme", "U0000000001") });
+        let order: Vec<(&str, &str)> = p.workspaces.iter().map(|w| (w.team_id.as_str(), w.user_id.as_str())).collect();
+        assert_eq!(order, [("T0000000001", "U0000000001"), ("T0000000001", "U0000000002"), ("T0000000002", "U0000000001")]);
+        assert_eq!(p.workspace(None).unwrap().user_id, "U0000000001");
+        assert_eq!(p.workspaces[0].source, Some(SessionSource::Cookie));
+    }
+
+    #[test]
+    fn a_broken_session_file_is_not_replaced() {
+        let dir = std::env::temp_dir().join(format!("klack-session-read-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // No file: a new, empty profile.
+        assert!(Profile::read_or_new(&dir.join("session.json")).unwrap().workspaces.is_empty());
+        std::fs::write(dir.join("session.json"), "{ not json").unwrap();
+        assert!(Profile::read_or_new(&dir.join("session.json")).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

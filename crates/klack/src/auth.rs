@@ -26,6 +26,8 @@ pub struct LoginFlags {
 /// asked), in a browser window, or with the `d` cookie (flag, `$KLACK_COOKIE_D` or asked for).
 pub async fn login(profile: &str, flags: LoginFlags) -> Result<()> {
     let LoginFlags { workspace, cookie, no_browser, from_browser, browser_profile } = flags;
+    // Only a missing file is a new profile: one that cannot be read is not replaced.
+    let mut saved = Profile::read_or_new(&session::config_dir(profile)?.join("session.json"))?;
     let url = workspace.ok_or_else(|| anyhow!("which workspace? add --workspace acme.slack.com"))?;
     let url = if url.starts_with("https://") { url } else { format!("https://{url}") };
     let given = cookie.or_else(|| std::env::var("KLACK_COOKIE_D").ok());
@@ -102,7 +104,6 @@ pub async fn login(profile: &str, flags: LoginFlags) -> Result<()> {
             WorkspaceSession { source: Some(SessionSource::Cookie), ..s }
         }
     };
-    let mut saved = Profile::load(profile).unwrap_or_default();
     println!("signed in to {} ({}) as {} ({})", ws.team_name, ws.team_id, ws.user_name, ws.user_id);
     saved.upsert(ws);
     let path = saved.save(profile)?;
@@ -176,13 +177,7 @@ async fn check(ws: &WorkspaceSession) -> String {
 /// One line per workspace of `profile` — name, address, who you are, where the session came
 /// from and whether it still works (checked concurrently) — with ★ on the one plain `klack` opens.
 pub async fn status(profile: &str) -> Result<()> {
-    let p = match Profile::load(profile) {
-        Ok(p) => p,
-        Err(_) => {
-            println!("profile {profile} has no sign-ins — klack auth login");
-            return Ok(());
-        }
-    };
+    let p = Profile::read_or_new(&session::config_dir(profile)?.join("session.json"))?;
     if p.workspaces.is_empty() {
         println!("profile {profile} has no sign-ins — klack auth login");
         return Ok(());
