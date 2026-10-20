@@ -11,12 +11,14 @@ use serde_json::Value;
 
 use crate::session::{self, SessionSource, WorkspaceSession};
 
-/// Slack's sign-in page, where the person asks for the code.
+/// Slack's sign-in page: it hands out the cookies the code calls need (and is the browser's sign-in link on a desktop).
 pub const SIGNIN_PAGE: &str = "https://slack.com/signin";
 
-/// The sign-in page with `email` already typed in.
+/// The page where the person asks for the code, with `email` already typed in: Slack's "get started" form, which
+/// works on a phone too. On a phone `slack.com/signin` goes to the app download page instead (checked 2026-10-20),
+/// and the form only takes the email from the query before the `#/createnew` fragment, not from inside it.
 pub fn signin_link(email: &str) -> String {
-    let mut out = format!("{SIGNIN_PAGE}?email=");
+    let mut out = String::from("https://app.slack.com/get-started?email=");
     for b in email.bytes() {
         if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
             out.push(b as char);
@@ -24,6 +26,7 @@ pub fn signin_link(email: &str) -> String {
             out.push_str(&format!("%{b:02X}"));
         }
     }
+    out.push_str("#/createnew");
     out
 }
 
@@ -239,9 +242,9 @@ mod tests {
 
     #[test]
     fn the_link_fills_in_the_email() {
-        assert_eq!(signin_link("you@gmail.com"), "https://slack.com/signin?email=you%40gmail.com");
-        assert!(signin_link("a+b c@x.io").ends_with("a%2Bb%20c%40x.io"));
-        assert!(signin_link("ü@x.io").ends_with("%C3%BC%40x.io"));
+        assert_eq!(signin_link("you@gmail.com"), "https://app.slack.com/get-started?email=you%40gmail.com#/createnew");
+        assert!(signin_link("a+b c@x.io").ends_with("?email=a%2Bb%20c%40x.io#/createnew"));
+        assert!(signin_link("ü@x.io").ends_with("?email=%C3%BC%40x.io#/createnew"));
     }
 
     #[test]

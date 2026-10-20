@@ -146,7 +146,7 @@ mod tests {
 
     #[test]
     fn the_code_has_its_quiet_zone_and_finders() {
-        let m = modules("https://slack.com/signin?email=person%40example.com");
+        let m = modules("https://app.slack.com/get-started?email=person%40example.com#/createnew");
         assert!(!m.is_empty() && m.iter().all(|r| r.len() == m.len()));
         let n = m.len();
         assert!(m[..4].iter().all(|r| r.iter().all(|d| !d)));
@@ -176,7 +176,7 @@ mod tests {
         assert_eq!(fit(37, 19, 50, 30, 40), Fit::LinkOnly);
         assert_eq!(fit(37, 19, 50, 95, 20), Fit::LinkOnly);
         let s = code_screen("person@example.com", 30, 40).join("\n");
-        assert!(s.contains(&osc8("https://slack.com/signin?email=person%40example.com")));
+        assert!(s.contains(&osc8("https://app.slack.com/get-started?email=person%40example.com#/createnew")));
         assert!(!s.contains('▀'));
         // Beside needs 3 + rows + 2 lines, under 3 + rows + 1 + 4 + 2.
         assert_eq!(fit(37, 19, 50, 80, 19 + 8), Fit::LinkOnly);
@@ -191,7 +191,10 @@ mod tests {
     fn beside_lines_are_no_wider_than_the_fit_says() {
         let link = slack_core::signin::signin_link("person@example.com");
         let qr_cols = modules(&link).len();
-        let screen = code_screen("person@example.com", 100, 40);
+        // The code (45 columns), the gap and the link (71) need 119 columns to stand side by side.
+        assert_eq!(qr_cols, 45);
+        assert_eq!(fit(qr_cols, qr_cols.div_ceil(2), link.width(), 118, 40), Fit::Under);
+        let screen = code_screen("person@example.com", 120, 40);
         let text_cols = ["On your phone, scan this — or open", link.as_str(), "Slack emails you a code. Type it here;"].iter().map(|t| t.width()).max().unwrap();
         for l in &screen[3..] {
             let v = visible(l);
@@ -203,9 +206,9 @@ mod tests {
 
     #[test]
     fn wrapped_lines_are_counted() {
-        // The link is 51 columns: 3 lines on a terminal 20 wide; an empty line is still one.
-        let link = osc8("https://slack.com/signin?email=person%40example.com");
-        assert_eq!(rows_on(&[String::new(), "abc".into(), link], 20), 5);
+        // The link is 71 columns: 4 lines on a terminal 20 wide; an empty line is still one.
+        let link = osc8("https://app.slack.com/get-started?email=person%40example.com#/createnew");
+        assert_eq!(rows_on(&[String::new(), "abc".into(), link], 20), 6);
         let screen = code_screen("person@example.com", 100, 40);
         assert_eq!(rows_on(&screen, 100), screen.len());
     }
@@ -215,6 +218,6 @@ mod tests {
     #[ignore]
     fn qr_print() {
         let out = std::env::var("KLACK_QR_OUT").unwrap();
-        std::fs::write(out, code_screen("person@example.com", 100, 40).join("\n") + "\n").unwrap();
+        std::fs::write(out, code_screen("person@example.com", 120, 40).join("\n") + "\n").unwrap();
     }
 }

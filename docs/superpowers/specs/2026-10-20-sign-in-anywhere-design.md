@@ -43,8 +43,11 @@ with a `multipart/form-data` body:
 
 Each try left one more B session on Slack; nothing was signed out.
 
-**Slack's sign-in page fills in the email from the address:** `https://slack.com/signin?email=you%40example.com`
-(a query string; after the `#` it is ignored) — checked in a headless browser, field value read live.
+**Slack's sign-in page fills in the email from the address:** `https://app.slack.com/get-started?email=you%40example.com#/createnew`
+(a query string before the `#`; `#/createnew?email=…` shows the form empty) — checked in a headless browser with a phone's
+user agent, field value read live. On a phone `slack.com/signin` redirects to the app download page — found in the
+first live check, 2026-10-20 — so the code's link is the "get started" form; `slack.com/signin` is still where the
+sign-in cookies come from.
 
 **Not used, and why** (so it isn't rediscovered): catching the desktop app's `slack://…/magic-login/<token>` hand-off
 would mean claiming the system's `slack://` handler; the user first allowed it with a guaranteed restore, then dropped
@@ -91,7 +94,7 @@ Sign in with a code
   Email: you@gmail.com
 
   ▄▄▄▄▄▄▄ ▄ ▄▄ ▄▄▄▄▄▄▄     On your phone, scan this — or open
-  █ ▄▄▄ █ ▀█▄█ █ ▄▄▄ █     slack.com/signin?email=you%40gmail.com
+  █ ▄▄▄ █ ▀█▄█ █ ▄▄▄ █     app.slack.com/get-started?email=you%40gmail.com#/createnew
   █ ███ █ ▄▀ ▀ █ ███ █     Slack emails you a code. Type it here;
   …                        don't enter it on the phone.
 
@@ -100,8 +103,9 @@ Sign in with a code
 
 1. **Email** — one line (W5's `ask`); when signing in again, the email the session came from is filled in (Enter
    keeps it).
-2. **QR code** (user: "definitely") opening `https://slack.com/signin?email=<the email, percent-encoded>` (user: "not
-   have to input email twice"), drawn with Unicode half blocks, dark modules on an explicitly light background with
+2. **QR code** (user: "definitely") opening `https://app.slack.com/get-started?email=<the email, percent-encoded>#/createnew`
+   (user: "not have to input email twice"; on a phone `slack.com/signin` redirects to the app download page — found in
+   the first live check, 2026-10-20), drawn with Unicode half blocks, dark modules on an explicitly light background with
    the quiet zone, so it scans on dark terminal themes too. The same link is printed beside it (or under it when the
    terminal is narrow), as an OSC 8 hyperlink with the address as its visible text; a terminal too small for the code
    shows only the link. On the phone the user passes Slack's captcha if asked; Slack emails the code.
