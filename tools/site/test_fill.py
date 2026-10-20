@@ -114,6 +114,54 @@ class FillTests(unittest.TestCase):
             F.fill_page(site)
             self.assertEqual((site / "index.html").read_text(), out)
 
+    def _capture_site(self, d, names):
+        site = Path(d)
+        (site / "data").mkdir()
+        (site / "data/release.json").write_text(json.dumps(RELEASE))
+        marks = "".join(f"<!-- fill:{m} -->old<!-- /fill:{m} -->" for m in
+                        ["download-button", "downloads", "hero-capture", "capture-huddle", "capture-signin",
+                         "capture-keys", "capture-ssh"])
+        (site / "index.html").write_text(marks)
+        (site / "captures").mkdir()
+        for n in names:
+            (site / "captures" / f"{n}.html").write_text(f"<div>{n} capture</div>\n")
+        return site
+
+    def test_fill_page_puts_in_every_capture(self):
+        with tempfile.TemporaryDirectory() as d:
+            site = self._capture_site(d, ["hero", "huddle", "signin", "keys", "ssh"])
+            F.fill_page(site)
+            out = (site / "index.html").read_text()
+            self.assertIn("<!-- fill:hero-capture --><div>hero capture</div><!-- /fill:hero-capture -->", out)
+            for n in ("huddle", "signin", "keys", "ssh"):
+                self.assertIn(f"<!-- fill:capture-{n} --><div>{n} capture</div><!-- /fill:capture-{n} -->", out)
+            F.fill_page(site)
+            self.assertEqual((site / "index.html").read_text(), out)
+
+    def test_fill_page_keeps_a_region_without_its_capture(self):
+        with tempfile.TemporaryDirectory() as d:
+            site = self._capture_site(d, ["keys"])
+            F.fill_page(site)
+            out = (site / "index.html").read_text()
+            self.assertIn("<!-- fill:capture-keys --><div>keys capture</div><!-- /fill:capture-keys -->", out)
+            self.assertIn("<!-- fill:hero-capture -->old<!-- /fill:hero-capture -->", out)
+            self.assertIn("<!-- fill:capture-ssh -->old<!-- /fill:capture-ssh -->", out)
+
+    def test_a_capture_without_its_region_is_an_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            site = self._capture_site(d, ["ssh"])
+            (site / "index.html").write_text("<!-- fill:download-button --><!-- /fill:download-button -->"
+                                             "<!-- fill:downloads --><!-- /fill:downloads -->")
+            with self.assertRaises(KeyError) as c:
+                F.fill_page(site)
+            self.assertIn("capture-ssh", str(c.exception))
+
+    def test_the_site_has_all_five_captures(self):
+        for n in ("hero", "huddle", "signin", "keys", "ssh"):
+            t = (ROOT / "site/captures" / f"{n}.html").read_text()
+            self.assertTrue(t.startswith('<div class="term capture"'), n)
+            self.assertIn("<pre>", t)
+
     def test_cli_failed_fetch_keeps_file(self):
         with tempfile.TemporaryDirectory() as d:
             site = Path(d)

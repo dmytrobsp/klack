@@ -117,6 +117,19 @@ def release_from_api(repo, token, urlopen=urllib.request.urlopen):
         raise ReleaseFetchError(f"unexpected reply: {e!r}") from e
 
 
+# fill region -> site/captures/<name>.html (Task 7); a region whose capture is missing keeps what it has
+CAPTURES = {"hero-capture": "hero", "capture-huddle": "huddle", "capture-signin": "signin",
+            "capture-keys": "keys", "capture-ssh": "ssh"}
+
+
+def fill_captures(html, captures):
+    for region, name in CAPTURES.items():
+        p = Path(captures) / f"{name}.html"
+        if p.is_file():
+            html = fill(html, region, p.read_text().strip())
+    return html
+
+
 def fill_page(site, release=None, numbers=None, needs=None):
     site = Path(site)
     if release is None:
@@ -128,6 +141,7 @@ def fill_page(site, release=None, numbers=None, needs=None):
     html = page.read_text()
     html = fill(html, "download-button", render_download_button(release))
     html = fill(html, "downloads", render_downloads(release, needs))
+    html = fill_captures(html, site / "captures")
     page.write_text(html)
 
 
