@@ -98,9 +98,12 @@ After the browsers come three ways, for any workspace (also from the `another wo
   Slack's captcha, so only a real browser can do it). Type the code into the `___-___` prompt; klack confirms
   it with Slack itself and lists the workspaces of that address. Workspaces that need two-factor or SSO are
   shown dim ("needs your browser (two-factor)") — use the browser way for those.
+  This way works over SSH and on machines with no browser.
 - **In your browser:** klack prints a link; open it in whichever browser and profile you like and sign in.
   klack watches the browser profiles (read only) and, when one gets a new Slack session, offers it. On
   Windows, Chrome cannot be watched (app-bound encryption); the row says so and points to Firefox or the code.
+  It needs a browser on the machine klack runs on; over SSH, use the code way instead, or reach that
+  machine's browser through a remote desktop (such as RDP) while klack runs in the SSH session.
 - **Paste a cookie:** the `d` cookie by hand.
 
 `klack auth login --email you@example.com` goes straight to the code way with the address filled in.
