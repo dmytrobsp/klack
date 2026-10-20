@@ -602,10 +602,21 @@ async fn by_email(profile_name: &str, email: &str, asking: bool) -> Result<()> {
     } else {
         code_from_stdin(email).await?
     };
-    if results.is_empty() {
-        return nothing_signed_in();
+    let count = if results.is_empty() {
+        nothing_signed_in()?;
+        0
+    } else {
+        finish(profile_name, &mut saved, results)?
+    };
+    email_outcome(asking, count)
+}
+
+/// How `auth login --email` ends after saving `saved` sessions: without a terminal nothing saved is an error, so a
+/// script can tell (what failed has been printed already); in a terminal the person has seen it.
+fn email_outcome(asking: bool, saved: usize) -> Result<()> {
+    if !asking && saved == 0 {
+        bail!("nothing signed in");
     }
-    finish(profile_name, &mut saved, results)?;
     Ok(())
 }
 
@@ -1193,6 +1204,15 @@ mod tests {
         assert_eq!(team_rows(&teams, &profile, Some("T0000000003")).1, Vec::<usize>::new());
         // Only one can be used: it is marked.
         assert_eq!(team_rows(&teams[..2], &profile, None).1, [0]);
+    }
+
+    #[test]
+    fn a_script_learns_that_nothing_was_signed_in() {
+        // Without a terminal nothing saved is an error (a non-zero exit); in a terminal the person has seen why.
+        assert!(email_outcome(false, 0).is_err_and(|e| e.to_string() == "nothing signed in"));
+        assert!(email_outcome(false, 2).is_ok());
+        assert!(email_outcome(true, 0).is_ok());
+        assert!(email_outcome(true, 1).is_ok());
     }
 
     #[test]
