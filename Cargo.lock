@@ -2281,7 +2281,6 @@ dependencies = [
  "slack-core",
  "syntect",
  "tokio",
- "tokio-tungstenite",
  "toml",
  "toml_edit",
  "tracing",

@@ -37,7 +37,7 @@ pub enum SessionSource {
     /// Taken from a browser profile the user is signed in with: `browser` is `firefox` or
     /// `chrome`, `profile` the profile's folder, `label` how it is shown ("Chrome · Work").
     Browser { browser: String, profile: PathBuf, label: String },
-    /// Signed in in klack's temporary browser window.
+    /// Signed in in klack's former temporary browser window (no longer offered; old files still load).
     Window,
     /// The `d` cookie given by hand (flag, environment or prompt).
     Cookie,
@@ -387,6 +387,12 @@ pub async fn signed_in_teams_with(http: &reqwest::Client, cookie_d: &str) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_old_window_session_still_loads() {
+        let source: SessionSource = serde_json::from_str(r#"{"kind":"window"}"#).unwrap();
+        assert_eq!(source, SessionSource::Window);
+    }
 
     #[test]
     fn old_folders_are_adopted_once() {

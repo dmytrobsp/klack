@@ -232,6 +232,7 @@ fn firefox_profiles_in(root: &Path) -> Vec<BrowserProfile> {
 }
 
 /// Every workspace each browser profile of this machine is signed in to, checked.
+#[cfg(test)]
 pub async fn discover() -> Vec<Group> {
     discover_in(browser_profiles()).await
 }

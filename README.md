@@ -87,20 +87,17 @@ one under the cursor), `/` filters, a click marks a row, Esc in the list leaves 
 Workspaces a browser is signed out of are shown dim with the reason; ones already in the profile say
 `already signed in` (picking one refreshes it). The last row, `another workspace, or sign in another
 way…`, asks for the workspace (`acme` — `.slack.com` is filled in — or a link pasted from the browser)
-and how to sign in to it: a browser profile signed in there, a new browser window, or the `d` cookie
+and how to sign in to it: a browser profile signed in there, a code from your email, your browser, or the `d` cookie
 by hand. Esc at those questions skips only that workspace: rows marked together with `another
 workspace…` are still signed in to and saved. Each workspace ends in one line: `✓ Signed in to Acme as
 you — profile default saved.`
 
 For scripts (nothing is asked without a terminal):
 
-- **In a browser window:** `klack auth login --workspace acme.slack.com` (in a terminal it lists the
-  ways for that workspace first) opens Chrome,
-  Chromium, Edge or Brave (an installed one or a flatpak; `KLACK_BROWSER` picks another) on the
-  workspace's sign-in page, with a temporary profile of its own (no sync; klack turns off Chrome's offers to sign
-  itself in or set up a profile after a Google sign-in on the page, in that profile only). Sign in there however Slack offers
-  (password, Google / SSO, 2FA, an emailed code); klack notices, takes the session, closes the window
-  and deletes that profile. Your own browser profile is never read or changed. Ctrl+C cancels.
+- **Several ways for one workspace:** `klack auth login --workspace acme.slack.com` in a terminal lists the
+  browsers signed in to it, then a code from your email, your browser and a pasted cookie (that workspace
+  is marked in each list). Without a terminal the `d` cookie is read (below). The old throwaway browser
+  window is gone.
 - **From the browser you already use:** `klack auth login --workspace acme.slack.com --from-browser
   firefox` (or `chrome`) takes the session from a browser you are signed in to Slack with. Its cookie
   database is copied and read, never changed; Chrome's (and Chromium's, Edge's, Brave's) cookies are
@@ -112,11 +109,11 @@ For scripts (nothing is asked without a terminal):
   profile name and the account) and asks which; without a terminal to ask in it takes the one used
   most recently. Chrome
   on Windows cannot be read this way (app-bound encryption); Firefox can.
-- **By hand:** with `--no-browser`, or when no such browser is found, klack asks for the value of
+- **By hand:** without a terminal klack asks for the value of
   the `d` cookie for `slack.com` (sign in in any browser, then devtools → Application → Cookies);
   `KLACK_COOKIE_D` or `--cookie` give it directly. Either way klack fetches the token itself and
-  checks it with `auth.test`. (There is no sign-in by emailed code inside the terminal: Slack sends
-  the code only after a captcha, which needs a browser — the window above does it.)
+  checks it with `auth.test`. `klack auth login --email you@example.com` signs in with the code Slack
+  emails you (the link is printed; the code is read from standard input).
 
 Sessions are saved per profile in `~/.config/klack/<profile>/session.json` (owner-only
 permissions), each with where it came from (which browser profile, the window, or a cookie — names

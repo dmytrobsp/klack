@@ -2,7 +2,6 @@
 
 mod auth;
 mod ctl;
-mod login_browser;
 mod login_import;
 mod login_watch;
 mod pick;
@@ -63,17 +62,14 @@ enum AuthCmd {
     /// from your email, in your browser, or by pasting a cookie.
     Login {
         /// The workspace (acme, acme.slack.com or a link from the browser). In a terminal the ways
-        /// to sign in to it are listed; without one a browser window opens to sign in (Chrome,
-        /// Chromium, Edge or Brave, with a temporary profile), failing that the `d` cookie is read.
+        /// to sign in to it are listed (the browsers signed in to it, a code from your email, your
+        /// browser, a pasted cookie); without one the `d` cookie is read from standard input.
         #[arg(long, value_name = "URL")]
         workspace: Option<String>,
         /// Value of the browser's `d` cookie for slack.com (prefer the env var or the prompt,
         /// so it does not end up in your shell history).
         #[arg(long)]
         cookie: Option<String>,
-        /// Do not open a browser window; ask for the cookie.
-        #[arg(long)]
-        no_browser: bool,
         /// Take the session from a browser you are signed in to Slack with (read-only).
         #[arg(long, value_enum, value_name = "BROWSER")]
         from_browser: Option<login_import::Source>,
@@ -84,7 +80,7 @@ enum AuthCmd {
         /// Sign in with the code Slack emails to this address (scan the QR code or open the link,
         /// ask for the code, type it here). Without a terminal the link is printed, the code is read
         /// from standard input and every workspace that can be used is signed in to.
-        #[arg(long, value_name = "ADDRESS", conflicts_with_all = ["workspace", "cookie", "no_browser", "from_browser"])]
+        #[arg(long, value_name = "ADDRESS", conflicts_with_all = ["workspace", "cookie", "from_browser"])]
         email: Option<String>,
     },
     /// Forget sign-ins on this machine (Slack is not signed out): in a terminal the profile's are
@@ -169,7 +165,7 @@ async fn run() -> Result<()> {
     }
     match cli.command {
         Some(Command::Auth { cmd }) => match cmd {
-            AuthCmd::Login { workspace, cookie, no_browser, from_browser, browser_profile, email } => auth::login(&profile, auth::LoginFlags { workspace, cookie, no_browser, from_browser, browser_profile, email }).await,
+            AuthCmd::Login { workspace, cookie, from_browser, browser_profile, email } => auth::login(&profile, auth::LoginFlags { workspace, cookie, from_browser, browser_profile, email }).await,
             AuthCmd::Logout { all } => auth::logout(&profile, cli.team.as_deref(), all).await,
             AuthCmd::Status => auth::status(&profile).await,
         },
