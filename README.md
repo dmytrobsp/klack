@@ -48,7 +48,7 @@ certificates klack uses the Mozilla roots it carries.
 
 ```sh
 cargo build --release
-./target/release/klack login --workspace acme.slack.com   # prompts for the `d` cookie
+./target/release/klack auth login --workspace acme.slack.com   # opens a browser window to sign in
 ./target/release/klack
 ```
 
@@ -80,12 +80,12 @@ unread); a click on a tile switches, like Alt+1…9.
 
 ## Signing in
 
-- **In a browser window (the easy way):** `klack login --workspace acme.slack.com` opens Chrome,
+- **In a browser window (the easy way):** `klack auth login --workspace acme.slack.com` opens Chrome,
   Chromium, Edge or Brave (an installed one or a flatpak; `KLACK_BROWSER` picks another) on the
   workspace's sign-in page, with a temporary profile of its own. Sign in there however Slack offers
   (password, Google / SSO, 2FA, an emailed code); klack notices, takes the session, closes the window
   and deletes that profile. Your own browser profile is never read or changed. Ctrl+C cancels.
-- **From the browser you already use:** `klack login --workspace acme.slack.com --from-browser
+- **From the browser you already use:** `klack auth login --workspace acme.slack.com --from-browser
   firefox` (or `chrome`) takes the session from a browser you are signed in to Slack with. Its cookie
   database is copied and read, never changed; Chrome's (and Chromium's, Edge's, Brave's) cookies are
   decrypted with its key from the system keyring (Linux) or the Keychain (macOS, which asks once).
@@ -101,7 +101,23 @@ unread); a click on a tile switches, like Alt+1…9.
   the code only after a captcha, which needs a browser — the window above does it.)
 
 Sessions are saved per profile in `~/.config/klack/<profile>/session.json` (owner-only
-permissions). Use `--profile NAME` to keep several accounts apart. Profiles separate accounts only:
+permissions), each with where it came from (which browser profile, the window, or a cookie — names
+only, nothing secret). One profile may hold two accounts of the same workspace.
+
+- `klack auth status` — each workspace of the profile, who you are there, where the session came from
+  and whether it still works (checked with Slack); ★ marks the one plain `klack` opens.
+- `klack auth logout --team NAME` (or `--all`) — forgets that sign-in on this machine only; Slack is
+  not signed out (a session taken from a browser stays that browser's). The profile stays, empty if
+  it was the last.
+- `klack profile list` — every profile, ★ on the default, with its workspaces (local files only).
+- `klack profile default NAME` — plain `klack` (and `auth`, `ctl`) use that profile from now on
+  (kept in `~/.config/klack/default-profile`); `--profile NAME` always wins.
+- `klack profile remove NAME` — lists and, after a y/N question (or `--yes`), deletes the profile's
+  `~/.config/klack/NAME/` (sign-ins) and `~/.cache/klack/NAME/` (log, caches); drafts and the
+  sidebar layout stay. Refused while a klack runs on that profile.
+
+Use `--profile NAME` to keep several accounts apart (letters, digits, `-` and `_`); signing in under a
+new name makes that profile. Profiles separate accounts only:
 the preferences (`settings.toml`, everything in F6), `keys.toml`, `themes/` and `locales/` are shared
 by all profiles; each profile has its own sessions and its own log/cache folder. To tell workspaces
 apart, give each a theme of its own (F6 → Appearance → Theme for this workspace). Signing in to more workspaces

@@ -1,4 +1,4 @@
-//! `klack login --from-browser firefox|chrome`: take the `d` cookie from a browser you are already
+//! `klack auth login --from-browser firefox|chrome`: take the `d` cookie from a browser you are already
 //! signed in to Slack with. Its cookie database is copied to a temporary folder and read there
 //! (nothing of the browser is changed); Chrome's cookies are decrypted with its key from the
 //! system keyring (Secret Service on Linux, the Keychain on macOS). Chrome on Windows encrypts
@@ -251,7 +251,7 @@ async fn chrome_key() -> Result<Vec<u8>> {
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
-        bail!("Chrome's cookies cannot be read on this system (app-bound encryption): use `klack login` (browser window) or Firefox")
+        bail!("Chrome's cookies cannot be read on this system (app-bound encryption): use `klack auth login` (browser window) or Firefox")
     }
 }
 

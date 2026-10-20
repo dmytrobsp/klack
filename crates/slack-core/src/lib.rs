@@ -4,6 +4,7 @@
 pub mod api;
 pub mod dnd;
 pub mod format;
+pub mod profiles;
 pub mod rtm;
 pub mod session;
 pub mod types;

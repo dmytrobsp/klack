@@ -158,9 +158,14 @@ pub enum Ctl {
 
 const ALL_TYPES: &str = "public_channel,private_channel,mpim,im";
 
+/// A client for `profile`'s workspace `team` (or its default); a team with two accounts in the
+/// profile is refused, with the accounts listed.
 pub fn client(profile: &str, team: Option<&str>) -> Result<Client> {
     let p = Profile::load(profile)?;
-    let ws = p.workspace(team).ok_or_else(|| anyhow!("profile '{profile}' has no such workspace"))?;
+    let ws = match team {
+        Some(t) => crate::auth::one_account(&p, profile, t)?,
+        None => p.workspace(None).ok_or_else(|| anyhow!("profile '{profile}' has no sign-ins — klack auth login"))?,
+    };
     Client::new(ws.clone())
 }
 

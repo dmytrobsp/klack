@@ -1,4 +1,4 @@
-//! Signing in through a browser window (`klack login`): a Chromium-based browser opens on the
+//! Signing in through a browser window (`klack auth login`): a Chromium-based browser opens on the
 //! workspace's sign-in page with a temporary profile of its own; once Slack has signed you in, its
 //! `d` cookie is read over the DevTools protocol, the window closes and the profile is deleted.
 //! Your own browser profile is never read or changed.

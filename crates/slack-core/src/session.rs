@@ -24,6 +24,23 @@ pub struct WorkspaceSession {
     pub token: String,
     /// Raw value of the `d` cookie as sent by browsers (already URL-encoded).
     pub cookie_d: String,
+    /// Where the session came from, to offer it first when signing in again (none in files
+    /// written before klack remembered it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<SessionSource>,
+}
+
+/// How a session was obtained: names and paths only, nothing secret.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SessionSource {
+    /// Taken from a browser profile the user is signed in with: `browser` is `firefox` or
+    /// `chrome`, `profile` the profile's folder, `label` how it is shown ("Chrome · Work").
+    Browser { browser: String, profile: PathBuf, label: String },
+    /// Signed in in klack's temporary browser window.
+    Window,
+    /// The `d` cookie given by hand (flag, environment or prompt).
+    Cookie,
 }
 
 impl std::fmt::Debug for WorkspaceSession {
@@ -36,6 +53,7 @@ impl std::fmt::Debug for WorkspaceSession {
             .field("user_name", &self.user_name)
             .field("token", &"<redacted>")
             .field("cookie_d", &"<redacted>")
+            .field("source", &self.source)
             .finish()
     }
 }
@@ -106,8 +124,13 @@ impl Profile {
 
     pub fn load(profile: &str) -> Result<Self> {
         let path = Self::path(profile)?;
-        let text = std::fs::read_to_string(&path).with_context(|| format!("no session for profile '{profile}' — run `klack login`"))?;
+        let text = std::fs::read_to_string(&path).with_context(|| format!("no session for profile '{profile}' — run `klack auth login`"))?;
         Ok(serde_json::from_str(&text)?)
+    }
+
+    /// Read a session file (another profile's, for `klack profile list`).
+    pub fn read(path: &Path) -> Result<Self> {
+        Ok(serde_json::from_str(&std::fs::read_to_string(path)?)?)
     }
 
     pub fn save(&self, profile: &str) -> Result<PathBuf> {
@@ -119,13 +142,30 @@ impl Profile {
         Ok(path)
     }
 
-    /// Insert or replace the session for its team.
+    /// Insert or replace the session of its account (team + user: one profile may hold two
+    /// accounts of one workspace).
     pub fn upsert(&mut self, ws: WorkspaceSession) {
-        self.workspaces.retain(|w| w.team_id != ws.team_id);
+        self.workspaces.retain(|w| w.team_id != ws.team_id || w.user_id != ws.user_id);
         if self.default_team.is_none() {
             self.default_team = Some(ws.team_id.clone());
         }
         self.workspaces.push(ws);
+    }
+
+    /// Every account of the workspace `team` (its id or name).
+    pub fn matching(&self, team: &str) -> Vec<&WorkspaceSession> {
+        self.workspaces.iter().filter(|w| w.team_id == team || w.team_name == team).collect()
+    }
+
+    /// Forget the account `user_id` of `team_id`; false when there is none. When its team was the
+    /// default and has no account left, the first remaining workspace becomes the default.
+    pub fn remove(&mut self, team_id: &str, user_id: &str) -> bool {
+        let before = self.workspaces.len();
+        self.workspaces.retain(|w| w.team_id != team_id || w.user_id != user_id);
+        if self.default_team.as_deref().is_some_and(|t| !self.workspaces.iter().any(|w| w.team_id == t)) {
+            self.default_team = self.workspaces.first().map(|w| w.team_id.clone());
+        }
+        self.workspaces.len() != before
     }
 
     pub fn workspace(&self, team: Option<&str>) -> Option<&WorkspaceSession> {
@@ -195,6 +235,7 @@ pub async fn session_from_cookie(workspace_url: &str, cookie_d: &str) -> Result<
         user_name: s("user"),
         token,
         cookie_d: cookie_d.to_string(),
+        source: None,
     })
 }
 
@@ -236,9 +277,81 @@ mod tests {
             user_name: "u".into(),
             token: "xoxc-secret".into(),
             cookie_d: "cookie-secret".into(),
+            source: None,
         };
         let dbg = format!("{ws:?}");
         assert!(!dbg.contains("secret"));
         assert_eq!(ws.api_base(), "https://t.slack.com/api/");
+    }
+
+    fn account(team: &str, name: &str, user: &str) -> WorkspaceSession {
+        WorkspaceSession { team_id: team.into(), team_name: name.into(), user_id: user.into(), user_name: format!("person-{user}"), ..Default::default() }
+    }
+
+    #[test]
+    fn two_accounts_of_one_team_are_kept() {
+        let mut p = Profile::default();
+        p.upsert(account("T0000000001", "acme", "U0000000001"));
+        p.upsert(account("T0000000001", "acme", "U0000000002"));
+        assert_eq!(p.workspaces.len(), 2);
+        assert_eq!(p.default_team.as_deref(), Some("T0000000001"));
+        // The first saved is the one started.
+        assert_eq!(p.workspace(None).unwrap().user_id, "U0000000001");
+    }
+
+    #[test]
+    fn the_same_account_is_replaced() {
+        let mut p = Profile::default();
+        p.upsert(account("T0000000001", "acme", "U0000000001"));
+        p.upsert(account("T0000000002", "other", "U0000000001"));
+        p.upsert(WorkspaceSession { source: Some(SessionSource::Cookie), ..account("T0000000001", "acme", "U0000000001") });
+        assert_eq!(p.workspaces.len(), 2);
+        let acme = p.matching("acme");
+        assert_eq!(acme.len(), 1);
+        assert_eq!(acme[0].source, Some(SessionSource::Cookie));
+        // Forgetting an account touches only that team + user.
+        assert!(!p.remove("T0000000001", "U0000000009"));
+        assert!(p.remove("T0000000001", "U0000000001"));
+        assert_eq!(p.workspaces.len(), 1);
+        // The default no longer names a team without accounts.
+        assert_eq!(p.default_team.as_deref(), Some("T0000000002"));
+        assert!(p.remove("T0000000002", "U0000000001"));
+        assert_eq!(p.default_team, None);
+    }
+
+    #[test]
+    fn old_session_files_still_load() {
+        let text = r#"{"workspaces":[
+            {"team_id":"T0000000001","team_name":"acme","url":"https://acme.slack.com/","user_id":"U0000000001","user_name":"one","token":"xoxc-made-up","cookie_d":"made-up"},
+            {"team_id":"T0000000002","team_name":"other","url":"https://other.slack.com/","user_id":"U0000000001","user_name":"one","token":"xoxc-made-up","cookie_d":"made-up"},
+            {"team_id":"T0000000001","team_name":"acme","url":"https://acme.slack.com/","user_id":"U0000000002","user_name":"two","token":"xoxc-made-up","cookie_d":"made-up"}
+        ],"default_team":"T0000000001"}"#;
+        let p: Profile = serde_json::from_str(text).unwrap();
+        assert!(p.workspaces.iter().all(|w| w.source.is_none()));
+        let start = p.workspace(None).unwrap();
+        assert_eq!((start.team_id.as_str(), start.user_id.as_str()), ("T0000000001", "U0000000001"));
+        let users: Vec<&str> = p.matching("acme").iter().map(|w| w.user_id.as_str()).collect();
+        assert_eq!(users, ["U0000000001", "U0000000002"]);
+        assert_eq!(p.matching("T0000000002").len(), 1);
+        assert!(p.matching("nope").is_empty());
+        // Saving it again writes no source for the old ones.
+        assert!(!serde_json::to_string(&p).unwrap().contains("source"));
+    }
+
+    #[test]
+    fn source_round_trips() {
+        let sources = [
+            SessionSource::Browser { browser: "chrome".into(), profile: PathBuf::from("/home/person/.config/google-chrome/Profile 1"), label: "Chrome · Work".into() },
+            SessionSource::Window,
+            SessionSource::Cookie,
+        ];
+        for source in sources {
+            let ws = WorkspaceSession { source: Some(source.clone()), ..account("T0000000001", "acme", "U0000000001") };
+            let text = serde_json::to_string(&ws).unwrap();
+            let back: WorkspaceSession = serde_json::from_str(&text).unwrap();
+            assert_eq!(back.source, Some(source), "{text}");
+        }
+        let text = serde_json::to_string(&WorkspaceSession { source: Some(SessionSource::Window), ..Default::default() }).unwrap();
+        assert!(text.contains(r#""source":{"kind":"window"}"#), "{text}");
     }
 }
