@@ -1,0 +1,575 @@
+//! The help box under F6's list: what the selected item does, what its values mean and how to set it.
+//! The sentences go through `tr` (and are listed by [`strings`]); the bullets, the alignment and
+//! the colour of the keys are drawn here.
+
+use ratatui::Frame;
+use ratatui::layout::Rect;
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+use super::keymap::{Action, Context, Keymap};
+use super::prefs::{CATEGORIES, Field, KEYS_SETTINGS};
+use super::state::Workspace;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HelpLine {
+    /// A sentence or two, wrapped at words.
+    Text(String),
+    /// `• name   meaning`: the names line up, a long meaning hangs under itself.
+    Value { name: String, meaning: String },
+    /// `keys   what they do`, the keys in the accent colour.
+    Key { keys: String, does: String },
+    Blank,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Help {
+    /// The item's name, as on its row.
+    pub title: String,
+    pub lines: Vec<HelpLine>,
+}
+
+/// Below room for this many rows of text (plus the borders), or the whole help if it is
+/// shorter, the box is not drawn.
+pub const MIN_TEXT_ROWS: u16 = 3;
+
+/// Blank cells between the columns of a value or key line.
+const GAP: usize = 2;
+
+/// The help of a field, with the user's current keys named in it.
+pub fn help(field: Field, ws: &Workspace, keys: &Keymap) -> Help {
+    build(field, ws, keys, &|s| super::i18n::tr(s).into_owned())
+}
+
+/// Every sentence the helps say, as `tr` takes them (for `ctl locale-template`).
+pub fn strings() -> Vec<&'static str> {
+    let seen = std::cell::RefCell::new(Vec::<&'static str>::new());
+    let (ws, keys) = (Workspace::default(), Keymap::load("").0);
+    let mut fields: Vec<Field> = CATEGORIES.iter().flat_map(|c| c.1.iter().copied()).chain(KEYS_SETTINGS.iter().copied()).collect();
+    fields.extend([Field::ScheduleHours, Field::GroupHeader(0), Field::Binding(0)]);
+    fields.extend((0..7).map(Field::ScheduleDay));
+    for field in fields {
+        build(field, &ws, &keys, &|s| {
+            seen.borrow_mut().push(s);
+            s.to_string()
+        });
+    }
+    let mut seen = seen.into_inner();
+    let mut unique = std::collections::HashSet::new();
+    seen.retain(|s| unique.insert(*s));
+    seen
+}
+
+/// Collects the lines of one help.
+struct Builder<'a> {
+    tr: &'a dyn Fn(&'static str) -> String,
+    keys: &'a Keymap,
+    lines: Vec<HelpLine>,
+}
+
+impl Builder<'_> {
+    fn text(&mut self, s: &'static str) -> &mut Self {
+        self.lines.push(HelpLine::Text((self.tr)(s)));
+        self
+    }
+
+    fn blank(&mut self) -> &mut Self {
+        self.lines.push(HelpLine::Blank);
+        self
+    }
+
+    /// A value as the row shows it (not translated), and what it means.
+    fn value(&mut self, name: &str, meaning: &'static str) -> &mut Self {
+        self.lines.push(HelpLine::Value { name: name.to_string(), meaning: (self.tr)(meaning) });
+        self
+    }
+
+    fn key(&mut self, keys: String, does: &'static str) -> &mut Self {
+        self.lines.push(HelpLine::Key { keys, does: (self.tr)(does) });
+        self
+    }
+
+    /// The user's first key for an action in the preferences.
+    fn key_of(&self, action: Action) -> String {
+        self.keys.first_key(Context::Preferences, action).unwrap_or_else(|| "(unbound)".into())
+    }
+
+    /// Enter changes it: `Enter` and what it does.
+    fn change(&mut self, does: &'static str) -> &mut Self {
+        let keys = self.key_of(Action::Open);
+        self.key(keys, does)
+    }
+
+    /// Enter, + and - change it: `Enter / + -` and what they do.
+    fn step(&mut self, does: &'static str) -> &mut Self {
+        let keys = format!("{} / {} {}", self.key_of(Action::Open), self.key_of(Action::Increase), self.key_of(Action::Decrease));
+        self.key(keys, does)
+    }
+
+    /// The three levels a notification setting goes through.
+    fn levels(&mut self) -> &mut Self {
+        self.value("all new messages", "every message notifies you").value("mentions and DMs", "only messages that mention you, and direct messages").value("nothing", "no message notifies you")
+    }
+}
+
+fn build(field: Field, _ws: &Workspace, keys: &Keymap, tr: &dyn Fn(&'static str) -> String) -> Help {
+    let mut b = Builder { tr, keys, lines: Vec::new() };
+    match field {
+        // Availability
+        Field::Status => {
+            b.text("Your status on Slack: an emoji and a short text people see next to your name.").blank();
+            b.change("edit it, Enter again saves; empty clears the status");
+            b.key(":emoji: text".into(), "the form to type; add \" for 30m\" (or 2h, 1d, today) to make it clear itself");
+        }
+        Field::Away => {
+            b.text("Shows you as away on Slack, whatever you are doing, until you switch it off. Kept on Slack.");
+        }
+        Field::Notifications => {
+            b.text("Pauses the notifications Slack sends you, or lets them through again. Kept on Slack.").blank();
+            b.change("pause for 30 minutes, or resume");
+            let keys = format!("{} {}", b.key_of(Action::Increase), b.key_of(Action::Decrease));
+            b.key(keys, "lengthen or shorten a running pause: 30 min, 1 h, 2 h, 8 h");
+        }
+        Field::Schedule => {
+            b.text("The hours you receive notifications; outside them they are paused. Changes are saved to Slack at once.").blank();
+            b.value("off", "notifications come at any time").value("every day", "the same hours every day").value("weekdays", "the hours on Monday to Friday").value("custom", "hours of its own for each day, listed below").blank();
+            b.step("change the kind");
+        }
+        Field::ScheduleHours => {
+            b.text("The hours you receive notifications; outside them they are paused. Saved to Slack at once.").blank();
+            b.change("type the hours as 9:00-17:00 (24-hour), Enter again saves");
+        }
+        Field::ScheduleDay(_) => {
+            b.text("Notifications on this day of the custom schedule.").blank();
+            b.value("9:00-17:00", "they come through between these hours").value("receive all day", "no quiet hours").value("paused all day", "nothing comes through").blank();
+            b.change("edit the hours, or type receive all day / paused all day");
+            let keys = format!("{} {}", b.key_of(Action::Increase), b.key_of(Action::Decrease));
+            b.key(keys, "go through hours, receive all day, paused all day (hours again: the every-day ones)");
+        }
+        // Appearance
+        Field::Theme => {
+            b.text("The colours klack uses: a built-in theme, the terminal's own colours, or a theme file of yours.").blank();
+            b.change("choose from a list; each theme shows as you move, Esc goes back");
+        }
+        Field::WorkspaceTheme => {
+            b.text("A colour theme for this workspace alone, to tell workspaces apart. Without one, the colour theme is used.").blank();
+            b.change("choose from a list; each theme shows as you move, Esc goes back");
+        }
+        Field::Compact => {
+            b.text("No blank rows between authors in messages, or between sections of the sidebar.");
+        }
+        Field::HideInactive => {
+            b.text("Channels and DMs without a message for this long leave the sidebar. Starred, unread and open ones stay, and the switcher still finds the rest.").blank();
+            b.step("never, 1, 7, 14, 30, 60 or 90 days");
+        }
+        // Messages & media
+        Field::InlineImages => {
+            b.text("Shows attached images as thumbnails in the message list, where the terminal draws pictures.");
+        }
+        Field::Avatars => {
+            b.text("Shows profile pictures next to author names, where the terminal draws pictures.");
+        }
+        Field::LargeAvatars => {
+            b.text("Makes profile pictures two rows tall, beside the name and the first line of the text.");
+        }
+        Field::PreviewRefresh => {
+            b.text("A channel you only preview (you haven't joined it) gets no live events, so it is fetched again this often.").blank();
+            b.step("off, or every 5, 10, 15, 30, 60 or 120 seconds");
+        }
+        Field::Graphics => {
+            b.text("How pictures are drawn in the terminal. KLACK_GRAPHICS, when set, wins over this.").blank();
+            b.value("auto", "ask the terminal what it can draw").value("kitty", "the kitty graphics protocol").value("sixel", "sixel graphics").value("iterm2", "the iTerm2 image protocol").value("halfblocks", "coloured blocks: works everywhere, but no profile pictures").blank();
+            b.change("the next way");
+        }
+        Field::EmojiAsNames => {
+            b.text("Shows emoji as :names: instead of the characters, for terminals that draw them badly.");
+        }
+        Field::CustomEmojiPictures => {
+            b.text("Draws your workspace's own picture emoji as pictures in messages and reactions, where the terminal draws pictures; otherwise they show as :name:.");
+        }
+        Field::SaveDir => {
+            b.text("The folder a file is offered to be saved to first (~ is your home). Empty: your downloads folder. KLACK_DOWNLOAD_DIR, when set, wins over this.").blank();
+            b.change("type a folder, Enter again keeps it");
+        }
+        // Language & region
+        Field::Clock24 => {
+            b.text("Shows times as 13:05 when on, as 1:05 pm when off.");
+        }
+        Field::DateFormat => {
+            b.text("How the date shows in the separators between days of messages.").blank();
+            b.change("the next format");
+        }
+        Field::TimeZone => {
+            b.text("The time zone klack shows times in. Empty: the system's zone.").blank();
+            b.change("type a zone such as Europe/Kyiv, Enter again keeps it");
+        }
+        Field::Language => {
+            b.text("The language of klack's own texts. English is built in; others are read from locales/<code>.toml in klack's config folder, and klack ctl locale-template writes an empty one to translate.").blank();
+            b.change("type the code (such as de), Enter again applies it");
+        }
+        // Notifications
+        Field::Desktop => {
+            b.text("Shows a desktop notification for a message that notifies you, as the levels below decide.");
+        }
+        Field::Sound => {
+            b.text("The sound played with each notification. How loud is Notification sound volume under Audio & video.").blank();
+            b.value("off", "silent").value("chime, ping, knock", "built-in sounds").value("system", "the desktop's own notification sound").blank();
+            b.change("the next sound, played for you to hear");
+        }
+        Field::ConversationLevel => {
+            b.text("What notifies you in the conversation on screen. Kept on Slack; it needs a conversation open.").blank();
+            b.levels().blank();
+            b.change("the next level; after nothing, back to the channels' default");
+        }
+        Field::ChannelDefault => {
+            b.text("What notifies you in channels that have no setting of their own. Kept on Slack.").blank();
+            b.levels().blank();
+            b.change("the next level");
+        }
+        Field::Keywords => {
+            b.text("Words that notify you like a mention. Kept on Slack.").blank();
+            b.change("type them separated by commas, Enter again saves");
+        }
+        Field::Vips => {
+            b.text("The people you marked as VIPs, whose messages Slack notifies you about. Kept on Slack. You add or remove one on their profile card.");
+        }
+        // Audio & video
+        Field::Input => {
+            b.text("The microphone used in huddles. KLACK_AUDIO_INPUT, when set, wins over this.").blank();
+            b.change("the next one: the system default, then each microphone found");
+        }
+        Field::Output => {
+            b.text("The speaker used in huddles and for sounds. KLACK_AUDIO_OUTPUT, when set, wins over this.").blank();
+            b.change("the next one: the system default, then each speaker found");
+        }
+        Field::HuddleVolume => {
+            b.text("How loud the others sound in a huddle; a huddle you are in follows at once.").blank();
+            b.step("change it in steps, 0 to 200 %");
+        }
+        Field::SoundVolume => {
+            b.text("How loud notification and huddle sounds play; you hear the new level as you set it.").blank();
+            b.step("change it in steps, 0 to 200 %");
+        }
+        Field::MicGain => {
+            b.text("How much your microphone is amplified in a huddle; it follows at once.").blank();
+            b.step("change it in steps, 25 to 400 %");
+        }
+        Field::SpeakingThreshold => {
+            b.text("Below this level the microphone sends silence, so quiet background noise isn't heard. Off: the microphone always sends.").blank();
+            b.step("off, or -60 to -20 dB in steps of 5 (higher is stricter)");
+        }
+        Field::NoiseSuppression => {
+            b.text("Filters steady background noise out of your microphone in a huddle.");
+        }
+        Field::EchoCancellation => {
+            b.text("Removes what your speaker plays from your microphone, so the others don't hear themselves.");
+        }
+        Field::Camera => {
+            b.text("The camera a huddle can send. None keeps it off; klack never picks one for you, and nothing is opened here.").blank();
+            b.change("none, then each camera found");
+        }
+        // Huddles
+        Field::JoinSound => {
+            b.text("Played when you join a huddle, once it is connected.").blank();
+            b.change("the next sound, played for you to hear");
+        }
+        Field::SomeoneJoined => {
+            b.text("Played when someone else joins the huddle you are in.").blank();
+            b.change("the next sound, played for you to hear");
+        }
+        Field::SomeoneLeft => {
+            b.text("Played when someone leaves the huddle you are in.").blank();
+            b.change("the next sound, played for you to hear");
+        }
+        Field::RingSound => {
+            b.text("Played every few seconds while a huddle invitation rings, until you answer or it stops ringing.").blank();
+            b.change("the next sound, played for you to hear");
+        }
+        Field::RingTimeout => {
+            b.text("How long an invitation rings before it stops.").blank();
+            b.step("15, 30, 45, 60, 90 or 120 seconds");
+        }
+        Field::AutoDecline => {
+            b.text("When an invitation rings out unanswered, also declines it on Slack, so the caller sees it was.");
+        }
+        Field::AloneSound => {
+            b.text("A quiet melody that loops when you have been the only one in a huddle for the time below, until someone joins or you leave. It plays softer than the other sounds.").blank();
+            b.change("the next one, played for you to hear");
+        }
+        Field::AloneSecs => {
+            b.text("How long you may be alone in a huddle before the reminder starts.").blank();
+            b.step("30 s, 1, 2, 3, 5, 10 or 15 minutes");
+        }
+        // Keys, above the bindings
+        Field::WhichKeyShow => {
+            b.text("The panel that lists the keys that can come next while you press a sequence of keys.");
+        }
+        Field::WhichKeyCorner => {
+            b.text("The corner of the screen the which-key panel sits in.").blank();
+            b.change("the next corner: bottom-right, bottom-left, top-left, top-right");
+        }
+        Field::WhichKeyDelay => {
+            b.text("How long after the last key the which-key panel opens; 0 opens it at once.").blank();
+            b.step("change it in steps of 0.1 s, up to 5 s");
+        }
+        Field::WhichKeyHeight => {
+            b.text("The tallest the which-key panel gets, in percent of the screen's height; a longer list pages.").blank();
+            b.step("change it in steps of 10 %, up to 100 %");
+        }
+        Field::WhichKeyIcons => {
+            b.text("Shows an icon before each label in which-key, in the help and in this Keys list.");
+        }
+        Field::Leader => {
+            b.text("The key that starts the sequences written with Leader in the bindings, such as Leader k.").blank();
+            leader_keys(&mut b);
+        }
+        Field::InsertLeader => {
+            b.text("The leader while typing a message and in dialogs, where plain keys type text.").blank();
+            leader_keys(&mut b);
+        }
+        // Placeholders until the Keys rows get their own help.
+        Field::GroupHeader(_) => {
+            b.text("A group of keys.");
+        }
+        Field::Binding(_) => {
+            b.text("The keys for this action.");
+        }
+    }
+    Help { title: field.label(), lines: b.lines }
+}
+
+/// How to record, remove or reset a leader.
+fn leader_keys(b: &mut Builder) {
+    let (open, unbind, reset) = (b.key_of(Action::Open), b.key_of(Action::Unbind), b.key_of(Action::Reset));
+    b.key(open, "record the new key (until a 1 s pause; any key counts)");
+    b.key(unbind, "have none");
+    b.key(reset, "back to the default");
+}
+
+/// The styled lines of a help, wrapped to `width` cells.
+pub fn layout(help: &Help, width: u16) -> Vec<Line<'static>> {
+    let width = width.max(1) as usize;
+    let accent = Style::default().fg(super::theme::p().accent);
+    let bold = Style::default().add_modifier(Modifier::BOLD);
+    let name_w = help.lines.iter().filter_map(|l| if let HelpLine::Value { name, .. } = l { Some(name.width()) } else { None }).max().unwrap_or(0);
+    let keys_w = help.lines.iter().filter_map(|l| if let HelpLine::Key { keys, .. } = l { Some(keys.width()) } else { None }).max().unwrap_or(0);
+    let mut out = Vec::new();
+    for line in &help.lines {
+        match line {
+            HelpLine::Blank => out.push(Line::raw("")),
+            HelpLine::Text(t) => out.extend(wrap(t, width).into_iter().map(Line::raw)),
+            HelpLine::Value { name, meaning } => {
+                let column = 2 + name_w + GAP;
+                let mut rows = wrap(meaning, width.saturating_sub(column).max(1)).into_iter();
+                out.push(Line::from(vec![Span::raw("• "), Span::styled(name.clone(), bold), Span::raw(" ".repeat(column - 2 - name.width())), Span::raw(rows.next().unwrap_or_default())]));
+                out.extend(rows.map(|r| Line::raw(format!("{}{r}", " ".repeat(column)))));
+            }
+            HelpLine::Key { keys, does } => {
+                let column = keys_w + GAP + 1;
+                let mut rows = wrap(does, width.saturating_sub(column).max(1)).into_iter();
+                out.push(Line::from(vec![Span::styled(keys.clone(), accent), Span::raw(" ".repeat(column - keys.width())), Span::raw(rows.next().unwrap_or_default())]));
+                out.extend(rows.map(|r| Line::raw(format!("{}{r}", " ".repeat(column)))));
+            }
+        }
+    }
+    out
+}
+
+/// `text` broken at spaces into rows of at most `width` cells (a longer word is cut).
+fn wrap(text: &str, width: usize) -> Vec<String> {
+    let mut rows: Vec<String> = Vec::new();
+    let mut row = String::new();
+    for word in text.split_whitespace() {
+        let mut word = word.to_string();
+        while word.width() > width {
+            // Cut a word longer than a row where the row ends.
+            if !row.is_empty() {
+                rows.push(std::mem::take(&mut row));
+            }
+            let mut used = 0;
+            let cut = word.char_indices().find(|(_, c)| { used += c.width().unwrap_or(0); used > width }).map_or(word.len(), |(i, _)| i.max(word.chars().next().map_or(0, char::len_utf8)));
+            rows.push(word[..cut].to_string());
+            word = word[cut..].to_string();
+        }
+        if !row.is_empty() && row.width() + 1 + word.width() > width {
+            rows.push(std::mem::take(&mut row));
+        }
+        if !row.is_empty() {
+            row.push(' ');
+        }
+        row.push_str(&word);
+    }
+    if !row.is_empty() || rows.is_empty() {
+        rows.push(row);
+    }
+    rows
+}
+
+/// The rows of a box `outer` cells wide and `room` rows high, or None when it does not fit:
+/// room for [`MIN_TEXT_ROWS`] rows of text and the borders (less if the help is shorter) is the least.
+pub fn box_height(help: &Help, outer: u16, room: u16) -> Option<u16> {
+    let rows = layout(help, outer.saturating_sub(2)).len() as u16;
+    (room >= rows.min(MIN_TEXT_ROWS) + 2).then(|| (rows + 2).min(room))
+}
+
+/// `lines` cut to `rows`; the last of a cut help ends in "…".
+fn fitted(mut lines: Vec<Line<'static>>, rows: usize, width: usize) -> Vec<Line<'static>> {
+    if lines.len() <= rows {
+        return lines;
+    }
+    lines.truncate(rows);
+    let Some(last) = lines.last_mut() else { return lines };
+    // Make room for the ellipsis at the end of the row.
+    while last.width() + 1 > width {
+        let Some(span) = last.spans.last_mut() else { break };
+        let mut text = span.content.to_string();
+        if text.pop().is_none() {
+            last.spans.pop();
+        } else {
+            span.content = text.into();
+        }
+    }
+    last.spans.push(Span::raw("…"));
+    lines
+}
+
+/// Draws the help in a rounded, dim box filling `area`.
+pub fn draw(f: &mut Frame, area: Rect, help: &Help) {
+    let dim = Style::default().fg(super::theme::p().dim);
+    let block = Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).border_style(dim).title(Line::styled(format!(" {} ", help.title), dim.add_modifier(Modifier::BOLD)));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let lines = fitted(layout(help, inner.width), inner.height as usize, inner.width as usize);
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tui::keymap::Keymap;
+    use crate::tui::prefs::{CATEGORIES, Field};
+
+    fn all_fields() -> Vec<Field> {
+        let mut all: Vec<Field> = CATEGORIES.iter().flat_map(|c| c.1.iter().copied()).collect();
+        all.push(Field::ScheduleHours);
+        all.extend((0..7).map(Field::ScheduleDay));
+        all.extend(crate::tui::prefs::KEYS_SETTINGS.iter().copied());
+        all
+    }
+
+    fn keys() -> Keymap {
+        Keymap::load("").0
+    }
+
+    fn texts(h: &Help) -> usize {
+        h.lines.iter().filter(|l| matches!(l, HelpLine::Text(_))).count()
+    }
+
+    fn values(h: &Help) -> Vec<&str> {
+        h.lines.iter().filter_map(|l| if let HelpLine::Value { name, .. } = l { Some(name.as_str()) } else { None }).collect()
+    }
+
+    fn key_lines(h: &Help) -> Vec<&str> {
+        h.lines.iter().filter_map(|l| if let HelpLine::Key { keys, .. } = l { Some(keys.as_str()) } else { None }).collect()
+    }
+
+    fn plain(line: &Line) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    fn lines_of(n: usize) -> Help {
+        Help { title: "t".into(), lines: (0..n).map(|i| HelpLine::Text(format!("line {i}"))).collect() }
+    }
+
+    #[test]
+    fn every_item_has_help() {
+        let ws = Workspace::default();
+        for field in all_fields() {
+            let h = help(field, &ws, &keys());
+            assert!(!h.title.is_empty(), "{field:?} has a title");
+            assert_eq!(h.title, field.label(), "{field:?}: the title is the row's label");
+            assert!(texts(&h) >= 1, "{field:?} says what it does");
+        }
+    }
+
+    #[test]
+    fn the_schedule_lists_its_kinds() {
+        let h = help(Field::Schedule, &Workspace::default(), &keys());
+        assert_eq!(values(&h), ["off", "every day", "weekdays", "custom"]);
+        assert!(key_lines(&h).iter().any(|k| k.contains("Enter")), "{:?}", key_lines(&h));
+    }
+
+    #[test]
+    fn a_custom_day_explains_its_values() {
+        let h = help(Field::ScheduleDay(0), &Workspace::default(), &keys());
+        assert!(values(&h).contains(&"receive all day") && values(&h).contains(&"paused all day"));
+        let all: String = h.lines.iter().map(|l| match l { HelpLine::Text(t) => t.clone(), HelpLine::Value { name, meaning } => format!("{name} {meaning}"), HelpLine::Key { keys, does } => format!("{keys} {does}"), HelpLine::Blank => String::new() }).collect();
+        assert!(all.contains("9:00-17:00"));
+    }
+
+    #[test]
+    fn on_off_items_are_short() {
+        let h = help(Field::Compact, &Workspace::default(), &keys());
+        assert!(key_lines(&h).is_empty());
+        assert!(texts(&h) <= 2, "{h:?}");
+    }
+
+    #[test]
+    fn help_names_your_keys() {
+        let (rebound, warnings) = Keymap::load("[preferences]\nchange = \"x\"\n");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let h = help(Field::Schedule, &Workspace::default(), &rebound);
+        let keys = key_lines(&h);
+        assert!(keys.iter().any(|k| k.starts_with('x')), "{keys:?}");
+        assert!(keys.iter().all(|k| !k.contains("Enter")), "{keys:?}");
+    }
+
+    #[test]
+    fn the_box_disappears_below_its_minimum() {
+        let h = lines_of(6);
+        assert_eq!(box_height(&h, 60, 4), None, "3 text rows + 2 borders = 5 needed");
+        assert_eq!(box_height(&h, 60, 5), Some(5));
+        assert_eq!(box_height(&h, 60, 20), Some(8));
+    }
+
+    #[test]
+    fn a_short_help_needs_less() {
+        assert_eq!(box_height(&lines_of(2), 60, 4), Some(4));
+    }
+
+    #[test]
+    fn values_align_and_wrap() {
+        let long = "this meaning is long enough that it has to go on to a second and a third row of the box";
+        let h = Help { title: "t".into(), lines: vec![HelpLine::Value { name: "off".into(), meaning: long.into() }, HelpLine::Value { name: "every day".into(), meaning: "x".into() }] };
+        let lines = layout(&h, 40);
+        assert!(lines.len() >= 3, "wrapped: {lines:?}");
+        let column = |line: &Line, text: &str| plain(line).find(text).map(|i| plain(line)[..i].chars().count());
+        let first = column(&lines[0], "this").unwrap();
+        let last = lines.iter().find(|l| plain(l).contains("every day")).unwrap();
+        assert_eq!(column(last, "x"), Some(first), "meanings start in one column");
+        assert_eq!(plain(&lines[1]).chars().take(first).collect::<String>().trim(), "", "the continuation hangs under the meaning");
+        assert!(lines[1].spans.iter().all(|s| !s.style.add_modifier.contains(Modifier::BOLD)));
+        assert!(lines[0].spans.iter().any(|s| s.content == "off" && s.style.add_modifier.contains(Modifier::BOLD)), "names are bold");
+        assert!(lines.iter().all(|l| plain(l).chars().count() <= 40));
+    }
+
+    #[test]
+    fn a_cut_help_ends_in_an_ellipsis() {
+        let lines = fitted(layout(&lines_of(6), 40), 4, 40);
+        assert_eq!(lines.len(), 4);
+        assert!(plain(&lines[3]).ends_with('…'), "{:?}", plain(&lines[3]));
+        assert_eq!(fitted(layout(&lines_of(3), 40), 4, 40).len(), 3, "a help that fits is untouched");
+    }
+
+    #[test]
+    fn help_is_translatable() {
+        let first = match &help(Field::Schedule, &Workspace::default(), &keys()).lines[0] {
+            HelpLine::Text(t) => t.clone(),
+            other => panic!("{other:?}"),
+        };
+        assert!(strings().iter().any(|s| *s == first), "{first}");
+        assert!(crate::tui::prefs::translatable().contains(&first));
+    }
+}

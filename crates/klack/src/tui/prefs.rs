@@ -5,7 +5,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Paragraph};
 
 use std::time::{Duration, Instant};
 
@@ -128,7 +128,7 @@ pub const CATEGORIES: &[(&str, &[Field])] = &[
 ];
 
 /// The Keys category's settings above the bindings.
-const KEYS_SETTINGS: &[Field] = &[Field::WhichKeyShow, Field::WhichKeyCorner, Field::WhichKeyDelay, Field::WhichKeyHeight, Field::WhichKeyIcons, Field::Leader, Field::InsertLeader];
+pub const KEYS_SETTINGS: &[Field] = &[Field::WhichKeyShow, Field::WhichKeyCorner, Field::WhichKeyDelay, Field::WhichKeyHeight, Field::WhichKeyIcons, Field::Leader, Field::InsertLeader];
 
 /// which-key's corners, in the order Enter goes through them.
 const CORNERS: &[&str] = &["bottom-right", "bottom-left", "top-left", "top-right"];
@@ -578,7 +578,7 @@ pub fn translatable() -> Vec<String> {
         Field::HuddleVolume, Field::SoundVolume, Field::MicGain, Field::SpeakingThreshold, Field::NoiseSuppression, Field::EchoCancellation, Field::Camera, Field::JoinSound, Field::SomeoneJoined, Field::SomeoneLeft, Field::RingSound, Field::RingTimeout, Field::AutoDecline, Field::AloneSound, Field::AloneSecs,
     ];
     let all = [&all[..], &(0..7).map(Field::ScheduleDay).collect::<Vec<_>>()].concat();
-    CATEGORIES.iter().map(|c| c.0).chain(["Keys", LEADER_LABEL, INSERT_LEADER_LABEL, RECORD_START, RECORD_DONE, "filter", "to filter", "to change", "Enter keep · Esc clear"]).chain(all.iter().chain(KEYS_SETTINGS).map(|f| f.fixed_label())).map(String::from).collect()
+    CATEGORIES.iter().map(|c| c.0).chain(["Keys", LEADER_LABEL, INSERT_LEADER_LABEL, RECORD_START, RECORD_DONE, "filter", "to filter", "to change", "Enter keep · Esc clear"]).chain(all.iter().chain(KEYS_SETTINGS).map(|f| f.fixed_label())).chain(super::prefs_help::strings()).map(String::from).collect()
 }
 
 #[derive(Debug, Default)]
@@ -742,6 +742,7 @@ impl Prefs {
         Some(Ok(vec![edit]))
     }
 
+    #[cfg(test)]
     pub fn category_name(&self) -> &'static str {
         CATEGORIES.get(self.category).map_or("Keys", |c| c.0)
     }
@@ -1064,7 +1065,8 @@ impl Prefs {
         let width_of = |bindings: bool| (fields.iter().filter(|f| matches!(f, Field::Binding(_)) == bindings && !matches!(f, Field::GroupHeader(_))).map(|f| label_of(f).width()).max().unwrap_or(0) + 2).min(right.width as usize / 2 + 8);
         let (settings_w, bindings_w) = (width_of(false), width_of(true));
         // Keep the selection in view (the Keys list is long).
-        let room = list_area.height.saturating_sub(5).max(1) as usize;
+        // Room is left under the rows for the help box at its least, after a blank row.
+        let room = list_area.height.saturating_sub(super::prefs_help::MIN_TEXT_ROWS + 3).max(1) as usize;
         if self.selected < self.scroll {
             self.scroll = self.selected;
         } else if self.selected >= self.scroll + room {
@@ -1109,38 +1111,19 @@ impl Prefs {
             };
             rows.push(if selected { line.style(highlight) } else if self.hover == Some(n) { line.style(super::theme::hover_style()) } else { line });
         }
-        let fixed: &[&str] = match self.category_name() {
-            "Keys" => &[
-                "Enter records keys until a 1 s pause (any key counts, Enter and Esc too). Delete unbinds, r resets.",
-                "/ filters (Enter keeps the filter, Esc clears it). On a group: Enter renames it, i changes its icon.",
-            ],
-            "Availability" => &[
-                "Status: \":emoji: text for 30m\" (or today); empty clears.",
-                "Notification schedule: the hours you receive notifications, paused outside them; saved to Slack at once. Enter or + / - change the kind, hours are typed as 9:00-17:00 (24-hour).",
-            ],
-            "Notifications" => &["All but the first are kept on Slack. Keywords: comma-separated."],
-            "Audio & video" => &[
-                "+ / - (or Enter) change the levels; a huddle you are in follows at once.",
-                "Below the speaking threshold the microphone sends silence.",
-                "KLACK_AUDIO_INPUT / _OUTPUT, when set, win over the devices.",
-            ],
-            _ => &[],
-        };
-        let mut hints: Vec<String> = fixed.iter().map(|h| h.to_string()).collect();
-        if let Some(sch) = ws.dnd.schedule.as_ref().filter(|s| self.availability_shown() && s.days == ScheduleDays::Custom) {
-            let range = format!("{}-{}", sch.range.0, sch.range.1);
-            hints.push(format!("A day: Enter edits its hours (or type receive all day / paused all day); + / - go hours · receive all day (no quiet hours) · paused all day. Back to hours, a day gets the every-day ones ({range})."));
-        }
         let shown = rows.len() as u16;
         let rows_shown = rows.len();
         f.render_widget(Paragraph::new(rows), list_area);
         let list = Rect { height: (room as u16).min(list_area.height), ..list_area };
         (self.list, self.shown) = (list, rows_shown);
         super::scroll::indicator_beside(f, popup, list, self.scroll, room, fields.len(), Style::default().fg(super::theme::p().accent));
-        // The hints under a blank row, wrapped at words and indented like the rows.
+        // The selected item's help under a blank row, indented like the rows; too little room: none.
         let below = Rect { x: right.x + 1, y: list_area.y + shown + 1, width: right.width.saturating_sub(1), height: list_area.height.saturating_sub(shown + 1) };
-        if !hints.is_empty() && below.height > 0 {
-            f.render_widget(Paragraph::new(hints.into_iter().map(|h| Line::styled(h, dim)).collect::<Vec<_>>()).wrap(Wrap { trim: true }), below);
+        if let Some(field) = fields.get(self.selected) {
+            let help = super::prefs_help::help(*field, ws, keys);
+            if let Some(height) = super::prefs_help::box_height(&help, below.width, below.height) {
+                super::prefs_help::draw(f, Rect { height, ..below }, &help);
+            }
         }
         if let Some(picker) = self.picker.as_mut() {
             picker.draw(f, area, &ws.settings.appearance.theme);

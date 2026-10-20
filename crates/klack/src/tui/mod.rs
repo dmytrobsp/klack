@@ -26,6 +26,7 @@ pub mod open;
 pub mod others;
 pub mod picker;
 pub mod prefs;
+pub mod prefs_help;
 pub mod profile;
 pub mod rail;
 pub mod save;
