@@ -1,17 +1,23 @@
 {
-  "_note": "made-up shape, from the fields seen live on 2026-10-20",
+  "_note": "the shape of Slack's real signin.findWorkspaces reply, recorded live on 2026-10-20 (current_teams is a list of groups by email, each with its teams); every value here is made up. current_orgs is assumed to be grouped the same way (unverified: no Grid account).",
   "ok": true,
   "current_teams": [
-    {"id":"T0000000001","name":"Acme & Sons","domain":"acme","url":"https://acme.slack.com/","magic_login_url":"https://app.slack.com/magic-login/made-up-one","magic_login_code":"made-up-code-1","sso_required":false,"two_factor_required":false,"is_logged_out":true},
-    {"id":"T0000000002","name":"Widgets Inc","domain":"widgets-inc","url":"https://widgets-inc.slack.com/","magic_login_url":"https://app.slack.com/magic-login/made-up-two","magic_login_code":"made-up-code-2","sso_required":true,"two_factor_required":true,"is_logged_out":true},
-    {"id":"T0000000003","name":"No Link","domain":"nolink","url":"https://nolink.slack.com/","sso_required":false,"two_factor_required":false,"is_logged_out":true}
+    {"email": "person@example.com", "teams": [
+      {"id": "T0000000001", "name": "Acme & Sons", "url": "https://acme.slack.com/", "domain": "acme", "active_users": 2, "two_factor_required": false, "sso_required": false, "icon_44": "https://example.com/icon-44.png", "icon_88": "https://example.com/icon-88.png", "icon": {"image_44": "https://example.com/icon-44.png"}, "variant": "made-up", "associated_user": "U0000000001", "magic_login_url": "https://app.slack.com/magic-login/made-up-one", "magic_login_code": "made-up-code-1", "magic_login_browser_url": "https://app.slack.com/magic-login/made-up-one-browser", "profile_photos": ["https://example.com/photo.png"], "user_email": "person@example.com", "image_default": true, "last_login_ts": 1792495828, "user_type": "made-up", "has_passkey": false, "sso_suggested": false, "is_logged_out": true},
+      {"id": "T0000000002", "name": "Widgets Inc", "url": "https://widgets-inc.slack.com/", "domain": "widgets-inc", "two_factor_required": true, "sso_required": true, "associated_user": "U0000000002", "magic_login_url": "https://app.slack.com/magic-login/made-up-two", "magic_login_code": "made-up-code-2", "user_email": "person@example.com", "is_logged_out": true},
+      {"id": "T0000000003", "name": "No Link", "url": "https://nolink.slack.com/", "domain": "nolink", "two_factor_required": false, "sso_required": false, "associated_user": "U0000000003", "user_email": "person@example.com", "is_logged_out": true}
+    ]}
   ],
   "current_orgs": [
-    {"id":"E0000000001","name":"Big Org","teams":[
-      {"id":"T0000000001","name":"Acme & Sons","domain":"acme","url":"https://acme.slack.com/","magic_login_url":"https://app.slack.com/magic-login/made-up-one","sso_required":false,"two_factor_required":false},
-      {"id":"T0000000004","name":"Grid Team","domain":"grid-team","url":"https://grid-team.slack.com/","magic_login_url":"https://app.slack.com/magic-login/made-up-four","sso_required":false,"two_factor_required":false}
+    {"email": "person@example.com", "teams": [
+      {"id": "T0000000001", "name": "Acme & Sons", "url": "https://acme.slack.com/", "domain": "acme", "two_factor_required": false, "sso_required": false, "associated_user": "U0000000001", "magic_login_url": "https://app.slack.com/magic-login/made-up-one"},
+      {"id": "T0000000004", "name": "Grid Team", "url": "https://grid-team.slack.com/", "domain": "grid-team", "two_factor_required": false, "sso_required": false, "magic_login_url": "https://app.slack.com/magic-login/made-up-four"}
     ]}
   ],
   "invited_teams": [],
-  "domain_enabled_teams": []
+  "domain_enabled_teams": [],
+  "has_valid_cookie": true,
+  "confirmed_email": "person@example.com",
+  "redirect_url": "https://app.slack.com/made-up",
+  "privacy_consent_group": "made-up"
 }

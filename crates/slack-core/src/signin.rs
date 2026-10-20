@@ -85,6 +85,8 @@ pub fn parse_confirm(reply: &Value) -> Result<bool, CodeError> {
 #[derive(Clone, PartialEq, Eq)]
 pub struct CodeTeam {
     pub team_id: String,
+    /// The account of the email there (`associated_user`); empty when Slack does not say.
+    pub user_id: String,
     pub name: String,
     pub domain: String,
     /// e.g. `https://acme.slack.com/`
@@ -99,6 +101,7 @@ impl std::fmt::Debug for CodeTeam {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CodeTeam")
             .field("team_id", &self.team_id)
+            .field("user_id", &self.user_id)
             .field("name", &self.name)
             .field("domain", &self.domain)
             .field("url", &self.url)
@@ -117,24 +120,18 @@ fn team_from(v: &Value) -> Option<CodeTeam> {
     }
     let domain = text("domain");
     let url = session::workspace_url(&text("url")).unwrap_or_else(|_| format!("https://{domain}.slack.com/"));
-    Some(CodeTeam { team_id, name: text("name"), domain, url, magic_login_url, sso_required: v["sso_required"].as_bool().unwrap_or(false), two_factor_required: v["two_factor_required"].as_bool().unwrap_or(false) })
+    Some(CodeTeam { team_id, user_id: text("associated_user"), name: text("name"), domain, url, magic_login_url, sso_required: v["sso_required"].as_bool().unwrap_or(false), two_factor_required: v["two_factor_required"].as_bool().unwrap_or(false) })
 }
 
-/// `signin.findWorkspaces`' answer: `current_teams`, then what the `current_orgs` hold.
+/// `signin.findWorkspaces`' answer: the teams of `current_teams`, then those of `current_orgs`. Each list holds groups
+/// by email (`[{"email": …, "teams": [ … ]}]`, the shape seen live on 2026-10-20), each group its teams.
 pub fn parse_workspaces(reply: &Value) -> Result<Vec<CodeTeam>> {
     if reply["ok"].as_bool() != Some(true) {
         return Err(anyhow!("Slack refused to list the workspaces: {}", reply["error"].as_str().unwrap_or("no answer")));
     }
-    let mut candidates: Vec<&Value> = reply["current_teams"].as_array().into_iter().flatten().collect();
-    // UNVERIFIED (no Grid account to try): an org is assumed to carry its workspaces in a `teams`
-    // array, and to be a sign-in target itself when it has a `magic_login_url`.
-    for org in reply["current_orgs"].as_array().into_iter().flatten() {
-        match org["teams"].as_array() {
-            Some(teams) => candidates.extend(teams),
-            None if org["magic_login_url"].is_string() => candidates.push(org),
-            None => {}
-        }
-    }
+    // UNVERIFIED (no Grid account to try): `current_orgs` is assumed to be grouped like `current_teams`.
+    let groups = ["current_teams", "current_orgs"].into_iter().flat_map(|list| reply[list].as_array().into_iter().flatten());
+    let candidates = groups.flat_map(|group| group["teams"].as_array().into_iter().flatten());
     let mut out: Vec<CodeTeam> = Vec::new();
     for team in candidates.into_iter().filter_map(team_from) {
         if !out.iter().any(|t| t.team_id == team.team_id) {
@@ -291,11 +288,15 @@ mod tests {
         assert_eq!(ids, ["T0000000001", "T0000000002", "T0000000004"]);
         assert_eq!(teams[0].name, "Acme & Sons");
         assert_eq!(teams[0].url, "https://acme.slack.com/");
+        assert_eq!((teams[0].user_id.as_str(), teams[2].user_id.as_str()), ("U0000000001", ""));
         assert!(!teams[0].sso_required && !teams[0].two_factor_required);
         assert!(teams[1].sso_required && teams[1].two_factor_required);
         let text = format!("{:?}", teams[1]);
         assert!(!text.contains("magic-login"), "{text}");
         assert!(parse_workspaces(&json!({"ok":false,"error":"nope"})).unwrap_err().to_string().contains("nope"));
+        // The teams are inside groups by email: a team straight in the list is not one.
+        let flat = json!({"ok":true,"current_teams":[{"id":"T0000000001","name":"Acme","url":"https://acme.slack.com/","magic_login_url":"https://example.com/m"}]});
+        assert!(parse_workspaces(&flat).unwrap().is_empty());
     }
 
     #[test]
@@ -345,7 +346,7 @@ mod tests {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
         let signin = CodeSignIn::at("person@example.com", "http://127.0.0.1:9").unwrap();
-        let team = CodeTeam { team_id: "T0000000001".into(), name: "Acme".into(), domain: "acme".into(), url: "https://acme.slack.com/".into(), magic_login_url: format!("http://127.0.0.1:{port}/magic-login/secret-token-123"), sso_required: false, two_factor_required: false };
+        let team = CodeTeam { team_id: "T0000000001".into(), user_id: "U0000000001".into(), name: "Acme".into(), domain: "acme".into(), url: "https://acme.slack.com/".into(), magic_login_url: format!("http://127.0.0.1:{port}/magic-login/secret-token-123"), sso_required: false, two_factor_required: false };
         let text = format!("{:#}", signin.redeem(&team).await.unwrap_err());
         assert!(text.contains("Acme"), "{text}");
         assert!(!text.contains("secret") && !text.contains("magic-login") && !text.contains(&port.to_string()), "{text}");

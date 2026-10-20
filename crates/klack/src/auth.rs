@@ -480,7 +480,7 @@ async fn code_way(saved: &Profile, hint: &Hint) -> Result<Step<Vec<Result<Worksp
     let screen = CodeScreen::show(&email)?;
     loop {
         // The code is shown as typed: it is short and works once.
-        let Some(typed) = pick::ask("Code: ", |t| if t.is_empty() { "___-___".into() } else { String::new() })? else {
+        let Some(typed) = pick::ask_code("Code: ")? else {
             screen.erase()?;
             return Ok(Step::Back);
         };
@@ -559,8 +559,8 @@ fn why_not(t: &CodeTeam) -> Option<&'static str> {
     }
 }
 
-/// The workspaces of the code's list (dim with why when one can't be used; "already signed in" when `profile` has it,
-/// by team: the list names no user), and the rows marked at the start: the one named by `team_hint`, else the only
+/// The workspaces of the code's list (dim with why when one can't be used; "already signed in" when `profile` has that
+/// account: team and user, or the team alone when the list names no user), and the rows marked at the start: the one named by `team_hint`, else the only
 /// one that can be used.
 fn team_rows(teams: &[CodeTeam], profile: &Profile, team_hint: Option<&str>) -> (Vec<Row>, Vec<usize>) {
     let rows: Vec<Row> = teams
@@ -568,7 +568,8 @@ fn team_rows(teams: &[CodeTeam], profile: &Profile, team_hint: Option<&str>) -> 
         .map(|t| match why_not(t) {
             Some(why) => item(team_name(t), &host_of(&t.url), why, false),
             None => {
-                let already = profile.workspaces.iter().any(|w| w.team_id == t.team_id);
+                // That account (team + user); the team alone when Slack names no user.
+                let already = profile.workspaces.iter().any(|w| w.team_id == t.team_id && (t.user_id.is_empty() || w.user_id == t.user_id));
                 item(team_name(t), &host_of(&t.url), if already { "already signed in" } else { "" }, true)
             }
         })
@@ -1230,7 +1231,7 @@ mod tests {
 
     fn code_team(id: &str, name: &str, sso: bool, two_factor: bool) -> CodeTeam {
         let domain = name.to_lowercase();
-        CodeTeam { team_id: id.into(), name: name.into(), url: format!("https://{domain}.slack.com/"), domain, magic_login_url: "https://example.com/magic".into(), sso_required: sso, two_factor_required: two_factor }
+        CodeTeam { team_id: id.into(), user_id: "U0000000001".into(), name: name.into(), url: format!("https://{domain}.slack.com/"), domain, magic_login_url: "https://example.com/magic".into(), sso_required: sso, two_factor_required: two_factor }
     }
 
     #[test]
@@ -1256,6 +1257,10 @@ mod tests {
         assert_eq!(team_rows(&teams, &profile, Some("T0000000003")).1, Vec::<usize>::new());
         // Only one can be used: it is marked.
         assert_eq!(team_rows(&teams[..2], &profile, None).1, [0]);
+        // "Already signed in" is that account: another user of the team is not, and without a user the team is.
+        let other_user = CodeTeam { user_id: "U0000000002".into(), ..teams[3].clone() };
+        let no_user = CodeTeam { user_id: String::new(), ..teams[3].clone() };
+        assert_eq!(shown(&team_rows(&[other_user, no_user], &profile, None).0), ["- Widgets | widgets.slack.com | ", "- Widgets | widgets.slack.com | already signed in"]);
     }
 
     #[test]

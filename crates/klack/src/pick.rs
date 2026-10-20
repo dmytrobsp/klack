@@ -383,46 +383,101 @@ pub fn ask(prompt: &str, placeholder: impl Fn(&str) -> String) -> Result<Option<
 
 /// [`ask`] with `initial` already typed (Enter keeps it; Backspace takes it away a character at a time).
 pub fn ask_with(prompt: &str, initial: &str, placeholder: impl Fn(&str) -> String) -> Result<Option<String>> {
-    read_line(&|typed| prompt_line(prompt, typed, &placeholder), initial)
+    read_line(&|typed| prompt_line(prompt, typed, &placeholder), initial, &|t: &str| t.to_string(), false)
+}
+
+/// The prompt for a sign-in code: `___-___` filled in as it is typed, the hyphen put in by itself. Only letters and
+/// digits are taken (capitalised, six at most), so a typed or pasted hyphen or space does nothing. Enter gives the
+/// letters and digits typed (maybe fewer than six); Esc and Ctrl+C give `None`.
+pub fn ask_code(prompt: &str) -> Result<Option<String>> {
+    read_line(&|typed| {
+        let (shown, rest) = code_mask(typed);
+        (prompt.to_string(), shown, rest)
+    }, "", &code_chars, true)
+}
+
+/// What the code prompt keeps of `typed`: its letters and digits, capitalised, six at most.
+fn code_chars(typed: &str) -> String {
+    typed.chars().filter(char::is_ascii_alphanumeric).map(|c| c.to_ascii_uppercase()).take(6).collect()
+}
+
+/// The code `typed` (from [`code_chars`]) in its mask `___-___`: what is typed, with the hyphen once three are, and
+/// the rest of the mask (drawn dim).
+fn code_mask(typed: &str) -> (String, String) {
+    const MASK: &str = "___-___";
+    let mut shown = String::new();
+    for (i, c) in typed.chars().enumerate() {
+        shown.push(c);
+        if i == 2 {
+            shown.push('-');
+        }
+    }
+    let rest = MASK.chars().skip(shown.chars().count()).collect();
+    (shown, rest)
 }
 
 /// A one-line prompt for a secret (a cookie): what is typed or pasted is never drawn, only how many characters it has.
 /// Enter gives the text; Esc and Ctrl+C give `None`.
 pub fn ask_secret(prompt: &str) -> Result<Option<String>> {
-    read_line(&|typed| secret_line(prompt, typed), "")
+    read_line(&|typed| secret_line(prompt, typed), "", &|t: &str| t.to_string(), false)
 }
 
-/// The prompt loop of [`ask_with`] and [`ask_secret`]: `line(typed)` gives what to draw, `initial` is typed already.
-fn read_line(line: &dyn Fn(&str) -> (String, String, String), initial: &str) -> Result<Option<String>> {
-    struct Raw;
+/// The prompt loop of [`ask_with`], [`ask_code`] and [`ask_secret`]: `line(typed)` gives what to draw, `initial` is
+/// typed already, `keep(typed)` is what is kept of the text after each key or paste, and `paste` turns on bracketed
+/// paste (a paste then comes as one piece; without it, or where the terminal has none, as keys).
+fn read_line(line: &dyn Fn(&str) -> (String, String, String), initial: &str, keep: &dyn Fn(&str) -> String, paste: bool) -> Result<Option<String>> {
+    struct Raw(bool);
     impl Drop for Raw {
         fn drop(&mut self) {
+            if self.0 {
+                let _ = execute!(io::stdout(), event::DisableBracketedPaste);
+            }
             let _ = execute!(io::stdout(), cursor::MoveToColumn(0), Clear(ClearType::CurrentLine));
             let _ = disable_raw_mode();
         }
     }
     enable_raw_mode()?;
-    let _raw = Raw;
+    let _raw = Raw(paste);
+    if paste {
+        execute!(io::stdout(), event::EnableBracketedPaste)?;
+    }
     drain_input()?;
     let mut typed = initial.to_string();
     loop {
         draw_prompt(line(&typed))?;
-        let Event::Key(k) = event::read()? else { continue };
-        if k.kind == KeyEventKind::Release {
-            continue;
-        }
-        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
-        match k.code {
-            KeyCode::Char('c') if ctrl => return Ok(None),
-            KeyCode::Esc => return Ok(None),
-            KeyCode::Enter => return Ok(Some(typed)),
-            KeyCode::Backspace => {
-                typed.pop();
-            }
-            KeyCode::Char(c) if !ctrl && !k.modifiers.contains(KeyModifiers::ALT) => typed.push(c),
-            _ => {}
+        if let Some(enter) = apply(&mut typed, &event::read()?, keep) {
+            return Ok(enter.then_some(typed));
         }
     }
+}
+
+/// What a key or a paste does to the prompt's text `typed` (`keep` says what is kept of it): `Some(true)` for Enter,
+/// `Some(false)` for Esc and Ctrl+C, `None` to go on asking.
+fn apply(typed: &mut String, ev: &Event, keep: &dyn Fn(&str) -> String) -> Option<bool> {
+    match ev {
+        Event::Paste(text) => {
+            typed.push_str(text);
+            *typed = keep(typed);
+        }
+        Event::Key(k) if k.kind != KeyEventKind::Release => {
+            let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+            match k.code {
+                KeyCode::Char('c') if ctrl => return Some(false),
+                KeyCode::Esc => return Some(false),
+                KeyCode::Enter => return Some(true),
+                KeyCode::Backspace => {
+                    typed.pop();
+                }
+                KeyCode::Char(c) if !ctrl && !k.modifiers.contains(KeyModifiers::ALT) => {
+                    typed.push(c);
+                    *typed = keep(typed);
+                }
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+    None
 }
 
 #[cfg(test)]
@@ -600,6 +655,57 @@ mod tests {
         assert_eq!((p.as_str(), shown.as_str()), ("d cookie: ", ""));
         assert_eq!(dim, "14 characters");
         assert_eq!(secret_line("d cookie: ", "").2, "paste it, then Enter");
+    }
+
+    /// The code prompt's text after `events`, from nothing typed.
+    fn code_after(events: &[Event]) -> String {
+        let mut typed = String::new();
+        for e in events {
+            assert!(apply(&mut typed, e, &code_chars).is_none());
+        }
+        typed
+    }
+    fn keys(text: &str) -> Vec<Event> {
+        text.chars().map(|c| Event::Key(ch(c))).collect()
+    }
+
+    #[test]
+    fn the_code_fills_its_mask() {
+        assert_eq!(code_mask(""), (String::new(), "___-___".to_string()));
+        assert_eq!(code_mask("RE"), ("RE".to_string(), "_-___".to_string()));
+        // Three typed: the hyphen is put in, and the next one goes after it.
+        assert_eq!(code_mask("REP"), ("REP-".to_string(), "___".to_string()));
+        assert_eq!(code_mask("REPO"), ("REP-O".to_string(), "__".to_string()));
+        assert_eq!(code_mask("REPOEU"), ("REP-OEU".to_string(), String::new()));
+    }
+
+    #[test]
+    fn the_code_takes_letters_and_digits_capitalised() {
+        assert_eq!(code_chars("a-b c1!"), "ABC1");
+        assert_eq!(code_after(&keys("a-b c1!")), "ABC1");
+        // At most six; the seventh does nothing.
+        assert_eq!(code_after(&keys("rep-oeuX")), "REPOEU");
+        // Pasted with a hyphen: as keys (no bracketed paste) or as one paste.
+        assert_eq!(code_after(&keys(" REP-OEU ")), "REPOEU");
+        assert_eq!(code_after(&[Event::Paste("rep-oeu".into())]), "REPOEU");
+        assert_eq!(code_after(&[Event::Paste("rep-oeu-extra".into())]), "REPOEU");
+        // Backspace takes the last letter: the hyphen is only drawn, so it is stepped over.
+        let mut typed = code_after(&keys("repo"));
+        assert!(apply(&mut typed, &Event::Key(k(KeyCode::Backspace)), &code_chars).is_none());
+        assert_eq!(code_mask(&typed), ("REP-".to_string(), "___".to_string()));
+        assert_eq!(apply(&mut typed, &Event::Key(k(KeyCode::Enter)), &code_chars), Some(true));
+        assert_eq!(apply(&mut typed, &Event::Key(k(KeyCode::Esc)), &code_chars), Some(false));
+    }
+
+    #[test]
+    fn other_prompts_keep_what_is_typed() {
+        let same = |t: &str| t.to_string();
+        let mut typed = String::new();
+        for e in keys("a-b c") {
+            apply(&mut typed, &e, &same);
+        }
+        apply(&mut typed, &Event::Paste("1!".into()), &same);
+        assert_eq!(typed, "a-b c1!");
     }
 
     #[test]
