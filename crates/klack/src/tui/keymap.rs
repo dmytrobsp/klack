@@ -1191,6 +1191,19 @@ impl Keymap {
         }
     }
 
+    /// "workspace N" named after the workspace (`names`, the profile's in order), unless keys.toml labels it.
+    pub fn name_workspaces(&self, children: &mut [Child], names: &[String]) {
+        for c in children.iter_mut() {
+            let Some((context, action)) = c.action else { continue };
+            let Some(name) = workspace_of(action).and_then(|i| names.get(i)) else { continue };
+            let info = ACTIONS.iter().find(|a| a.context == context && a.action == action);
+            let labelled = info.is_some_and(|i| self.labels.get(&(context, i.name)).is_some_and(|(label, _)| label.is_some()));
+            if !labelled {
+                c.label = name.clone();
+            }
+        }
+    }
+
     /// An action's which-key label and icon: the user's, else the table's.
     fn label_of(&self, info: &ActionInfo) -> (String, String) {
         let (label, icon) = self.labels.get(&(info.context, info.name)).cloned().unwrap_or_default();
@@ -1300,6 +1313,12 @@ impl Keymap {
 /// Whether `seq` can be pressed where `<leader>` is pressed as `leader` (None: there is none).
 fn pressable(leader: Option<Key>, seq: &[Key]) -> bool {
     seq[0] != LEADER || leader.is_some()
+}
+
+/// The workspace (from 0) a "workspace N" action switches to.
+pub fn workspace_of(action: Action) -> Option<usize> {
+    use Action::*;
+    [Workspace1, Workspace2, Workspace3, Workspace4, Workspace5, Workspace6, Workspace7, Workspace8, Workspace9].iter().position(|a| *a == action)
 }
 
 /// A group of rows in the shared tree (F1 help, F6 → Keys, `ctl keys-template`).
@@ -2085,6 +2104,20 @@ mod tests {
         assert_eq!(map.sequences(Global, "jump_to"), vec![vec![LEADER, k("q")]]);
         assert_eq!(map.resolve(&[Messages, Global], Mode::Normal, &[LEADER], k("q")), Resolved::Action(Global, Action::Switcher));
         assert_eq!(map.resolve(&[Composer, Global], Mode::Insert, &[LEADER], k("q")), Resolved::Action(Global, Action::Switcher));
+    }
+
+    #[test]
+    fn which_key_names_the_workspaces() {
+        let names: Vec<String> = ["acme", "beta"].map(String::from).into();
+        let map = Keymap::load("").0;
+        let mut children = map.children(&[Context::Global], Mode::Normal, &[LEADER, k("w")]);
+        map.name_workspaces(&mut children, &names);
+        let label = |key: &str| children.iter().find(|c| c.key == k(key)).map(|c| c.label.clone());
+        assert_eq!((label("1"), label("2"), label("3")), (Some("acme".into()), Some("beta".into()), Some("workspace 3".into())), "beyond the profile: as before");
+        let mine = Keymap::load("[labels.global]\nworkspace_2 = \"home\"\n").0;
+        let mut children = mine.children(&[Context::Global], Mode::Normal, &[LEADER, k("w")]);
+        mine.name_workspaces(&mut children, &names);
+        assert_eq!(children.iter().find(|c| c.key == k("2")).map(|c| c.label.as_str()), Some("home"), "a keys.toml label wins");
     }
 
     #[test]

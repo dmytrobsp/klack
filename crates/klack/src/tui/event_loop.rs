@@ -2887,6 +2887,7 @@ impl App {
         });
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64();
         self.keys.follow_state(&mut children, self.ws.dnd_active(now));
+        self.keys.name_workspaces(&mut children, &self.workspaces);
         children
     }
 
@@ -4247,12 +4248,6 @@ struct Here {
     workspace: usize,
 }
 
-/// The workspace (from 0) a "workspace N" action switches to.
-fn workspace_of(action: Action) -> Option<usize> {
-    use Action::*;
-    [Workspace1, Workspace2, Workspace3, Workspace4, Workspace5, Workspace6, Workspace7, Workspace8, Workspace9].iter().position(|a| *a == action)
-}
-
 /// Whether `action` of `context` makes sense here; which-key leaves the others out.
 fn applies(here: &Here, context: Context, action: Action) -> bool {
     use Action::*;
@@ -4266,7 +4261,7 @@ fn applies(here: &Here, context: Context, action: Action) -> bool {
         (Context::Sidebar, Star | MoveToSection | Details | NotificationLevel) => here.selected,
         (Context::Profile, Huddle) => here.card,
         // Only the profile's other workspaces.
-        (Context::Global, _) if workspace_of(action).is_some() => workspace_of(action).is_some_and(|i| i < here.workspaces && i != here.workspace),
+        (Context::Global, _) if super::keymap::workspace_of(action).is_some() => super::keymap::workspace_of(action).is_some_and(|i| i < here.workspaces && i != here.workspace),
         _ => true,
     }
 }
