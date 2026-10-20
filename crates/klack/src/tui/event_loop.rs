@@ -4443,6 +4443,14 @@ fn run_global(app: &mut App, action: Action) -> bool {
         Action::Workspace9 => app.switch_workspace(8),
         Action::PrevConversation => app.sidebar.move_by_conversation(-1),
         Action::NextConversation => app.sidebar.move_by_conversation(1),
+        Action::PrevUnread | Action::NextUnread => {
+            // From the open conversation, else from where the sidebar's selection is.
+            let from = app.current.clone().or_else(|| app.sidebar.selected_id().map(String::from));
+            match app.ws.next_unread(from.as_deref(), action == Action::NextUnread) {
+                Some(id) => app.jump_to(&id),
+                None => app.status = "nothing unread".into(),
+            }
+        }
         Action::ScrollUp | Action::ScrollDown => {
             let older = scroll_page(app.focus, app.thread.is_some(), &mut app.messages, &mut app.thread_pane, action == Action::ScrollUp);
             if older {

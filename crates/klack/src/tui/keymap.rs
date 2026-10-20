@@ -320,6 +320,8 @@ pub enum Action {
     Preferences,
     PrevConversation,
     NextConversation,
+    PrevUnread,
+    NextUnread,
     ScrollUp,
     ScrollDown,
     HalfPageUp,
@@ -471,6 +473,8 @@ actions! {
         Preferences "preferences" "preferences" "preferences" "🔧" ["f6"]
         PrevConversation "previous_conversation" "previous conversation" "previous" "🔼" ["alt+up"]
         NextConversation "next_conversation" "next conversation" "next" "🔽" ["alt+down"]
+        PrevUnread "previous_unread" "previous unread conversation" "previous unread" "🔼" ["alt+shift+up"]
+        NextUnread "next_unread" "next unread conversation" "next unread" "🔽" ["alt+shift+down"]
         ScrollUp "scroll_up" "scroll messages up" "scroll up" "⏫" ["pageup"]
         ScrollDown "scroll_down" "scroll messages down" "scroll down" "⏬" ["pagedown"]
         FocusNext "focus_next" "next pane" "next pane" "⏩" ["tab"]

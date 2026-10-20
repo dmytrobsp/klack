@@ -805,6 +805,23 @@ impl Workspace {
         (n, m)
     }
 
+    /// The next (`down`) or previous unread conversation after `from` in the sidebar's order,
+    /// wrapping round; the sidebar's own rule (listed, unread, not muted, so what the count
+    /// counts), plain order with mentions not first. `from` itself is the last one tried; None
+    /// when nothing is unread.
+    pub fn next_unread(&self, from: Option<&str>, down: bool) -> Option<String> {
+        let mut order: Vec<String> = Vec::new();
+        for id in self.sidebar_groups().into_iter().flat_map(|(_, ids)| ids) {
+            if !order.contains(&id) {
+                order.push(id);
+            }
+        }
+        let unread = |id: &String| !self.muted.contains(id) && self.unread.get(id).is_some_and(|u| u.has_unreads);
+        let n = order.len();
+        let at = from.and_then(|f| order.iter().position(|i| i == f));
+        (1..=n).map(|k| if down { (at.unwrap_or(n - 1) + k) % n } else { (at.unwrap_or(0) + n - k % n) % n }).map(|i| &order[i]).find(|id| unread(id)).cloned()
+    }
+
     /// Typing users (active within 6 s) for a channel.
     pub fn typing_in(&self, channel: &str) -> Vec<String> {
         self.typing
@@ -835,6 +852,40 @@ mod tests {
         // C1 and D1 are bold in the sidebar; C2 is muted (dim, its mention badged), C3 archived
         // and C9 unknown are not listed.
         assert_eq!(ws.total_unread(), (2, 3));
+    }
+
+    #[test]
+    fn next_unread_walks_the_sidebar() {
+        let mut ws = Workspace::default();
+        for (id, name, archived) in [("C1", "a", false), ("C2", "b", false), ("C3", "c", false), ("C4", "d", true), ("C5", "e", false)] {
+            ws.conversations.insert(id.into(), Conversation { id: id.into(), name: name.into(), is_channel: true, is_member: true, is_archived: archived, ..Default::default() });
+        }
+        assert_eq!(ws.next_unread(Some("C1"), true), None, "nothing unread");
+        for id in ["C1", "C2", "C3", "C4", "C5"] {
+            ws.unread.insert(id.into(), Unread { has_unreads: true, mentions: if id == "C5" { 3 } else { 0 } });
+        }
+        ws.muted.insert("C2".into());
+        // C2 is muted and C4 archived (not listed): both skipped; the mention on C5 ranks nothing.
+        let next = |ws: &Workspace, from, down| ws.next_unread(from, down);
+        assert_eq!(next(&ws, Some("C1"), true).as_deref(), Some("C3"));
+        assert_eq!(next(&ws, Some("C3"), true).as_deref(), Some("C5"));
+        assert_eq!(next(&ws, Some("C5"), true).as_deref(), Some("C1"), "wraps down");
+        assert_eq!(next(&ws, Some("C5"), false).as_deref(), Some("C3"));
+        assert_eq!(next(&ws, Some("C1"), false).as_deref(), Some("C5"), "wraps up");
+        assert_eq!(next(&ws, Some("C2"), true).as_deref(), Some("C3"), "from a muted one");
+        assert_eq!(next(&ws, None, true).as_deref(), Some("C1"));
+        assert_eq!(next(&ws, None, false).as_deref(), Some("C5"));
+        // The only unread one is the open one: it is found (wrapping all the way round).
+        for id in ["C1", "C3"] {
+            ws.unread.get_mut(id).unwrap().has_unreads = false;
+        }
+        assert_eq!(next(&ws, Some("C5"), true).as_deref(), Some("C5"));
+        // Only muted unread: nothing.
+        ws.unread.get_mut("C5").unwrap().has_unreads = false;
+        assert_eq!(next(&ws, Some("C1"), true), None);
+        // Marked unread (held) counts as unread.
+        ws.mark_unread("C3", "1.0");
+        assert_eq!(next(&ws, Some("C1"), true).as_deref(), Some("C3"));
     }
 
     fn msg(ts: &str) -> Message {
