@@ -596,12 +596,14 @@ pub async fn logout(profile: &str, team: Option<&str>, all: bool) -> Result<()> 
 }
 
 /// How a session's source is shown.
-pub fn source_label(source: Option<&SessionSource>) -> &str {
+pub fn source_label(source: Option<&SessionSource>) -> std::borrow::Cow<'_, str> {
+    use std::borrow::Cow;
     match source {
-        Some(SessionSource::Browser { label, .. }) => label,
-        Some(SessionSource::Window) => "browser window",
-        Some(SessionSource::Cookie) => "cookie",
-        None => "unknown",
+        Some(SessionSource::Browser { label, .. }) => Cow::Borrowed(label),
+        Some(SessionSource::Window) => Cow::Borrowed("a browser window"),
+        Some(SessionSource::Cookie) => Cow::Borrowed("cookie"),
+        Some(SessionSource::Code { email }) => Cow::Owned(format!("code to {email}")),
+        None => Cow::Borrowed("unknown"),
     }
 }
 
@@ -961,7 +963,8 @@ mod tests {
     fn sources_are_named() {
         let chrome = SessionSource::Browser { browser: "chrome".into(), profile: "/x".into(), label: "Chrome · Work".into() };
         assert_eq!(source_label(Some(&chrome)), "Chrome · Work");
-        assert_eq!(source_label(Some(&SessionSource::Window)), "browser window");
+        assert_eq!(source_label(Some(&SessionSource::Window)), "a browser window");
+        assert_eq!(source_label(Some(&SessionSource::Code { email: "person@example.com".into() })), "code to person@example.com");
         assert_eq!(source_label(Some(&SessionSource::Cookie)), "cookie");
         assert_eq!(source_label(None), "unknown");
     }

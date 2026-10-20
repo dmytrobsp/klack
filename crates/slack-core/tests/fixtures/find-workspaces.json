@@ -1,0 +1,17 @@
+{
+  "_note": "made-up shape, from the fields seen live on 2026-10-20",
+  "ok": true,
+  "current_teams": [
+    {"id":"T0000000001","name":"Acme & Sons","domain":"acme","url":"https://acme.slack.com/","magic_login_url":"https://app.slack.com/magic-login/made-up-one","magic_login_code":"made-up-code-1","sso_required":false,"two_factor_required":false,"is_logged_out":true},
+    {"id":"T0000000002","name":"Widgets Inc","domain":"widgets-inc","url":"https://widgets-inc.slack.com/","magic_login_url":"https://app.slack.com/magic-login/made-up-two","magic_login_code":"made-up-code-2","sso_required":true,"two_factor_required":true,"is_logged_out":true},
+    {"id":"T0000000003","name":"No Link","domain":"nolink","url":"https://nolink.slack.com/","sso_required":false,"two_factor_required":false,"is_logged_out":true}
+  ],
+  "current_orgs": [
+    {"id":"E0000000001","name":"Big Org","teams":[
+      {"id":"T0000000001","name":"Acme & Sons","domain":"acme","url":"https://acme.slack.com/","magic_login_url":"https://app.slack.com/magic-login/made-up-one","sso_required":false,"two_factor_required":false},
+      {"id":"T0000000004","name":"Grid Team","domain":"grid-team","url":"https://grid-team.slack.com/","magic_login_url":"https://app.slack.com/magic-login/made-up-four","sso_required":false,"two_factor_required":false}
+    ]}
+  ],
+  "invited_teams": [],
+  "domain_enabled_teams": []
+}

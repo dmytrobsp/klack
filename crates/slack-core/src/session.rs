@@ -41,6 +41,8 @@ pub enum SessionSource {
     Window,
     /// The `d` cookie given by hand (flag, environment or prompt).
     Cookie,
+    /// An emailed sign-in code, confirmed by klack (`email` is where Slack sent it).
+    Code { email: String },
 }
 
 impl std::fmt::Debug for WorkspaceSession {
@@ -511,6 +513,7 @@ mod tests {
             SessionSource::Browser { browser: "chrome".into(), profile: PathBuf::from("/home/person/.config/google-chrome/Profile 1"), label: "Chrome · Work".into() },
             SessionSource::Window,
             SessionSource::Cookie,
+            SessionSource::Code { email: "person@example.com".into() },
         ];
         for source in sources {
             let ws = WorkspaceSession { source: Some(source.clone()), ..account("T0000000001", "acme", "U0000000001") };
@@ -520,6 +523,8 @@ mod tests {
         }
         let text = serde_json::to_string(&WorkspaceSession { source: Some(SessionSource::Window), ..Default::default() }).unwrap();
         assert!(text.contains(r#""source":{"kind":"window"}"#), "{text}");
+        let text = serde_json::to_string(&WorkspaceSession { source: Some(SessionSource::Code { email: "person@example.com".into() }), ..Default::default() }).unwrap();
+        assert!(text.contains(r#""kind":"code""#), "{text}");
     }
 
     #[test]

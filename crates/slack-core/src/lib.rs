@@ -7,6 +7,7 @@ pub mod format;
 pub mod profiles;
 pub mod rtm;
 pub mod session;
+pub mod signin;
 pub mod types;
 
 pub use api::Client;
