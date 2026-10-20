@@ -82,29 +82,166 @@
   </section>
 
   <section id="features">
-    <h2>Features</h2>
-    <!-- fill:capture-huddle --><!-- /fill:capture-huddle -->
-    <!-- fill:capture-signin --><!-- /fill:capture-signin -->
-    <!-- fill:capture-keys --><!-- /fill:capture-keys -->
+    <!-- draft -->
+    <h2>What it does</h2>
+
+    <article class="feature" style="--accent: var(--green)">
+      <div class="words">
+        <!-- draft -->
+        <h3>Huddles and screen sharing. In a terminal.</h3>
+        <!-- draft -->
+        <p>Join, talk, share your screen and watch theirs — tiles, video and all, drawn right in the terminal. You join muted; the mic opens only when you say so.</p>
+        <!-- draft -->
+        <p class="jab">The official app shares your screen and heats your room. We skipped the heating. <a href="#numbers">See the numbers.</a></p>
+      </div>
+      <div class="shot"><!-- fill:capture-huddle --><!-- /fill:capture-huddle --></div>
+    </article>
+
+    <article class="feature flip" style="--accent: var(--blue)">
+      <div class="words">
+        <!-- draft -->
+        <h3>Sign in with one code.</h3>
+        <!-- draft -->
+        <p>Scan the QR code with your phone, type the code from your email, done. No browser needed on this machine. (Your browser's session or a pasted cookie work too — the guide offers both.)</p>
+        <!-- draft -->
+        <p class="jab"><s>Opening your browser to sign in…</s> The official app <em>is</em> a browser, and it still sends you to another one.</p>
+      </div>
+      <div class="shot"><!-- fill:capture-signin --><!-- /fill:capture-signin --></div>
+    </article>
+
+    <article class="feature" style="--accent: var(--yellow)">
+      <div class="words">
+        <!-- draft -->
+        <h3>Hands on the keys.</h3>
+        <!-- draft -->
+        <p>NORMAL and INSERT modes, like vim. <kbd>j</kbd>/<kbd>k</kbd>, <kbd>g</kbd>/<kbd>G</kbd>, <kbd>Ctrl+U</kbd>/<kbd>Ctrl+D</kbd>. <kbd>Space</kbd> is the leader: press it, wait a beat, and the which-key panel says what comes next. Every key rebindable. The mouse works too, if you must.</p>
+        <!-- draft -->
+        <p class="jab">The official app's idea of a modal editor is a modal dialog.</p>
+        <div class="q-meme">
+          <!-- draft -->
+          <span class="scrawl q-crossed" aria-hidden="true"><s>:q</s></span>
+          <p class="sticker q-sticker">Quit with Ctrl+Q. We're not monsters.</p>
+        </div>
+      </div>
+      <div class="shot"><!-- fill:capture-keys --><!-- /fill:capture-keys --></div>
+    </article>
+
+    <article class="feature flip" style="--accent: var(--pink)">
+      <div class="words">
+        <!-- draft -->
+        <h3>Script it: <code>klack ctl</code>.</h3>
+        <!-- draft -->
+        <p>The same Slack, from your shell: <code>whoami</code>, <code>channels</code>, <code>history</code>, <code>replies</code>, <code>post</code>, <code>react</code>, <code>pin</code>, <code>upload</code>, <code>search</code>, <code>listen</code>… Pipe it, cron it, wire it into CI.</p>
+        <!-- draft -->
+        <p class="jab">The official app's automation story: drive a browser with another browser. Ours is a pipe.</p>
+      </div>
+      <div class="term ctl"><div class="dots">● ● ●  sh</div><!-- draft -->
+<pre><span class="ps">$</span> make test &amp;&amp; klack ctl post '#deploys' 'green. ship it.'
+<span class="ps">$</span> klack ctl history '#deploys' | grep -i rollback
+<span class="ps">$</span> klack ctl listen | grep -i outage</pre></div>
+    </article>
+
+    <div class="rest">
+      <!-- draft -->
+      <h3>And the rest</h3>
+      <ul class="everything">
+        <!-- draft -->
+        <li class="paper a" style="--r:-1.5deg"><b>threads</b> a reply pane, and every thread you're in, unread first</li>
+        <!-- draft -->
+        <li class="paper b" style="--r:1deg"><b>reactions</b> the picker even says who reacted</li>
+        <!-- draft -->
+        <li class="paper a" style="--r:2deg"><b>custom emoji</b> as pictures, where the terminal can draw them</li>
+        <!-- draft -->
+        <li class="paper b" style="--r:-2deg"><b>pictures in the terminal</b> kitty, WezTerm, Ghostty, foot, any sixel terminal — half-blocks elsewhere</li>
+        <!-- draft -->
+        <li class="paper a" style="--r:1deg"><b>video with sound</b> Space pauses. Obviously.</li>
+        <!-- draft -->
+        <li class="paper b" style="--r:-1deg"><b>files</b> upload, paste a screenshot, save attachments</li>
+        <!-- draft -->
+        <li class="paper a" style="--r:1.5deg"><b>search</b> more results load as you scroll</li>
+        <!-- draft -->
+        <li class="paper b" style="--r:-1.5deg"><b>notifications</b> on your desktop, with a sound if you want one</li>
+        <!-- draft -->
+        <li class="paper a" style="--r:2deg"><b>do not disturb</b> <code>/dnd</code>, a pause, a schedule</li>
+        <!-- draft -->
+        <li class="paper b" style="--r:-2deg"><b>several workspaces</b> a rail of tiles, one keystroke apart</li>
+        <!-- draft -->
+        <li class="paper a" style="--r:-1deg"><b>themes</b> dark, light, terminal, or your own TOML</li>
+        <!-- draft -->
+        <li class="paper b" style="--r:1deg"><b>links into your Slack</b> open in klack, not in a browser tab</li>
+        <!-- draft -->
+        <li class="paper a" style="--r:1.5deg"><b>drafts</b> half-written messages survive quitting and crashes</li>
+        <!-- draft -->
+        <li class="paper b" style="--r:-1.5deg"><b>slash commands</b> Slack's and the apps' — <code>/remind</code>, <code>/giphy</code>, <code>/shrug</code></li>
+        <!-- draft -->
+        <li class="paper a" style="--r:1deg"><b>your keys</b> rebind anything; your <code>keys.toml</code> keeps its comments</li>
+      </ul>
+      <!-- draft -->
+      <p class="jab rest-jab">All of it in one terminal tab. Not a Chromium in sight.</p>
+    </div>
   </section>
 
   <section id="numbers">
     <h2>The numbers</h2>
-    <!-- fill:sheet --><!-- /fill:sheet -->
-    <!-- fill:measured-note --><!-- /fill:measured-note -->
+    <!-- draft -->
+    <p class="lede">Same machine, same session, one app at a time. Measured, not guessed.</p>
+    <!-- draft -->
+    <p class="jab">The official app ships a whole browser to show you a list of channels. It shows.</p>
+    <div class="sheet-slot"><!-- fill:sheet --><!-- draft --><p class="standin-note">measuring… no number goes up here until it's been measured.</p><!-- /fill:sheet --></div>
+    <div class="note"><!-- fill:measured-note --><!-- /fill:measured-note --></div>
+    <!-- draft -->
+    <p class="scrawl freedom">Everything here was measured on Linux. macOS and Windows numbers? Sorry, can't hear you over the sound of my freedom.</p>
   </section>
 
   <section id="ssh">
-    <h2>Over SSH</h2>
-    <!-- fill:capture-ssh --><!-- /fill:capture-ssh -->
+    <div class="ssh-head">
+      <h2>Chat over SSH: yes. Huddle over SSH: only if you shout really loud.</h2>
+      <img class="graffiti" src="img/sad-smiley.svg" alt="a sad smiley sprayed on the wall" width="150" height="165">
+    </div>
+    <p class="scrawl ssh-aside">SSH forwards ports, not vocal cords.</p>
+    <div class="feature" style="--accent: var(--blue)">
+      <div class="words">
+        <!-- draft -->
+        <p>For the box with no screen and no browser: run <code>klack auth login</code> in the SSH session, scan the QR code with your phone, type the code from your email. Signed in.</p>
+        <!-- draft -->
+        <p>Then it's all there: channels, DMs, threads, reactions, search — in the terminal you already have open.</p>
+        <!-- draft -->
+        <p class="jab">The official app over SSH: forward X, drag a whole Chromium down the wire, go make coffee. Grow the beans first.</p>
+      </div>
+      <div class="shot"><!-- fill:capture-ssh --><!-- /fill:capture-ssh --></div>
+    </div>
   </section>
 
   <section id="get">
-    <h2>Download</h2>
-    <!-- fill:downloads --><table class="downloads"><thead><tr><th>Download</th><th>Size</th><th>Runs on</th><th>Needs</th></tr></thead><tbody><tr><th scope="row"><a href="https://github.com/dmytrobsp/klack/releases/download/v0.8.0/klack-0.8.0-x86_64-linux.zip">Linux</a><code>x86_64-linux.zip</code></th><td>12.7 MB</td><td>glibc 2.34 or newer (Ubuntu 22.04, Debian 12, Fedora 35, RHEL 9 and later)</td><td>libasound.so.2 (ALSA), libstdc++ — on every desktop Linux</td></tr><tr><th scope="row"><a href="https://github.com/dmytrobsp/klack/releases/download/v0.8.0/klack-0.8.0-aarch64-macos.zip">macOS · Apple Silicon</a><code>aarch64-macos.zip</code></th><td>10.2 MB</td><td>Apple Silicon Macs, macOS 11 or newer</td><td>nothing (system frameworks only); unsigned: xattr -d com.apple.quarantine klack once, or allow it in System Settings → Privacy &amp; Security</td></tr><tr><th scope="row"><a href="https://github.com/dmytrobsp/klack/releases/download/v0.8.0/klack-0.8.0-x86_64-macos.zip">macOS · Intel</a><code>x86_64-macos.zip</code></th><td>11.1 MB</td><td>Intel Macs, macOS 11 or newer</td><td>as above</td></tr><tr><th scope="row"><a href="https://github.com/dmytrobsp/klack/releases/download/v0.8.0/klack-0.8.0-x86_64-windows.zip">Windows</a><code>x86_64-windows.zip</code></th><td>11.1 MB</td><td>64-bit Windows 10 / 11</td><td>nothing (Windows system DLLs only, no MinGW runtime); unsigned, so SmartScreen may ask once</td></tr></tbody></table><p class="sums"><a href="https://github.com/dmytrobsp/klack/releases/download/v0.8.0/SHA256SUMS">SHA256SUMS</a> · <a href="https://github.com/dmytrobsp/klack/releases/tag/v0.8.0">release v0.8.0</a></p><!-- /fill:downloads -->
+    <!-- draft -->
+    <h2>Get it</h2>
+    <!-- draft -->
+    <p class="lede">One zip per system, one binary inside. Unzip it, put <code>klack</code> on your PATH, sign in:</p>
+    <pre class="cmd"><span class="ps">$</span> klack auth login</pre>
+    <!-- draft -->
+    <p class="jab">No installer. No auto-updater. No herd of “Slack Helper (Renderer)” processes.</p>
+    <div class="table-wrap"><!-- fill:downloads --><table class="downloads"><thead><tr><th>Download</th><th>Size</th><th>Runs on</th><th>Needs</th></tr></thead><tbody><tr><th scope="row"><a href="https://github.com/dmytrobsp/klack/releases/download/v0.8.0/klack-0.8.0-x86_64-linux.zip">Linux</a><code>x86_64-linux.zip</code></th><td>12.7 MB</td><td>glibc 2.34 or newer (Ubuntu 22.04, Debian 12, Fedora 35, RHEL 9 and later)</td><td>libasound.so.2 (ALSA), libstdc++ — on every desktop Linux</td></tr><tr><th scope="row"><a href="https://github.com/dmytrobsp/klack/releases/download/v0.8.0/klack-0.8.0-aarch64-macos.zip">macOS · Apple Silicon</a><code>aarch64-macos.zip</code></th><td>10.2 MB</td><td>Apple Silicon Macs, macOS 11 or newer</td><td>nothing (system frameworks only); unsigned: xattr -d com.apple.quarantine klack once, or allow it in System Settings → Privacy &amp; Security</td></tr><tr><th scope="row"><a href="https://github.com/dmytrobsp/klack/releases/download/v0.8.0/klack-0.8.0-x86_64-macos.zip">macOS · Intel</a><code>x86_64-macos.zip</code></th><td>11.1 MB</td><td>Intel Macs, macOS 11 or newer</td><td>as above</td></tr><tr><th scope="row"><a href="https://github.com/dmytrobsp/klack/releases/download/v0.8.0/klack-0.8.0-x86_64-windows.zip">Windows</a><code>x86_64-windows.zip</code></th><td>11.1 MB</td><td>64-bit Windows 10 / 11</td><td>nothing (Windows system DLLs only, no MinGW runtime); unsigned, so SmartScreen may ask once</td></tr></tbody></table><p class="sums"><a href="https://github.com/dmytrobsp/klack/releases/download/v0.8.0/SHA256SUMS">SHA256SUMS</a> · <a href="https://github.com/dmytrobsp/klack/releases/tag/v0.8.0">release v0.8.0</a></p><!-- /fill:downloads --></div>
+    <ul class="notes">
+      <!-- draft -->
+      <li>None of them is signed, so your OS will have opinions. macOS: <code>xattr -d com.apple.quarantine klack</code> once, or allow it in System Settings → Privacy &amp; Security. Windows: SmartScreen may ask once.</li>
+      <!-- draft -->
+      <li>Video, cameras and screen sharing want <code>ffmpeg</code> on your PATH (on Wayland, screen sharing goes through the desktop's own picker and GStreamer).</li>
+      <!-- draft -->
+      <li>Huddles are at home on Linux. On macOS and Windows your camera and screen sharing are written but not yet tried for real — they should work; if they don't, <a href="https://github.com/dmytrobsp/klack/issues">tell us</a>. Every number on this page was measured on Linux.</li>
+    </ul>
   </section>
 
-  <footer id="footer"></footer>
+  <footer id="footer">
+    <div class="sticker foot-sticker" style="--r:8deg">NO CHROMIUM<br>WAS HARMED</div>
+    <div class="foot-words">
+      <!-- draft -->
+      <p>klack is MIT or Apache-2.0, your pick. Code, issues and the manual (the README) live on <a href="https://github.com/dmytrobsp/klack">GitHub</a>.</p>
+      <!-- draft -->
+      <p>klack is not affiliated with Slack Technologies or Salesforce; Slack is their trademark.</p>
+      <!-- draft -->
+      <p>Thanks to <a href="https://getslk.sh/">slk</a> for the inspiration.</p>
+    </div>
+  </footer>
 </div>
 </body>
 </html>
