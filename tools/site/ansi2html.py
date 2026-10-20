@@ -27,7 +27,8 @@ PALETTE = _palette()
 _TOKEN = re.compile(
     r"\x1b\[([0-9;:?<=>]*)([ -/]*[@-~])"   # CSI
     r"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?"  # OSC (BEL or ST terminated)
-    r"|\x1b[ -/]*[0-@-~]?"                   # other escapes
+    r"|\x1b[P_^X][^\x1b\x07]*(?:\x07|\x1b\\)?"  # DCS, APC, PM, SOS payloads
+    r"|\x1b[ -/]*[0-~]?"                     # other escapes (a bare ST included)
 )
 
 _FRESH = (None, None, False, False, False, False, False, False)  # fg bg bold dim italic ul strike rev

@@ -63,6 +63,12 @@ class Convert(unittest.TestCase):
     def test_other_csi_dropped(self):
         self.assertEqual(convert("a\x1b[2Kb\x1b[?25l"), '<pre class="term">ab</pre>')
 
+    def test_string_sequences_dropped(self):
+        for esc in ("\x1b_Gf=100;SECRETPAYLOAD\x1b\\", "\x1bPqSECRET\x1b\\",
+                    "\x1b^pm\x1b\\", "\x1bXsos\x1b\\"):
+            self.assertEqual(convert("a" + esc + "b"), '<pre class="term">ab</pre>')
+        self.assertEqual(convert("a\x1b\\b"), '<pre class="term">ab</pre>')
+
     def test_rename_across_runs(self):
         out = convert("\x1b[1mAlice \x1b[0;36mSmith\x1b[0m", {"Alice Smith": "Bob"})
         self.assertNotIn("Alice", out)
