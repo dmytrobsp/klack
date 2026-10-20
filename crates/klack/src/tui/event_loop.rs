@@ -5046,7 +5046,23 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         let title = super::which_key::title(&app.keys, &contexts, &app.pending);
         if let Some(panel) = app.which_key.as_mut() {
             panel.page = panel.page.min(pages.saturating_sub(1));
-            app.which_key_area = super::which_key::draw(f, above_status, &title, &children, panel, settings, back);
+            let icons;
+            (app.which_key_area, icons) = super::which_key::draw(f, above_status, &title, &children, panel, settings, back);
+            // A workspace's logo over its icon, where the terminal draws pictures (the 🏢 stands in while it loads).
+            let logos = app.logos.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            for (i, cell) in icons {
+                let Some(logo) = children[i].action.and_then(|(_, a)| super::keymap::workspace_of(a)).and_then(|w| logos.get(&w)).filter(|_| app.media.graphics()) else { continue };
+                let small = slack_core::types::File { id: format!("{}@small", logo.id), ..logo.clone() };
+                match app.media.thumbs.get(&small.id) {
+                    Some(super::media::Thumb::Ready(proto)) => {
+                        f.render_widget(ratatui::widgets::Clear, cell);
+                        f.render_widget(ratatui_image::sliced::SlicedImage::new(proto, ratatui_image::sliced::SignedPosition { x: 0, y: 0 }), cell);
+                    }
+                    Some(_) => {}
+                    // Loaded with the rail's pictures.
+                    None => app.rail_wanted.push((small, super::media::AVATAR_SIZE)),
+                }
+            }
         }
     }
     // The status line: the mode, what is going on, the keys under way and the hints.

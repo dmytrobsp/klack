@@ -142,13 +142,13 @@ fn put(buf: &mut Buffer, x: u16, y: u16, s: &str, room: usize, style: Style) {
 
 /// The panel in `settings.corner` of `screen`, `title` in its top border. Returns where it was
 /// drawn, for clicks (empty when it did not fit).
-pub fn draw(f: &mut Frame, screen: Rect, title: &str, children: &[Child], panel: &Panel, settings: &WhichKey, back: bool) -> Rect {
+pub fn draw(f: &mut Frame, screen: Rect, title: &str, children: &[Child], panel: &Panel, settings: &WhichKey, back: bool) -> (Rect, Vec<(usize, Rect)>) {
     let l = layout(children, screen, settings.max_height_percent, settings.icons);
     let title = format!(" {title} ");
     let width = (l.width as usize).max(title.width() + 2).min(screen.width as usize) as u16;
     let height = (l.rows as u16 + 3).min(screen.height);
     if width < 3 || height < 2 {
-        return Rect::default();
+        return (Rect::default(), Vec::new());
     }
     let x = if settings.corner.ends_with("left") { screen.x } else { screen.right() - width };
     let y = if settings.corner.starts_with("top") { screen.y } else { screen.bottom() - height };
@@ -159,7 +159,7 @@ pub fn draw(f: &mut Frame, screen: Rect, title: &str, children: &[Child], panel:
     let inner = block.inner(area);
     f.render_widget(block, area);
     if inner.height == 0 {
-        return area;
+        return (area, Vec::new());
     }
     let w = Widths::of(children, (screen.width as usize).saturating_sub(4), settings.icons);
     let page = panel.page.min(l.pages.saturating_sub(1));
@@ -167,6 +167,7 @@ pub fn draw(f: &mut Frame, screen: Rect, title: &str, children: &[Child], panel:
     let (left, right) = (inner.x + 1, inner.right().saturating_sub(1));
     let rows = inner.height as usize - 1;
     let buf = f.buffer_mut();
+    let mut icons = Vec::new();
     for (i, c) in children.iter().skip(page * per_page).take(per_page).enumerate() {
         let (column, row) = (i / l.rows, i % l.rows);
         let x = left as usize + column * (w.entry() + GAP);
@@ -179,6 +180,9 @@ pub fn draw(f: &mut Frame, screen: Rect, title: &str, children: &[Child], panel:
         put(buf, x + w.key as u16 + 1, y, "→", room(w.key + 1), Style::default().fg(p.dim));
         if settings.icons {
             put(buf, x + w.key as u16 + 3, y, &c.icon, 2.min(room(w.key + 3)), Style::default());
+            if room(w.key + 3) >= 2 {
+                icons.push((page * per_page + i, Rect::new(x + w.key as u16 + 3, y, 2, 1)));
+            }
         }
         let at = w.key + 3 + w.icon;
         let style = if c.group { Style::default().fg(p.accent) } else { Style::default() };
@@ -187,7 +191,7 @@ pub fn draw(f: &mut Frame, screen: Rect, title: &str, children: &[Child], panel:
     let footer = footer(page, l.pages, back);
     let room = right.saturating_sub(left) as usize;
     put(buf, left, inner.bottom() - 1, &super::status::cut(&footer, room), room, Style::default().fg(p.dim));
-    area
+    (area, icons)
 }
 
 #[cfg(test)]
@@ -336,14 +340,18 @@ mod tests {
         // Bottom-right by default, above nothing else: the border's corners are where it says.
         let mut term = Terminal::new(TestBackend::new(60, 20)).unwrap();
         let mut area = Rect::default();
-        term.draw(|f| area = draw(f, f.area(), "␣  message", &many(3), &Panel::default(), &WhichKey::default(), true)).unwrap();
+        let mut icons = Vec::new();
+        term.draw(|f| (area, icons) = draw(f, f.area(), "␣  message", &many(3), &Panel::default(), &WhichKey::default(), true)).unwrap();
         let buf = term.backend().buffer().clone();
         assert!(area.width > 2 && area.height > 2 && area.right() == 60 && area.bottom() == 20, "{area:?}");
         assert_eq!((buf[(area.x, area.y)].symbol(), buf[(area.right() - 1, area.bottom() - 1)].symbol()), ("┌", "┘"));
         assert_eq!(buf[(area.x - 1, area.y)].symbol(), " ", "nothing left of it");
+        // Each entry's icon cell (where a workspace's logo goes), two cells inside the panel.
+        assert_eq!(icons.iter().map(|(i, _)| *i).collect::<Vec<_>>(), [0, 1, 2]);
+        assert!(icons.iter().all(|(_, r)| r.width == 2 && r.height == 1 && area.contains(r.as_position())), "{icons:?}");
         // Too small to draw: nothing to click.
         term = Terminal::new(TestBackend::new(2, 1)).unwrap();
-        term.draw(|f| area = draw(f, f.area(), "␣", &many(3), &Panel::default(), &WhichKey::default(), true)).unwrap();
+        term.draw(|f| area = draw(f, f.area(), "␣", &many(3), &Panel::default(), &WhichKey::default(), true).0).unwrap();
         assert_eq!(area, Rect::default());
     }
 }
