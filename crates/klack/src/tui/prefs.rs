@@ -229,7 +229,7 @@ impl Field {
             Field::InsertLeader => return keys.insert_leader.map(|k| k.label()).unwrap_or_else(|| "none".into()),
             Field::GroupHeader(_) => return String::new(),
             Field::Binding(i) => {
-                let label = keys.keys_label(ACTIONS[i].context, ACTIONS[i].name);
+                let label = keys.keys_named(ACTIONS[i].context, ACTIONS[i].name);
                 return if label.is_empty() { "(unbound)".into() } else { label };
             }
             _ => {}
@@ -500,7 +500,7 @@ fn next_level(level: &str) -> String {
     LEVELS[i].to_string()
 }
 
-const LEADER_LABEL: &str = "Leader key (for chords such as Leader k)";
+const LEADER_LABEL: &str = "Leader key (<leader> in the bindings)";
 const INSERT_LEADER_LABEL: &str = "Leader while typing and in dialogs";
 /// Shown while a recording waits for its first key.
 const RECORD_START: &str = "press the keys… (a 1 s pause ends it)";
@@ -568,6 +568,16 @@ pub enum Anchor {
 pub fn recorded(keys: &Keymap, seq: &[Key]) -> String {
     let leaders = [keys.leader, keys.insert_leader];
     seq.iter().enumerate().map(|(n, k)| if n == 0 && seq.len() > 1 && leaders.contains(&Some(*k)) { "<leader>".to_string() } else { k.spec() }).collect::<Vec<_>>().join(" ")
+}
+
+/// Keys being recorded as the list shows them: a leader that starts a longer sequence is
+/// `<leader>`, as [`recorded`] saves it.
+fn recording_label(keys: &Keymap, seq: &[Key]) -> String {
+    let leaders = [keys.leader, keys.insert_leader];
+    match seq {
+        [first, rest @ ..] if !rest.is_empty() && leaders.contains(&Some(*first)) => keys.label_named(&[&[super::keymap::LEADER], rest].concat()),
+        _ => keys.label(seq),
+    }
 }
 
 /// Category names and fixed labels, for translation templates.
@@ -1082,8 +1092,8 @@ impl Prefs {
             let value = match (&self.editing, &self.recording, selected) {
                 (Some(text), _, true) => format!("{text}▏"),
                 (_, Some(r), true) if r.keys.is_empty() => tr(RECORD_START).into_owned(),
-                (_, Some(r), true) if r.done => format!("{} · {}", keys.label(&r.keys), tr(RECORD_DONE)),
-                (_, Some(r), true) => format!("{} …", keys.label(&r.keys)),
+                (_, Some(r), true) if r.done => format!("{} · {}", recording_label(keys, &r.keys), tr(RECORD_DONE)),
+                (_, Some(r), true) => format!("{} …", recording_label(keys, &r.keys)),
                 _ => match field {
                     // A group's icon (`i` changes it).
                     Field::GroupHeader(s) => sections.get(*s).and_then(|s| keys.group(s.prefix.as_ref()?)).map(|g| g.1).unwrap_or_default(),
@@ -1688,6 +1698,9 @@ mod tests {
         assert_eq!(recorded(&keys, &[k("space"), k("h"), k("m")]), "<leader> h m");
         assert_eq!(recorded(&keys, &[k("ctrl+space"), k("x")]), "<leader> x", "either leader");
         assert_eq!(recorded(&keys, &[k("g"), k("space"), k("enter"), k("esc")]), "g space enter esc", "only at the start");
+        assert_eq!(recording_label(&keys, &[k("space")]), "Space", "a leader alone is the key");
+        assert_eq!(recording_label(&keys, &[k("space"), k("h"), k("m")]), "<leader> h m");
+        assert_eq!(recording_label(&keys, &[k("ctrl+space"), k("x")]), "<leader> x");
         let (map, warnings) = Keymap::load(&format!("[messages]\nreact = \"{}\"\n", recorded(&keys, &[k("space"), k("x")])));
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(map.sequences(super::super::keymap::Context::Messages, "react"), vec![vec![super::super::keymap::LEADER, k("x")]]);

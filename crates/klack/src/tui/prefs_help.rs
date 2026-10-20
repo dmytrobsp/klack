@@ -64,7 +64,9 @@ pub fn strings() -> Vec<&'static str> {
     let mut fields: Vec<Field> = CATEGORIES.iter().flat_map(|c| c.1.iter().copied()).chain(KEYS_SETTINGS.iter().copied()).collect();
     // A group with a prefix and one without; a binding rebound, so its default shows too.
     let prefixed = super::keymap::keys_tree(&keys).iter().position(|s| s.prefix.is_some()).unwrap_or(0);
-    fields.extend([Field::ScheduleHours, Field::GroupHeader(0), Field::GroupHeader(prefixed)]);
+    // A binding with a <leader> key, which says what the leader is.
+    let leader_bound = super::keymap::ACTIONS.iter().position(|a| a.name == "jump_to").unwrap_or(0);
+    fields.extend([Field::ScheduleHours, Field::GroupHeader(0), Field::GroupHeader(prefixed), Field::Binding(leader_bound)]);
     fields.extend((0..7).map(Field::ScheduleDay));
     let rebound = Keymap::load("[global]\nquit = \"ctrl+g\"\n").0;
     build(Field::Binding(0), &ws, &rebound, &|s| {
@@ -355,11 +357,11 @@ fn build(field: Field, _ws: &Workspace, keys: &Keymap, tr: &dyn Fn(&'static str)
             b.text("Shows an icon before each label in which-key, in the help and in this Keys list.");
         }
         Field::Leader => {
-            b.text("The key that starts the sequences written with Leader in the bindings, such as Leader k.").blank();
+            b.text("The key that starts the sequences written <leader> in the bindings, such as <leader> k.").blank();
             leader_keys(&mut b);
         }
         Field::InsertLeader => {
-            b.text("The leader while typing a message and in dialogs, where plain keys type text.").blank();
+            b.text("The <leader> while typing a message and in dialogs, where plain keys type text.").blank();
             leader_keys(&mut b);
         }
         Field::GroupHeader(n) => {
@@ -380,9 +382,13 @@ fn build(field: Field, _ws: &Workspace, keys: &Keymap, tr: &dyn Fn(&'static str)
             b.text(info.description).blank();
             let works = if info.context == Context::Global { format!("{} (Global)", tr("everywhere")) } else { tr(info.context.title()) };
             b.fact("Works", works);
-            let now = keys.keys_label(info.context, info.name);
+            let now = keys.keys_named(info.context, info.name);
             b.fact("Keys", if now.is_empty() { unbound.clone() } else { now.clone() });
-            let default = keys.default_label(info.context, info.name);
+            // What <leader> is pressed as here (the insert leader while typing and in dialogs).
+            if let Some(leader) = keys.leader_in(info.context).filter(|_| now.contains("<leader>")) {
+                b.fact("<leader>", leader.label());
+            }
+            let default = keys.default_named(info.context, info.name);
             if default != now {
                 b.fact("Default", if default.is_empty() { unbound } else { default });
             }
@@ -654,7 +660,8 @@ mod tests {
         let info = &crate::tui::keymap::ACTIONS[i];
         assert!(h.lines.contains(&HelpLine::Text(info.description.to_string())), "{h:?}");
         assert_eq!(value_of(&h, "Works"), Some("everywhere (Global)"));
-        assert_eq!(value_of(&h, "Keys"), Some(map.keys_label(Context::Global, "jump_to").as_str()));
+        assert_eq!(value_of(&h, "Keys"), Some(map.keys_named(Context::Global, "jump_to").as_str()));
+        assert_eq!(value_of(&h, "<leader>"), Some("Space"));
         assert_eq!(value_of(&h, "keys.toml"), Some("jump_to"));
         assert_eq!(key_lines(&h), ["Enter", "Delete", "r"]);
         let other = crate::tui::keymap::ACTIONS.iter().position(|a| a.context == Context::Sidebar).unwrap();
@@ -671,7 +678,8 @@ mod tests {
         assert!(warnings.is_empty(), "{warnings:?}");
         let h = help(Field::Binding(i), &Workspace::default(), &rebound);
         assert_eq!(value_of(&h, "Keys"), Some("Ctrl+G"));
-        assert_eq!(value_of(&h, "Default"), Some(keys().keys_label(Context::Global, "jump_to").as_str()));
+        assert_eq!(value_of(&h, "Default"), Some(keys().keys_named(Context::Global, "jump_to").as_str()));
+        assert_eq!(value_of(&h, "<leader>"), None, "no <leader> in Ctrl+G");
     }
 
     #[test]

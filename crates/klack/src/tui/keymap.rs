@@ -1230,6 +1230,11 @@ impl Keymap {
         self.label_with(self.leader_key(), seq)
     }
 
+    /// A sequence as the preferences show it, the leader as `<leader>` ("<leader> h m").
+    pub fn label_named(&self, seq: &[Key]) -> String {
+        self.label_with(None, seq)
+    }
+
     fn label_with(&self, leader: Option<Key>, seq: &[Key]) -> String {
         seq.iter().map(|k| if *k == LEADER { leader.unwrap_or(LEADER) } else { *k }.label()).collect::<Vec<_>>().join(" ")
     }
@@ -1247,15 +1252,26 @@ impl Keymap {
     /// The keys of an action in a context, as shown in help ("↑ / k", "Ctrl+Space h p");
     /// a `<leader>` sequence where there is no leader is left out.
     pub fn keys_label(&self, context: Context, name: &str) -> String {
-        let leader = self.leader_in(context);
-        self.keys.iter().find(|((c, n), _)| *c == context && *n == name).map(|(_, seqs)| seqs.iter().filter(|s| pressable(leader, s)).map(|s| self.label_with(leader, s)).collect::<Vec<_>>().join(" / ")).unwrap_or_default()
+        self.keys_label_by(context, name, false)
     }
 
-    /// The keys an action has by default, as [`Keymap::keys_label`] shows them.
-    pub fn default_label(&self, context: Context, name: &str) -> String {
+    /// The keys of an action as the preferences list them, the leader as `<leader>`
+    /// ("↑ / k", "<leader> h p").
+    pub fn keys_named(&self, context: Context, name: &str) -> String {
+        self.keys_label_by(context, name, true)
+    }
+
+    fn keys_label_by(&self, context: Context, name: &str, named: bool) -> String {
+        let leader = self.leader_in(context);
+        let shown = if named { None } else { leader };
+        self.keys.iter().find(|((c, n), _)| *c == context && *n == name).map(|(_, seqs)| seqs.iter().filter(|s| pressable(leader, s)).map(|s| self.label_with(shown, s)).collect::<Vec<_>>().join(" / ")).unwrap_or_default()
+    }
+
+    /// The keys an action has by default, as [`Keymap::keys_named`] shows them.
+    pub fn default_named(&self, context: Context, name: &str) -> String {
         let leader = self.leader_in(context);
         let Some(info) = ACTIONS.iter().find(|a| a.context == context && a.name == name) else { return String::new() };
-        self.defaults(info).iter().filter(|s| pressable(leader, s)).map(|s| self.label_with(leader, s)).collect::<Vec<_>>().join(" / ")
+        self.defaults(info).iter().filter(|s| pressable(leader, s)).map(|s| self.label_with(None, s)).collect::<Vec<_>>().join(" / ")
     }
 
     /// The first sequence of an action that can be pressed in its context.
@@ -1310,15 +1326,17 @@ pub struct TreeRow {
 /// the selected message or conversation, one section per group, typing, each dialog, and
 /// the actions without a key. Empty sections are left out. Workspaces 1…9 share one row.
 pub fn tree(keys: &Keymap) -> Vec<Section> {
-    tree_with(keys, true)
-}
-
-/// [`tree`] with a row for each workspace, so F6 → Keys can rebind each of them.
-pub fn keys_tree(keys: &Keymap) -> Vec<Section> {
     tree_with(keys, false)
 }
 
-fn tree_with(keys: &Keymap, workspaces_together: bool) -> Vec<Section> {
+/// [`tree`] as F6 → Keys lists it: a row for each workspace, so each can be rebound, and the
+/// leader as `<leader>`, as keys.toml writes it.
+pub fn keys_tree(keys: &Keymap) -> Vec<Section> {
+    tree_with(keys, true)
+}
+
+fn tree_with(keys: &Keymap, prefs: bool) -> Vec<Section> {
+    let workspaces_together = !prefs;
     let (mut message, mut conversation, mut typing, mut unbound) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     // Direct keys by pane: everywhere, sidebar, messages and thread, huddle view.
     let mut direct: [Vec<TreeRow>; 4] = Default::default();
@@ -1334,12 +1352,13 @@ fn tree_with(keys: &Keymap, workspaces_together: bool) -> Vec<Section> {
         let (label, icon) = keys.label_of(info);
         // A <leader> sequence where there is no leader can't be pressed: not offered.
         let reachable: Vec<&Vec<Key>> = seqs.iter().filter(|s| pressable(leader, s)).collect();
-        let mut shown: Vec<String> = reachable.iter().map(|s| keys.label_with(leader, s)).collect();
+        let named = if prefs { None } else { leader };
+        let mut shown: Vec<String> = reachable.iter().map(|s| keys.label_with(named, s)).collect();
         let mut label = label;
         if workspaces_together && info.name == "workspace_1" {
             // "Alt+1 … Alt+9": each way of reaching them.
             let last = keys.sequences(info.context, "workspace_9");
-            shown = reachable.iter().zip(last.iter().filter(|s| pressable(leader, s))).map(|(a, b)| format!("{} … {}", keys.label_with(leader, a), keys.label_with(leader, b))).collect();
+            shown = reachable.iter().zip(last.iter().filter(|s| pressable(leader, s))).map(|(a, b)| format!("{} … {}", keys.label_with(named, a), keys.label_with(named, b))).collect();
             label = super::i18n::tr("workspace 1…9").into_owned();
         }
         if shown.is_empty() && !seqs.is_empty() {
@@ -1376,7 +1395,9 @@ fn tree_with(keys: &Keymap, workspaces_together: bool) -> Vec<Section> {
     // The default groups in their order, then the user's by key.
     let default_place = |prefix: &[Key]| GROUPS.iter().position(|(s, ..)| keys.parse_sequences(Context::Global, &[s.to_string()]).is_ok_and(|p| p[0] == prefix)).unwrap_or(usize::MAX);
     groups.sort_by_key(|(prefix, _)| (default_place(prefix), prefix.iter().map(|k| k.spec()).collect::<Vec<_>>()));
-    let leader = keys.show(&[LEADER]);
+    // A prefix as which-key shows it (`␣h`), in the preferences as keys.toml writes it (`<leader> h`).
+    let prefix_of = |seq: &[Key]| if prefs { keys.label_with(None, seq) } else { keys.show(seq) };
+    let leader = prefix_of(&[LEADER]);
     let mut out: Vec<Section> = direct.into_iter().zip(["everywhere", "sidebar", "messages and thread", "huddle view"]).map(|(rows, pane)| Section { title: format!("{} — {}", super::i18n::tr("Direct keys"), super::i18n::tr(pane)), prefix: None, rows }).collect();
     out.extend([
         Section { title: format!("{leader} {}", super::i18n::tr("on a message")), prefix: None, rows: message },
@@ -1384,7 +1405,7 @@ fn tree_with(keys: &Keymap, workspaces_together: bool) -> Vec<Section> {
     ]);
     for (prefix, rows) in groups {
         let name = keys.group(&prefix).map_or_else(|| format!("+{}", keys.show(&prefix[1..])), |g| g.0);
-        out.push(Section { title: format!("{} {name}", keys.show(&prefix)), prefix: Some(prefix), rows });
+        out.push(Section { title: format!("{} {name}", prefix_of(&prefix)), prefix: Some(prefix), rows });
     }
     out.push(Section { title: super::i18n::tr("Typing (INSERT)").into_owned(), prefix: None, rows: typing });
     dialogs.sort_by_key(|(c, _)| Context::ALL.iter().position(|a| a == c));
@@ -2067,11 +2088,24 @@ mod tests {
     }
 
     #[test]
+    fn the_preferences_name_the_leader() {
+        let map = Keymap::load("").0;
+        let row = |tree: Vec<Section>| tree.into_iter().flat_map(|s| s.rows).find(|r| ACTIONS[r.info].context == Context::Global && ACTIONS[r.info].name == "jump_to").unwrap().keys;
+        assert_eq!(row(keys_tree(&map)), "Ctrl+K / <leader> <leader> / <leader> f f");
+        assert_eq!(row(tree(&map)), "Ctrl+K / Space Space / Space f f", "the help shows the key");
+        let titles: Vec<String> = keys_tree(&map).into_iter().map(|s| s.title).collect();
+        assert!(titles.contains(&"<leader> on a message".to_string()) && titles.iter().any(|t| t.starts_with("<leader> h ")), "{titles:?}");
+        assert!(tree(&map).iter().any(|s| s.title.starts_with("␣h ")), "which-key style in the help");
+        assert_eq!(map.keys_named(Context::Composer, "send"), map.keys_label(Context::Composer, "send"), "no leader: the same");
+        assert_eq!(map.label_named(&[LEADER, k("h")]), "<leader> h");
+    }
+
+    #[test]
     fn keys_tree_lists_each_workspace() {
         let map = Keymap::load("").0;
         let rows: Vec<TreeRow> = keys_tree(&map).into_iter().flat_map(|s| s.rows).filter(|r| ACTIONS[r.info].name.starts_with("workspace_")).collect();
         assert_eq!(rows.len(), 9, "{rows:?}");
-        assert_eq!((rows[1].label.as_str(), rows[1].keys.as_str()), ("workspace 2", "Alt+2 / Space w 2"));
+        assert_eq!((rows[1].label.as_str(), rows[1].keys.as_str()), ("workspace 2", "Alt+2 / <leader> w 2"));
         assert_eq!(tree(&map).into_iter().flat_map(|s| s.rows).filter(|r| ACTIONS[r.info].name.starts_with("workspace_")).count(), 1, "help keeps one row");
     }
 }
