@@ -62,8 +62,15 @@ pub fn strings() -> Vec<&'static str> {
     let seen = std::cell::RefCell::new(Vec::<&'static str>::new());
     let (ws, keys) = (Workspace::default(), Keymap::load("").0);
     let mut fields: Vec<Field> = CATEGORIES.iter().flat_map(|c| c.1.iter().copied()).chain(KEYS_SETTINGS.iter().copied()).collect();
-    fields.extend([Field::ScheduleHours, Field::GroupHeader(0), Field::Binding(0)]);
+    // A group with a prefix and one without; a binding rebound, so its default shows too.
+    let prefixed = super::keymap::keys_tree(&keys).iter().position(|s| s.prefix.is_some()).unwrap_or(0);
+    fields.extend([Field::ScheduleHours, Field::GroupHeader(0), Field::GroupHeader(prefixed)]);
     fields.extend((0..7).map(Field::ScheduleDay));
+    let rebound = Keymap::load("[global]\nquit = \"ctrl+g\"\n").0;
+    build(Field::Binding(0), &ws, &rebound, &|s| {
+        seen.borrow_mut().push(s);
+        s.to_string()
+    });
     build_filter(&keys, &|s| {
         seen.borrow_mut().push(s);
         s.to_string()
@@ -356,22 +363,28 @@ fn build(field: Field, _ws: &Workspace, keys: &Keymap, tr: &dyn Fn(&'static str)
             leader_keys(&mut b);
         }
         Field::GroupHeader(n) => {
-            b.text("Keys that start the same way.");
-            let (rename, icon) = (b.key_of(Action::Open), b.key_of(Action::EditIcon));
-            b.key(rename, "rename it, Enter again saves (empty: the default)");
-            b.key(icon, "change its icon, Enter again saves (empty: the default)");
-            title = super::keymap::keys_tree(keys).into_iter().nth(n).map(|s| s.title);
+            let section = super::keymap::keys_tree(keys).into_iter().nth(n);
+            if section.as_ref().is_some_and(|s| s.prefix.is_some()) {
+                b.text("Keys that start the same way.");
+                let (rename, icon) = (b.key_of(Action::Open), b.key_of(Action::EditIcon));
+                b.key(rename, "rename it, Enter again saves (empty: the default)");
+                b.key(icon, "change its icon, Enter again saves (empty: the default)");
+            } else {
+                b.text("Keys gathered by where they work. This heading has no name or icon to change.");
+            }
+            title = section.map(|s| s.title);
         }
         Field::Binding(i) => {
             let info = &super::keymap::ACTIONS[i];
+            let unbound = tr("(unbound)");
             b.text(info.description).blank();
             let works = if info.context == Context::Global { format!("{} (Global)", tr("everywhere")) } else { tr(info.context.title()) };
             b.fact("Works", works);
             let now = keys.keys_label(info.context, info.name);
-            b.fact("Keys", if now.is_empty() { tr("(unbound)") } else { now.clone() });
+            b.fact("Keys", if now.is_empty() { unbound.clone() } else { now.clone() });
             let default = keys.default_label(info.context, info.name);
             if default != now {
-                b.fact("Default", default);
+                b.fact("Default", if default.is_empty() { unbound } else { default });
             }
             b.lines.push(HelpLine::Value { name: "keys.toml".into(), meaning: info.name.into() });
             b.blank();
@@ -660,7 +673,9 @@ mod tests {
 
     #[test]
     fn a_group_row_says_how_to_rename() {
-        let h = help(Field::GroupHeader(0), &Workspace::default(), &keys());
+        let map = keys();
+        let n = crate::tui::keymap::keys_tree(&map).iter().position(|s| s.prefix.is_some()).unwrap();
+        let h = help(Field::GroupHeader(n), &Workspace::default(), &map);
         assert_eq!(key_lines(&h), ["Enter", "i"]);
         assert!(key_does(&h, "Enter").unwrap().contains("rename") && key_does(&h, "i").unwrap().contains("icon"), "{h:?}");
         assert!(texts(&h) >= 1);
@@ -673,5 +688,32 @@ mod tests {
         assert!(key_does(&h, "Enter").unwrap().contains("keep") && key_does(&h, "Esc").unwrap().contains("clear"), "{h:?}");
         assert!(texts(&h) >= 1);
         assert!(strings().iter().any(|s| matches!(&h.lines[0], HelpLine::Text(t) if t == *s)), "listed for translation");
+    }
+
+    #[test]
+    fn only_a_prefixed_group_can_be_renamed() {
+        let map = keys();
+        let tree = crate::tui::keymap::keys_tree(&map);
+        let plain = tree.iter().position(|s| s.prefix.is_none()).unwrap();
+        let prefixed = tree.iter().position(|s| s.prefix.is_some()).unwrap();
+        let h = help(Field::GroupHeader(plain), &Workspace::default(), &map);
+        assert!(key_lines(&h).is_empty() && texts(&h) >= 1, "{h:?}");
+        assert_eq!(h.title, tree[plain].title);
+        assert_eq!(key_lines(&help(Field::GroupHeader(prefixed), &Workspace::default(), &map)), ["Enter", "i"]);
+    }
+
+    #[test]
+    fn a_changed_binding_shows_its_default() {
+        let (rebound, _) = Keymap::load("[global]\nquit = \"ctrl+g\"\n");
+        let h = help(Field::Binding(0), &Workspace::default(), &rebound);
+        assert_eq!(value_of(&h, "Default"), Some("Ctrl+Q"));
+    }
+
+    #[test]
+    fn every_binding_and_group_sentence_is_listed() {
+        let listed = strings();
+        for want in ["Works", "Keys", "Default", "everywhere", "(unbound)", "Keys that start the same way.", "Keys gathered by where they work. This heading has no name or icon to change.", "record new keys (until a 1 s pause; any key counts)"] {
+            assert!(listed.contains(&want), "{want}");
+        }
     }
 }
