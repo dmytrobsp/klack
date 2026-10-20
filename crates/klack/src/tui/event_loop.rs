@@ -2871,6 +2871,8 @@ impl App {
             selected: selected.is_some(),
             card: self.profile.is_some(),
             dialog: self.mode() == Mode::Dialog,
+            workspaces: self.workspaces.len(),
+            workspace: self.workspace,
         };
         applies(&here, context, action)
     }
@@ -4240,6 +4242,15 @@ struct Here {
     card: bool,
     /// A dialog is open: nothing opens under it.
     dialog: bool,
+    /// How many workspaces the profile has, and which one this is.
+    workspaces: usize,
+    workspace: usize,
+}
+
+/// The workspace (from 0) a "workspace N" action switches to.
+fn workspace_of(action: Action) -> Option<usize> {
+    use Action::*;
+    [Workspace1, Workspace2, Workspace3, Workspace4, Workspace5, Workspace6, Workspace7, Workspace8, Workspace9].iter().position(|a| *a == action)
 }
 
 /// Whether `action` of `context` makes sense here; which-key leaves the others out.
@@ -4254,6 +4265,8 @@ fn applies(here: &Here, context: Context, action: Action) -> bool {
         (Context::Sidebar, LeaveConversation) => here.selected_leavable,
         (Context::Sidebar, Star | MoveToSection | Details | NotificationLevel) => here.selected,
         (Context::Profile, Huddle) => here.card,
+        // Only the profile's other workspaces.
+        (Context::Global, _) if workspace_of(action).is_some() => workspace_of(action).is_some_and(|i| i < here.workspaces && i != here.workspace),
         _ => true,
     }
 }
@@ -5620,6 +5633,11 @@ mod tests {
         assert!(!applies(&here, C::Sidebar, LeaveConversation) && applies(&Here { selected_leavable: true, ..here }, C::Sidebar, LeaveConversation));
         assert!(!applies(&here, C::Sidebar, Star) && applies(&Here { selected: true, ..here }, C::Sidebar, Star), "a header or Threads is selected");
         assert!(!applies(&here, C::Profile, Huddle) && applies(&Here { card: true, ..here }, C::Profile, Huddle));
+        let two = Here { workspaces: 2, workspace: 0, ..here };
+        assert!(!applies(&two, C::Global, Workspace1), "the one you are in");
+        assert!(applies(&two, C::Global, Workspace2));
+        assert!(!applies(&two, C::Global, Workspace3) && !applies(&two, C::Global, Workspace9), "the profile has two");
+        assert!(!applies(&Here { workspaces: 1, ..two }, C::Global, Workspace1) && !applies(&Here { workspaces: 1, ..two }, C::Global, Workspace2), "one workspace: none"); 
         assert!(applies(&here, C::Global, Mute) && applies(&here, C::Global, Huddle));
         let dialog = Here { dialog: true, ..here };
         assert!(!applies(&dialog, C::Global, Search) && !applies(&dialog, C::Global, HuddleView) && applies(&dialog, C::Global, Mute), "nothing opens under a dialog");
