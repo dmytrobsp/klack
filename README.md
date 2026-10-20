@@ -188,6 +188,7 @@ actions, on a conversation the conversation's. Its corner, delay, height and ico
 | ↑ ↓ / `k` `j`, Home End / `g` `G`, PgUp PgDn, Ctrl+U / Ctrl+D | move, first / last, a page, half a page |
 | Tab / Shift+Tab | move between sidebar, messages, composer, thread, reply box |
 | Alt+↑ / Alt+↓ | previous / next conversation |
+| Alt+Shift+↑ / Alt+Shift+↓ | previous / next unread conversation (muted ones are skipped) |
 | Ctrl+K · `␣␣` | jump to any conversation or person — unread first, then the most recently active (`#` lists every channel, including ones you are not in) |
 | Ctrl+F · `␣fs` | search messages (more results load as you move down the list) |
 | Ctrl+A · `␣fa` | activity: mentions, reactions to your messages, thread replies |
@@ -205,16 +206,19 @@ After `Space` (written `␣`), on a **message**:
 
 | Key | |
 |---|---|
-| `␣r` `␣e` `␣d` | react · edit · delete |
+| `␣r` `␣e` `␣d` | react · edit · delete (the reaction picker also shows who reacted: `remove · you, alice`) |
 | `␣y` `␣Y` | copy the text · copy a link to the message |
 | `␣o` | open what the message holds — a link in your browser, a picture, a video (Space pauses, ← / → jump 10 s), a snippet; with several, a list to pick from |
 | `␣s` | save files (a dialog: Space / `a` pick which, Tab changes the folder for this save, Enter saves) |
 | `␣p` `␣u` `␣m` | pin · profile card of the author (←/→: people the message mentions; Enter messages them, `␣hp` starts a huddle) · the message's menu, as a right-click opens it |
+| `␣U` | mark unread from this message (the conversation is unread again from here; klack leaves it so until you switch away and back) |
 | `␣hT` | start (or join) a huddle in the message's thread |
 
 On a **conversation** in the sidebar: `␣s` star · `␣m` move to a section (or a new one) · `␣d` details (about,
-members, pins) · `␣b` what it notifies about · `␣l` leave. The same, and more, from anywhere under `␣c`
-(`␣cs` `␣cm` `␣cd` `␣cb` `␣cl`, `␣cj` join, `␣cr` rename and `␣cx` delete the section). The other groups:
+members, pins) · `␣b` what it notifies about · `␣M` mute / unmute · `␣y` copy the conversation's link · `␣l` leave. The
+same, and more, from anywhere under `␣c` (`␣cs` `␣cm` `␣cd` `␣cb` `␣cM` `␣cy` `␣cl`, `␣cu` mark unread from the selected message
+or the latest, `␣cj` join, `␣cr` rename and `␣cx` delete the section). The sidebar's right-click menu offers mute, mark unread and
+copy link too. The other groups:
 
 | Group | |
 |---|---|

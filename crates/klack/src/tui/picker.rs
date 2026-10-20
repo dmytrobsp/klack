@@ -38,7 +38,7 @@ struct Present {
 
 /// "you, alice, +2": the people that fit in `width` columns, yours first; the rest as "+N" (of `total`).
 fn people_line(names: &[String], total: u64, width: usize) -> String {
-    let w = |s: &str| s.chars().count();
+    let w = |s: &str| unicode_width::UnicodeWidthStr::width(s);
     for k in (0..=names.len()).rev() {
         let rest = total.saturating_sub(k as u64);
         let mut parts: Vec<String> = names[..k].to_vec();
@@ -189,15 +189,15 @@ impl EmojiPicker {
                 let lead = if c.mine { super::i18n::tr("remove").into_owned() } else if c.on_message { format!("· {}", c.count) } else { String::new() };
                 let mut hint = lead;
                 if c.on_message && !c.users.is_empty() {
-                    let names: Vec<String> = c.users.iter().map(|u| if u == me { "you".to_string() } else { name(u) }).collect();
-                    let room = (list.width as usize).saturating_sub(spans.iter().map(|s| s.width()).sum::<usize>() + hint.chars().count() + 4);
+                    let names: Vec<String> = c.users.iter().map(|u| if u == me { super::i18n::tr("you").into_owned() } else { name(u) }).collect();
+                    let room = (list.width as usize).saturating_sub(spans.iter().map(|s| s.width()).sum::<usize>() + unicode_width::UnicodeWidthStr::width(hint.as_str()) + 4);
                     let people = people_line(&names, c.count, room);
                     if !people.is_empty() {
                         hint = format!("{hint} · {people}");
                     }
                 }
                 if !hint.is_empty() {
-                    let used: usize = spans.iter().map(|s| s.width()).sum::<usize>() + hint.chars().count();
+                    let used: usize = spans.iter().map(|s| s.width()).sum::<usize>() + unicode_width::UnicodeWidthStr::width(hint.as_str());
                     spans.push(Span::raw(" ".repeat((list.width as usize).saturating_sub(used + 1).max(1))));
                     spans.push(Span::styled(hint, Style::default().fg(pal.dim)));
                 }
@@ -308,6 +308,8 @@ mod tests {
         assert!(row(11).contains(":fire:") && row(11).ends_with("· 1 · U7"), "{:?}", row(11));
         assert_eq!(people_line(&["you".into(), "alice".into(), "bob".into()], 3, 9), "you, +2");
         assert_eq!(people_line(&["you".into()], 1, 1), "");
+        assert_eq!(people_line(&["太郎太郎".into()], 1, 7), "+1", "a wide name is measured in columns (8), not chars (4)");
+        assert_eq!(people_line(&["太郎太郎".into()], 1, 8), "太郎太郎");
         assert_eq!(people_line(&["a".into()], 5, 20), "a, +4", "users fewer than the count");
     }
 

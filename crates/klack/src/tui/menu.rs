@@ -98,7 +98,7 @@ const MESSAGE_ACTIONS: &[Action] = &[
 impl Menu {
     /// `offers`: what the message allows (only that is offered); `channel`: the conversation
     /// is a channel (leave is offered).
-    pub fn new(target: Target, at: (u16, u16), keys: &Keymap, offers: Offers, channel: bool, starred: bool) -> Menu {
+    pub fn new(target: Target, at: (u16, u16), keys: &Keymap, offers: Offers, channel: bool, starred: bool, muted: bool) -> Menu {
         let key = |c: Context, a: Action| keys.first_shown(c, a).unwrap_or_default();
         let describe = |c: Context, a: Action| ACTIONS.iter().find(|i| i.context == c && i.action == a).map_or(String::new(), |i| super::i18n::tr(i.description).into_owned());
         let items = match &target {
@@ -115,6 +115,9 @@ impl Menu {
                     (Item::Do(Action::Star), super::i18n::tr(if starred { "unstar" } else { "star" }).into_owned(), key(Context::Sidebar, Action::Star)),
                     (Item::Do(Action::MoveToSection), describe(Context::Sidebar, Action::MoveToSection), key(Context::Sidebar, Action::MoveToSection)),
                     (Item::Details, describe(Context::Global, Action::Details), key(Context::Sidebar, Action::Details)),
+                    (Item::Do(Action::MuteConversation), super::i18n::tr(if muted { "unmute" } else { "mute" }).into_owned(), key(Context::Sidebar, Action::MuteConversation)),
+                    (Item::Do(Action::MarkUnread), super::i18n::tr("mark unread").into_owned(), key(Context::Global, Action::MarkUnread)),
+                    (Item::Do(Action::CopyConversationLink), super::i18n::tr("copy link").into_owned(), key(Context::Sidebar, Action::CopyConversationLink)),
                 ];
                 if channel {
                     items.push((Item::Leave, super::i18n::tr("leave the channel").into_owned(), key(Context::Sidebar, Action::LeaveConversation)));
@@ -206,18 +209,18 @@ mod tests {
     fn items_fit_the_target() {
         let keys = Keymap::load("").0;
         let all = Offers { own: true, open: true, save: true, text: true };
-        let theirs = Menu::new(Target::Message { thread: false }, (0, 0), &keys, Offers { own: false, ..all }, true, false);
+        let theirs = Menu::new(Target::Message { thread: false }, (0, 0), &keys, Offers { own: false, ..all }, true, false, false);
         assert!(!theirs.items.iter().any(|i| matches!(i.0, Item::Do(Action::Edit | Action::Delete))), "not on others' messages");
         assert_eq!(theirs.items[0], (Item::Do(Action::OpenThread), "open the message's thread".into(), "Enter".into()));
-        let mine_in_thread = Menu::new(Target::Message { thread: true }, (0, 0), &keys, all, true, false);
+        let mine_in_thread = Menu::new(Target::Message { thread: true }, (0, 0), &keys, all, true, false, false);
         assert!(mine_in_thread.items.iter().any(|i| i.0 == Item::Do(Action::Delete)));
         assert!(!mine_in_thread.items.iter().any(|i| i.0 == Item::Do(Action::OpenThread)));
-        let plain = Menu::new(Target::Message { thread: false }, (0, 0), &keys, Offers { own: false, open: false, save: false, text: true }, true, false);
+        let plain = Menu::new(Target::Message { thread: false }, (0, 0), &keys, Offers { own: false, open: false, save: false, text: true }, true, false, false);
         assert!(!plain.items.iter().any(|i| matches!(i.0, Item::Do(Action::Open | Action::Save))), "nothing to open or save: not offered");
-        let picture_only = Menu::new(Target::Message { thread: false }, (0, 0), &keys, Offers { own: false, open: true, save: true, text: false }, true, false);
+        let picture_only = Menu::new(Target::Message { thread: false }, (0, 0), &keys, Offers { own: false, open: true, save: true, text: false }, true, false, false);
         assert!(!picture_only.items.iter().any(|i| i.0 == Item::Do(Action::Copy)), "no text to copy");
         assert!(picture_only.items.iter().any(|i| i.0 == Item::Do(Action::Open)) && picture_only.items.iter().any(|i| i.0 == Item::Do(Action::Save)));
-        let dm = Menu::new(Target::Conversation, (0, 0), &keys, all, false, true);
+        let dm = Menu::new(Target::Conversation, (0, 0), &keys, all, false, true, false);
         assert!(dm.items.iter().any(|i| i.1 == "unstar") && !dm.items.iter().any(|i| i.0 == Item::Leave));
     }
 
@@ -225,7 +228,7 @@ mod tests {
     fn item_keys_run_items() {
         let keys = Keymap::load("").0;
         let all = Offers { own: true, open: true, save: true, text: true };
-        let m = Menu::new(Target::Message { thread: false }, (0, 0), &keys, all, false, false);
+        let m = Menu::new(Target::Message { thread: false }, (0, 0), &keys, all, false, false, false);
         let react = m.items.iter().find(|i| i.0 == Item::Do(Action::React)).unwrap();
         assert_eq!(react.2, "␣r", "the key column shows the sequence");
         let key = |s: &str| super::super::keymap::Key::parse(s).unwrap();
@@ -236,16 +239,16 @@ mod tests {
         for own in ["up", "down", "enter", "space", "esc", "q", "j", "k"] {
             assert_eq!(m.item_for_key(key(own)), None, "{own}");
         }
-        let conversation = Menu::new(Target::Conversation, (0, 0), &keys, all, true, false);
+        let conversation = Menu::new(Target::Conversation, (0, 0), &keys, all, true, false, false);
         let shown: Vec<&str> = conversation.items.iter().map(|i| i.2.as_str()).collect();
-        assert_eq!(shown, ["Enter", "␣s", "␣m", "␣d", "␣l"]);
+        assert_eq!(shown, ["Enter", "␣s", "␣m", "␣d", "␣M", "␣cu", "␣y", "␣l"]);
         assert_eq!((conversation.item_for_key(key("d")), conversation.item_for_key(key("l"))), (Some(Item::Details), Some(Item::Leave)));
     }
 
     #[test]
     fn stays_on_screen_and_hits_items() {
         let keys = Keymap::load("").0;
-        let mut m = Menu::new(Target::Conversation, (78, 22), &keys, Offers { own: false, open: false, save: false, text: false }, true, false);
+        let mut m = Menu::new(Target::Conversation, (78, 22), &keys, Offers { own: false, open: false, save: false, text: false }, true, false, false);
         m.area = Rect { x: 50, y: 10, width: 30, height: 7 };
         assert_eq!(m.item_at(55, 11), Some(0));
         assert_eq!(m.item_at(55, 15), Some(4));

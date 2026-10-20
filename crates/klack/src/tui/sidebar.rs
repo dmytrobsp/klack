@@ -252,7 +252,6 @@ impl Sidebar {
         }
     }
 
-    /// The conversation item drawn at a terminal position.
     /// The row the pointer is over, for the hover shade: a conversation or the Threads row.
     pub fn hover_at(&self, column: u16, row: u16) -> Option<usize> {
         let inner = self.area.inner(ratatui::layout::Margin { horizontal: 1, vertical: 1 });
@@ -263,6 +262,7 @@ impl Sidebar {
         matches!(self.items.get(n), Some(Item::Conversation(_) | Item::Threads)).then_some(n)
     }
 
+    /// The conversation item drawn at a terminal position.
     pub fn item_at(&self, column: u16, row: u16) -> Option<usize> {
         let inner = self.area.inner(ratatui::layout::Margin { horizontal: 1, vertical: 1 });
         if !inner.contains((column, row).into()) {

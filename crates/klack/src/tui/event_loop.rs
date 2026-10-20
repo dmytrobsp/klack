@@ -1075,7 +1075,7 @@ impl App {
             let id = self.sidebar.selected_id().unwrap_or_default().to_string();
             let channel = self.ws.conversations.get(&id).is_some_and(|c| !c.is_dm() && c.is_member);
             let none = super::menu::Offers { own: false, open: false, save: false, text: false };
-            self.menu = Some(Menu::new(Target::Conversation, at, &self.keys, none, channel, self.ws.starred.contains(&id)));
+            self.menu = Some(Menu::new(Target::Conversation, at, &self.keys, none, channel, self.ws.starred.contains(&id), self.ws.muted.contains(&id)));
         }
     }
 
@@ -1091,7 +1091,7 @@ impl App {
             self.messages.selected = Some(ts);
             self.focus = Focus::Messages;
         }
-        self.menu = Some(Menu::new(Target::Message { thread }, at, &self.keys, offers, false, false));
+        self.menu = Some(Menu::new(Target::Message { thread }, at, &self.keys, offers, false, false, false));
     }
 
     /// Run the context menu's chosen item, like its key would.
@@ -1138,7 +1138,7 @@ impl App {
             Action::Open if self.sidebar.on_threads() => self.load_threads(false),
             Action::Open | Action::Type => self.focus = Focus::Composer,
             // The selected conversation is the current one.
-            Action::Details | Action::NotificationLevel | Action::MuteConversation | Action::CopyConversationLink | Action::LeaveConversation if self.sidebar.selected_id().is_some() => {
+            Action::Details | Action::NotificationLevel | Action::MuteConversation | Action::CopyConversationLink | Action::MarkUnread | Action::LeaveConversation if self.sidebar.selected_id().is_some() => {
                 run_global(self, action);
             }
             Action::FoldSection => self.sidebar.toggle_selected_fold(&self.ws, self.current.as_deref()),
@@ -2074,6 +2074,10 @@ impl App {
     /// unread count leaves it out), then on Slack; a failure puts it back (`Net::MuteFailed`).
     fn toggle_conversation_mute(&mut self) {
         let Some(channel) = self.current.clone() else { return };
+        if self.ws.is_outside(&channel) {
+            self.status = "join the channel to mute it".into();
+            return;
+        }
         let muted = self.ws.toggle_muted(&channel);
         self.sidebar.rebuild(&self.ws);
         self.status = format!("{} {}", if muted { "muted" } else { "unmuted" }, self.ws.channel_label(&channel));
@@ -3044,8 +3048,6 @@ fn upload_status(name: &str, sent: u64, total: u64) -> String {
     format!("uploading {name}… {percent}% ({} of {})", super::text::human_size(sent), super::text::human_size(total))
 }
 
-/// The reply a thread is read up to once it is shown: its newest, when its replies are loaded and
-/// it has any.
 /// What the open conversation `channel` is marked read up to now: its newest message, unless
 /// that is marked already (`marked`), the user marked it unread while here
 /// (`Workspace::held_unread`), or it is a channel we are not in.
@@ -3091,6 +3093,8 @@ fn ts_just_before(ts: &str) -> Option<String> {
     Some(format!("{}.{:06}", total / 1_000_000, total % 1_000_000))
 }
 
+/// The reply a thread is read up to once it is shown: its newest, when its replies are loaded and
+/// it has any.
 fn thread_mark_target(t: &super::state::Timeline, parent: &str) -> Option<String> {
     t.messages.last().map(|m| m.ts.clone()).filter(|ts| t.loaded && ts != parent)
 }
@@ -4460,9 +4464,9 @@ fn run_global(app: &mut App, action: Action) -> bool {
         Action::PrevUnread | Action::NextUnread => {
             // From the open conversation, else from where the sidebar's selection is.
             let from = app.current.clone().or_else(|| app.sidebar.selected_id().map(String::from));
-            match app.ws.next_unread(from.as_deref(), action == Action::NextUnread) {
-                Some(id) => app.jump_to(&id),
-                None => app.status = "nothing unread".into(),
+            match unread_jump(app.current.as_deref(), app.ws.next_unread(from.as_deref(), action == Action::NextUnread)) {
+                Ok(id) => app.jump_to(&id),
+                Err(note) => app.status = note.into(),
             }
         }
         Action::ScrollUp | Action::ScrollDown => {
@@ -4479,10 +4483,22 @@ fn run_global(app: &mut App, action: Action) -> bool {
     true
 }
 
+/// Where next / previous unread goes: the conversation found, or why nowhere. Finding the open
+/// conversation itself means it is the only one unread: nothing else.
+fn unread_jump(open: Option<&str>, found: Option<String>) -> Result<String, &'static str> {
+    match found {
+        None => Err("nothing unread"),
+        Some(id) if open == Some(id.as_str()) => Err("nothing else unread"),
+        Some(id) => Ok(id),
+    }
+}
+
 /// PgUp / PgDn: a page of the pane that has focus (the thread and its reply box: the thread;
-/// anything else: the messages). True when the messages scrolled up (older ones may be wanted).
+/// anything else: the messages). When the thread replaces the messages (a narrow terminal: the
+/// messages pane has no room) the thread pages whatever has focus. True when the messages
+/// scrolled up (older ones may be wanted).
 fn scroll_page(focus: Focus, thread_open: bool, messages: &mut MessagePane, thread: &mut MessagePane, up: bool) -> bool {
-    let in_thread = thread_open && matches!(focus, Focus::Thread | Focus::ThreadComposer);
+    let in_thread = thread_open && (matches!(focus, Focus::Thread | Focus::ThreadComposer) || messages.area.height == 0);
     let pane = if in_thread { thread } else { messages };
     let page = pane.area.height.saturating_sub(3) as usize;
     if up {
@@ -5830,9 +5846,25 @@ mod tests {
             assert!(super::scroll_page(focus, true, &mut m, &mut t, true));
             assert_eq!((m.offset(), t.offset()), (20, 0), "{focus:?}: PgUp moves the messages only");
         }
+        // A narrow terminal: the thread replaces the messages, so it pages whatever has focus.
+        for focus in [Focus::Messages, Focus::Composer, Focus::Sidebar] {
+            let (mut m, mut t) = panes();
+            m.area = Rect::new(0, 0, 0, 0);
+            assert!(!super::scroll_page(focus, true, &mut m, &mut t, true), "{focus:?}: no older-history load for a hidden pane");
+            assert_eq!((m.offset(), t.offset()), (0, 10), "{focus:?}: PgUp pages the thread");
+        }
         let (mut m, mut t) = panes();
         super::scroll_page(Focus::Thread, false, &mut m, &mut t, true);
         assert_eq!((m.offset(), t.offset()), (20, 0), "no thread open: the messages");
+    }
+
+    #[test]
+    fn next_unread_never_lands_on_the_open_conversation() {
+        let found = |s: &str| Some(s.to_string());
+        assert_eq!(super::unread_jump(Some("C1"), found("C2")), Ok("C2".to_string()));
+        assert_eq!(super::unread_jump(Some("C1"), found("C1")), Err("nothing else unread"));
+        assert_eq!(super::unread_jump(None, found("C1")), Ok("C1".to_string()));
+        assert_eq!(super::unread_jump(Some("C1"), None), Err("nothing unread"));
     }
 
     #[test]
