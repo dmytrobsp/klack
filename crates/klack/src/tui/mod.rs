@@ -1,6 +1,7 @@
 //! Interactive terminal UI.
 
 pub mod activity;
+pub mod applink;
 pub mod autocomplete;
 pub mod call;
 pub mod clipboard;
