@@ -63,12 +63,18 @@ pub struct Group {
 /// How long each step of [`discover`] (a key, a page, a check) may take.
 const STEP_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Why `--from-browser chrome` does not work on Windows.
+const CHROME_ON_WINDOWS: &str = "Chrome's cookies cannot be read on this system (app-bound encryption): use `klack auth login` (browser window) or Firefox";
+
 /// The files a profile's cookies are kept in.
 const FIREFOX_DB: &[&str] = &["cookies.sqlite"];
 const CHROME_DBS: &[&str] = &["Network/Cookies", "Cookies"];
 
 /// Every Slack session cookie in `source`'s profiles (or just in `profile`), freshest first.
 pub async fn find(source: Source, profile: Option<&Path>) -> Result<Vec<Found>> {
+    if source == Source::Chrome && cfg!(windows) {
+        bail!("{CHROME_ON_WINDOWS}");
+    }
     let profiles: Vec<BrowserProfile> = match profile {
         // One profile, or a browser's folder of profiles.
         Some(p) if is_profile(p) => vec![profile_at(source, p)],
@@ -124,7 +130,7 @@ fn home() -> PathBuf {
 pub fn browser_profiles() -> Vec<BrowserProfile> {
     let mut out: Vec<BrowserProfile> = firefox_roots().iter().flat_map(|root| firefox_profiles_in(root)).collect();
     out.extend(chrome_roots().iter().flat_map(|(family, root)| chrome_family_profiles(family, root)));
-    out
+    listed(out, cfg!(windows))
 }
 
 /// The profile at `dir`, named as [`browser_profiles`] names it (or by its folder when it is not
@@ -175,9 +181,8 @@ fn chrome_roots() -> Vec<(&'static str, PathBuf)> {
         let support = h.join("Library/Application Support");
         [("Chrome", "Google/Chrome"), ("Chromium", "Chromium"), ("Edge", "Microsoft Edge"), ("Brave", "BraveSoftware/Brave-Browser")].into_iter().map(|(f, d)| (f, support.join(d))).collect()
     } else if cfg!(windows) {
-        // Listed so that the sign-in guide can say why they are left out.
-        let Some(local) = std::env::var_os("LOCALAPPDATA").map(PathBuf::from) else { return Vec::new() };
-        [("Chrome", r"Google\Chrome\User Data"), ("Chromium", r"Chromium\User Data"), ("Edge", r"Microsoft\Edge\User Data"), ("Brave", r"BraveSoftware\Brave-Browser\User Data")].into_iter().map(|(f, d)| (f, local.join(d))).collect()
+        // Not readable there (see `listed`).
+        Vec::new()
     } else {
         let config = h.join(".config");
         let mut r: Vec<(&str, PathBuf)> = [("Chrome", "google-chrome"), ("Chromium", "chromium"), ("Edge", "microsoft-edge"), ("Brave", "BraveSoftware/Brave-Browser")].into_iter().map(|(f, d)| (f, config.join(d))).collect();
@@ -249,15 +254,22 @@ pub async fn discover_in(profiles: Vec<BrowserProfile>) -> Vec<Group> {
     discover_with(profiles, |family| async move { chrome_key(&family).await }).await
 }
 
+/// The profiles klack can read on this platform: on Windows Chrome's family encrypts its cookies
+/// so that only the browser can read them, so those are left out there.
+fn listed(profiles: Vec<BrowserProfile>, windows: bool) -> Vec<BrowserProfile> {
+    profiles.into_iter().filter(|p| !(windows && p.source == Source::Chrome)).collect()
+}
+
 /// [`discover_in`], reading a Chrome-family browser's key with `key`.
 async fn discover_with<K, F>(profiles: Vec<BrowserProfile>, key: K) -> Vec<Group>
 where
     K: Fn(String) -> F,
     F: std::future::Future<Output = Result<Vec<u8>>>,
 {
+    let profiles = listed(profiles, cfg!(windows));
     // Each browser's key once (on macOS the Keychain asks once per browser).
     let mut families: Vec<String> = Vec::new();
-    for p in profiles.iter().filter(|p| p.source == Source::Chrome && !cfg!(windows)) {
+    for p in profiles.iter().filter(|p| p.source == Source::Chrome) {
         if !families.iter().any(|f| f == family(p)) {
             families.push(family(p).to_string());
         }
@@ -286,10 +298,6 @@ async fn profile_group(profile: BrowserProfile, key: Option<&Result<Vec<u8>, Str
     let mut group = Group { profile, problem: None, candidates: Vec::new() };
     let cookies = match (group.profile.source, key) {
         (Source::Firefox, _) => firefox_cookies(&group.profile.dir),
-        (Source::Chrome, _) if cfg!(windows) => {
-            group.problem = Some("Chrome keeps its cookies to itself on Windows".into());
-            return group;
-        }
         (Source::Chrome, Some(Ok(key))) => chrome_cookies(&group.profile.dir, key),
         (Source::Chrome, Some(Err(problem))) => {
             group.problem = Some(problem.clone());
@@ -358,18 +366,30 @@ struct Copy {
 impl Copy {
     fn of(db: &Path) -> Result<Copy> {
         let dir = std::env::temp_dir().join(format!("klack-cookies-{}-{}", std::process::id(), rand_suffix()));
+        // Owner-only: the copies hold session cookies (Firefox's in plain text).
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(std::fs::DirBuilder::new().recursive(true), 0o700).create(&dir)?;
+        #[cfg(not(unix))]
         std::fs::create_dir_all(&dir)?;
         let name = db.file_name().ok_or_else(|| anyhow!("no file name"))?;
         let copy = Copy { dir: dir.clone(), db: dir.join(name) };
-        std::fs::copy(db, &copy.db).with_context(|| format!("copying {}", db.display()))?;
+        copy_private(db, &copy.db).with_context(|| format!("copying {}", db.display()))?;
         for extra in ["-wal", "-journal"] {
             let side = PathBuf::from(format!("{}{extra}", db.display()));
             if side.is_file() {
-                let _ = std::fs::copy(&side, dir.join(format!("{}{extra}", name.to_string_lossy())));
+                let _ = copy_private(&side, &dir.join(format!("{}{extra}", name.to_string_lossy())));
             }
         }
         Ok(copy)
     }
+}
+
+/// Copy `from` to `to`, readable by the owner only (`fs::copy` keeps the source's mode).
+fn copy_private(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::copy(from, to)?;
+    #[cfg(unix)]
+    std::fs::set_permissions(to, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
+    Ok(())
 }
 
 impl Drop for Copy {
@@ -478,7 +498,7 @@ async fn chrome_key(family: &str) -> Result<Vec<u8>> {
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = entries;
-        bail!("Chrome's cookies cannot be read on this system (app-bound encryption): use `klack auth login` (browser window) or Firefox")
+        bail!("{CHROME_ON_WINDOWS}")
     }
 }
 
@@ -627,12 +647,46 @@ mod tests {
         })
         .await;
         let problems: Vec<(&str, Option<&str>, usize)> = groups.iter().map(|g| (g.profile.label.as_str(), g.problem.as_deref(), g.candidates.len())).collect();
-        let key_problem = if cfg!(windows) { "Chrome keeps its cookies to itself on Windows" } else { "can't read Chrome's key: the keyring is locked" };
-        assert_eq!(problems, [("Chrome · Work", Some(key_problem), 0), ("Firefox · default", None, 0), ("Chrome · Profile 1", Some(key_problem), 0)]);
+        let key_problem = Some("can't read Chrome's key: the keyring is locked");
+        if cfg!(windows) {
+            // Chrome's family is not listed there at all.
+            assert_eq!(problems, [("Firefox · default", None, 0)]);
+        } else {
+            assert_eq!(problems, [("Chrome · Work", key_problem, 0), ("Firefox · default", None, 0), ("Chrome · Profile 1", key_problem, 0)]);
+        }
         // The key is asked for once per browser, not per profile.
         assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), if cfg!(windows) { 0 } else { 1 });
         std::fs::remove_dir_all(&chrome).unwrap();
         std::fs::remove_dir_all(&firefox).unwrap();
+    }
+
+    #[test]
+    fn chrome_is_not_listed_on_windows() {
+        let profile = |source, label: &str| BrowserProfile { source, dir: PathBuf::from(label), label: label.into(), account: None };
+        let all = vec![profile(Source::Chrome, "Chrome · Work"), profile(Source::Firefox, "Firefox · default"), profile(Source::Chrome, "Brave · Default")];
+        let labels = |list: Vec<BrowserProfile>| list.into_iter().map(|p| p.label).collect::<Vec<_>>();
+        assert_eq!(labels(listed(all.clone(), true)), ["Firefox · default"]);
+        assert_eq!(labels(listed(all, false)), ["Chrome · Work", "Firefox · default", "Brave · Default"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cookie_copies_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let profile = temp("copy-mode");
+        let db = profile.join("cookies.sqlite");
+        std::fs::write(&db, "db").unwrap();
+        std::fs::write(profile.join("cookies.sqlite-wal"), "wal").unwrap();
+        std::fs::set_permissions(&db, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let copy = Copy::of(&db).unwrap();
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&copy.dir), 0o700, "the folder");
+        assert_eq!(mode(&copy.db), 0o600, "the database");
+        assert_eq!(mode(&copy.dir.join("cookies.sqlite-wal")), 0o600, "its WAL");
+        let dir = copy.dir.clone();
+        drop(copy);
+        assert!(!dir.exists());
+        std::fs::remove_dir_all(&profile).unwrap();
     }
 
     /// Reads this machine's real browsers and checks every sign-in found, printing only counts.
