@@ -11,6 +11,7 @@ use slack_core::types::{File, Message};
 
 use ratatui_image::sliced::{SignedPosition, SlicedImage};
 
+use super::applink::{AppLink, Here};
 use super::media::{Media, Thumb};
 use super::state::{Timeline, Workspace};
 use super::text;
@@ -184,7 +185,8 @@ impl MessagePane {
         }
     }
 
-    pub fn draw(&mut self, f: &mut Frame, area: Rect, ws: &Workspace, title: &str, timeline: Option<&Timeline>, focused: bool, media: &Media) {
+    pub fn draw(&mut self, f: &mut Frame, area: Rect, here: &Here, title: &str, timeline: Option<&Timeline>, focused: bool, media: &Media) {
+        let ws = here.ws;
         self.area = area;
         let title = if title.is_empty() { String::new() } else { format!(" {title} ") };
         let border = if focused { Style::default().fg(super::theme::p().accent) } else { Style::default().fg(super::theme::p().dim) };
@@ -240,7 +242,7 @@ impl MessagePane {
                         from = from.min(k);
                     }
                     let end = if self.thread { last } else { to };
-                    let built = build_lines_range(ws, t, from, end, width, self.thread, &thumb_size, avatars, first_new.as_deref());
+                    let built = build_lines_range(here, t, from, end, width, self.thread, &thumb_size, avatars, first_new.as_deref());
                     // Lines after the anchor message (to scroll down past it).
                     let below_anchor = anchored.and_then(|i| order.get(i)).and_then(|a| built.1.iter().rposition(|o| o.as_deref() == Some(*a))).map_or(0, |l| built.0.len() - 1 - l);
                     let enough_above = from == 0 || built.0.len() - below_anchor >= self.scroll + 2 * height;
@@ -382,7 +384,7 @@ impl MessagePane {
         f.render_widget(Paragraph::new(visible).block(block), area);
         // Links the terminal can open on its own click.
         if let Some(t) = timeline {
-            for spot in link_spots(&t.messages, &lines, &owners).into_iter().filter(|s| (start..end).contains(&s.line)) {
+            for spot in link_spots(here, &t.messages, &lines, &owners).into_iter().filter(|s| (start..end).contains(&s.line)) {
                 let y = inner.y + (pad + spot.line - start) as u16;
                 let x = inner.x + spot.col;
                 let width = spot.width.min(inner.right().saturating_sub(x));
@@ -585,20 +587,23 @@ fn reaction_pill(emoji: &str, count: u64, mine: bool) -> Span<'static> {
     Span::styled(format!("\u{a0}{emoji}\u{a0}{count}\u{a0}"), style)
 }
 
-/// A piece of a link in built message lines: `width` cells at `col` of `line`.
+/// A piece of a link in built message lines: `width` cells at `col` of `line`; `app`: where it goes in klack, for a
+/// link into the profile's workspaces.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LinkSpot {
     pub line: usize,
     pub col: u16,
     pub width: u16,
     pub url: String,
+    pub app: Option<AppLink>,
 }
 
 /// Where the links of the messages in `lines` (`owners`: whose each line is) are: the
-/// underlined link pieces of each message, matched in order to the links its text and its
-/// attachments' text hold (a wrapped link is several pieces).
-pub fn link_spots(messages: &[Message], lines: &[Line], owners: &[Option<String>]) -> Vec<LinkSpot> {
-    let link_fg = Some(super::theme::p().link);
+/// underlined link pieces of each message (in the link colour, or the accent for links into the profile's
+/// workspaces), matched in order to the links its text and its attachments' text hold (a wrapped link is several
+/// pieces).
+pub fn link_spots(here: &Here, messages: &[Message], lines: &[Line], owners: &[Option<String>]) -> Vec<LinkSpot> {
+    let link_fg = [Some(super::theme::p().link), Some(super::theme::p().accent)];
     let letters = |s: &str| s.chars().filter(|c| !c.is_whitespace()).count();
     let mut out = Vec::new();
     let mut n = 0;
@@ -609,20 +614,21 @@ pub fn link_spots(messages: &[Message], lines: &[Line], owners: &[Option<String>
         };
         let end = owners[n..].iter().position(|o| o.as_deref() != Some(ts)).map_or(lines.len(), |k| n + k);
         if let Some(m) = messages.iter().find(|m| m.ts == ts) {
-            let mut links = text::links_shown(&format::message_blocks(&m.text, &m.blocks));
+            let here = here.of(m);
+            let mut links = text::links_shown(&here, &format::message_blocks(&m.text, &m.blocks));
             for att in &m.attachments {
                 if let Some(detail) = att["text"].as_str().filter(|d| !d.is_empty()) {
-                    links.extend(text::links_shown(&format::from_mrkdwn(detail)));
+                    links.extend(text::links_shown(&here, &format::from_mrkdwn(detail)));
                 }
             }
-            let mut links = links.into_iter().map(|(url, shown)| (url, letters(&shown))).peekable();
+            let mut links = links.into_iter().map(|(url, shown, app)| (url, app, letters(&shown))).peekable();
             'lines: for (k, line) in lines[n..end].iter().enumerate() {
                 let mut col = 0u16;
                 for span in &line.spans {
                     let width = unicode_width::UnicodeWidthStr::width(span.content.as_ref()) as u16;
-                    if span.style.fg == link_fg && span.style.add_modifier.contains(Modifier::UNDERLINED) {
-                        let Some((url, left)) = links.peek_mut() else { break 'lines };
-                        out.push(LinkSpot { line: n + k, col, width, url: url.clone() });
+                    if link_fg.contains(&span.style.fg) && span.style.add_modifier.contains(Modifier::UNDERLINED) {
+                        let Some((url, app, left)) = links.peek_mut() else { break 'lines };
+                        out.push(LinkSpot { line: n + k, col, width, url: url.clone(), app: app.clone() });
                         *left = left.saturating_sub(letters(&span.content));
                         if *left == 0 {
                             links.next();
@@ -671,14 +677,15 @@ pub fn build_lines_owned(ws: &Workspace, t: &Timeline, width: usize, thread: boo
 /// whole build (grouping and day separators carry on from the message before it).
 #[cfg(test)]
 pub fn build_lines_from(ws: &Workspace, t: &Timeline, from: usize, width: usize, thread: bool, thumb_size: ThumbSize, avatars: Avatars) -> (Vec<Line<'static>>, Vec<Option<String>>, Vec<ImageSlot>) {
-    build_lines_range(ws, t, from, usize::MAX, width, thread, thumb_size, avatars, None)
+    build_lines_range(&Here::alone(ws), t, from, usize::MAX, width, thread, thumb_size, avatars, None)
 }
 
 /// [`build_lines_from`] up to (not including) the `to`-th shown message.
 #[allow(clippy::too_many_arguments)]
 /// `break_before`: a message that starts an author group of its own (with its header), as the
 /// first one under the "— new —" line does.
-pub fn build_lines_range(ws: &Workspace, t: &Timeline, from: usize, to: usize, width: usize, thread: bool, thumb_size: ThumbSize, avatars: Avatars, break_before: Option<&str>) -> (Vec<Line<'static>>, Vec<Option<String>>, Vec<ImageSlot>) {
+pub fn build_lines_range(here: &Here, t: &Timeline, from: usize, to: usize, width: usize, thread: bool, thumb_size: ThumbSize, avatars: Avatars, break_before: Option<&str>) -> (Vec<Line<'static>>, Vec<Option<String>>, Vec<ImageSlot>) {
+    let ws = here.ws;
     let mut out: Vec<Line<'static>> = Vec::new();
     let mut owners: Vec<Option<String>> = Vec::new();
     let mut slots: Vec<ImageSlot> = Vec::new();
@@ -749,7 +756,7 @@ pub fn build_lines_range(ws: &Workspace, t: &Timeline, from: usize, to: usize, w
             out.push(Line::from(header));
         }
         let base = out.len();
-        let (mut body, body_slots) = message_body(ws, m, width.saturating_sub(indent), !thread, thumb_size);
+        let (mut body, body_slots) = message_body(here, m, width.saturating_sub(indent), !thread, thumb_size);
         if beside.is_some() && body.is_empty() {
             body.push(Line::raw(""));
         }
@@ -777,11 +784,13 @@ pub fn build_lines_range(ws: &Workspace, t: &Timeline, from: usize, to: usize, w
 
 /// Text, files (with room for thumbnails), reactions and (with `summary`) the thread summary
 /// of one message. Slot lines are relative to the returned lines.
-pub fn message_body(ws: &Workspace, m: &Message, width: usize, summary: bool, thumb_size: ThumbSize) -> (Vec<Line<'static>>, Vec<ImageSlot>) {
+pub fn message_body(here: &Here, m: &Message, width: usize, summary: bool, thumb_size: ThumbSize) -> (Vec<Line<'static>>, Vec<ImageSlot>) {
+    let ws = here.ws;
+    let here = here.of(m);
     let mut slots = Vec::new();
     let mut out = Vec::new();
     let blocks = format::message_blocks(&m.text, &m.blocks);
-    let mut body = text::render_blocks(ws, &blocks, width);
+    let mut body = text::render_blocks(&here, &blocks, width);
     if m.edited.is_some() {
         let mark = Span::styled(" (edited)", Style::default().fg(super::theme::p().dim));
         match body.last_mut() {
@@ -807,7 +816,7 @@ pub fn message_body(ws: &Workspace, m: &Message, width: usize, summary: bool, th
         }
         if !detail.is_empty() {
             let doc = format::from_mrkdwn(detail);
-            for line in text::render_blocks(ws, &doc, width.saturating_sub(2)) {
+            for line in text::render_blocks(&here, &doc, width.saturating_sub(2)) {
                 let mut spans = vec![bar.clone()];
                 spans.extend(line.spans);
                 out.push(Line::from(spans));
@@ -899,10 +908,10 @@ mod tests {
         let m = Message { ts: "1.0".into(), user: Some("U1".into()), files: vec![file], ..Default::default() };
         // 10×20 px cells, at most 36×10: an 800×500 image is 32×10 at full size.
         let sizes = |f: &File, max: u16| super::super::media::thumb_cells(f, ratatui_image::FontSize::new(10, 20), 36u16.min(max), 10);
-        let (_, full) = message_body(&ws, &m, 60, true, &sizes);
+        let (_, full) = message_body(&Here::alone(&ws), &m, 60, true, &sizes);
         assert_eq!((full[0].size, full[0].file.id.as_str()), ((32, 10), "F1"));
         // The thread pane at 30 columns: smaller, and cached under its own id.
-        let (_, narrow) = message_body(&ws, &m, 30, true, &sizes);
+        let (_, narrow) = message_body(&Here::alone(&ws), &m, 30, true, &sizes);
         assert_eq!(narrow.len(), 1, "a narrow pane still shows the thumbnail");
         assert_eq!(narrow[0].size.0, 30);
         assert!(narrow[0].file.id.starts_with("F1@30x"));
@@ -969,9 +978,9 @@ mod tests {
         ws.users.insert(bot.id.clone(), bot);
         ws.users.insert("U2".into(), slack_core::types::User { id: "U2".into(), name: "yuriy".into(), ..Default::default() });
         let mut m: Message = serde_json::from_value(serde_json::json!({"app_id": "A08SF47R6P4", "team": "T1", "text": "a reply", "ts": "1.0", "type": "message", "user": "U2"})).unwrap();
-        let rows = plain(&message_body(&ws, &m, 40, false, &|_, _| None).0);
+        let rows = plain(&message_body(&Here::alone(&ws), &m, 40, false, &|_, _| None).0);
         assert_eq!(rows, ["a reply", "Sent using @Claude"]);
-        let lines = message_body(&ws, &m, 40, false, &|_, _| None).0;
+        let lines = message_body(&Here::alone(&ws), &m, 40, false, &|_, _| None).0;
         assert!(lines[1].style.add_modifier.contains(Modifier::ITALIC), "in italics");
         m.app_id = Some("A0OTHER".into());
         assert_eq!(ws.sent_using(&m).as_deref(), Some("Sent using an app"), "an app whose bot user is not known");
@@ -987,9 +996,9 @@ mod tests {
         let ws = Workspace::default();
         let mut m = msg("1.0", "U2", "see <https://github.com/acme/api/pull/482|the retry fix PR> and <https://x.y/z>");
         m.attachments = vec![serde_json::json!({"text": "via <https://docs.acme.dev|the docs>"})];
-        let (lines, _) = message_body(&ws, &m, 16, false, &|_, _| None);
+        let (lines, _) = message_body(&Here::alone(&ws), &m, 16, false, &|_, _| None);
         let owners = vec![Some("1.0".to_string()); lines.len()];
-        let spots = link_spots(&[m], &lines, &owners);
+        let spots = link_spots(&Here::alone(&ws), &[m], &lines, &owners);
         let pieces: Vec<(usize, u16, &str)> = spots.iter().map(|s| (s.line, s.col, s.url.as_str())).collect();
         assert_eq!(plain(&lines)[..3], ["see the retry ", "fix PR and ", "https://x.y/z"]);
         assert_eq!(
@@ -1009,6 +1018,40 @@ mod tests {
     }
 
     #[test]
+    fn an_in_app_link_is_found_where_it_is_drawn() {
+        let mut ws = Workspace::default();
+        ws.conversations.insert("C1".into(), slack_core::types::Conversation { id: "C1".into(), name: "deploys".into(), is_channel: true, ..Default::default() });
+        let workspaces = vec![("https://acme.slack.com/".to_string(), "T1".to_string())];
+        let names = vec!["acme".to_string()];
+        let authors = crate::tui::applink::Authors::new();
+        let here = Here { ws: &ws, workspaces: &workspaces, names: &names, shown: 0, authors: &authors, message: None };
+        let url = "https://acme.slack.com/archives/C1/p1729440000123456";
+        let m = msg("1.0", "U2", &format!("see <{url}|> and <https://x.y> then <{url}|the fix>"));
+        let (lines, _) = message_body(&here, &m, 12, false, &|_, _| None);
+        assert_eq!(plain(&lines), ["see ↪ ", "#deploys › ", "message and ", "https://x.y ", "then ↪ the ", "fix"], "the label wraps; the URL is not shown");
+        let accent = lines[1].spans.iter().find(|s| s.content.contains("deploys")).unwrap().style;
+        assert_eq!((accent.fg, accent.add_modifier.contains(Modifier::UNDERLINED)), (Some(crate::tui::theme::p().accent), true), "in the accent colour, underlined");
+        let external = lines[3].spans[0].style;
+        assert_eq!((external.fg, external.add_modifier.contains(Modifier::UNDERLINED)), (Some(crate::tui::theme::p().link), true), "an external link as before");
+        let owners = vec![Some("1.0".to_string()); lines.len()];
+        let spots = link_spots(&here, &[m], &lines, &owners);
+        let app = crate::tui::applink::parse(url);
+        let pieces: Vec<(usize, u16, &str, bool)> = spots.iter().map(|s| (s.line, s.col, s.url.as_str(), s.app == app)).collect();
+        assert_eq!(
+            pieces,
+            [(0, 4, url, true), (1, 0, url, true), (1, 9, url, true), (2, 0, url, true), (3, 0, "https://x.y", false), (4, 5, url, true), (4, 7, url, true), (5, 0, url, true)],
+            "every piece of the label carries the real URL and where it goes"
+        );
+        assert!(spots.iter().filter(|s| s.url != url).all(|s| s.app.is_none()), "an external link goes nowhere in klack");
+        // Slack's blocks label a pasted link with its own address (`&` there, `&amp;` in the address): not the
+        // author's words.
+        let pasted = format!("{url}?thread_ts=1729440000.000100&cid=C1");
+        let block = serde_json::json!([{"type": "rich_text", "elements": [{"type": "rich_text_section", "elements": [{"type": "link", "url": pasted.replace('&', "&amp;"), "text": pasted}]}]}]);
+        let m = Message { blocks: serde_json::from_value(block).unwrap(), ..msg("2.0", "U2", "") };
+        assert_eq!(plain(&message_body(&here, &m, 60, false, &|_, _| None).0), ["↪ #deploys › thread reply"]);
+    }
+
+    #[test]
     fn custom_emoji_pictures_in_text_and_reactions() {
         let mut ws = Workspace::default();
         ws.custom_emoji.insert("piggy".into(), "https://emoji.slack-edge.com/T1/piggy/b77.png".into());
@@ -1018,11 +1061,11 @@ mod tests {
         let mut m = msg("1.0", "U2", "so :piggy: much :yes:");
         m.reactions = vec![Reaction { name: "pig2x".into(), users: vec![], count: 2 }];
         // Without pictures (half blocks, or turned off): names, as before.
-        let (lines, slots) = message_body(&ws, &m, 40, false, &|_, _| None);
+        let (lines, slots) = message_body(&Here::alone(&ws), &m, 40, false, &|_, _| None);
         assert_eq!(plain(&lines)[0], "so :piggy: much ✅");
         assert!(slots.is_empty());
         ws.emoji_pictures = true;
-        let (lines, slots) = message_body(&ws, &m, 40, false, &|_, _| None);
+        let (lines, slots) = message_body(&Here::alone(&ws), &m, 40, false, &|_, _| None);
         let rows = plain(&lines);
         assert_eq!(rows[0], "so    much ✅", "two blank cells for the picture; an alias of a standard emoji stays a character");
         let at: Vec<(usize, u16, (u16, u16), &str)> = slots.iter().map(|s| (s.line, s.col, s.size, s.file.id.as_str())).collect();
@@ -1031,7 +1074,7 @@ mod tests {
         // Wrapped onto a new line, the picture goes with its cells.
         let mut long = msg("2.0", "U2", "aaaa bbbb :piggy:");
         long.reactions.clear();
-        let (lines, slots) = message_body(&ws, &long, 10, false, &|_, _| None);
+        let (lines, slots) = message_body(&Here::alone(&ws), &long, 10, false, &|_, _| None);
         assert_eq!(plain(&lines), ["aaaa bbbb ", "  "]);
         assert_eq!((slots[0].line, slots[0].col), (1, 0));
         // Plain text (notifications, search) never gets a placeholder.
@@ -1100,7 +1143,7 @@ mod tests {
             let mut frame = |pane: &mut MessagePane, runs: usize| {
                 let start = std::time::Instant::now();
                 for _ in 0..runs {
-                    terminal.draw(|f| pane.draw(f, f.area(), &ws, "t", Some(&t), false, &media)).unwrap();
+                    terminal.draw(|f| pane.draw(f, f.area(), &Here::alone(&ws), "t", Some(&t), false, &media)).unwrap();
                 }
                 start.elapsed().as_secs_f64() * 1000.0 / runs as f64
             };
@@ -1131,7 +1174,7 @@ mod tests {
         let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
         let mut pane = MessagePane::default();
         let mut draw = |pane: &mut MessagePane, t: &Timeline| {
-            terminal.draw(|f| pane.draw(f, f.area(), &ws, "t", Some(t), false, &media)).unwrap();
+            terminal.draw(|f| pane.draw(f, f.area(), &Here::alone(&ws), "t", Some(t), false, &media)).unwrap();
         };
         // The old way: everything built, the view counted in lines from the bottom (with the
         // "beginning of conversation" note on top).
@@ -1172,7 +1215,7 @@ mod tests {
         // Selecting a message far above the view brings it into view.
         let far = t3.messages[20].ts.clone();
         pane.selected = Some(far.clone());
-        terminal.draw(|f| pane.draw(f, f.area(), &ws, "t", Some(&t3), true, &media)).unwrap();
+        terminal.draw(|f| pane.draw(f, f.area(), &Here::alone(&ws), "t", Some(&t3), true, &media)).unwrap();
         assert!(pane.rows.contains(&Some(far)), "the selection is on screen");
     }
 
@@ -1190,7 +1233,7 @@ mod tests {
         let mut pane = MessagePane::default();
         // The text on screen.
         let mut draw = |pane: &mut MessagePane| {
-            let buffer = terminal.draw(|f| pane.draw(f, f.area(), &ws, "t", Some(&t), true, &media)).unwrap().buffer.clone();
+            let buffer = terminal.draw(|f| pane.draw(f, f.area(), &Here::alone(&ws), "t", Some(&t), true, &media)).unwrap().buffer.clone();
             (0..buffer.area.height).map(|y| (0..buffer.area.width).map(|x| buffer[(x, y)].symbol()).collect::<String>()).collect::<Vec<_>>().join("\n")
         };
         draw(&mut pane);
@@ -1380,8 +1423,8 @@ mod tests {
         let ws = Workspace::default();
         let mut m = msg("1000.0", "U1", "exactly ten");
         m.edited = Some(Default::default());
-        assert_eq!(plain(&message_body(&ws, &m, 30, true, &|_, _| None).0), vec!["exactly ten (edited)"]);
-        assert_eq!(plain(&message_body(&ws, &m, 12, true, &|_, _| None).0), vec!["exactly ten", "(edited)"]);
+        assert_eq!(plain(&message_body(&Here::alone(&ws), &m, 30, true, &|_, _| None).0), vec!["exactly ten (edited)"]);
+        assert_eq!(plain(&message_body(&Here::alone(&ws), &m, 12, true, &|_, _| None).0), vec!["exactly ten", "(edited)"]);
     }
 
     #[test]
@@ -1470,7 +1513,7 @@ mod tests {
         };
         // Read up to message 20; 21 is our own, so the line stands above 22.
         let mut pane = MessagePane { new_since: Some(ts(20)), ..Default::default() };
-        terminal.draw(|f| pane.draw(f, f.area(), &ws, "t", Some(&t), false, &media)).unwrap();
+        terminal.draw(|f| pane.draw(f, f.area(), &Here::alone(&ws), "t", Some(&t), false, &media)).unwrap();
         let at = pane.rows.iter().position(|r| r.as_deref() == Some(ts(22).as_str())).expect("message 22 on screen");
         assert_eq!(pane.rows[at - 1], None);
         let rows = screen(&terminal);
@@ -1479,12 +1522,12 @@ mod tests {
         assert!(!rows[13].contains("newer"), "following the newest: no count");
         // Only our own messages after it, or a thread: no line.
         for mut pane in [MessagePane { new_since: Some(ts(20)), thread: true, ..Default::default() }, MessagePane { new_since: Some(ts(29)), ..Default::default() }] {
-            terminal.draw(|f| pane.draw(f, f.area(), &ws, "t", Some(&t), false, &media)).unwrap();
+            terminal.draw(|f| pane.draw(f, f.area(), &Here::alone(&ws), "t", Some(&t), false, &media)).unwrap();
             assert!(!screen(&terminal).iter().any(|r| r.contains(" new ")));
         }
         // Reading further up, the bottom border counts the messages below the view.
         pane.scroll_up(12);
-        terminal.draw(|f| pane.draw(f, f.area(), &ws, "t", Some(&t), false, &media)).unwrap();
+        terminal.draw(|f| pane.draw(f, f.area(), &Here::alone(&ws), "t", Some(&t), false, &media)).unwrap();
         let last = pane.rows.iter().flatten().last().cloned().unwrap();
         let below = 29 - (0..30).position(|i| ts(i) == last).unwrap();
         assert!(below > 0);
@@ -1545,9 +1588,9 @@ mod tests {
         // Read up to 5: 34 unread, far more than a screen. Drawn first while the history loads.
         let mut pane = MessagePane { new_since: Some(ts(5)), jump_to_new: true, ..Default::default() };
         let loading = Timeline::default();
-        terminal.draw(|f| pane.draw(f, f.area(), &ws, "t", Some(&loading), false, &media)).unwrap();
+        terminal.draw(|f| pane.draw(f, f.area(), &Here::alone(&ws), "t", Some(&loading), false, &media)).unwrap();
         assert!(pane.jump_to_new, "still to do once the history is in");
-        terminal.draw(|f| pane.draw(f, f.area(), &ws, "t", Some(&t), false, &media)).unwrap();
+        terminal.draw(|f| pane.draw(f, f.area(), &Here::alone(&ws), "t", Some(&t), false, &media)).unwrap();
         let rows = screen(&terminal);
         let line = rows.iter().position(|r| r.contains(" new ")).expect("the line is on screen after opening");
         assert!(line <= 3, "near the top: {rows:#?}");
@@ -1556,7 +1599,7 @@ mod tests {
         assert!(!pane.jump_to_new, "only once");
         // Without the jump (or once done) the view stays at the newest.
         let mut pane = MessagePane { new_since: Some(ts(5)), ..Default::default() };
-        terminal.draw(|f| pane.draw(f, f.area(), &ws, "t", Some(&t), false, &media)).unwrap();
+        terminal.draw(|f| pane.draw(f, f.area(), &Here::alone(&ws), "t", Some(&t), false, &media)).unwrap();
         assert!(screen(&terminal)[12].contains("message 39"));
     }
 
@@ -1579,11 +1622,11 @@ mod tests {
         // Slackbot's answer to `/remind help` (shortened): text and an identical fallback.
         let att = serde_json::json!({"callback_id": "x", "id": 1, "mrkdwn_in": ["text"], "text": "Use `/remind` to:\nSnooze a reminder", "fallback": "Use `/remind` to:\nSnooze a reminder"});
         let m = Message { attachments: vec![att], ..msg("1.0", "USLACKBOT", "Need some help?") };
-        let p = plain(&message_body(&ws, &m, 60, false, &|_, _| None).0);
+        let p = plain(&message_body(&Here::alone(&ws), &m, 60, false, &|_, _| None).0);
         assert_eq!(p.iter().filter(|l| l.contains("Snooze a reminder")).count(), 1, "once, not again from the fallback: {p:?}");
         assert!(!p.iter().any(|l| l.contains('`')), "rendered, not raw: {p:?}");
         let only_fallback = serde_json::json!({"fallback": "[a link preview]"});
         let m = Message { attachments: vec![only_fallback], ..msg("2.0", "U1", "") };
-        assert!(plain(&message_body(&ws, &m, 60, false, &|_, _| None).0).iter().any(|l| l.contains("[a link preview]")));
+        assert!(plain(&message_body(&Here::alone(&ws), &m, 60, false, &|_, _| None).0).iter().any(|l| l.contains("[a link preview]")));
     }
 }

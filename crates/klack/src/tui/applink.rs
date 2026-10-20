@@ -1,6 +1,8 @@
-//! Slack links that point into a workspace this profile has open: parsing and matching.
-// Z2 and Z3 use this; Z2 removes the allow.
-#![cfg_attr(not(test), allow(dead_code))]
+//! Slack links that point into a workspace this profile has open: parsing, matching and labels.
+
+use slack_core::types::Message;
+
+use super::state::Workspace;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target {
@@ -139,6 +141,114 @@ pub fn workspace_of(link: &AppLink, workspaces: &[(String, String)], shown: usiz
     if all.contains(&shown) { Some(shown) } else { all.first().copied() }
 }
 
+/// Who wrote linked messages, by (channel, ts): what a link to a message is labelled with (filled in Z5).
+#[derive(Debug, Default)]
+pub struct Authors(std::collections::BTreeMap<(String, String), String>);
+
+impl Authors {
+    pub const fn new() -> Authors {
+        Authors(std::collections::BTreeMap::new())
+    }
+
+    pub fn get(&self, channel: &str, ts: &str) -> Option<&str> {
+        self.0.get(&(channel.to_string(), ts.to_string())).map(String::as_str)
+    }
+
+    #[cfg(test)]
+    pub fn insert(&mut self, channel: &str, ts: &str, name: &str) {
+        self.0.insert((channel.into(), ts.into()), name.into());
+    }
+}
+
+/// None known.
+static NO_AUTHORS: Authors = Authors::new();
+
+/// Where links are drawn: this workspace, the profile's workspaces ((url, team id) each, `names` their rail labels,
+/// `shown` this one's index), what is known of linked messages, and the message the link is in (its link previews and
+/// files name what it points to).
+#[derive(Clone, Copy)]
+pub struct Here<'a> {
+    pub ws: &'a Workspace,
+    pub workspaces: &'a [(String, String)],
+    pub names: &'a [String],
+    pub shown: usize,
+    pub authors: &'a Authors,
+    pub message: Option<&'a Message>,
+}
+
+impl<'a> Here<'a> {
+    /// This workspace alone, which no link matches: every link is drawn as an external one.
+    pub fn alone(ws: &'a Workspace) -> Here<'a> {
+        Here { ws, workspaces: &[], names: &[], shown: 0, authors: &NO_AUTHORS, message: None }
+    }
+
+    /// The same, for links in message `m`.
+    pub fn of(self, m: &'a Message) -> Here<'a> {
+        Here { message: Some(m), ..self }
+    }
+}
+
+/// What a link into the profile's workspaces is shown as (after `↪ `): the author's own words for it
+/// (`author_text`), else where it goes (`#deploys › message from Bob`); None when it is not in-app.
+pub fn label(link: &AppLink, here: &Here, author_text: Option<&str>) -> Option<String> {
+    let at = workspace_of(link, here.workspaces, here.shown)?;
+    if let Some(words) = author_text.map(str::trim).filter(|w| !w.is_empty()) {
+        return Some(words.to_string());
+    }
+    let ws = here.ws;
+    let readable = match &link.target {
+        Target::Conversation { channel } => conversation(ws, channel),
+        Target::Message { channel, ts, thread_ts } => {
+            let author = here.authors.get(channel, ts).map(str::to_string).or_else(|| preview_author(here, link));
+            let what = match (thread_ts.as_deref().map(|t| t == ts), author) {
+                (None, None) => "message".to_string(),
+                (None, Some(a)) => format!("message from {a}"),
+                (Some(false), None) => "thread reply".to_string(),
+                (Some(false), Some(a)) => format!("reply from {a}"),
+                // The thread itself (the desktop app's thread link).
+                (Some(true), None) => "thread".to_string(),
+                (Some(true), Some(a)) => format!("thread from {a}"),
+            };
+            format!("{} › {what}", conversation(ws, channel))
+        }
+        Target::Person { user } => known_user(ws, user).map_or_else(|| "someone's profile".to_string(), |n| format!("{n}'s profile")),
+        Target::File { file } => {
+            let carried = here.message.and_then(|m| m.files.iter().find(|f| f.id == *file));
+            carried.map(|f| if f.title.is_empty() { &f.name } else { &f.title }).filter(|n| !n.is_empty()).map_or_else(|| "a file".to_string(), |n| format!("file {n}"))
+        }
+    };
+    if at == here.shown {
+        return Some(readable);
+    }
+    let name = here.names.get(at).map_or("another workspace", String::as_str);
+    Some(format!("{name} · {readable}"))
+}
+
+/// A person's name when this workspace knows them (never their id).
+fn known_user(ws: &Workspace, id: &str) -> Option<String> {
+    ws.users.get(id).map(|u| u.display().to_string()).filter(|n| !n.is_empty())
+}
+
+/// A conversation as a link label: `#deploys`, `DM with Bob`, `group DM`; one this workspace does not know is
+/// `a channel` (`a DM`).
+fn conversation(ws: &Workspace, channel: &str) -> String {
+    match ws.conversations.get(channel) {
+        Some(c) if c.is_im => c.user.as_deref().and_then(|u| known_user(ws, u)).map_or_else(|| "a DM".to_string(), |n| format!("DM with {n}")),
+        Some(c) if c.is_mpim => "group DM".to_string(),
+        Some(c) if !c.name.is_empty() => format!("#{}", c.name),
+        _ if channel.starts_with('D') => "a DM".to_string(),
+        _ => "a channel".to_string(),
+    }
+}
+
+/// The author of the linked message as the message's own link preview of it names them.
+fn preview_author(here: &Here, link: &AppLink) -> Option<String> {
+    let Target::Message { channel, ts, .. } = &link.target else { return None };
+    let same = |url: &str| parse(url).is_some_and(|l| l.team == link.team && l.target.channel() == Some(channel) && matches!(&l.target, Target::Message { ts: t, .. } if t == ts));
+    let preview = here.message?.attachments.iter().find(|a| ["from_url", "original_url"].iter().any(|k| a[*k].as_str().is_some_and(same)))?;
+    preview["author_name"].as_str().map(str::trim).filter(|n| !n.is_empty()).map(str::to_string).or_else(|| preview["author_id"].as_str().and_then(|u| known_user(here.ws, u)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -237,5 +347,65 @@ mod tests {
         assert_eq!(t, conv("C1"));
         assert_eq!(t.channel(), Some("C1"));
         assert_eq!(Target::Person { user: "U1".into() }.channel(), None);
+    }
+
+    #[test]
+    fn in_app_links_are_labelled() {
+        use slack_core::types::{Conversation, File, User};
+        let mut ws = Workspace::default();
+        let user = |id: &str, name: &str| User { id: id.into(), name: name.into(), ..Default::default() };
+        ws.users.insert("U1".into(), user("U1", "ann"));
+        ws.users.insert("U2".into(), user("U2", "bob"));
+        ws.conversations.insert("C1".into(), Conversation { id: "C1".into(), name: "deploys".into(), is_channel: true, ..Default::default() });
+        ws.conversations.insert("D1".into(), Conversation { id: "D1".into(), is_im: true, user: Some("U2".into()), ..Default::default() });
+        ws.conversations.insert("G1".into(), Conversation { id: "G1".into(), name: "mpdm-ann--bob--cy-1".into(), is_mpim: true, ..Default::default() });
+        let workspaces = vec![("https://acme.slack.com/".to_string(), "T1".to_string()), ("https://beta.slack.com/".to_string(), "T2".to_string())];
+        let names = vec!["acme".to_string(), "beta".to_string()];
+        let mut authors = Authors::new();
+        authors.insert("C1", "1729440000.000200", "Cy");
+        let here = Here { ws: &ws, workspaces: &workspaces, names: &names, shown: 0, authors: &authors, message: None };
+        let l = |url: &str, here: &Here| label(&parse(url).unwrap(), here, None);
+        let a = "https://acme.slack.com";
+        assert_eq!(l(&format!("{a}/archives/C1"), &here).as_deref(), Some("#deploys"));
+        assert_eq!(l(&format!("{a}/archives/D1"), &here).as_deref(), Some("DM with bob"));
+        assert_eq!(l(&format!("{a}/archives/G1"), &here).as_deref(), Some("group DM"));
+        assert_eq!(l(&format!("{a}/archives/C1/p1729440000000100"), &here).as_deref(), Some("#deploys › message"));
+        assert_eq!(l(&format!("{a}/archives/D1/p1729440000000100"), &here).as_deref(), Some("DM with bob › message"));
+        assert_eq!(l(&format!("{a}/archives/G1/p1729440000000100"), &here).as_deref(), Some("group DM › message"));
+        assert_eq!(l(&format!("{a}/archives/C1/p1729440000000200"), &here).as_deref(), Some("#deploys › message from Cy"), "the author is known");
+        assert_eq!(l(&format!("{a}/archives/C1/p1729440000000300?thread_ts=1729440000.000100&cid=C1"), &here).as_deref(), Some("#deploys › thread reply"));
+        assert_eq!(l(&format!("{a}/archives/C1/p1729440000000200?thread_ts=1729440000.000100&cid=C1"), &here).as_deref(), Some("#deploys › reply from Cy"));
+        assert_eq!(l("https://app.slack.com/client/T1/C1/thread/C1-1729440000.000100", &here).as_deref(), Some("#deploys › thread"), "the desktop app's thread link: the thread, not a reply");
+        assert_eq!(l("https://app.slack.com/client/T1/C1", &here).as_deref(), Some("#deploys"));
+        assert_eq!(l(&format!("{a}/team/U2"), &here).as_deref(), Some("bob's profile"));
+        assert_eq!(l(&format!("{a}/team/U9"), &here).as_deref(), Some("someone's profile"), "never the id");
+        assert_eq!(l(&format!("{a}/files/U2/F1/report.pdf"), &here).as_deref(), Some("a file"));
+        // Unknown details fall back, never an id.
+        assert_eq!(l(&format!("{a}/archives/C9"), &here).as_deref(), Some("a channel"));
+        assert_eq!(l(&format!("{a}/archives/C9/p1729440000000100"), &here).as_deref(), Some("a channel › message"));
+        assert_eq!(l(&format!("{a}/archives/D9"), &here).as_deref(), Some("a DM"));
+        // Another workspace of the profile: its name first; a channel only when this one knows it.
+        assert_eq!(l("https://beta.slack.com/archives/C7/p1729440000000100", &here).as_deref(), Some("beta · a channel › message"));
+        assert_eq!(l("https://beta.slack.com/archives/C1", &here).as_deref(), Some("beta · #deploys"));
+        assert_eq!(l("https://app.slack.com/client/T2/C7", &here).as_deref(), Some("beta · a channel"));
+        assert_eq!(l("https://acme.slack.com/archives/C1", &Here { shown: 1, ..here }).as_deref(), Some("acme · #deploys"));
+        // The author's own words, with the arrow still drawn before them.
+        assert_eq!(label(&parse(&format!("{a}/archives/C1")).unwrap(), &here, Some("the fix")).as_deref(), Some("the fix"));
+        assert_eq!(label(&parse(&format!("{a}/archives/C1")).unwrap(), &here, Some(" ")).as_deref(), Some("#deploys"), "blank words are none");
+        // The message's own link preview names the author; the file it carries names the file.
+        let link = format!("{a}/archives/C1/p1729440000000500");
+        let mut m = Message { ts: "9.0".into(), text: format!("<{link}>"), ..Default::default() };
+        m.attachments = vec![serde_json::json!({"from_url": "https://example.com/x", "author_name": "Not me"}), serde_json::json!({"from_url": link, "author_name": "Bob", "is_msg_unfurl": true})];
+        m.files = vec![File { id: "F1".into(), name: "report.pdf".into(), ..Default::default() }];
+        assert_eq!(l(&link, &here.of(&m)).as_deref(), Some("#deploys › message from Bob"));
+        assert_eq!(l(&format!("{a}/files/U2/F1/report.pdf"), &here.of(&m)).as_deref(), Some("file report.pdf"));
+        m.attachments = vec![serde_json::json!({"original_url": link, "author_id": "U1"})];
+        assert_eq!(l(&link, &here.of(&m)).as_deref(), Some("#deploys › message from ann"), "the author's id, by name");
+        m.attachments = vec![serde_json::json!({"original_url": link, "author_id": "U9"})];
+        assert_eq!(l(&link, &here.of(&m)).as_deref(), Some("#deploys › message"), "an unknown author: no id");
+        // Not in-app: another Slack, or not Slack at all.
+        assert_eq!(l("https://nobody.slack.com/archives/C1", &here), None);
+        assert_eq!(l("https://app.slack.com/client/T9/C1", &here), None);
+        assert_eq!(l("https://acme.slack.com/archives/C1", &Here::alone(&ws)), None);
     }
 }

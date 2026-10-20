@@ -140,6 +140,10 @@ struct App {
     key_warnings: Vec<String>,
     /// The profile's workspaces (labels) and which one this is.
     workspaces: Vec<String>,
+    /// The profile's workspaces' (url, team id), which links into them are matched against.
+    addresses: Vec<(String, String)>,
+    /// Who wrote the messages links point to, as far as known.
+    authors: super::applink::Authors,
     /// Unread state of the other workspaces (polled in the background).
     others: super::others::Badges,
     /// The workspace rail's tiles at the last draw (none without a rail).
@@ -3225,6 +3229,7 @@ pub async fn run(profile: slack_core::session::Profile, account: Option<(&str, &
     let mut index = start_index(&sessions, wanted, &signed_out).ok_or_else(|| anyhow::anyhow!("every workspace of this profile is signed out — klack auth login"))?;
     let signed_out: SignedOut = std::sync::Arc::new(std::sync::Mutex::new(signed_out));
     let labels = workspace_labels(&sessions);
+    let addresses: Vec<(String, String)> = sessions.iter().map(|s| (s.url.clone(), s.team_id.clone())).collect();
     let keymap = super::keymap::load_user();
     let shown = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(index));
     let badges: super::others::Badges = Default::default();
@@ -3267,7 +3272,7 @@ pub async fn run(profile: slack_core::session::Profile, account: Option<(&str, &
         let mut keymap = super::keymap::load_user();
         keymap.1.extend(settings_problem);
         super::messages::set_open_key(keymap.0.first_shown(Context::Messages, Action::Open).unwrap_or_default());
-        let (next, kept_media, kept_clipboard) = run_workspace(client, (labels.clone(), index, badges.clone(), open_after.clone(), logos.clone(), signed_out.clone()), &mut clicks, &keymap, &settings, &mut terminal, &mut events, media, clipboard).await?;
+        let (next, kept_media, kept_clipboard) = run_workspace(client, (labels.clone(), index, badges.clone(), open_after.clone(), logos.clone(), signed_out.clone(), addresses.clone()), &mut clicks, &keymap, &settings, &mut terminal, &mut events, media, clipboard).await?;
         (media, clipboard) = (kept_media, kept_clipboard);
         match next {
             Some(i) => index = i,
@@ -3290,7 +3295,7 @@ fn workspace_labels(sessions: &[slack_core::session::WorkspaceSession]) -> Vec<S
 /// One workspace until quit (None) or a switch (Some(index)); hands back what outlives it.
 async fn run_workspace(
     client: Client,
-    workspaces: (Vec<String>, usize, super::others::Badges, super::others::OpenAfter, super::others::Logos, SignedOut),
+    workspaces: (Vec<String>, usize, super::others::Badges, super::others::OpenAfter, super::others::Logos, SignedOut, Vec<(String, String)>),
     clicks: &mut mpsc::UnboundedReceiver<super::others::Click>,
     keymap: &(Keymap, Vec<String>),
     settings: &super::settings::Settings,
@@ -3313,6 +3318,8 @@ async fn run_workspace(
         which_key_area: Rect::default(),
         closing_click: None,
         workspaces: workspaces.0,
+        addresses: workspaces.6,
+        authors: Default::default(),
         workspace: workspaces.1,
         others: workspaces.2,
         rail: Vec::new(),
@@ -5117,7 +5124,8 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         let title = format!("Thread · {} · {} close", app.ws.channel_label(&channel), app.keys.first_key(Context::Messages, Action::Back).unwrap_or_default());
         let timeline = app.ws.threads.get(&super::state::thread_key(&channel, &ts));
         app.thread_pane.editing = app.thread_composer.editing.clone();
-        app.thread_pane.draw(f, pane, &app.ws, &title, timeline, app.focus == Focus::Thread, &app.media);
+        let here = super::applink::Here { ws: &app.ws, workspaces: &app.addresses, names: &app.workspaces, shown: app.workspace, authors: &app.authors, message: None };
+        app.thread_pane.draw(f, pane, &here, &title, timeline, app.focus == Focus::Thread, &app.media);
         app.thread_composer_area = comp;
         draw_composer(f, comp, app, true);
     }
@@ -5141,7 +5149,8 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         let timeline = current.as_deref().and_then(|c| app.ws.timelines.get(c));
         let title = current.as_deref().map(|c| app.ws.channel_label(c)).unwrap_or_default();
         app.messages.editing = app.composer.editing.clone();
-        app.messages.draw(f, msgs, &app.ws, &title, timeline, app.focus == Focus::Messages, &app.media);
+        let here = super::applink::Here { ws: &app.ws, workspaces: &app.addresses, names: &app.workspaces, shown: app.workspace, authors: &app.authors, message: None };
+        app.messages.draw(f, msgs, &here, &title, timeline, app.focus == Focus::Messages, &app.media);
         app.composer_area = comp;
         draw_composer(f, comp, app, false);
     }
@@ -6036,7 +6045,7 @@ mod tests {
         let media = Media::with(ratatui_image::picker::Picker::halfblocks());
         let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 20)).unwrap();
         for _ in 0..2 {
-            terminal.draw(|f| pane.draw(f, f.area(), &ws, "t", ws.timelines.get("D1"), true, &media)).unwrap();
+            terminal.draw(|f| pane.draw(f, f.area(), &crate::tui::applink::Here::alone(&ws), "t", ws.timelines.get("D1"), true, &media)).unwrap();
             let buf = terminal.backend().buffer();
             let rows: Vec<String> = (0..buf.area.height).map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect()).collect();
             let line = rows.iter().position(|r| r.contains(" new ")).expect("the new line");

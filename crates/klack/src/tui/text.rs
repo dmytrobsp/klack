@@ -5,6 +5,7 @@ use ratatui::text::{Line, Span};
 use slack_core::format::{self, Block, Inline};
 use unicode_width::UnicodeWidthStr;
 
+use super::applink::{AppLink, Here};
 use super::state::Workspace;
 
 
@@ -158,8 +159,25 @@ fn text_style(s: format::Style) -> Style {
     st
 }
 
+/// What a link shows: its label or its address; a link into the profile's workspaces `↪ ` and where it goes
+/// (or the author's label for it), with where that is.
+fn link_shown(here: &Here, url: &str, label: Option<&str>) -> (String, Option<AppLink>) {
+    let label = label.filter(|l| !l.is_empty());
+    // Slack's own label for a pasted link is the address itself (in blocks the address has `&amp;` where the label
+    // has `&`): not the author's words.
+    let bare = |s: &str| format::unescape(s.trim()).trim_start_matches("https://").trim_start_matches("http://").to_string();
+    let own = label.filter(|l| bare(l) != bare(url));
+    if let Some(app) = super::applink::parse(url) {
+        if let Some(shown) = super::applink::label(&app, here, own) {
+            return (format!("↪ {shown}"), Some(app));
+        }
+    }
+    (label.map(str::to_string).unwrap_or_else(|| url.trim_start_matches("mailto:").to_string()), None)
+}
+
 /// Spans for one inline element.
-pub fn inline_spans(ws: &Workspace, i: &Inline) -> Vec<Span<'static>> {
+pub fn inline_spans(here: &Here, i: &Inline) -> Vec<Span<'static>> {
+    let ws = here.ws;
     let mention = Style::default().fg(super::theme::p().mention).add_modifier(Modifier::BOLD);
     match i {
         Inline::Text { text, style } => vec![Span::styled(text.clone(), text_style(*style))],
@@ -171,15 +189,17 @@ pub fn inline_spans(ws: &Workspace, i: &Inline) -> Vec<Span<'static>> {
         Inline::Broadcast(b) => vec![Span::styled(format!("@{b}"), mention.add_modifier(Modifier::REVERSED))],
         Inline::Usergroup { id, handle } => vec![Span::styled(handle.clone().unwrap_or_else(|| format!("@{id}")), mention)],
         Inline::Link { url, label, style } => {
-            let shown = label.clone().filter(|l| !l.is_empty()).unwrap_or_else(|| url.trim_start_matches("mailto:").to_string());
-            vec![Span::styled(shown, text_style(*style).fg(super::theme::p().link).add_modifier(Modifier::UNDERLINED))]
+            let (shown, app) = link_shown(here, url, label.as_deref());
+            let fg = if app.is_some() { super::theme::p().accent } else { super::theme::p().link };
+            vec![Span::styled(shown, text_style(*style).fg(fg).add_modifier(Modifier::UNDERLINED))]
         }
         Inline::Emoji { name, unicode } => vec![Span::raw(emoji_cell(ws, name, unicode.as_deref()))],
     }
 }
 
-/// The links of a document in the order [`render_blocks`] draws them: (address, the text shown).
-pub fn links_shown(blocks: &[Block]) -> Vec<(String, String)> {
+/// The links of a document in the order [`render_blocks`] draws them: (address, the text shown, where it goes in
+/// klack for a link into the profile's workspaces).
+pub fn links_shown(here: &Here, blocks: &[Block]) -> Vec<(String, String, Option<AppLink>)> {
     let mut out = Vec::new();
     for b in blocks {
         let items: Vec<&Inline> = match b {
@@ -189,8 +209,8 @@ pub fn links_shown(blocks: &[Block]) -> Vec<(String, String)> {
         };
         for i in items {
             if let Inline::Link { url, label, .. } = i {
-                let shown = label.clone().filter(|l| !l.is_empty()).unwrap_or_else(|| url.trim_start_matches("mailto:").to_string());
-                out.push((url.clone(), shown));
+                let (shown, app) = link_shown(here, url, label.as_deref());
+                out.push((url.clone(), shown, app));
             }
         }
     }
@@ -202,7 +222,7 @@ pub fn inline_plain(ws: &Workspace, i: &Inline) -> String {
     match i {
         // Never a picture's placeholder.
         Inline::Emoji { name, unicode } => emoji(ws, name, unicode.as_deref()),
-        _ => inline_spans(ws, i).into_iter().map(|s| s.content.to_string()).collect(),
+        _ => inline_spans(&Here::alone(ws), i).into_iter().map(|s| s.content.to_string()).collect(),
     }
 }
 
@@ -290,12 +310,12 @@ pub fn wrap(spans: Vec<Span<'static>>, width: usize, prefix: Vec<Span<'static>>,
 }
 
 /// Render a message document to lines of at most `width` columns.
-pub fn render_blocks(ws: &Workspace, blocks: &[Block], width: usize) -> Vec<Line<'static>> {
+pub fn render_blocks(here: &Here, blocks: &[Block], width: usize) -> Vec<Line<'static>> {
     let mut out = Vec::new();
     for b in blocks {
         match b {
             Block::Paragraph(items) => {
-                let spans: Vec<Span> = items.iter().flat_map(|i| inline_spans(ws, i)).collect();
+                let spans: Vec<Span> = items.iter().flat_map(|i| inline_spans(here, i)).collect();
                 if spans.is_empty() {
                     out.push(Line::raw(""));
                 } else {
@@ -304,7 +324,7 @@ pub fn render_blocks(ws: &Workspace, blocks: &[Block], width: usize) -> Vec<Line
             }
             Block::Quote(items) => {
                 let bar = vec![Span::styled("▎ ", Style::default().fg(super::theme::p().quote_bar))];
-                let spans: Vec<Span> = items.iter().flat_map(|i| inline_spans(ws, i)).collect();
+                let spans: Vec<Span> = items.iter().flat_map(|i| inline_spans(here, i)).collect();
                 out.extend(wrap(spans, width, bar.clone(), bar));
             }
             Block::Code(code) => {
@@ -317,7 +337,7 @@ pub fn render_blocks(ws: &Workspace, blocks: &[Block], width: usize) -> Vec<Line
                 for (n, item) in items.iter().enumerate() {
                     let marker = if *ordered { format!("{pad}{}. ", n + 1) } else { format!("{pad}• ") };
                     let hang = " ".repeat(marker.width());
-                    let spans: Vec<Span> = item.iter().flat_map(|i| inline_spans(ws, i)).collect();
+                    let spans: Vec<Span> = item.iter().flat_map(|i| inline_spans(here, i)).collect();
                     out.extend(wrap(spans, width, vec![Span::raw(marker)], vec![Span::raw(hang)]));
                 }
             }
