@@ -91,6 +91,8 @@ pub struct MessagePane {
     shown: Option<String>,
     /// Message ts owning each visible row of the last draw (for clicks).
     rows: Vec<Option<String>>,
+    /// Where links into the profile's workspaces were drawn at the last draw (for clicks).
+    links: Vec<(Rect, AppLink)>,
     /// Thread mode: show the parent and every reply instead of top-level messages.
     pub thread: bool,
     /// Message under the mouse pointer.
@@ -164,6 +166,11 @@ impl MessagePane {
         self.rows.get((row - inner.y) as usize).cloned().flatten()
     }
 
+    /// The link into the profile's workspaces drawn at a terminal position.
+    pub fn link_at(&self, column: u16, row: u16) -> Option<AppLink> {
+        self.links.iter().find(|(at, _)| at.contains((column, row).into())).map(|(_, link)| link.clone())
+    }
+
     /// Where a menu for a message opens: its first row on screen, past the gutter (the pane's
     /// middle when it is not on screen).
     pub fn spot(&self, ts: &str) -> (u16, u16) {
@@ -188,6 +195,7 @@ impl MessagePane {
     pub fn draw(&mut self, f: &mut Frame, area: Rect, here: &Here, title: &str, timeline: Option<&Timeline>, focused: bool, media: &Media) {
         let ws = here.ws;
         self.area = area;
+        self.links.clear();
         let title = if title.is_empty() { String::new() } else { format!(" {title} ") };
         let border = if focused { Style::default().fg(super::theme::p().accent) } else { Style::default().fg(super::theme::p().dim) };
         let block = Block::default().borders(Borders::ALL).border_style(border).title(title);
@@ -389,6 +397,9 @@ impl MessagePane {
                 let x = inner.x + spot.col;
                 let width = spot.width.min(inner.right().saturating_sub(x));
                 hyperlink(f.buffer_mut(), x, y, width, &spot.url);
+                if let Some(link) = spot.app {
+                    self.links.push((Rect { x, y, width, height: 1 }, link));
+                }
             }
         }
         if let (Some(top), Some(bottom)) = (on_screen.first().and_then(index), on_screen.last().and_then(index)) {
@@ -1049,6 +1060,45 @@ mod tests {
         let block = serde_json::json!([{"type": "rich_text", "elements": [{"type": "rich_text_section", "elements": [{"type": "link", "url": pasted.replace('&', "&amp;"), "text": pasted}]}]}]);
         let m = Message { blocks: serde_json::from_value(block).unwrap(), ..msg("2.0", "U2", "") };
         assert_eq!(plain(&message_body(&here, &m, 60, false, &|_, _| None).0), ["↪ #deploys › thread reply"]);
+    }
+
+    #[test]
+    fn a_click_on_a_link_finds_its_target() {
+        let mut ws = Workspace::default();
+        ws.conversations.insert("C1".into(), slack_core::types::Conversation { id: "C1".into(), name: "deploys".into(), is_channel: true, ..Default::default() });
+        let url = "https://acme.slack.com/archives/C1/p1729440000123456?thread_ts=1729440000.000100&cid=C1";
+        let mut t = Timeline { loaded: true, ..Default::default() };
+        t.upsert(msg("1729440000.000500", "U2", &format!("see <{}|> or <https://x.y/?a=1&amp;b=2>", url.replace('&', "&amp;"))));
+        let workspaces = vec![("https://acme.slack.com/".to_string(), "T1".to_string())];
+        let names = vec!["acme".to_string()];
+        let authors = crate::tui::applink::Authors::new();
+        let here = Here { ws: &ws, workspaces: &workspaces, names: &names, shown: 0, authors: &authors, message: None };
+        let media = Media::with(ratatui_image::picker::Picker::halfblocks());
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 8)).unwrap();
+        let mut pane = MessagePane::default();
+        terminal.draw(|f| pane.draw(f, f.area(), &here, "t", Some(&t), true, &media)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let cell = |what: &str| (0..buf.area.height).flat_map(|y| (0..buf.area.width).map(move |x| (x, y))).find(|&(x, y)| buf[(x, y)].symbol().contains(what)).unwrap_or_else(|| panic!("{what} is drawn"));
+        let (x, y) = cell("↪");
+        let link = crate::tui::applink::parse(url);
+        assert!(link.is_some());
+        assert_eq!(pane.link_at(x, y), link, "the arrow");
+        assert_eq!(pane.link_at(x + 4, y), link, "the label");
+        assert_eq!(pane.link_at(x - 2, y), None, "the text before it");
+        let (ex, ey) = cell("\x1b]8;;https://x.y/?a=1&b=2\x1b\\");
+        assert_eq!(pane.link_at(ex, ey), None, "an external link opens in the browser");
+        assert_eq!(pane.link_at(0, y), None, "the border");
+        // The URL under both is Slack's own, unescaped once.
+        assert!(buf[(x, y)].symbol().contains(&format!("\x1b]8;;{url}\x1b\\")), "{:?}", buf[(x, y)].symbol());
+        let lines = message_body(&here, &t.messages[0], 56, false, &|_, _| None).0;
+        let spots = link_spots(&here, &t.messages, &lines, &vec![Some(t.messages[0].ts.clone()); lines.len()]);
+        assert!(spots.iter().any(|s| s.url == url) && spots.iter().any(|s| s.url == "https://x.y/?a=1&b=2"), "{spots:?}");
+        // Slack's blocks carry the address escaped as well.
+        let block = serde_json::json!([{"type": "rich_text", "elements": [{"type": "rich_text_section", "elements": [{"type": "link", "url": "https://x.y/?a=1&amp;b=2"}]}]}]);
+        let m = Message { blocks: serde_json::from_value(block).unwrap(), ..msg("2.0", "U2", "") };
+        let lines = message_body(&here, &m, 56, false, &|_, _| None).0;
+        let spots = link_spots(&here, std::slice::from_ref(&m), &lines, &vec![Some("2.0".to_string()); lines.len()]);
+        assert_eq!(spots.iter().map(|s| s.url.as_str()).collect::<Vec<_>>(), ["https://x.y/?a=1&b=2"]);
     }
 
     #[test]

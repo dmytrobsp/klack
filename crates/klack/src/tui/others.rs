@@ -134,7 +134,7 @@ pub fn spawn(sessions: Vec<WorkspaceSession>, shown: Arc<AtomicUsize>, badges: B
 pub type Click = (usize, super::notify::Target);
 
 /// Where a click from another workspace leads once that workspace has booted.
-pub type OpenAfter = Arc<Mutex<Option<Click>>>;
+pub type OpenAfter = Arc<Mutex<Option<(usize, super::applink::Target)>>>;
 
 /// How to join a huddle of workspace `index` from another one ("Alt+2, then Space h h,"), with
 /// the keys bound now.

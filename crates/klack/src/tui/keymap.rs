@@ -518,7 +518,7 @@ actions! {
         HalfPageUp "half_page_up" "half a page up" "half page up" "⏫" ["ctrl+u"]
         HalfPageDown "half_page_down" "half a page down" "half page down" "⏬" ["ctrl+d"]
         OpenThread "open_thread" "open the message's thread" "thread" "🧵" ["enter", "<leader> t"]
-        Back "back" "close the thread (in the messages pane: nothing)" "back" "🔙" ["esc"]
+        Back "back" "close the thread (in the messages pane: stop looking for a message)" "back" "🔙" ["esc"]
         Type "type" "type (in a thread: reply)" "type" "💬" ["i"]
         React "react" "add a reaction" "react" "😀" ["<leader> r"]
         Edit "edit" "edit your message" "edit" "📝" ["<leader> e"]

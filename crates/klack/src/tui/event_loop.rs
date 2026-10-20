@@ -52,6 +52,8 @@ enum Net {
     ThreadBack { channel: String, ts: String, page: Option<HistoryPage> },
     /// Conversation details loaded for the details overlay.
     DetailsInfo(slack_core::types::Conversation),
+    /// What Slack says about a conversation a link (or notification) leads to that this workspace did not know.
+    LinkConversation { result: Result<slack_core::types::Conversation, String>, target: super::applink::Target },
     DetailsMembers { channel: String, members: Vec<String> },
     DetailsPins { channel: String, pins: Vec<slack_core::types::Message> },
     /// Search results for a query.
@@ -208,6 +210,10 @@ struct App {
     pending_hit: Option<super::search::Hit>,
     /// A message (channel, top-level ts) older than the loaded history, being paged back to.
     seeking: Option<(String, String)>,
+    /// A link (or a notification) started the seek: a message that isn't there says so.
+    seek_from_link: bool,
+    /// A thread reply a link leads to (channel, parent, reply): said to be missing once the thread is in without it.
+    link_reply: Option<(String, String, String)>,
     /// A huddle invitation ringing now.
     ringing: Option<Ring>,
     /// What was typed in conversations (by id) and threads (by thread key) you left.
@@ -993,7 +999,7 @@ impl App {
             }
             // Esc closes a thread; the messages pane has nothing to go back to.
             Some(Action::Back) if in_thread => self.close_thread(),
-            Some(Action::Back) => {}
+            Some(Action::Back) => self.stop_seek(),
             Some(Action::Type) if in_thread => self.focus = Focus::ThreadComposer,
             Some(Action::Type) => self.focus = Focus::Composer,
             Some(Action::OpenThread) if !in_thread => {
@@ -1494,6 +1500,13 @@ impl App {
 
     /// Go to a search hit: its conversation, the message selected, its thread open.
     fn open_hit(&mut self, hit: super::search::Hit) {
+        self.open_hit_from(hit, false);
+    }
+
+    /// `open_hit`; `from_link`: a link (or a notification) leads there, so a missing message says so.
+    fn open_hit_from(&mut self, hit: super::search::Hit, from_link: bool) {
+        self.seek_from_link = from_link;
+        self.link_reply = None;
         if self.current.as_deref() == Some(hit.channel.as_str()) {
             self.show_hit(hit);
         } else {
@@ -1510,8 +1523,12 @@ impl App {
         match hit.thread_ts {
             Some(parent) => {
                 self.messages.selected = Some(parent.clone());
+                if self.seek_from_link && hit.ts != parent {
+                    self.link_reply = Some((hit.channel.clone(), parent.clone(), hit.ts.clone()));
+                }
                 self.open_thread_at(hit.channel, parent);
                 self.thread_pane.selected = Some(hit.ts);
+                self.check_link_reply();
             }
             None => {
                 self.messages.selected = Some(hit.ts);
@@ -1538,28 +1555,143 @@ impl App {
         let found = tl.index_of(&ts).is_some();
         let older = tl.messages.first().is_some_and(|m| seek_older(&ts, &m.ts));
         let (has_more, n) = (tl.has_more, tl.messages.len());
-        if found || !older {
-            self.seeking = None;
-            if self.status.starts_with("looking for the message") {
-                self.status.clear();
+        match seek_step(found, older, has_more, self.seek_from_link) {
+            Seek::Done => {
+                self.seeking = None;
+                if self.status.starts_with("looking for the message") {
+                    self.status.clear();
+                }
             }
-        } else if has_more {
-            self.status = format!("looking for the message… ({n} loaded)");
-            self.load_history(&channel, true);
-        } else {
-            self.seeking = None;
-            self.status = "that message is no longer in this conversation's history".into();
+            Seek::More => {
+                self.status = format!("looking for the message… ({n} loaded)");
+                self.load_history(&channel, true);
+            }
+            Seek::Missing(note) => {
+                self.seeking = None;
+                self.status = note.into();
+                if self.seek_from_link {
+                    // Stay in the conversation, on nothing that isn't there.
+                    self.link_reply = None;
+                    if self.messages.selected.as_deref() == Some(ts.as_str()) {
+                        self.messages.selected = None;
+                    }
+                    if self.thread.as_ref().is_some_and(|(c, t)| *c == channel && *t == ts) {
+                        self.close_thread();
+                    }
+                }
+            }
         }
+    }
+
+    /// Esc in the messages pane: stop paging back for a message.
+    fn stop_seek(&mut self) {
+        if self.seeking.take().is_some() {
+            self.pending_hit = None;
+            self.status = "stopped looking for the message".into();
+        }
+    }
+
+    /// The thread reply a link leads to, once its thread is in: not there → say so.
+    fn check_link_reply(&mut self) {
+        let Some((channel, parent, reply)) = self.link_reply.clone() else { return };
+        let Some(tl) = self.ws.threads.get(&super::state::thread_key(&channel, &parent)).filter(|t| t.loaded) else { return };
+        self.link_reply = None;
+        if tl.index_of(&reply).is_none() && self.thread.as_ref().is_some_and(|(c, t)| *c == channel && *t == parent) {
+            self.thread_pane.selected = None;
+            self.status = LINK_GONE.into();
+        }
+    }
+
+    /// A plain click on a link into the profile's workspaces: open where it goes, in klack (another workspace is
+    /// switched to first and opens it once booted).
+    fn open_app_link(&mut self, link: &super::applink::AppLink) {
+        let Some(at) = super::applink::workspace_of(link, &self.addresses, self.workspace) else { return };
+        if at == self.workspace {
+            self.open_in_app(link.target.clone(), true);
+            return;
+        }
+        *self.open_after.lock().unwrap_or_else(|e| e.into_inner()) = Some((at, link.target.clone()));
+        self.switch_workspace(at);
+        if self.switch_to.is_none() {
+            // Not switched (the reason is in the status line): nothing waits for that workspace.
+            self.open_after.lock().unwrap_or_else(|e| e.into_inner()).take();
+        }
+    }
+
+    /// Open a target in this workspace: a conversation as Jump to does (previewed when you are not in it), a message
+    /// selected (paging back to it, a reply in its open thread), a person's profile card, a file in its viewer.
+    /// `from_link`: a message that isn't there says so. A conversation this workspace doesn't know is asked about
+    /// first.
+    fn open_in_app(&mut self, target: super::applink::Target, from_link: bool) {
+        use super::applink::Target;
+        if let Some(channel) = target.channel().filter(|c| !self.ws.conversations.contains_key(*c)).map(String::from) {
+            let (client, tx) = (self.client.clone(), self.net.clone());
+            tokio::spawn(async move {
+                let result = client.conversation_info(&channel).await.map_err(|e| e.to_string());
+                let _ = tx.send(Net::LinkConversation { result, target });
+            });
+            return;
+        }
+        match target {
+            Target::Conversation { channel } => self.jump_to(&channel),
+            Target::Message { .. } => {
+                let Some(hit) = hit_of(target) else { return };
+                if self.ws.is_outside(&hit.channel) {
+                    self.ws.preview = Some(hit.channel.clone());
+                }
+                self.open_hit_from(hit, from_link);
+            }
+            Target::Person { user } => {
+                if !self.ws.users.contains_key(&user) {
+                    let (client, tx, id) = (self.client.clone(), self.net.clone(), user.clone());
+                    tokio::spawn(async move {
+                        match client.user_info(&id).await {
+                            Ok(u) => {
+                                let _ = tx.send(Net::UserInfo(u));
+                            }
+                            Err(e) => tracing::warn!("users.info {id}: {e}"),
+                        }
+                    });
+                }
+                self.profile = super::profile::ProfileCard::new(vec![user]);
+            }
+            Target::File { file } => self.open_file_link(&file),
+        }
+    }
+
+    /// A link to a file: its viewer when a loaded message carries it and klack has one (pictures, videos, snippets).
+    fn open_file_link(&mut self, id: &str) {
+        use super::open::Thing;
+        let carrier = self.ws.timelines.values().chain(self.ws.threads.values()).flat_map(|t| t.messages.iter()).find(|m| m.files.iter().any(|f| f.id == id));
+        let Some(files) = carrier.map(|m| m.files.clone()) else {
+            self.status = "klack can't show that file here".into();
+            return;
+        };
+        let Some(file) = files.iter().find(|f| f.id == id).cloned() else { return };
+        if file.is_image() {
+            let pictures: Vec<slack_core::types::File> = files.into_iter().filter(|f| f.is_image()).collect();
+            let n = pictures.iter().position(|f| f.id == id).unwrap_or(0);
+            self.viewer = Some(super::viewer::Viewer::new(pictures, n));
+            self.load_viewer_image();
+        } else if file.is_video() {
+            self.open_thing("", Thing::Video(file));
+        } else if file.is_snippet() {
+            self.open_thing("", Thing::Snippet(file));
+        } else {
+            self.status = "klack can't show that file here".into();
+        }
+    }
+
+    /// The link into the profile's workspaces drawn at a terminal position (the thread pane, then the messages).
+    fn link_at(&self, column: u16, row: u16) -> Option<super::applink::AppLink> {
+        self.thread.as_ref().and_then(|_| self.thread_pane.link_at(column, row)).or_else(|| self.messages.link_at(column, row))
     }
 
     /// Open what a clicked notification is about: the message (or thread reply), or the
     /// conversation.
     fn open_target(&mut self, target: super::notify::Target) {
         tracing::debug!(?target, "notification clicked");
-        match target.ts {
-            Some(ts) => self.open_hit(super::search::Hit { channel: target.channel, ts, thread_ts: target.thread_ts, user: None, text: String::new(), ..Default::default() }),
-            None => self.jump_to(&target.channel),
-        }
+        self.open_in_app(target.into(), true);
     }
 
     /// What clicking a desktop notification about `target` does: open it here (a click
@@ -3108,6 +3240,39 @@ const SEEK_STEP: f64 = 10.0;
 
 /// Whether a message at `ts` lies before the oldest loaded one (`first`): Slack timestamps
 /// compare as numbers.
+/// The note when the message a link points to can't be found.
+const LINK_GONE: &str = "that message isn't there any more, or you can't see it";
+
+/// What a seek does once the history has come: stop there (the message is loaded, or a search's is newer than the
+/// oldest loaded), page further back, or stop and say the message is missing.
+#[derive(Debug, PartialEq, Eq)]
+enum Seek {
+    Done,
+    More,
+    Missing(&'static str),
+}
+
+/// The stop rule of a seek: the message is `found` in what is loaded, or `older` than all of it with `has_more` to
+/// page; `from_link`: a link started it (a search's hit newer than the loaded history is left alone).
+fn seek_step(found: bool, older: bool, has_more: bool, from_link: bool) -> Seek {
+    match (found, older, has_more) {
+        (true, _, _) => Seek::Done,
+        (false, false, _) if from_link => Seek::Missing(LINK_GONE),
+        (false, false, _) => Seek::Done,
+        (false, true, true) => Seek::More,
+        (false, true, false) if from_link => Seek::Missing(LINK_GONE),
+        (false, true, false) => Seek::Missing("that message is no longer in this conversation's history"),
+    }
+}
+
+/// The search hit that opens a message target (None: not a message).
+fn hit_of(target: super::applink::Target) -> Option<super::search::Hit> {
+    match target {
+        super::applink::Target::Message { channel, ts, thread_ts } => Some(super::search::Hit { channel, ts, thread_ts, user: None, text: String::new(), ..Default::default() }),
+        _ => None,
+    }
+}
+
 fn seek_older(ts: &str, first: &str) -> bool {
     match (ts.parse::<f64>(), first.parse::<f64>()) {
         (Ok(a), Ok(b)) => a < b,
@@ -3359,6 +3524,8 @@ async fn run_workspace(
         pending_hit: None,
         ringing: None,
         seeking: None,
+        seek_from_link: false,
+        link_reply: None,
         drafts: super::drafts::load(&client.session.team_id, &client.session.user_id),
         player: None,
         screen: Default::default(),
@@ -3441,7 +3608,7 @@ async fn run_workspace(
                 if index == app.workspace {
                     app.open_target(target);
                 } else {
-                    *app.open_after.lock().unwrap_or_else(|e| e.into_inner()) = Some((index, target));
+                    *app.open_after.lock().unwrap_or_else(|e| e.into_inner()) = Some((index, target.into()));
                     app.switch_workspace(index);
                 }
             }
@@ -4186,6 +4353,9 @@ fn handle_main(app: &mut App, ev: Event) -> bool {
                 } else if app.sidebar.click(m.column, m.row) {
                     // On its messages in NORMAL, as Jump to (`i` types).
                     app.focus = Focus::Messages;
+                } else if let Some(link) = m.modifiers.is_empty().then(|| app.link_at(m.column, m.row)).flatten() {
+                    // A plain click on a link into your Slack opens it here (Ctrl+Shift+click stays the terminal's).
+                    app.open_app_link(&link);
                 } else if app.messages.click(m.column, m.row) {
                     app.focus = Focus::Messages;
                 } else if app.thread.is_some() && app.thread_pane.click(m.column, m.row) {
@@ -4605,7 +4775,8 @@ fn handle_net(app: &mut App, msg: Net) {
             app.subscribe_presence();
             let after = app.open_after.lock().unwrap_or_else(|e| e.into_inner()).take_if(|(i, _)| *i == app.workspace);
             if let Some((_, target)) = after {
-                app.open_target(target);
+                // A link's or a notification's, from the workspace switched from.
+                app.open_in_app(target, true);
             } else if let Some(id) = app.sidebar.remembered.clone().filter(|id| app.ws.conversations.get(id).is_some_and(|c| !c.is_archived)) {
                 // Back where you were last time, in NORMAL on the messages (or the thread).
                 app.start = Some((id.clone(), app.sidebar.remembered_thread.clone()));
@@ -4748,7 +4919,25 @@ fn handle_net(app: &mut App, msg: Net) {
             }
             tl.loaded = true;
             tl.loading = false;
+            app.check_link_reply();
         }
+        Net::LinkConversation { result, target } => match result {
+            // Known now: opened as any other (the same one only, so this is asked once).
+            Ok(c) if target.channel() == Some(c.id.as_str()) => {
+                app.ws.conversations.insert(c.id.clone(), c);
+                app.sidebar.rebuild(&app.ws);
+                app.open_in_app(target, true);
+            }
+            other => {
+                if let Err(e) = other {
+                    tracing::debug!("conversations.info for a link: {e}");
+                }
+                app.status = match target {
+                    super::applink::Target::Conversation { .. } => "that conversation isn't there any more, or you can't see it".into(),
+                    _ => LINK_GONE.into(),
+                };
+            }
+        },
         Net::FileDone(message) => app.status = message,
         Net::SendFailed { thread, key, draft, error } => {
             app.status = error;
@@ -5613,6 +5802,43 @@ mod tests {
         assert!(!seek_older("1792344759.290079", "1792344759.290079"), "the oldest loaded one is there");
         assert!(!seek_older("1792349999.000000", "1792344759.290079"), "newer: not paged for");
         assert!(!seek_older("x", "1.0"));
+    }
+
+    #[test]
+    fn a_seek_that_reaches_the_start_says_so() {
+        use super::{LINK_GONE, Seek, seek_step};
+        // (found, older than the loaded history, more history to page, started by a link)
+        assert_eq!(seek_step(true, false, true, true), Seek::Done);
+        assert_eq!(seek_step(false, true, true, true), Seek::More, "far back: paged for");
+        assert_eq!(seek_step(false, true, false, true), Seek::Missing(LINK_GONE), "the start of the history");
+        assert_eq!(seek_step(false, false, true, true), Seek::Missing(LINK_GONE), "deleted: inside what is loaded, not there");
+        assert_eq!(LINK_GONE, "that message isn't there any more, or you can't see it");
+        // Search behaves as before.
+        assert_eq!(seek_step(true, false, true, false), Seek::Done);
+        assert_eq!(seek_step(false, false, true, false), Seek::Done);
+        assert_eq!(seek_step(false, true, true, false), Seek::More);
+        assert_eq!(seek_step(false, true, false, false), Seek::Missing("that message is no longer in this conversation's history"));
+    }
+
+    #[test]
+    fn notify_targets_still_open() {
+        use super::super::applink::Target;
+        use super::super::notify::Target as Notified;
+        use super::hit_of;
+        let reply = Target::from(Notified { channel: "C1".into(), ts: Some("2.0".into()), thread_ts: Some("1.0".into()) });
+        let hit = hit_of(reply.clone()).expect("a message");
+        assert_eq!((hit.channel.as_str(), hit.ts.as_str(), hit.thread_ts.as_deref()), ("C1", "2.0", Some("1.0")), "the reply in its thread");
+        let top = hit_of(Target::from(Notified { channel: "C1".into(), ts: Some("2.0".into()), thread_ts: None })).unwrap();
+        assert_eq!((top.ts.as_str(), top.thread_ts), ("2.0", None));
+        assert!(hit_of(Target::from(Notified { channel: "C1".into(), ts: None, thread_ts: None })).is_none(), "a conversation: opened as Jump to does");
+        // What waits for another workspace to boot is the same kind of target as a link's.
+        let after: super::super::others::OpenAfter = Default::default();
+        *after.lock().unwrap() = Some((1, reply.clone()));
+        assert_eq!(after.lock().unwrap().take(), Some((1, reply)));
+        // The desktop app's thread link: the thread, its parent selected.
+        let thread = hit_of(Target::Message { channel: "C1".into(), ts: "1.0".into(), thread_ts: Some("1.0".into()) }).unwrap();
+        assert_eq!((thread.ts.as_str(), thread.thread_ts.as_deref()), ("1.0", Some("1.0")));
+        assert!(hit_of(Target::Person { user: "U1".into() }).is_none() && hit_of(Target::File { file: "F1".into() }).is_none());
     }
 
     #[test]

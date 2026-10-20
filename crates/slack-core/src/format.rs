@@ -61,7 +61,8 @@ fn rich_inlines(elements: &Value) -> Vec<Inline> {
         let s = |k: &str| el[k].as_str().map(String::from);
         match el["type"].as_str().unwrap_or("") {
             "text" => out.push(text(el["text"].as_str().unwrap_or(""), style_of(el))),
-            "link" => out.push(Inline::Link { url: s("url").unwrap_or_default(), label: s("text"), style: style_of(el) }),
+            // The address comes HTML-escaped (`&amp;`), as in mrkdwn text.
+            "link" => out.push(Inline::Link { url: unescape(el["url"].as_str().unwrap_or("")), label: s("text"), style: style_of(el) }),
             "user" => out.push(Inline::User { id: s("user_id").unwrap_or_default() }),
             "channel" => out.push(Inline::Channel { id: s("channel_id").unwrap_or_default(), name: None }),
             "usergroup" => out.push(Inline::Usergroup { id: s("usergroup_id").unwrap_or_default(), handle: None }),
