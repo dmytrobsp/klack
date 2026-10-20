@@ -1563,15 +1563,15 @@ impl App {
         })
     }
 
-    /// Show conversation `id` and put the cursor in the composer. A channel we are not in
-    /// is previewed.
+    /// Show conversation `id`, on its messages. A channel we are not in is previewed.
     fn jump_to(&mut self, id: &str) {
         if self.ws.is_outside(id) {
             self.ws.preview = Some(id.to_string());
         }
         self.reveal(id);
         self.sidebar.select_id(&self.ws, id);
-        self.focus = Focus::Composer;
+        // In NORMAL, as at start (`i` types).
+        self.focus = Focus::Messages;
     }
 
     /// Put conversation `id` in the sidebar however quiet it is (until another one is open).
