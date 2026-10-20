@@ -260,23 +260,6 @@ async fn watch_hidden(index: usize, client: &Client, label: &str, shown: &Atomic
     }
 }
 
-/// The status bar's note on the other workspaces: " · Alt+2 @3" for something needing
-/// attention, " · Alt+2 •" for other unread messages; empty when all is read.
-pub fn label(badges: &HashMap<usize, Badge>, shown: usize) -> String {
-    let mut keys: Vec<&usize> = badges.keys().filter(|i| **i != shown).collect();
-    keys.sort();
-    keys.into_iter()
-        .filter_map(|i| {
-            let b = badges[i];
-            match (b.attention, b.unread) {
-                (0, false) => None,
-                (0, true) => Some(format!(" · Alt+{} •", i + 1)),
-                (n, _) => Some(format!(" · Alt+{} @{n}", i + 1)),
-            }
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,18 +294,12 @@ mod tests {
         assert_eq!(badge(&v), Badge { attention: 7, unread: true });
         let quiet = serde_json::json!({"channels":[{"has_unreads":false}],"channel_badges":{"dms":0,"channels":0,"thread_mentions":0,"thread_unreads":0}});
         assert_eq!(badge(&quiet), Badge::default());
-        let mut all = HashMap::new();
-        all.insert(1, Badge { attention: 3, unread: true });
-        all.insert(2, Badge { attention: 0, unread: true });
-        all.insert(3, Badge::default());
-        all.insert(0, Badge { attention: 9, unread: true });
-        assert_eq!(label(&all, 0), " · Alt+2 @3 · Alt+3 •", "the shown workspace and quiet ones are left out");
     }
 
     #[test]
     fn signed_out_workspaces_lose_their_badges() {
         let mut badges = HashMap::from([(1, Badge { attention: 3, unread: true }), (2, Badge { attention: 0, unread: true })]);
         forget_signed_out(&mut badges, &std::collections::HashSet::from([1]));
-        assert_eq!(label(&badges, 0), " · Alt+3 •", "the stale badge of workspace 2 is gone");
+        assert_eq!(badges.keys().copied().collect::<Vec<_>>(), [2], "the stale badge of workspace 2 is gone");
     }
 }

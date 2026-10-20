@@ -5086,7 +5086,6 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     let info = super::status::Info {
         unread,
         mentions,
-        others: super::others::label(&app.others.lock().unwrap_or_else(|e| e.into_inner()), app.workspace),
         availability: super::profile::availability(&app.ws, chrono::Utc::now().timestamp()),
         paused: app.ws.dnd_active(chrono::Utc::now().timestamp() as f64),
         away: app.ws.presence.get(&app.ws.self_id) == Some(&false),

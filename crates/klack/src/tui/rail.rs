@@ -1,6 +1,6 @@
 //! The workspace rail (with two or more workspaces): a tile per workspace left of the
-//! sidebar — its initials in its own colour, the shown one marked, below it what needs you
-//! there — and a click on one switches, as Alt+1…9 do.
+//! sidebar — its initials in its own colour, the shown one marked (a full accent bar `▌`; a thin dim one `▎`
+//! beside another with unread messages), below it what needs you there (`@N`) — and a click on one switches, as Alt+1…9 do.
 
 use std::collections::{HashMap, HashSet};
 
@@ -37,11 +37,12 @@ pub fn draw(f: &mut Frame, area: Rect, labels: &[String], shown: usize, badges: 
         let team = label.split(" · ").next().unwrap_or(label);
         let out = signed_out.contains(&i);
         let tile = if out { Style::default().fg(p.dim) } else { Style::default().bg(super::text::user_color(label)).fg(Color::Black).add_modifier(Modifier::BOLD) };
-        let marker = if i == shown { Span::styled("▌", Style::default().fg(p.accent)) } else { Span::raw(" ") };
-        let badge = match badges.get(&i).filter(|_| i != shown) {
+        let other = badges.get(&i).filter(|_| i != shown && !out);
+        // The shown one: the full bar; another with unread messages: the same, thinner and dimmer (as others' messages in the gutter).
+        let marker = if i == shown { Span::styled("▌", Style::default().fg(p.accent)) } else if other.is_some_and(|b| b.unread || b.attention > 0) { Span::styled("▎", Style::default().fg(p.accent).add_modifier(Modifier::DIM)) } else { Span::raw(" ") };
+        let badge = match other {
             _ if out => Span::styled("  ⊘", Style::default().fg(p.dim)),
             Some(Badge { attention: n, .. }) if *n > 0 => Span::styled(format!(" @{n}"), Style::default().fg(p.badge_fg).bg(p.badge_bg).add_modifier(Modifier::BOLD)),
-            Some(Badge { unread: true, .. }) => Span::styled("  •", Style::default().fg(p.strong).add_modifier(Modifier::BOLD)),
             _ => Span::raw(""),
         };
         let lines = vec![
@@ -84,8 +85,14 @@ mod tests {
         let buf = terminal.backend().buffer();
         let row = |y: u16| (0..WIDTH).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>();
         assert_eq!([row(1), row(2), row(3)], ["▌ TB  ", "▌ 1   ", "      "], "the shown one marked, no badge for it");
-        assert_eq!([row(4), row(5), row(6)], ["  AC  ", "  2   ", " @7   "]);
-        assert_eq!([row(7), row(9)], ["  TB  ", "  •   "], "two accounts in one workspace: the same initials");
+        assert_eq!([row(4), row(5), row(6)], ["▎ AC  ", "▎ 2   ", " @7   "], "unread with a mention: the thin bar and the badge");
+        assert_eq!([row(7), row(8), row(9)], ["▎ TB  ", "▎ 3   ", "      "], "two accounts in one workspace: the same initials; unread only: the thin bar, an empty badge row");
+        let accent = super::super::theme::p().accent;
+        for y in [4, 5, 7, 8] {
+            assert_eq!((buf[(0, y)].fg, buf[(0, y)].modifier.contains(Modifier::DIM)), (accent, true), "the accent colour, dimmed");
+        }
+        assert!(!buf[(0, 1)].modifier.contains(Modifier::DIM), "the shown one's bar is full");
+        assert!(!(0..WIDTH).any(|x| buf[(x, 9)].symbol() == "•"), "no dot");
         assert_ne!(buf[(1, 7)].bg, buf[(1, 1)].bg, "but their own colours");
         assert_eq!(tiles, [Rect::new(1, 1, 4, 2), Rect::new(1, 4, 4, 2), Rect::new(1, 7, 4, 2)]);
         // No room for the third.

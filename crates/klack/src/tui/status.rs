@@ -19,8 +19,6 @@ pub enum Pill {
 pub struct Info {
     pub unread: usize,
     pub mentions: u64,
-    /// The other workspaces' note (" · Alt+2 @3"), empty when all is read.
-    pub others: String,
     /// Your status and paused notifications ("☕ lunch · 🔕 until 09:00"), empty when none.
     pub availability: String,
     /// Notifications are paused (the short forms keep the bell).
@@ -95,7 +93,7 @@ fn info_spans(info: &Info, level: u8, note_room: Option<usize>) -> Vec<Span<'sta
     let dot = if info.away { Span::styled(format!("○{label}"), dim) } else { Span::styled(format!("●{label}"), Style::default().fg(p.good)) };
     let mut out = match level {
         0 => {
-            let mut text = format!("{} unread · {} mention{}{}", info.unread, info.mentions, if info.mentions == 1 { "" } else { "s" }, info.others);
+            let mut text = format!("{} unread · {} mention{}", info.unread, info.mentions, if info.mentions == 1 { "" } else { "s" });
             if !info.availability.is_empty() {
                 text.push_str(&format!(" · {}", info.availability));
             }
@@ -297,9 +295,9 @@ mod tests {
 
     #[test]
     fn connecting_and_the_extras() {
-        let i = Info { live: false, others: " · Alt+2 @3".into(), availability: "☕ lunch".into(), away: true, ..info() };
+        let i = Info { live: false, availability: "☕ lunch".into(), away: true, ..info() };
         let s = plain(&line(Pill::Insert, &i, "", &[], 100));
-        assert!(s.starts_with(" INSERT ") && s.contains("3 unread · 1 mention · Alt+2 @3 · ☕ lunch · ○ away · connecting…"), "{s:?}");
+        assert!(s.starts_with(" INSERT ") && s.contains("3 unread · 1 mention · ☕ lunch · ○ away · connecting…"), "{s:?}");
         let short = plain(&line(Pill::Insert, &Info { availability: String::new(), ..i.clone() }, "", &hints(), 80));
         assert!(short.contains("3 · @1 ○ connecting…"), "{short:?}");
         let up = plain(&line(Pill::Insert, &info(), "", &[], 100));

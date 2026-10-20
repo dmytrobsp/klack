@@ -74,8 +74,8 @@ opened with unread messages has a red "new" line above the first of them; while 
 up, the bottom border counts the newer messages below ("↓ 3 newer"). With two or more
 workspaces in the profile a rail on the far left has a tile for each — its logo where it has
 one and the terminal draws pictures, else its initials and number in a colour of its own — with
-the shown one marked and, below the others, what is waiting there (`@3`, or `•` for anything
-unread); a click on a tile switches, like Alt+1…9.
+the shown one marked by an accent bar and the others with unread messages by a thinner, dimmer
+one, and below such a tile `@3` for three unread DMs or mentions there; a click on a tile switches, like Alt+1…9.
 
 ## Signing in
 
@@ -164,9 +164,8 @@ the preferences (`settings.toml`, everything in F6), `keys.toml`, `themes/` and 
 by all profiles; each profile has its own sessions and its own log/cache folder. To tell workspaces
 apart, give each a theme of its own (F6 → Appearance → Theme for this workspace). Signing in to more workspaces
 with the same profile adds them to it: inside the app, `Alt+1 … Alt+9` switches between them
-and `/workspace [name]` lists them or switches by name. The status bar notes unread messages in the
-others ("Alt+2 @3": three unread DMs or mentions there; "Alt+2 •": something unread), checked every 30 s,
-and their desktop notifications still arrive (titled with the workspace); clicking one switches there.
+and `/workspace [name]` lists them or switches by name. The rail on the left shows
+unread messages in the others (checked every 30 s), and their desktop notifications still arrive (titled with the workspace); clicking one switches there.
 
 ## Keys
 
