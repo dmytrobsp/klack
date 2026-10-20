@@ -23,6 +23,7 @@ futures-util = "0.3.34"
 tokio-tungstenite = { version = "0.30.0", features = ["rustls-tls-webpki-roots"] }
 notify-rust = "4.18.2"
 unicode-width = "0.2.2"
+qrcode = { version = "0.14", default-features = false }
 arboard = { version = "3.7.0", features = ["wayland-data-control"] }
 ratatui = "0.30"
 crossterm = { version = "0.29", features = ["event-stream"] }

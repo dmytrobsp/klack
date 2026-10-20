@@ -5,6 +5,7 @@ mod ctl;
 mod login_browser;
 mod login_import;
 mod pick;
+mod qr;
 mod tui;
 
 use anyhow::{Result, bail};
