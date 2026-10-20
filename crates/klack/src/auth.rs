@@ -10,9 +10,9 @@ use anyhow::{Context, Result, anyhow, bail};
 use slack_core::session::{self, LoggedInTeam, Profile, SessionSource, WorkspaceSession, workspace_url};
 use slack_core::signin::{self, CodeError, CodeSignIn, CodeTeam};
 
-use crate::login_import::Group;
+use crate::login_import::{Group, Keys};
 use crate::pick::{Item, Row};
-use crate::{login_browser, login_import, pick, qr};
+use crate::{login_browser, login_import, login_watch, pick, qr};
 
 /// How long `auth status` waits for each workspace's answer.
 const STATUS_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
@@ -326,14 +326,21 @@ pub async fn guide(profile_name: &str) -> Result<usize> {
     let path = session::config_dir(profile_name)?.join("session.json");
     let mut saved = Profile::read_or_new(&path)?;
     println!("{}", opening_line(profile_name, path.exists()));
-    let Some(groups) = looking("Looking for Slack in your browsers…", login_import::discover()).await? else {
+    let profiles = login_import::browser_profiles();
+    let browsers = browsers_here(!profiles.is_empty(), login_import::unreadable_chrome_here());
+    // The keys are kept for the way "in your browser": on macOS the Keychain is asked once.
+    let looked = async move {
+        let keys = login_import::read_keys(&profiles).await;
+        (login_import::discover_with_keys(profiles, &keys).await, keys)
+    };
+    let Some((groups, keys)) = looking("Looking for Slack in your browsers…", looked).await? else {
         nothing_signed_in()?;
         return Ok(0);
     };
     // `reported`: `finish` has said what was signed in to (or that nothing was).
     let (mut total, mut reported) = (0, false);
     'list: loop {
-        let (rows, choices) = rows(&groups, &saved, Browsers::Some);
+        let (rows, choices) = rows(&groups, &saved, browsers);
         let items = item_rows(&rows);
         let pick::Outcome::Picked(at) = pick::choose("Sign in to:", rows, true)? else { break };
         let picked = picked_items(&items, &choices, &at);
@@ -352,11 +359,7 @@ pub async fn guide(profile_name: &str) -> Result<usize> {
             let step = match choice {
                 Choice::Candidate(..) => continue,
                 Choice::Code => code_way(&saved, &Hint::default()).await?,
-                // Task Y5 builds this way.
-                Choice::InBrowser => {
-                    println!("in your browser — coming in the next step");
-                    Step::Back
-                }
+                Choice::InBrowser => browser_way(&Hint::default(), &groups, &keys).await?,
                 Choice::Cookie => cookie_way(&Hint::default(), &saved).await?,
             };
             match step {
@@ -391,8 +394,7 @@ pub struct Hint {
     pub email: Option<String>,
     /// Team id and name: that workspace is marked when the code's list has it.
     pub team: Option<(String, String)>,
-    /// The sign-in link of the way "in your browser". Task Y7 fills this in and reads it.
-    #[allow(dead_code)]
+    /// The sign-in link of the way "in your browser" (Slack's sign-in page when there is none). Task Y7 fills it in.
     pub link: Option<String>,
 }
 
@@ -410,10 +412,11 @@ fn no_workspace(email: &str) -> String {
     format!("no workspace signed in with {email} — sign up in Slack first")
 }
 
-/// The code screen printed above the code prompt, and the message line under it: printed again for the new size when
-/// the terminal is resized while the prompt waits.
-struct CodeScreen {
-    email: String,
+/// A screen printed above a prompt or a wait (the code screen, the browser way's link), and the message line under it:
+/// printed again for the new size when the terminal is resized meanwhile, and erased on leaving.
+struct Screen {
+    /// The lines for a terminal `width` x `height`.
+    layout: Box<dyn Fn(u16, u16) -> Vec<String>>,
     /// The lines printed, and how many terminal lines they took at `width`.
     lines: Vec<String>,
     rows: usize,
@@ -426,7 +429,7 @@ struct CodeScreen {
     hint: bool,
 }
 
-/// How the old code screen goes after a resize: `Up(n)`, its lines and the message line erased from `n` lines up; or
+/// How the old screen goes after a resize: `Up(n)`, its lines and the message line erased from `n` lines up; or
 /// `All`, the terminal cleared.
 #[derive(Debug, PartialEq, Eq)]
 enum Redraw {
@@ -434,17 +437,18 @@ enum Redraw {
     All,
 }
 
-/// [`Redraw`] for a code screen that was `was_erasable` and now takes `rows_now` lines (re-wrapped at the new width)
+/// [`Redraw`] for a screen that was `was_erasable` and now takes `rows_now` lines (re-wrapped at the new width)
 /// on a terminal `height` lines high: erased in place while it, the message line and the prompt still fit.
 fn redraw(was_erasable: bool, rows_now: usize, height: u16) -> Redraw {
     if was_erasable && rows_now + qr::PROMPT_LINES <= height as usize { Redraw::Up(rows_now + 1) } else { Redraw::All }
 }
 
-impl CodeScreen {
-    /// Prints the screen of `email` for this terminal's size, then the hint line; the prompt goes on the next line.
-    fn show(email: &str) -> Result<CodeScreen> {
+impl Screen {
+    /// Prints the lines `layout` gives for this terminal's size, then the hint line `hint` (dim); the prompt goes on
+    /// the next line.
+    fn show(layout: Box<dyn Fn(u16, u16) -> Vec<String>>, hint: &str) -> Result<Screen> {
         let (width, height) = crossterm::terminal::size()?;
-        let mut screen = CodeScreen { email: email.to_string(), lines: Vec::new(), rows: 0, width, height, erasable: false, message: CODE_HINT.to_string(), hint: true };
+        let mut screen = Screen { layout, lines: Vec::new(), rows: 0, width, height, erasable: false, message: hint.to_string(), hint: true };
         screen.print(width, height)?;
         Ok(screen)
     }
@@ -453,7 +457,7 @@ impl CodeScreen {
     /// with `\r\n`, so this works in raw mode too (while the prompt waits).
     fn print(&mut self, width: u16, height: u16) -> Result<()> {
         use std::io::Write;
-        self.lines = qr::code_screen(&self.email, width, height);
+        self.lines = (self.layout)(width, height);
         self.rows = qr::rows_on(&self.lines, width);
         (self.width, self.height) = (width, height);
         self.erasable = self.rows + qr::PROMPT_LINES <= height as usize;
@@ -533,7 +537,8 @@ async fn code_way(saved: &Profile, hint: &Hint) -> Result<Step<Vec<Result<Worksp
             return Ok(Step::Done(Vec::new()));
         }
     };
-    let mut screen = CodeScreen::show(&email)?;
+    let shown = email.clone();
+    let mut screen = Screen::show(Box::new(move |w, h| qr::code_screen(&shown, w, h)), CODE_HINT)?;
     loop {
         // The code is shown as typed: it is short and works once.
         // A resize while the prompt waits prints the screen again for the new size (the typed code stays).
@@ -699,6 +704,61 @@ async fn cookie_way(hint: &Hint, profile: &Profile) -> Result<Step<Vec<Result<Wo
     }
 }
 
+/// The browser way's screen: the link to open (an OSC 8 hyperlink) and what klack does meanwhile; `chrome_note` when
+/// Chrome is here but can't be read.
+fn browser_screen(link: &str, chrome_note: bool) -> Vec<String> {
+    let mut lines = vec![
+        "Sign in in your browser".to_string(),
+        "  Open this link in the browser and profile you want to use (copy it, or Ctrl+Shift+click in kitty):".to_string(),
+        String::new(),
+        format!("  {}", qr::osc8(link)),
+        String::new(),
+        "  Sign in there any way Slack offers. klack is watching your browsers and picks the new sign-in up".to_string(),
+        "  (it can take up to half a minute for the browser to save it). Esc cancels.".to_string(),
+    ];
+    if chrome_note {
+        lines.push(format!("  {UNREADABLE_CHROME}"));
+    }
+    lines
+}
+
+/// The new sign-ins `new` (group, candidate) of `groups` as picker rows: "<profile> — <team> as <user>".
+fn new_rows(groups: &[Group], new: &[(usize, usize)]) -> Vec<Row> {
+    new.iter()
+        .filter_map(|&(g, c)| {
+            let (group, found) = (&groups[g], &groups[g].candidates[c]);
+            let s = found.session.as_ref().ok()?;
+            let team = [&s.team_name, &found.team.team_name, &found.team.domain].into_iter().find(|n| !n.is_empty()).cloned().unwrap_or_default();
+            Some(item(&format!("{} — {team} as {}", group.profile.label, s.user_name), "", "", true))
+        })
+        .collect()
+}
+
+/// The way "in your browser": prints the link (`hint`'s, else Slack's sign-in page) to open in a browser of the
+/// person's own, watches the browser profiles for a sign-in that is not among `groups` (the guide's discovery; `keys`
+/// its browsers' keys), and offers the new ones, all marked. Esc while waiting or at the list, and 10 minutes with
+/// nothing new, go `Back`.
+async fn browser_way(hint: &Hint, groups: &[Group], keys: &Keys) -> Result<Step<Vec<Result<WorkspaceSession, Failed>>>> {
+    let link = hint.link.clone().unwrap_or_else(|| signin::SIGNIN_PAGE.to_string());
+    let chrome_note = login_import::unreadable_chrome_here();
+    let before = login_watch::baseline(groups);
+    let started = std::time::Instant::now();
+    let mut screen = Screen::show(Box::new(move |_, _| browser_screen(&link, chrome_note)), "")?;
+    let watched = login_watch::watch(before.clone(), keys, &mut |w, h| screen.resized(w, h)).await;
+    screen.erase()?;
+    let Some(now) = watched? else {
+        if started.elapsed() >= login_watch::GIVE_UP {
+            println!("nothing new after {} minutes", login_watch::GIVE_UP.as_secs() / 60);
+        }
+        return Ok(Step::Back);
+    };
+    let new = login_watch::new_ones(&before, &now);
+    let rows = new_rows(&now, &new);
+    let marked: Vec<usize> = (0..rows.len()).collect();
+    let pick::Outcome::Picked(at) = pick::choose_marked("Sign in to:", rows, &marked)? else { return Ok(Step::Back) };
+    Ok(Step::Done(at.into_iter().filter_map(|i| new.get(i)).filter_map(|&(g, c)| now[g].candidates[c].session.clone().ok()).map(Ok).collect()))
+}
+
 /// `auth login --email ADDRESS`: the code way for that address. In a terminal it is [`code_way`] with the address
 /// filled in; without one Slack's sign-in link is printed, the code is read from standard input, and every listed
 /// workspace that can be used is signed in to.
@@ -809,16 +869,28 @@ pub enum Choice {
     Cookie,
 }
 
-/// Whether this machine has browser profiles for the way "in your browser" to watch (Task Y5 finds out).
+/// Whether this machine has browser profiles for the way "in your browser" to watch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Browsers {
     Some,
-    // Task Y5 tells these apart.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// No browser profile at all.
     None,
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// Only Chrome, which can't be read here (Windows).
     OnlyUnreadable,
 }
+
+/// [`Browsers`] of a machine where klack found browser profiles it can read (`readable`) or not, and where Chrome
+/// is there but can't be read (`unreadable_chrome`).
+fn browsers_here(readable: bool, unreadable_chrome: bool) -> Browsers {
+    match (readable, unreadable_chrome) {
+        (true, _) => Browsers::Some,
+        (false, false) => Browsers::None,
+        (false, true) => Browsers::OnlyUnreadable,
+    }
+}
+
+/// Why Chrome is not watched on Windows.
+const UNREADABLE_CHROME: &str = "Chrome on Windows can't be read — use Firefox, or the code";
 
 /// A way to sign in to one workspace (one per item row of [`ways`], in row order).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -885,7 +957,7 @@ pub fn rows(groups: &[Group], profile: &Profile, browsers: Browsers) -> (Vec<Row
     let browser_note = match browsers {
         Browsers::Some => "",
         Browsers::None => "no browser found here — use the code",
-        Browsers::OnlyUnreadable => "Chrome on Windows can't be read — use Firefox, or the code",
+        Browsers::OnlyUnreadable => UNREADABLE_CHROME,
     };
     rows.push(item(CODE_WAY, "", "phone or any device", true));
     choices.push(Choice::Code);
@@ -1284,6 +1356,37 @@ mod tests {
         assert_eq!(unreadable[1], "- in your browser |  | Chrome on Windows can't be read — use Firefox, or the code (dim)");
         // The code and the cookie can always be picked.
         assert!(!unreadable[0].ends_with("(dim)") && !unreadable[2].ends_with("(dim)"));
+    }
+
+    #[test]
+    fn the_browser_way_knows_what_it_can_watch() {
+        assert_eq!(browsers_here(true, false), Browsers::Some);
+        // Firefox is read even where Chrome can't be.
+        assert_eq!(browsers_here(true, true), Browsers::Some);
+        assert_eq!(browsers_here(false, false), Browsers::None);
+        assert_eq!(browsers_here(false, true), Browsers::OnlyUnreadable);
+    }
+
+    #[test]
+    fn the_browser_screen_shows_the_link() {
+        let screen = browser_screen(signin::SIGNIN_PAGE, false);
+        assert_eq!(screen[0], "Sign in in your browser");
+        assert_eq!(screen[3], format!("  {}", qr::osc8("https://slack.com/signin")));
+        assert!(screen.last().unwrap().ends_with("Esc cancels."));
+        assert!(!screen.join("\n").contains("Chrome on Windows"));
+        // Chrome here but unreadable: said, as the last line.
+        let screen = browser_screen("https://acme.slack.com/", true);
+        assert!(screen[3].contains("https://acme.slack.com/"));
+        assert_eq!(screen.last().unwrap(), "  Chrome on Windows can't be read — use Firefox, or the code");
+    }
+
+    #[test]
+    fn the_new_sign_ins_are_labelled_with_their_profile() {
+        let groups = vec![
+            group("Firefox · default", None, None, vec![found("T0000000001", "Acme", Some("U0000000001"), "Firefox · default"), found("T0000000002", "Widgets", Some("U0000000001"), "Firefox · default")]),
+            group("Chrome · Work", None, None, vec![found("T0000000003", "Gamma", Some("U0000000002"), "Chrome · Work")]),
+        ];
+        assert_eq!(shown(&new_rows(&groups, &[(0, 1), (1, 0)])), ["- Firefox · default — Widgets as person-U0000000001 |  | ", "- Chrome · Work — Gamma as person-U0000000002 |  | "]);
     }
 
     fn code_team(id: &str, name: &str, sso: bool, two_factor: bool) -> CodeTeam {

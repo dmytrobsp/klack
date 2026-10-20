@@ -4,6 +4,7 @@ mod auth;
 mod ctl;
 mod login_browser;
 mod login_import;
+mod login_watch;
 mod pick;
 mod qr;
 mod tui;

@@ -242,7 +242,8 @@ pub async fn discover() -> Vec<Group> {
 /// be looked at (its browser's key, a step that takes longer than 10 s, a sign-in page klack can't
 /// read) gets a `problem`; nothing here fails.
 pub async fn discover_in(profiles: Vec<BrowserProfile>) -> Vec<Group> {
-    discover_with(profiles, KEY_READS, |family| async move { chrome_key(&family).await }).await
+    let keys = read_keys(&profiles).await;
+    discover_with_keys(profiles, &keys).await
 }
 
 /// How the browsers' keys are read while looking: `one_at_a_time` (one browser after another), each waited for
@@ -304,16 +305,40 @@ fn listed(profiles: Vec<BrowserProfile>, windows: bool) -> Vec<BrowserProfile> {
     profiles.into_iter().filter(|p| !(windows && p.source == Source::Chrome)).collect()
 }
 
-/// [`discover_in`], reading a Chrome-family browser's key with `key` as `reads` says.
-async fn discover_with<K, F>(profiles: Vec<BrowserProfile>, reads: KeyReads, key: K) -> Vec<Group>
+/// Whether Chrome is on this machine where its cookies can't be read: Windows (app-bound encryption), where
+/// [`browser_profiles`] leaves it out. Elsewhere `false`.
+pub fn unreadable_chrome_here() -> bool {
+    cfg!(windows) && std::env::var_os("LOCALAPPDATA").is_some_and(|a| PathBuf::from(a).join(r"Google\Chrome\User Data").exists())
+}
+
+/// When `profile`'s cookies were last written: the newest modification time of its cookie database and the
+/// database's `-wal` / `-journal`; `None` when it has none.
+pub fn stamp(profile: &BrowserProfile) -> Option<std::time::SystemTime> {
+    let dbs = match profile.source {
+        Source::Firefox => FIREFOX_DB,
+        Source::Chrome => CHROME_DBS,
+    };
+    dbs.iter().flat_map(|db| ["", "-wal", "-journal"].map(|side| profile.dir.join(format!("{db}{side}")))).filter_map(|f| std::fs::metadata(f).and_then(|m| m.modified()).ok()).max()
+}
+
+/// The keys of the Chrome-family browsers, read once: each browser's key, or why it can't be read. Kept while the way
+/// "in your browser" watches, so on macOS the Keychain is asked once.
+pub struct Keys(HashMap<String, Result<Vec<u8>, String>>);
+
+/// The key of each Chrome-family browser of `profiles` (on macOS one Keychain question per browser).
+pub async fn read_keys(profiles: &[BrowserProfile]) -> Keys {
+    read_keys_with(profiles, KEY_READS, |family| async move { chrome_key(&family).await }).await
+}
+
+/// [`read_keys`], reading a Chrome-family browser's key with `key` as `reads` says.
+async fn read_keys_with<K, F>(profiles: &[BrowserProfile], reads: KeyReads, key: K) -> Keys
 where
     K: Fn(String) -> F,
     F: std::future::Future<Output = Result<Vec<u8>>>,
 {
-    let profiles = listed(profiles, cfg!(windows));
     // Each browser's key once (on macOS the Keychain asks once per browser).
     let mut families: Vec<String> = Vec::new();
-    for p in profiles.iter().filter(|p| p.source == Source::Chrome) {
+    for p in profiles.iter().filter(|p| p.source == Source::Chrome && !cfg!(windows)) {
         if !families.iter().any(|f| f == family(p)) {
             families.push(family(p).to_string());
         }
@@ -337,15 +362,31 @@ where
     } else {
         futures_util::future::join_all(families.iter().map(|f| read(f))).await
     };
-    let keys: HashMap<String, Result<Vec<u8>, String>> = families.into_iter().zip(got).collect();
+    Keys(families.into_iter().zip(got).collect())
+}
+
+/// [`discover_in`] with the browsers' keys read already (`keys`).
+pub async fn discover_with_keys(profiles: Vec<BrowserProfile>, keys: &Keys) -> Vec<Group> {
+    let profiles = listed(profiles, cfg!(windows));
     // One client for every request, made when the first cookie is found.
     let http = std::sync::OnceLock::new();
     let limit = tokio::sync::Semaphore::new(CHECKS_AT_ONCE);
     futures_util::future::join_all(profiles.into_iter().map(|profile| {
-        let key = keys.get(family(&profile));
+        let key = keys.0.get(family(&profile));
         profile_group(profile, key, &http, &limit)
     }))
     .await
+}
+
+/// [`discover_in`], reading a Chrome-family browser's key with `key` as `reads` says.
+#[cfg(test)]
+async fn discover_with<K, F>(profiles: Vec<BrowserProfile>, reads: KeyReads, key: K) -> Vec<Group>
+where
+    K: Fn(String) -> F,
+    F: std::future::Future<Output = Result<Vec<u8>>>,
+{
+    let keys = read_keys_with(&profiles, reads, key).await;
+    discover_with_keys(profiles, &keys).await
 }
 
 /// The `d` cookies of `profile` (Chrome's family: decrypted with `key`), read off the async threads: copying the
@@ -841,6 +882,38 @@ mod tests {
         let labels = |list: Vec<BrowserProfile>| list.into_iter().map(|p| p.label).collect::<Vec<_>>();
         assert_eq!(labels(listed(all.clone(), true)), ["Firefox · default"]);
         assert_eq!(labels(listed(all, false)), ["Chrome · Work", "Firefox · default", "Brave · Default"]);
+    }
+
+    #[test]
+    fn stamp_follows_the_wal() {
+        let dir = temp("stamp");
+        let p = BrowserProfile { source: Source::Firefox, dir: dir.clone(), label: "Firefox · default".into(), account: None };
+        assert_eq!(stamp(&p), None, "no cookie database yet");
+        let t0 = std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        std::fs::File::create(dir.join("cookies.sqlite")).unwrap().set_modified(t0).unwrap();
+        assert_eq!(stamp(&p), Some(t0));
+        // The browser writes its WAL later: the profile's stamp is the WAL's.
+        let t1 = t0 + Duration::from_secs(10);
+        std::fs::File::create(dir.join("cookies.sqlite-wal")).unwrap().set_modified(t1).unwrap();
+        assert_eq!(stamp(&p), Some(t1));
+        // And a journal newer still.
+        let t2 = t1 + Duration::from_secs(10);
+        std::fs::File::create(dir.join("cookies.sqlite-journal")).unwrap().set_modified(t2).unwrap();
+        assert_eq!(stamp(&p), Some(t2));
+        // Chrome's database is under Network/.
+        let chrome = temp("stamp-chrome");
+        std::fs::create_dir_all(chrome.join("Network")).unwrap();
+        std::fs::File::create(chrome.join("Network/Cookies")).unwrap().set_modified(t1).unwrap();
+        assert_eq!(stamp(&BrowserProfile { source: Source::Chrome, dir: chrome.clone(), label: "Chrome · Work".into(), account: None }), Some(t1));
+        std::fs::remove_dir_all(&dir).unwrap();
+        std::fs::remove_dir_all(&chrome).unwrap();
+    }
+
+    #[test]
+    fn chrome_here_is_only_a_windows_question() {
+        if !cfg!(windows) {
+            assert!(!unreadable_chrome_here());
+        }
     }
 
     #[cfg(unix)]
