@@ -4001,6 +4001,8 @@ fn handle_main(app: &mut App, ev: Event) -> bool {
 #[derive(Debug, Default)]
 struct ScheduleQueue {
     busy: bool,
+    /// The edits being written now.
+    flying: Option<Vec<slack_core::dnd::ScheduleEdit>>,
     waiting: std::collections::VecDeque<Vec<slack_core::dnd::ScheduleEdit>>,
     /// Slack's copy as last known (when the queue went busy, then as each write read it back):
     /// shown again when a write fails and Slack can't be asked.
@@ -4018,6 +4020,7 @@ impl ScheduleQueue {
         // Nothing in flight: what is shown is Slack's copy.
         self.known = shown.cloned();
         self.busy = true;
+        self.flying = Some(edits.clone());
         Some(edits)
     }
 
@@ -4029,6 +4032,7 @@ impl ScheduleQueue {
         }
         let next = self.waiting.pop_front();
         self.busy = next.is_some();
+        self.flying = next.clone();
         next
     }
 
@@ -4045,6 +4049,22 @@ impl ScheduleQueue {
     /// The edits waiting their turn, in order.
     fn waiting(&self) -> impl Iterator<Item = &Vec<slack_core::dnd::ScheduleEdit>> {
         self.waiting.iter()
+    }
+
+    /// The edits not yet on Slack: the one being written, then those waiting.
+    fn pending(&self) -> impl Iterator<Item = &Vec<slack_core::dnd::ScheduleEdit>> {
+        self.flying.iter().chain(&self.waiting)
+    }
+}
+
+/// The schedule shown: Slack's copy (`ws.dnd.schedule`) with klack's changes not yet on Slack on
+/// top. Slack echoes a write as one `pref_change` per pref, the kind last, so its copy passes
+/// through the previous schedule while a write is in flight.
+fn show_pending_schedule(ws: &mut Workspace, q: &ScheduleQueue) {
+    for edits in q.pending() {
+        if let Some(s) = ws.dnd.schedule.as_ref().and_then(|s| s.edited(edits).ok()) {
+            ws.dnd.schedule = Some(s);
+        }
     }
 }
 
@@ -4236,6 +4256,9 @@ fn handle_rtm(app: &mut App, ev: slack_core::rtm::RtmEvent) {
         }
         RtmEvent::Event(v) => {
             let fx = super::live::apply(&mut app.ws, &v, app.current.as_deref());
+            if v["type"] == "pref_change" && v["name"].as_str().is_some_and(|n| n.starts_with("dnd_")) {
+                show_pending_schedule(&mut app.ws, &app.schedule_writes);
+            }
             if fx.rebuild_sidebar {
                 app.sidebar.rebuild(&app.ws);
             }
@@ -4573,12 +4596,7 @@ fn handle_net(app: &mut App, msg: Net) {
             }
             let dropped = if error.is_some() { app.schedule_writes.waiting().count() } else { 0 };
             let next = app.schedule_writes.done(error.is_none());
-            let pending: Vec<Vec<slack_core::dnd::ScheduleEdit>> = next.iter().chain(app.schedule_writes.waiting()).cloned().collect();
-            for edits in &pending {
-                if let Some(s) = app.ws.dnd.schedule.as_ref().and_then(|s| s.edited(edits).ok()) {
-                    app.ws.dnd.schedule = Some(s);
-                }
-            }
+            show_pending_schedule(&mut app.ws, &app.schedule_writes);
             match error {
                 Some(e) => {
                     let also = if dropped > 0 { format!(" ({dropped} later change{} not sent)", if dropped == 1 { "" } else { "s" }) } else { String::new() };
@@ -5403,6 +5421,31 @@ mod tests {
         assert_eq!(q.done(false), None);
         assert_eq!(q.push(vec![Days(Off)], None), Some(vec![Days(Off)]));
         assert_eq!(q.last_read(), None, "not known: nothing was shown");
+    }
+
+    #[test]
+    fn slacks_echo_of_a_write_never_shows_the_previous_kind() {
+        use slack_core::dnd::{ScheduleDays::*, ScheduleEdit::*};
+        let mut ws = super::super::state::Workspace::default();
+        ws.apply_prefs(&serde_json::json!({"dnd_enabled": true, "dnd_days": "weekdays", "dnd_end_hour": "9:00", "dnd_start_hour": "17:00"}));
+        let mut q = super::ScheduleQueue::default();
+        let before = ws.dnd.schedule.clone();
+        let edits = q.push(vec![Days(EveryDay)], before.as_ref()).expect("written at once");
+        ws.dnd.schedule = ws.dnd.schedule.as_ref().and_then(|s| s.edited(&edits).ok());
+        q.push(vec![Days(Custom)], ws.dnd.schedule.as_ref());
+        ws.dnd.schedule = ws.dnd.schedule.as_ref().and_then(|s| s.edited(&[Days(Custom)]).ok());
+        // Slack echoes the first write a pref at a time, the kind last (as seen live 2026-10-20).
+        for (name, value) in [("dnd_start_hour", "17:00"), ("dnd_end_hour", "9:00"), ("dnd_enabled_monday", "partial"), ("dnd_days", "every_day")] {
+            super::super::live::apply(&mut ws, &serde_json::json!({"type": "pref_change", "name": name, "value": value}), None);
+            super::show_pending_schedule(&mut ws, &q);
+            assert_eq!(ws.dnd.schedule.as_ref().map(|s| s.days), Some(Custom), "after {name}: the latest change stays shown");
+        }
+        // Nothing of klack's in flight: another client's change shows as it is.
+        assert_eq!(q.done(true), Some(vec![Days(Custom)]));
+        assert_eq!(q.done(true), None);
+        super::super::live::apply(&mut ws, &serde_json::json!({"type": "pref_change", "name": "dnd_days", "value": "weekdays"}), None);
+        super::show_pending_schedule(&mut ws, &q);
+        assert_eq!(ws.dnd.schedule.as_ref().map(|s| s.days), Some(Weekdays));
     }
 
     #[test]
