@@ -294,7 +294,8 @@ impl MessagePane {
         if let Some(t) = timeline {
             let own: std::collections::HashSet<&str> = t.messages.iter().filter(|m| m.user.as_deref() == Some(ws.self_id.as_str()) && !is_system(m)).map(|m| m.ts.as_str()).collect();
             let system: std::collections::HashSet<&str> = t.messages.iter().filter(|m| is_system(m)).map(|m| m.ts.as_str()).collect();
-            add_gutter(&mut lines, &owners, &own, &system);
+            let authors: std::collections::HashMap<&str, &str> = t.messages.iter().filter_map(|m| Some((m.ts.as_str(), m.user.as_deref()?))).collect();
+            add_gutter(&mut lines, &owners, &own, &system, &authors);
         }
         // Shade the message under the pointer, then highlight the selected one.
         if let Some(h) = &self.hover {
@@ -459,9 +460,6 @@ fn snippet_preview(file: &File, width: usize, open_key: &str) -> Vec<Line<'stati
     text::shaded(out, width)
 }
 
-/// Prefix every line with the gutter, which marks where each message starts (`•`, or a
-/// heavier `▌` for your own) and runs a bar down your own messages (`own`); system
-/// messages get no marker.
 /// Highlight the lines of message `ts` and tag its first line "✎ editing".
 fn mark_editing(lines: &mut [Line<'static>], owners: &[Option<String>], ts: &str, highlight: Style) {
     let mut first = true;
@@ -476,18 +474,20 @@ fn mark_editing(lines: &mut [Line<'static>], owners: &[Option<String>], ts: &str
     }
 }
 
-fn add_gutter(lines: &mut [Line<'static>], owners: &[Option<String>], own: &std::collections::HashSet<&str>, system: &std::collections::HashSet<&str>) {
+/// Prefix every line with the gutter: a bar down each message, heavier where it starts — yours (`own`, `▌` then `▎`)
+/// in the theme's own colour, others' (`▎` then `▏`) thinner and dim in their name's colour (`authors`: message →
+/// user), so yours stand out; system messages get none.
+fn add_gutter(lines: &mut [Line<'static>], owners: &[Option<String>], own: &std::collections::HashSet<&str>, system: &std::collections::HashSet<&str>, authors: &std::collections::HashMap<&str, &str>) {
     let mut previous: Option<&str> = None;
     for (line, owner) in lines.iter_mut().zip(owners.iter().chain(std::iter::repeat(&None))) {
         let owner = owner.as_deref();
         let first = owner.is_some() && owner != previous;
         previous = owner;
-        let mine = owner.is_some_and(|ts| own.contains(ts));
-        let gutter = match (mine, first) {
-            (true, true) => Span::styled("▌ ", Style::default().fg(super::theme::p().own)),
-            (true, false) => Span::styled("▎ ", Style::default().fg(super::theme::p().own)),
-            (false, true) if !owner.is_some_and(|ts| system.contains(ts)) => Span::styled("• ", Style::default().fg(super::theme::p().dim)),
-            _ => Span::raw("  "),
+        let gutter = match owner {
+            None => Span::raw("  "),
+            Some(ts) if system.contains(ts) => Span::raw("  "),
+            Some(ts) if own.contains(ts) => Span::styled(if first { "▌ " } else { "▎ " }, Style::default().fg(super::theme::p().own)),
+            Some(ts) => Span::styled(if first { "▎ " } else { "▏ " }, Style::default().fg(authors.get(ts).map_or(super::theme::p().dim, |u| text::user_color(u))).add_modifier(Modifier::DIM)),
         };
         line.spans.insert(0, gutter);
     }
@@ -1311,16 +1311,20 @@ mod tests {
         t.upsert(msg("3.0", "UME", "mine\ntwo lines"));
         let (mut lines, owners, _) = build_lines_owned(&ws, &t, 40, false, &|_, _| None, Avatars::Off);
         let own = ["3.0"].into_iter().collect();
-        add_gutter(&mut lines, &owners, &own, &Default::default());
+        let authors = [("1.0", "U2"), ("2.0", "U2"), ("3.0", "UME")].into_iter().collect();
+        add_gutter(&mut lines, &owners, &own, &Default::default(), &authors);
         let rows = plain(&lines);
-        assert!(rows.iter().all(|r| ["▌ ", "▎ ", "• ", "  "].iter().any(|g| r.starts_with(g))), "every row has the gutter: {rows:?}");
-        // U2's header, then the start of U2's grouped second message.
-        let bullets: Vec<&String> = rows.iter().filter(|r| r.starts_with('•')).collect();
-        assert_eq!(bullets.len(), 2, "{rows:?}");
-        assert!(bullets[1].contains("theirs again"), "a grouped message still shows where it starts: {rows:?}");
-        let mine: Vec<&String> = rows.iter().filter(|r| r.starts_with('▌') || r.starts_with('▎')).collect();
+        assert!(rows.iter().all(|r| ["▌ ", "▎ ", "▏ ", "  "].iter().any(|g| r.starts_with(g))), "every row has the gutter: {rows:?}");
+        let theme = crate::tui::theme::p();
+        let (theirs, mine): (Vec<usize>, Vec<usize>) = (0..lines.len()).filter(|i| rows[*i].starts_with(['▌', '▎', '▏'])).partition(|i| lines[*i].spans[0].style.add_modifier.contains(Modifier::DIM));
+        // U2's header, then the start of U2's grouped second message: a heavier start each, thin and dim in U2's name colour.
+        let starts: Vec<&String> = theirs.iter().map(|i| &rows[*i]).filter(|r| r.starts_with('▎')).collect();
+        assert_eq!(starts.len(), 2, "{rows:?}");
+        assert!(starts[1].contains("theirs again"), "a grouped message still shows where it starts: {rows:?}");
+        assert!(theirs.iter().all(|i| lines[*i].spans[0].style.fg == Some(text::user_color("U2"))), "their name's colour");
         assert_eq!(mine.len(), 3, "header and both lines of our message: {rows:?}");
-        assert!(mine[0].starts_with('▌') && mine[1].starts_with('▎'));
+        assert!(rows[mine[0]].starts_with('▌') && rows[mine[1]].starts_with('▎'));
+        assert!(mine.iter().all(|i| lines[*i].spans[0].style.fg == Some(theme.own)), "ours in the own colour, not dim");
         let blank = rows.iter().position(|r| r.trim().is_empty()).expect("a blank row between the two authors");
         assert!(rows[blank + 1].contains("UME") || rows[blank + 1].contains("You") || rows[blank + 1].starts_with('▌'), "{rows:?}");
     }
