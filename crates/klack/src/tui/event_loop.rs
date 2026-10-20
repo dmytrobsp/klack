@@ -1138,7 +1138,7 @@ impl App {
             Action::Open if self.sidebar.on_threads() => self.load_threads(false),
             Action::Open | Action::Type => self.focus = Focus::Composer,
             // The selected conversation is the current one.
-            Action::Details | Action::NotificationLevel | Action::MuteConversation | Action::LeaveConversation if self.sidebar.selected_id().is_some() => {
+            Action::Details | Action::NotificationLevel | Action::MuteConversation | Action::CopyConversationLink | Action::LeaveConversation if self.sidebar.selected_id().is_some() => {
                 run_global(self, action);
             }
             Action::FoldSection => self.sidebar.toggle_selected_fold(&self.ws, self.current.as_deref()),
@@ -2083,6 +2083,14 @@ impl App {
                 let _ = tx.send(Net::MuteFailed { channel, muted, error: e.to_string() });
             }
         });
+    }
+
+    /// ␣cy: copy the current conversation's link, as Slack shows it.
+    fn copy_conversation_link(&mut self) {
+        let Some(channel) = self.current.clone() else { return };
+        let link = conversation_link(&self.client.session.url, &channel);
+        let how = self.clipboard.copy(&link);
+        self.status = if how == "clipboard" { "link copied".into() } else { format!("link copied to the {how}") };
     }
 
     /// ␣cu: mark the current conversation unread from `selected` (with none: from the newest), as
@@ -3054,6 +3062,11 @@ fn read_mark_target(ws: &super::state::Workspace, channel: &str, marked: &std::c
 fn hold_unread(ws: &mut super::state::Workspace, marked: &mut std::collections::HashMap<String, String>, channel: &str, ts: &str) {
     ws.mark_unread(channel, ts);
     marked.remove(channel);
+}
+
+/// A conversation's link as Slack shows it: `https://acme.slack.com/archives/C…`.
+fn conversation_link(workspace_url: &str, channel: &str) -> String {
+    format!("{}/archives/{channel}", workspace_url.trim_end_matches('/'))
 }
 
 /// Where Slack's read mark goes so that `selected` (with none: the newest) is the first unread
@@ -4349,7 +4362,7 @@ fn applies(here: &Here, context: Context, action: Action) -> bool {
         (Context::Global, JoinConversation) => here.outside,
         (Context::Global, LeaveConversation) => here.leavable,
         (Context::Sidebar, LeaveConversation) => here.selected_leavable,
-        (Context::Sidebar, Star | MoveToSection | Details | NotificationLevel | MuteConversation) => here.selected,
+        (Context::Sidebar, Star | MoveToSection | Details | NotificationLevel | MuteConversation | CopyConversationLink) => here.selected,
         (Context::Profile, Huddle) => here.card,
         // Only the profile's workspaces (the one you are in too).
         (Context::Global, _) if super::keymap::workspace_of(action).is_some() => super::keymap::workspace_of(action).is_some_and(|i| i < here.workspaces),
@@ -4380,6 +4393,7 @@ fn run_global(app: &mut App, action: Action) -> bool {
         },
         Action::NotificationLevel => app.cycle_conversation_level(),
         Action::MuteConversation => app.toggle_conversation_mute(),
+        Action::CopyConversationLink => app.copy_conversation_link(),
         Action::MarkUnread => {
             // From the messages pane its selection; from the sidebar or the composer the newest.
             let selected = app.messages.selected.clone().filter(|_| app.focus == Focus::Messages);
@@ -5936,6 +5950,13 @@ mod tests {
         assert_eq!(super::shown_note(None, None, "copied the link"), Some("copied the link".to_string()));
         assert_eq!(super::shown_note(None, None, ""), None);
         assert_eq!(super::shown_note(Some("📞 ann invites you".into()), Some(&sticky), ""), Some("📞 ann invites you".to_string()));
+    }
+
+    #[test]
+    fn conversation_link_form() {
+        use super::conversation_link;
+        assert_eq!(conversation_link("https://acme.slack.com/", "C0123"), "https://acme.slack.com/archives/C0123");
+        assert_eq!(conversation_link("https://acme.slack.com", "D0123"), "https://acme.slack.com/archives/D0123");
     }
 
     #[test]

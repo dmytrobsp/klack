@@ -397,6 +397,7 @@ pub enum Action {
     NotificationLevel,
     MuteConversation,
     MarkUnread,
+    CopyConversationLink,
     LeaveConversation,
     JoinConversation,
     RenameSection,
@@ -447,6 +448,7 @@ actions! {
         NotificationLevel "notification_level" "what the conversation notifies about: the next level" "notifications" "🔔" ["<leader> c b"]
         MuteConversation "mute_conversation" "mute / unmute the conversation" "mute" "🔕" ["<leader> c M"]
         MarkUnread "mark_unread" "mark unread from the selected message (or the latest)" "mark unread" "🔵" ["<leader> c u"]
+        CopyConversationLink "copy_conversation_link" "copy the conversation's link" "copy conversation link" "🔗" ["<leader> c y"]
         LeaveConversation "leave" "leave the channel (y/n)" "leave" "👋" ["<leader> c l"]
         JoinConversation "join" "join the channel you are looking at" "join" "📥" ["<leader> c j"]
         RenameSection "rename_section" "rename the conversation's section (/section rename)" "rename section" "📝" ["<leader> c r"]
@@ -503,6 +505,7 @@ actions! {
         Details "details" "conversation details: about, members, pins" "details" "📇" ["<leader> d"]
         NotificationLevel "notification_level" "what the conversation notifies about: the next level" "notifications" "🔔" ["<leader> b"]
         MuteConversation "mute_conversation" "mute / unmute the conversation" "mute" "🔕" ["<leader> M"]
+        CopyConversationLink "copy_conversation_link" "copy the conversation's link" "copy conversation link" "🔗" ["<leader> y"]
         LeaveConversation "leave" "leave the channel (y/n)" "leave" "👋" ["<leader> l"]
         FoldSection "fold_section" "fold / unfold the section (folded: what is unread in it)" "fold" "📁" ["z"]
         Help "help" "this help" "help" "❓" ["?"]
