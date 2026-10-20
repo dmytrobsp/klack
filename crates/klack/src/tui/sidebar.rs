@@ -474,6 +474,21 @@ mod tests {
     }
 
     #[test]
+    fn mute_toggles_and_dims() {
+        let mut w = ws();
+        let p = crate::tui::theme::p();
+        w.unread.insert("C1".into(), crate::tui::state::Unread { has_unreads: true, mentions: 0 });
+        let row = |w: &Workspace| conversation_line(w, "C1", false, false, 30);
+        let before = w.total_unread().0;
+        assert!(row(&w).spans[2].style.add_modifier.contains(Modifier::BOLD));
+        assert!(w.toggle_muted("C1"), "now muted");
+        assert_eq!((row(&w).spans[2].style.fg, w.total_unread().0), (Some(p.dim), before - 1), "dim, and left out of the count");
+        assert!(!w.toggle_muted("C1"), "now unmuted");
+        assert!(row(&w).spans[2].style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(w.total_unread().0, before);
+    }
+
+    #[test]
     fn the_last_conversation_is_kept() {
         let dir = std::env::temp_dir().join(format!("klack-last-{}", std::process::id()));
         let mut s = Sidebar::kept_in(Some(dir.clone()), "T1", "U1");

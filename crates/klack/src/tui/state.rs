@@ -750,6 +750,15 @@ impl Workspace {
         self.latest.get(id).copied().unwrap_or(0.0)
     }
 
+    /// Mute the conversation, or unmute it when it is muted; true when it is muted now.
+    pub fn toggle_muted(&mut self, id: &str) -> bool {
+        if self.muted.remove(id) {
+            return false;
+        }
+        self.muted.insert(id.to_string());
+        true
+    }
+
     pub fn total_unread(&self) -> (usize, u64) {
         // As the sidebar shows them: listed conversations only (not archived ones, or ones Slack
         // counts that are not in the list); a muted one is not unread, but its mentions count.

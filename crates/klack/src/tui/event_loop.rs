@@ -1134,7 +1134,7 @@ impl App {
             Action::Open if self.sidebar.on_threads() => self.load_threads(false),
             Action::Open | Action::Type => self.focus = Focus::Composer,
             // The selected conversation is the current one.
-            Action::Details | Action::NotificationLevel | Action::LeaveConversation if self.sidebar.selected_id().is_some() => {
+            Action::Details | Action::NotificationLevel | Action::MuteConversation | Action::LeaveConversation if self.sidebar.selected_id().is_some() => {
                 run_global(self, action);
             }
             Action::FoldSection => self.sidebar.toggle_selected_fold(&self.ws, self.current.as_deref()),
@@ -2064,6 +2064,16 @@ impl App {
         let mpim = self.ws.conversations.get(&channel).is_some_and(|c| c.is_mpim);
         let own = self.ws.notify.channels.contains_key(&channel);
         self.status = format!("{} notifies about {}{}", self.ws.channel_label(&channel), super::state::level_label(self.ws.notify.level(&channel, mpim)), if own { "" } else { " (the default)" });
+    }
+
+    /// ␣cM: mute the current conversation, or unmute it. Here at once (the sidebar dims it and the
+    /// unread count leaves it out), then on Slack; a failure fetches the prefs again, which puts it back.
+    fn toggle_conversation_mute(&mut self) {
+        let Some(channel) = self.current.clone() else { return };
+        let muted = self.ws.toggle_muted(&channel);
+        self.sidebar.rebuild(&self.ws);
+        self.status = format!("{} {}", if muted { "muted" } else { "unmuted" }, self.ws.channel_label(&channel));
+        self.save_notification_pref("muted", muted.to_string(), Some(channel), false);
     }
 
     /// A conversation's own level ("default": none), here at once and then on Slack.
@@ -4256,7 +4266,7 @@ fn applies(here: &Here, context: Context, action: Action) -> bool {
         (Context::Global, JoinConversation) => here.outside,
         (Context::Global, LeaveConversation) => here.leavable,
         (Context::Sidebar, LeaveConversation) => here.selected_leavable,
-        (Context::Sidebar, Star | MoveToSection | Details | NotificationLevel) => here.selected,
+        (Context::Sidebar, Star | MoveToSection | Details | NotificationLevel | MuteConversation) => here.selected,
         (Context::Profile, Huddle) => here.card,
         // Only the profile's workspaces (the one you are in too).
         (Context::Global, _) if super::keymap::workspace_of(action).is_some() => super::keymap::workspace_of(action).is_some_and(|i| i < here.workspaces),
@@ -4286,6 +4296,7 @@ fn run_global(app: &mut App, action: Action) -> bool {
             None => {}
         },
         Action::NotificationLevel => app.cycle_conversation_level(),
+        Action::MuteConversation => app.toggle_conversation_mute(),
         Action::LeaveConversation | Action::JoinConversation | Action::DeleteSection => {
             use super::commands::Command;
             let cmd = match action {

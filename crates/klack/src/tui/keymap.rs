@@ -393,6 +393,7 @@ pub enum Action {
     SeekForward,
     Yes,
     NotificationLevel,
+    MuteConversation,
     LeaveConversation,
     JoinConversation,
     RenameSection,
@@ -441,6 +442,7 @@ actions! {
         Star "star" "star / unstar the conversation" "star" "⭐" ["<leader> c s"]
         MoveToSection "move_to_section" "move the conversation to a section (or a new one)" "move to section" "📦" ["<leader> c m"]
         NotificationLevel "notification_level" "what the conversation notifies about: the next level" "notifications" "🔔" ["<leader> c b"]
+        MuteConversation "mute_conversation" "mute / unmute the conversation" "mute" "🔕" ["<leader> c M"]
         LeaveConversation "leave" "leave the channel (y/n)" "leave" "👋" ["<leader> c l"]
         JoinConversation "join" "join the channel you are looking at" "join" "📥" ["<leader> c j"]
         RenameSection "rename_section" "rename the conversation's section (/section rename)" "rename section" "📝" ["<leader> c r"]
@@ -494,6 +496,7 @@ actions! {
         MoveToSection "move_to_section" "move to a section (or a new one)" "move" "📦" ["<leader> m"]
         Details "details" "conversation details: about, members, pins" "details" "📇" ["<leader> d"]
         NotificationLevel "notification_level" "what the conversation notifies about: the next level" "notifications" "🔔" ["<leader> b"]
+        MuteConversation "mute_conversation" "mute / unmute the conversation" "mute" "🔕" ["<leader> M"]
         LeaveConversation "leave" "leave the channel (y/n)" "leave" "👋" ["<leader> l"]
         FoldSection "fold_section" "fold / unfold the section (folded: what is unread in it)" "fold" "📁" ["z"]
         Help "help" "this help" "help" "❓" ["?"]
