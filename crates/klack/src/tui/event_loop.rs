@@ -507,11 +507,10 @@ impl App {
     fn send(&mut self, thread: bool) {
         let Some(channel) = self.current.clone() else { return };
         // Signed out: what is typed stays in the composer; only klack's own commands run.
-        if let Some(note) = self.signed_out_note.clone() {
+        if self.signed_out_note.is_some() {
             let c = self.composer_for(thread);
             let local = c.attachments.is_empty() && matches!(super::commands::parse(&c.text(), &c.to_mrkdwn()), Some(Ok(cmd)) if runs_while_signed_out(&cmd));
-            if !local {
-                self.status = note;
+            if !local && self.refused_signed_out() {
                 return;
             }
         }
@@ -1211,8 +1210,19 @@ impl App {
         super::messages::shown_messages(t, thread).filter(|m| m.user.as_deref() == me && (m.subtype.is_none() || m.subtype.as_deref() == Some("thread_broadcast"))).last().map(|m| m.ts.clone())
     }
 
-    /// Save the message being edited in a composer (optimistic, then chat.update).
+    /// True (and the status line says why) when this workspace is signed out, so nothing is sent.
+    fn refused_signed_out(&mut self) -> bool {
+        let Some(note) = self.signed_out_note.clone() else { return false };
+        self.status = note;
+        true
+    }
+
+    /// Save the message being edited in a composer (optimistic, then chat.update). Signed out, the
+    /// edit stays in the composer.
     fn save_edit(&mut self, thread: bool) {
+        if self.refused_signed_out() {
+            return;
+        }
         let Some(channel) = self.current.clone() else { return };
         let c = self.composer_for(thread);
         let Some(ts) = c.editing.clone() else { return };
@@ -1240,6 +1250,9 @@ impl App {
 
     /// Ask to delete our own message `ts` in the current conversation.
     fn ask_delete(&mut self, ts: &str) {
+        if self.refused_signed_out() {
+            return;
+        }
         let Some(channel) = self.current.clone() else { return };
         let own = self.ws.find_message(&channel, ts).is_some_and(|m| m.user.as_deref() == Some(self.ws.self_id.as_str()) && !super::messages::is_system(m));
         if own {
@@ -1251,6 +1264,9 @@ impl App {
 
     /// Delete a message (optimistic, then chat.delete).
     fn delete(&mut self, channel: String, ts: String) {
+        if self.refused_signed_out() {
+            return;
+        }
         let Some(original) = self.ws.find_message(&channel, &ts).cloned() else { return };
         self.ws.remove_message(&channel, &ts);
         if let Some(parent) = original.thread_ts.as_ref().filter(|_| original.is_reply()) {
