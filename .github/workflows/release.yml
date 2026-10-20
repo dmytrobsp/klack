@@ -17,11 +17,11 @@ jobs:
       matrix:
         include:
           # 22.04: an older glibc, so the binary runs on more distributions.
-          - { name: x86_64-linux, os: ubuntu-22.04, target: x86_64-unknown-linux-gnu, archive: tar.gz }
-          - { name: aarch64-macos, os: macos-14, target: aarch64-apple-darwin, archive: tar.gz }
-          - { name: x86_64-macos, os: macos-14, target: x86_64-apple-darwin, archive: tar.gz }
+          - { name: x86_64-linux, os: ubuntu-22.04, target: x86_64-unknown-linux-gnu, exe: klack }
+          - { name: aarch64-macos, os: macos-14, target: aarch64-apple-darwin, exe: klack }
+          - { name: x86_64-macos, os: macos-14, target: x86_64-apple-darwin, exe: klack }
           # 22.04's MinGW (gcc 10) lacks what Opus and the static C runtime need; CI builds on 24.04 too.
-          - { name: x86_64-windows, os: ubuntu-24.04, target: x86_64-pc-windows-gnu, archive: zip }
+          - { name: x86_64-windows, os: ubuntu-24.04, target: x86_64-pc-windows-gnu, exe: klack.exe }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -35,20 +35,18 @@ jobs:
         with:
           key: ${{ matrix.target }}
       - run: cargo build --locked --release --target ${{ matrix.target }}
-      - name: Package
+      # The plain files, not an archive: GitHub zips every artifact itself, so a run's download is one zip with
+      # the program and docs at its top. (Artifacts lose the executable bit; the release job puts it back.)
+      - name: Stage
         shell: bash
         run: |
-          version=$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"]=="klack"))')
-          dir=klack-$version-${{ matrix.name }}
-          mkdir "$dir"
-          exe=klack; [ "${{ matrix.archive }}" = zip ] && exe=klack.exe
-          cp "target/${{ matrix.target }}/release/$exe" README.md LICENSE-MIT LICENSE-APACHE "$dir/"
-          if [ "${{ matrix.archive }}" = zip ]; then zip -qr "$dir.zip" "$dir"; else tar -czf "$dir.tar.gz" "$dir"; fi
-          ls -l "$dir".*
+          mkdir stage
+          cp "target/${{ matrix.target }}/release/${{ matrix.exe }}" README.md LICENSE-MIT LICENSE-APACHE stage/
+          ls -l stage
       - uses: actions/upload-artifact@v4
         with:
           name: klack-${{ matrix.name }}
-          path: klack-*.${{ matrix.archive }}
+          path: stage/*
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -64,8 +62,19 @@ jobs:
           [ "${GITHUB_REF_NAME}" = "v$version" ] || { echo "tag ${GITHUB_REF_NAME} but Cargo version $version"; exit 1; }
       - uses: actions/download-artifact@v4
         with:
-          path: dist
-          merge-multiple: true
+          path: staged
+      # One zip per platform with the program and docs at its top (no folder, no archive inside an archive); zip keeps
+      # the executable bit for unzip, macOS Finder and Linux file managers.
+      - name: Archives
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          mkdir dist
+          for d in staged/klack-*; do
+            name=${d#staged/klack-}
+            [ -f "$d/klack" ] && chmod 755 "$d/klack"
+            (cd "$d" && zip -q -X "../../dist/klack-$version-$name.zip" *)
+            unzip -l "dist/klack-$version-$name.zip"
+          done
       - name: Checksums
         run: cd dist && sha256sum klack-* > SHA256SUMS && cat SHA256SUMS
       - name: Publish
