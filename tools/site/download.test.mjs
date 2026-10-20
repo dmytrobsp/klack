@@ -81,3 +81,13 @@ test('enhance leaves the static region alone with no region or no release', () =
   assert.equal(d.area.innerHTML, 'static');
   assert.doesNotThrow(() => enhance({ querySelector: () => null }, rel, { userAgent: UA.win }));
 });
+
+test('enhance shows no version rather than "vundefined"', () => {
+  for (const os of [UA.win, UA.android]) {
+    const d = fakeDoc();
+    const { version, ...noVer } = rel;
+    enhance(d, noVer, { userAgent: os, platform: '', maxTouchPoints: 0 });
+    assert.doesNotMatch(d.area.innerHTML, /undefined/);
+    assert.doesNotMatch(d.area.innerHTML, />v\d/);
+  }
+});

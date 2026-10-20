@@ -45,18 +45,19 @@ export function enhance(doc, release, nav = typeof navigator !== 'undefined' ? n
   if (!area || !release || !release.assets) return;
   const os = detectOS(nav);
   const c = choose(os, release);
+  const ver = release.version ? `v${esc(release.version)} · ` : '';
   const find = p => release.assets.find(a => a.platform === p);
   let buttons, meta;
   if (!c.assets.length) {
     buttons = `<a class="dl" data-os="${os}" href="#get">${c.label}</a>`;
-    meta = `v${esc(release.version)} · macOS · Windows · Linux`;
+    meta = `${ver}macOS · Windows · Linux`;
   } else {
     buttons = c.assets.map(a => `<a class="dl" data-os="${os}" href="${esc(a.url)}">${esc(a.label)}</a>`).join('');
     const sizes = c.assets.map(a => mb(a.size)).join(' / ');
     const others = [['linux', 'Linux', 'x86_64-linux'], ['macos', 'macOS', 'aarch64-macos'], ['windows', 'Windows', 'x86_64-windows']]
       .filter(([k]) => k !== os)
       .map(([, name, p]) => (find(p) ? `<a href="${esc(find(p).url)}">${name}</a>` : name));
-    meta = `v${esc(release.version)} · ${sizes} · <span class="dl-others">${others.join(' · ')} · <a href="#get">all downloads</a></span>`;
+    meta = `${ver}${sizes} · <span class="dl-others">${others.join(' · ')} · <a href="#get">all downloads</a></span>`;
   }
   area.innerHTML = `${buttons}<span class="dl-meta">${meta}</span>`;
 }
