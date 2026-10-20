@@ -54,15 +54,21 @@ pub enum Fit {
     LinkOnly,
 }
 
-/// Beside needs the code, a gap of 3 and the text on one line; under needs the code's width; both need the code's
-/// rows plus 6 (heading, email, blank, code prompt, hint, margin).
+/// Lines above the code: the heading, the email and a blank.
+const HEADER_LINES: usize = 3;
+/// Lines Task Y3 prints below the code screen: the code prompt and its hint.
+const PROMPT_LINES: usize = 2;
+/// Lines of text beside or under the code (the intro, the link and the two hint lines).
+const TEXT_LINES: usize = 4;
+
+/// Beside needs the code, a gap of 3 and the text on one line across, and the header, the code and the prompt
+/// lines down; under needs the code's width across, and down the header, the code, a blank, the text and the
+/// prompt lines. Each layout's own check decides; otherwise only the link is shown.
 pub fn fit(qr_cols: usize, qr_rows: usize, text_cols: usize, width: u16, height: u16) -> Fit {
     let (width, height) = (width as usize, height as usize);
-    if qr_rows + 6 > height {
-        Fit::LinkOnly
-    } else if qr_cols + 3 + text_cols <= width {
+    if qr_cols + 3 + text_cols <= width && HEADER_LINES + qr_rows + PROMPT_LINES <= height {
         Fit::Beside
-    } else if qr_cols <= width {
+    } else if qr_cols <= width && HEADER_LINES + qr_rows + 1 + TEXT_LINES + PROMPT_LINES <= height {
         Fit::Under
     } else {
         Fit::LinkOnly
@@ -74,11 +80,12 @@ pub fn fit(qr_cols: usize, qr_rows: usize, text_cols: usize, width: u16, height:
 pub fn code_screen(email: &str, width: u16, height: u16) -> Vec<String> {
     let link = slack_core::signin::signin_link(email);
     let intro = "On your phone, scan this — or open";
-    let text: Vec<(String, usize)> = vec![
+    let (hint1, hint2) = ("Slack emails you a code. Type it here;", "don't enter it on the phone.");
+    let text: [(String, usize); TEXT_LINES] = [
         (intro.to_string(), intro.width()),
         (osc8(&link), link.width()),
-        ("Slack emails you a code. Type it here;".to_string(), 38),
-        ("don't enter it on the phone.".to_string(), 28),
+        (hint1.to_string(), hint1.width()),
+        (hint2.to_string(), hint2.width()),
     ];
     let text_cols = text.iter().map(|t| t.1).max().unwrap_or(0);
     let mut lines = vec!["Sign in with a code".to_string(), format!("  Email: {email}"), String::new()];
@@ -141,7 +148,53 @@ mod tests {
         let s = code_screen("person@example.com", 30, 40).join("\n");
         assert!(s.contains(&osc8("https://slack.com/signin?email=person%40example.com")));
         assert!(!s.contains('▀'));
+        // Beside needs 3 + rows + 2 lines, under 3 + rows + 1 + 4 + 2.
+        assert_eq!(fit(37, 19, 50, 80, 19 + 8), Fit::LinkOnly);
+        assert_eq!(fit(37, 19, 50, 80, 19 + 9), Fit::LinkOnly);
+        assert_eq!(fit(37, 19, 50, 80, 19 + 10), Fit::Under);
+        assert_eq!(fit(37, 19, 50, 95, 19 + 5), Fit::Beside);
+        assert_eq!(fit(37, 19, 50, 95, 19 + 4), Fit::LinkOnly);
         assert!(code_screen("person@example.com", 120, 40).join("\n").contains('▀'));
+    }
+
+    /// The text without its SGR and OSC 8 escapes.
+    fn visible(s: &str) -> String {
+        let mut out = String::new();
+        let mut it = s.chars().peekable();
+        while let Some(c) = it.next() {
+            if c != '\x1b' {
+                out.push(c);
+            } else if it.peek() == Some(&'[') {
+                for d in it.by_ref() {
+                    if d.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            } else {
+                // OSC: up to the string terminator ESC \
+                while let Some(d) = it.next() {
+                    if d == '\x1b' {
+                        it.next();
+                        break;
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn beside_lines_are_no_wider_than_the_fit_says() {
+        let link = slack_core::signin::signin_link("person@example.com");
+        let qr_cols = modules(&link).len();
+        let screen = code_screen("person@example.com", 100, 40);
+        let text_cols = ["On your phone, scan this — or open", link.as_str(), "Slack emails you a code. Type it here;"].iter().map(|t| t.width()).max().unwrap();
+        for l in &screen[3..] {
+            let v = visible(l);
+            assert!(v.width() <= qr_cols + 3 + text_cols, "{v:?}");
+            assert!(v.width() >= qr_cols, "{v:?}");
+        }
+        assert!(visible(&screen[3]).ends_with("or open"));
     }
 
     /// Prints the screen for the live check: `KLACK_QR_OUT=file cargo test -p klack qr_print -- --ignored`.
