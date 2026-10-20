@@ -3,6 +3,7 @@
 //! Nothing here asks Slack to send a code (that needs a captcha) and nothing prints a secret.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 use reqwest::cookie::{CookieStore, Jar};
@@ -164,10 +165,18 @@ fn unexpected(status: impl std::fmt::Display) -> CodeError {
     CodeError::Other(format!("Slack did not answer as expected (HTTP {status})"))
 }
 
+/// An error of a call made after the code was accepted: Slack's answer alone, not "refused the code".
+fn after_the_code(e: CodeError) -> anyhow::Error {
+    match e {
+        CodeError::Other(m) => anyhow!(m),
+        e => anyhow!(e),
+    }
+}
+
 impl CodeSignIn {
     fn new(email: &str, base: &str) -> Result<CodeSignIn> {
         let jar = Arc::new(Jar::default());
-        let http = crate::api::http_client(|| reqwest::Client::builder().user_agent(session::USER_AGENT).cookie_provider(jar.clone()))?;
+        let http = crate::api::http_client(|| reqwest::Client::builder().user_agent(session::USER_AGENT).cookie_provider(jar.clone()).connect_timeout(Duration::from_secs(15)).timeout(Duration::from_secs(30)))?;
         Ok(CodeSignIn { email: email.trim().to_string(), http, jar, base: base.to_string() })
     }
 
@@ -198,7 +207,7 @@ impl CodeSignIn {
     /// The workspaces of the confirmed email.
     pub async fn workspaces(&self) -> Result<Vec<CodeTeam>> {
         let form = reqwest::multipart::Form::new().text("email", self.email.clone()).text("reason", "get_started_workspaces");
-        parse_workspaces(&self.call("signin.findWorkspaces", form).await?)
+        parse_workspaces(&self.call("signin.findWorkspaces", form).await.map_err(after_the_code)?)
     }
 
     /// Follows the team's magic link, which sets the `d` cookie, and turns that into a session.
@@ -208,7 +217,7 @@ impl CodeSignIn {
         let header = self.jar.cookies(&"https://slack.com/".parse()?).and_then(|h| h.to_str().ok().map(str::to_string)).unwrap_or_default();
         let d = cookie_value(&header, "d").ok_or_else(|| anyhow!("Slack did not sign in to {}", team.name))?;
         // A client without the jar, so `session_from_cookie_with` sends the only Cookie header.
-        let session = session::session_from_cookie_with(&session::web_client()?, &team.url, &d).await?;
+        let session = session::session_from_cookie_with(&session::web_client()?, &team.url, &d).await.map_err(|e| anyhow!("Slack did not sign in to {}: {e:#}", team.name))?;
         Ok(WorkspaceSession { source: Some(SessionSource::Code { email: self.email.clone() }), ..session })
     }
 
@@ -310,6 +319,22 @@ mod tests {
             Err(CodeError::Other(m)) => assert!(m.contains("429") && !m.contains("secret"), "{m}"),
             other => panic!("{other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn a_listing_error_is_not_called_a_refused_code() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 8192];
+            let _ = sock.read(&mut buf).await;
+            sock.write_all(b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
+        });
+        // The code was taken already: the listing's error is Slack's answer alone.
+        let text = format!("{:#}", CodeSignIn::at("person@example.com", &base).unwrap().workspaces().await.unwrap_err());
+        assert_eq!(text, "Slack did not answer as expected (HTTP 500)");
     }
 
     #[tokio::test]

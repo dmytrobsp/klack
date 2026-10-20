@@ -58,7 +58,8 @@ enum Command {
 #[derive(Subcommand)]
 enum AuthCmd {
     /// Sign the profile in (a new profile name makes that profile). Without flags a guide lists the
-    /// Slack sign-ins of your browsers to pick from, or signs in to another workspace.
+    /// Slack sign-ins of your browsers to pick from, and the ways to sign in afresh: with a code
+    /// from your email, in your browser, or by pasting a cookie.
     Login {
         /// The workspace (acme, acme.slack.com or a link from the browser). In a terminal the ways
         /// to sign in to it are listed; without one a browser window opens to sign in (Chrome,
@@ -79,6 +80,11 @@ enum AuthCmd {
         /// all of them). Several signing in as different people: you are asked which.
         #[arg(long, value_name = "DIR", requires = "from_browser")]
         browser_profile: Option<std::path::PathBuf>,
+        /// Sign in with the code Slack emails to this address (scan the QR code or open the link,
+        /// ask for the code, type it here). Without a terminal the link is printed, the code is read
+        /// from standard input and every workspace that can be used is signed in to.
+        #[arg(long, value_name = "ADDRESS", conflicts_with_all = ["workspace", "cookie", "no_browser", "from_browser"])]
+        email: Option<String>,
     },
     /// Forget sign-ins on this machine (Slack is not signed out): in a terminal the profile's are
     /// listed to choose from; --team or --all for scripts.
@@ -162,7 +168,7 @@ async fn run() -> Result<()> {
     }
     match cli.command {
         Some(Command::Auth { cmd }) => match cmd {
-            AuthCmd::Login { workspace, cookie, no_browser, from_browser, browser_profile } => auth::login(&profile, auth::LoginFlags { workspace, cookie, no_browser, from_browser, browser_profile }).await,
+            AuthCmd::Login { workspace, cookie, no_browser, from_browser, browser_profile, email } => auth::login(&profile, auth::LoginFlags { workspace, cookie, no_browser, from_browser, browser_profile, email }).await,
             AuthCmd::Logout { all } => auth::logout(&profile, cli.team.as_deref(), all).await,
             AuthCmd::Status => auth::status(&profile).await,
         },

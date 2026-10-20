@@ -58,7 +58,16 @@ pub struct Picker {
 
 impl Picker {
     pub fn new(rows: Vec<Row>, multi: bool) -> Picker {
+        Picker::with_marks(rows, multi, &[])
+    }
+
+    /// A picker whose rows `marked` start marked (multi-choice only); indices that are not items that can be picked are
+    /// left out.
+    pub fn with_marks(rows: Vec<Row>, multi: bool, marked: &[usize]) -> Picker {
         let mut p = Picker { rows, multi, cursor: None, marks: BTreeSet::new(), filter: String::new(), filtering: false, scroll: Cell::new(0), outcome: None };
+        if multi {
+            p.marks = marked.iter().copied().filter(|&i| i < p.rows.len() && p.selectable(i)).collect();
+        }
         p.fix_cursor();
         p
     }
@@ -305,9 +314,18 @@ fn drain_input() -> Result<()> {
 
 /// Asks a list question inline and erases it when answered. Ctrl+C and Esc (without a filter) give `Cancelled`.
 pub fn choose(question: &str, rows: Vec<Row>, multi: bool) -> Result<Outcome> {
+    run(question, Picker::new(rows, multi))
+}
+
+/// [`choose`] with several to pick, the rows `marked` marked at the start.
+pub fn choose_marked(question: &str, rows: Vec<Row>, marked: &[usize]) -> Result<Outcome> {
+    run(question, Picker::with_marks(rows, true, marked))
+}
+
+/// The driver of [`choose`] and [`choose_marked`].
+fn run(question: &str, mut picker: Picker) -> Result<Outcome> {
     let term_h = terminal::size()?.1 as usize;
-    let list_h = rows.len().min(term_h.saturating_sub(2)).max(1);
-    let mut picker = Picker::new(rows, multi);
+    let list_h = picker.rows.len().min(term_h.saturating_sub(2)).max(1);
     let mut session = Session::start((list_h + 2) as u16)?;
     drain_input()?;
     let mut area = Rect::default();
@@ -360,17 +378,22 @@ fn draw_prompt((p, t, dim): (String, String, String)) -> Result<()> {
 /// A one-line text prompt. `placeholder(typed)` is drawn dim after the cursor. Enter gives the text; Esc and Ctrl+C give
 /// `None`. The line is erased afterwards.
 pub fn ask(prompt: &str, placeholder: impl Fn(&str) -> String) -> Result<Option<String>> {
-    read_line(&|typed| prompt_line(prompt, typed, &placeholder))
+    ask_with(prompt, "", placeholder)
+}
+
+/// [`ask`] with `initial` already typed (Enter keeps it; Backspace takes it away a character at a time).
+pub fn ask_with(prompt: &str, initial: &str, placeholder: impl Fn(&str) -> String) -> Result<Option<String>> {
+    read_line(&|typed| prompt_line(prompt, typed, &placeholder), initial)
 }
 
 /// A one-line prompt for a secret (a cookie): what is typed or pasted is never drawn, only how many characters it has.
 /// Enter gives the text; Esc and Ctrl+C give `None`.
 pub fn ask_secret(prompt: &str) -> Result<Option<String>> {
-    read_line(&|typed| secret_line(prompt, typed))
+    read_line(&|typed| secret_line(prompt, typed), "")
 }
 
-/// The prompt loop of [`ask`] and [`ask_secret`]: `line(typed)` gives what to draw.
-fn read_line(line: &dyn Fn(&str) -> (String, String, String)) -> Result<Option<String>> {
+/// The prompt loop of [`ask_with`] and [`ask_secret`]: `line(typed)` gives what to draw, `initial` is typed already.
+fn read_line(line: &dyn Fn(&str) -> (String, String, String), initial: &str) -> Result<Option<String>> {
     struct Raw;
     impl Drop for Raw {
         fn drop(&mut self) {
@@ -381,7 +404,7 @@ fn read_line(line: &dyn Fn(&str) -> (String, String, String)) -> Result<Option<S
     enable_raw_mode()?;
     let _raw = Raw;
     drain_input()?;
-    let mut typed = String::new();
+    let mut typed = initial.to_string();
     loop {
         draw_prompt(line(&typed))?;
         let Event::Key(k) = event::read()? else { continue };
@@ -459,6 +482,14 @@ mod tests {
     fn enter_without_marks_takes_the_cursor() {
         let mut p = sample(true);
         p.key(ch('j'));
+        assert!(matches!(p.key(k(KeyCode::Enter)), Some(Outcome::Picked(v)) if v == vec![4]));
+    }
+
+    #[test]
+    fn marked_rows_start_marked() {
+        // Row 0 is a heading and row 2 is dim: only row 4 can start marked.
+        let mut p = Picker::with_marks(vec![heading("One"), item("a", true), item("b", false), heading("Two"), item("c", true)], true, &[4, 0, 2]);
+        assert_eq!(p.visible(10).iter().filter(|v| v.2).map(|v| v.0).collect::<Vec<_>>(), vec![4]);
         assert!(matches!(p.key(k(KeyCode::Enter)), Some(Outcome::Picked(v)) if v == vec![4]));
     }
 

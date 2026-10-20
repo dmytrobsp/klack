@@ -8,10 +8,11 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use slack_core::session::{self, Profile, SessionSource, WorkspaceSession, workspace_url};
+use slack_core::signin::{self, CodeError, CodeSignIn, CodeTeam};
 
 use crate::login_import::Group;
 use crate::pick::{Item, Row};
-use crate::{login_browser, login_import, pick};
+use crate::{login_browser, login_import, pick, qr};
 
 /// How long `auth status` waits for each workspace's answer.
 const STATUS_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
@@ -26,17 +27,22 @@ pub struct LoginFlags {
     pub no_browser: bool,
     pub from_browser: Option<login_import::Source>,
     pub browser_profile: Option<PathBuf>,
+    pub email: Option<String>,
 }
 
 /// Sign `profile` in as `flags` say and save the session. Without flags, in a terminal, the guide
-/// lists the sign-ins of the browsers ([`guide`]); `--workspace` alone lists the ways to sign in
+/// lists the sign-ins of the browsers and the ways to sign in afresh ([`guide`]); `--email` signs
+/// in with the code Slack emails there ([`by_email`]); `--workspace` alone lists the ways to sign in
 /// to that workspace; `--from-browser`, `--no-browser` and `--cookie` / `$KLACK_COOKIE_D` pick the
 /// way. Without a terminal nothing is asked: the workspace must be given, and the way is the
 /// browser window, then the cookie (from the environment or standard input).
 pub async fn login(profile: &str, flags: LoginFlags) -> Result<()> {
-    let LoginFlags { workspace, cookie, no_browser, from_browser, browser_profile } = flags;
-    let given = cookie.or_else(|| std::env::var("KLACK_COOKIE_D").ok());
+    let LoginFlags { workspace, cookie, no_browser, from_browser, browser_profile, email } = flags;
     let asking = pick::interactive();
+    if let Some(email) = email {
+        return by_email(profile, &email, asking).await;
+    }
+    let given = cookie.or_else(|| std::env::var("KLACK_COOKIE_D").ok());
     let way_given = given.is_some() || no_browser || from_browser.is_some();
     if workspace.is_none() && !way_given && asking {
         guide(profile).await?;
@@ -312,9 +318,10 @@ fn picked_items<T: Copy>(item_rows: &[usize], items: &[T], at: &[usize]) -> Vec<
     at.iter().filter_map(|r| item_rows.iter().position(|i| i == r)).map(|k| items[k]).collect()
 }
 
-/// The guided sign-in: lists the Slack sign-ins of every browser profile (Space marks several,
-/// Enter signs in to them), or another workspace and how to sign in to it. Returns how many
-/// sessions were saved; Esc leaves without saving (or creating) anything.
+/// The guided sign-in: lists the Slack sign-ins of every browser profile and the three ways to sign in afresh (Space
+/// marks several, Enter takes them). The marked sign-ins are saved first (so a failure while asking does not lose
+/// them), then each marked way runs in list order; Esc in a way shows the list again, rebuilt. Returns how many
+/// sessions were saved; Esc at the list leaves without saving (or creating) anything more.
 pub async fn guide(profile_name: &str) -> Result<usize> {
     let path = session::config_dir(profile_name)?.join("session.json");
     let mut saved = Profile::read_or_new(&path)?;
@@ -323,47 +330,314 @@ pub async fn guide(profile_name: &str) -> Result<usize> {
         nothing_signed_in()?;
         return Ok(0);
     };
-    let (rows, choices) = rows(&groups, &saved);
-    let items = item_rows(&rows);
-    let pick::Outcome::Picked(at) = pick::choose("Sign in to:", rows, true)? else {
-        nothing_signed_in()?;
-        return Ok(0);
-    };
-    let mut results = Vec::new();
-    let mut other = false;
-    for choice in picked_items(&items, &choices, &at) {
-        match choice {
-            Choice::Candidate(g, c) => {
-                if let Ok(s) = &groups[g].candidates[c].session {
-                    results.push(Ok(s.clone()));
+    // `reported`: `finish` has said what was signed in to (or that nothing was).
+    let (mut total, mut reported) = (0, false);
+    'list: loop {
+        let (rows, choices) = rows(&groups, &saved, Browsers::Some);
+        let items = item_rows(&rows);
+        let pick::Outcome::Picked(at) = pick::choose("Sign in to:", rows, true)? else { break };
+        let picked = picked_items(&items, &choices, &at);
+        let found: Vec<Result<WorkspaceSession, Failed>> = picked
+            .iter()
+            .filter_map(|choice| match choice {
+                Choice::Candidate(g, c) => groups[*g].candidates[*c].session.clone().ok().map(Ok),
+                _ => None,
+            })
+            .collect();
+        if !found.is_empty() {
+            total += finish(profile_name, &mut saved, found)?;
+            reported = true;
+        }
+        for choice in picked {
+            let step = match choice {
+                Choice::Candidate(..) => continue,
+                Choice::Code => code_way(&saved, &Hint::default()).await?,
+                // Task Y5 builds this way.
+                Choice::InBrowser => {
+                    println!("in your browser — coming in the next step");
+                    Step::Back
                 }
+                Choice::Cookie => cookie_way().await?,
+            };
+            match step {
+                // The way has said why already.
+                Step::Done(results) if results.is_empty() => {}
+                Step::Done(results) => {
+                    total += finish(profile_name, &mut saved, results)?;
+                    reported = true;
+                }
+                Step::Back => continue 'list,
             }
-            Choice::Other => other = true,
         }
+        break;
     }
-    // A failure while asking (the terminal) does not lose what was marked and checked already: that is saved first.
-    let mut trouble = None;
-    if other {
-        let asked = async {
-            match ask_workspace()? {
-                Some(url) => by_way(&groups, &url).await,
-                None => Ok(None),
-            }
-        };
-        match asked.await {
-            Ok(Some(r)) => results.push(r),
-            Ok(None) => {}
-            Err(e) => trouble = Some(e),
+    if !reported {
+        nothing_signed_in()?;
+    }
+    Ok(total)
+}
+
+/// How a way of signing in ended: `Done` with what it signed in to (maybe nothing, having said why), or `Back` (Esc)
+/// to the guide's list.
+enum Step<T> {
+    Done(T),
+    Back,
+}
+
+/// What signing in again knows about the sign-in it replaces; the guide on its own knows nothing.
+#[derive(Debug, Clone, Default)]
+pub struct Hint {
+    /// The address the session's code was sent to: filled in at the email prompt.
+    pub email: Option<String>,
+    /// Team id and name: that workspace is marked when the code's list has it.
+    pub team: Option<(String, String)>,
+    /// The sign-in link of the way "in your browser". Task Y7 fills this in and reads it.
+    #[allow(dead_code)]
+    pub link: Option<String>,
+}
+
+/// The message for a code that is not six letters or digits.
+const BAD_CODE: &str = "a code is 6 letters or digits, like ABC-123";
+/// The line under the code screen until there is something to say.
+const CODE_HINT: &str = "Enter checks the code · Esc goes back";
+
+/// An email as typed, without spaces around it and without control characters (it is printed on the code screen).
+fn clean_email(typed: &str) -> String {
+    typed.trim().chars().filter(|c| !c.is_control()).collect()
+}
+
+fn no_workspace(email: &str) -> String {
+    format!("no workspace signed in with {email} — sign up in Slack first")
+}
+
+/// The code screen printed above the code prompt: how many terminal lines it took, and the message line under it.
+struct CodeScreen {
+    rows: usize,
+    width: u16,
+    /// Whether it can be erased: the screen, the message line and the prompt all fit the terminal.
+    erasable: bool,
+}
+
+impl CodeScreen {
+    /// Prints the screen of `email` for this terminal's size, then the hint line; the prompt goes on the next line.
+    fn show(email: &str) -> Result<CodeScreen> {
+        let (width, height) = crossterm::terminal::size()?;
+        let lines = qr::code_screen(email, width, height);
+        for l in &lines {
+            println!("{l}");
         }
+        let rows = qr::rows_on(&lines, width);
+        let screen = CodeScreen { rows, width, erasable: rows + qr::PROMPT_LINES <= height as usize };
+        println!("\x1b[2m{}\x1b[0m", screen.fitted(CODE_HINT));
+        Ok(screen)
     }
-    let saved_now = match (&trouble, results.is_empty()) {
-        (Some(_), true) => 0,
-        _ => finish(profile_name, &mut saved, results)?,
+
+    /// `text` cut to one line of the terminal, so the message line stays one line.
+    fn fitted(&self, text: &str) -> String {
+        text.chars().take((self.width as usize).saturating_sub(1).max(1)).collect()
+    }
+
+    /// Puts `text` on the message line, in place of what was there (the cursor is at the start of the prompt line).
+    fn say(&self, text: &str) -> Result<()> {
+        use crossterm::{cursor::MoveToPreviousLine, terminal::{Clear, ClearType}};
+        crossterm::execute!(std::io::stdout(), MoveToPreviousLine(1), Clear(ClearType::CurrentLine))?;
+        println!("{}", self.fitted(text));
+        Ok(())
+    }
+
+    /// Erases the screen and the message line, when they still fit the terminal (else they stay in the scrollback).
+    fn erase(&self) -> Result<()> {
+        use crossterm::{cursor::MoveToPreviousLine, terminal::{Clear, ClearType}};
+        if self.erasable {
+            crossterm::execute!(std::io::stdout(), MoveToPreviousLine((self.rows + 1) as u16), Clear(ClearType::FromCursorDown))?;
+        }
+        Ok(())
+    }
+}
+
+/// The way "with a code from your email": the email (filled in from `hint`), the QR code of Slack's sign-in page for
+/// the phone, the code Slack emails, then the workspaces of that email to pick from (`saved`: the profile, for
+/// "already signed in"), each marked one signed in to. Esc (or Ctrl+C) at any question goes `Back`.
+async fn code_way(saved: &Profile, hint: &Hint) -> Result<Step<Vec<Result<WorkspaceSession, Failed>>>> {
+    let mut typed = hint.email.clone().unwrap_or_default();
+    let email = loop {
+        let Some(t) = pick::ask_with("Email: ", &typed, |t| if t.is_empty() { "the address you sign in to Slack with".into() } else { String::new() })? else { return Ok(Step::Back) };
+        let email = clean_email(&t);
+        if signin::email_ok(&email) {
+            break email;
+        }
+        println!("that is not an email address — like you@example.com");
+        typed = t;
     };
-    match trouble {
-        Some(e) => Err(e),
-        None => Ok(saved_now),
+    let Some(started) = looking("Asking Slack…", CodeSignIn::start(&email)).await? else { return Ok(Step::Back) };
+    let s = match started {
+        Ok(s) => s,
+        Err(e) => {
+            println!("✗ Slack's sign-in page did not open: {e:#}");
+            return Ok(Step::Done(Vec::new()));
+        }
+    };
+    let screen = CodeScreen::show(&email)?;
+    loop {
+        // The code is shown as typed: it is short and works once.
+        let Some(typed) = pick::ask("Code: ", |t| if t.is_empty() { "___-___".into() } else { String::new() })? else {
+            screen.erase()?;
+            return Ok(Step::Back);
+        };
+        let Some(code) = signin::normalize_code(&typed) else {
+            screen.say(BAD_CODE)?;
+            continue;
+        };
+        let Some(answer) = looking("Checking the code…", s.confirm(&code)).await? else {
+            screen.erase()?;
+            return Ok(Step::Back);
+        };
+        match answer {
+            Ok(_) => break,
+            // The phone can ask for another code: the prompt comes again.
+            Err(e @ (CodeError::Failed | CodeError::Expired)) => screen.say(&e.to_string())?,
+            Err(e) => {
+                screen.erase()?;
+                println!("✗ {e}");
+                return Ok(Step::Done(Vec::new()));
+            }
+        }
     }
+    screen.erase()?;
+    let Some(listed) = looking("Finding your workspaces…", s.workspaces()).await? else { return Ok(Step::Back) };
+    let teams = match listed {
+        Ok(t) => t,
+        Err(e) => {
+            println!("✗ {e:#}");
+            return Ok(Step::Done(Vec::new()));
+        }
+    };
+    if teams.is_empty() {
+        println!("{}", no_workspace(&email));
+        return Ok(Step::Done(Vec::new()));
+    }
+    // None can be used here: each is said why, without a list that only Esc leaves.
+    if teams.iter().all(|t| why_not(t).is_some()) {
+        return Ok(Step::Done(teams.iter().map(|t| Err((team_name(t).to_string(), why_not(t).unwrap_or_default().to_string()))).collect()));
+    }
+    let (rows, marked) = team_rows(&teams, saved, hint.team.as_ref().map(|(id, _)| id.as_str()));
+    let pick::Outcome::Picked(at) = pick::choose_marked("Sign in to:", rows, &marked)? else { return Ok(Step::Back) };
+    let mut done = Vec::new();
+    for t in at.into_iter().map(|i| &teams[i]) {
+        let Some(r) = looking(&format!("Signing in to {}…", team_name(t)), s.redeem(t)).await? else {
+            // Ctrl+C: the workspaces signed in to so far are kept, the others are left.
+            if done.is_empty() {
+                return Ok(Step::Back);
+            }
+            break;
+        };
+        done.push((team_name(t).to_string(), r));
+    }
+    Ok(Step::Done(redeemed(done)))
+}
+
+/// Each workspace's name and how its sign-in went, as [`finish`] takes them: one that failed is said why, and the
+/// others are signed in all the same.
+fn redeemed(teams: Vec<(String, Result<WorkspaceSession>)>) -> Vec<Result<WorkspaceSession, Failed>> {
+    teams.into_iter().map(|(name, r)| r.map_err(|e| (name, format!("{e:#}")))).collect()
+}
+
+/// How a workspace of the code's list is named: its name, else its domain.
+fn team_name(t: &CodeTeam) -> &str {
+    if t.name.is_empty() { &t.domain } else { &t.name }
+}
+
+/// Why a workspace of the code's list can't be signed in to here; `None` when it can.
+fn why_not(t: &CodeTeam) -> Option<&'static str> {
+    if t.sso_required {
+        Some("needs your browser (SSO)")
+    } else if t.two_factor_required {
+        // Slack's page would ask for the two-factor code (`auth.loginMagic`); not tried without an account to test with.
+        Some("needs your browser (two-factor)")
+    } else {
+        None
+    }
+}
+
+/// The workspaces of the code's list (dim with why when one can't be used; "already signed in" when `profile` has it,
+/// by team: the list names no user), and the rows marked at the start: the one named by `team_hint`, else the only
+/// one that can be used.
+fn team_rows(teams: &[CodeTeam], profile: &Profile, team_hint: Option<&str>) -> (Vec<Row>, Vec<usize>) {
+    let rows: Vec<Row> = teams
+        .iter()
+        .map(|t| match why_not(t) {
+            Some(why) => item(team_name(t), &host_of(&t.url), why, false),
+            None => {
+                let already = profile.workspaces.iter().any(|w| w.team_id == t.team_id);
+                item(team_name(t), &host_of(&t.url), if already { "already signed in" } else { "" }, true)
+            }
+        })
+        .collect();
+    let usable: Vec<usize> = (0..teams.len()).filter(|&i| why_not(&teams[i]).is_none()).collect();
+    let marked = match team_hint {
+        Some(id) => usable.iter().copied().filter(|&i| teams[i].team_id == id).collect(),
+        None if usable.len() == 1 => usable,
+        None => Vec::new(),
+    };
+    (rows, marked)
+}
+
+/// The cookie way as W had it (Task Y4 replaces it): the `d` cookie, then the workspace it is for.
+async fn cookie_way() -> Result<Step<Vec<Result<WorkspaceSession, Failed>>>> {
+    let Some(c) = pick::ask_secret(COOKIE_PROMPT)? else { return Ok(Step::Back) };
+    let Some(url) = ask_workspace()? else { return Ok(Step::Back) };
+    Ok(Step::Done(vec![cookie_session(&url, &c).await.map_err(|e| (host_of(&url), format!("{e:#}")))]))
+}
+
+/// `auth login --email ADDRESS`: the code way for that address. In a terminal it is [`code_way`] with the address
+/// filled in; without one Slack's sign-in link is printed, the code is read from standard input, and every listed
+/// workspace that can be used is signed in to.
+async fn by_email(profile_name: &str, email: &str, asking: bool) -> Result<()> {
+    let mut saved = Profile::read_or_new(&session::config_dir(profile_name)?.join("session.json"))?;
+    let results = if asking {
+        match code_way(&saved, &Hint { email: Some(email.to_string()), ..Hint::default() }).await? {
+            Step::Done(r) => r,
+            Step::Back => Vec::new(),
+        }
+    } else {
+        code_from_stdin(email).await?
+    };
+    if results.is_empty() {
+        return nothing_signed_in();
+    }
+    finish(profile_name, &mut saved, results)?;
+    Ok(())
+}
+
+/// The code way without a terminal: the link and the question on standard error, the code from standard input.
+async fn code_from_stdin(email: &str) -> Result<Vec<Result<WorkspaceSession, Failed>>> {
+    let email = clean_email(email);
+    if !signin::email_ok(&email) {
+        bail!("--email {email}: that is not an email address");
+    }
+    let s = CodeSignIn::start(&email).await.context("Slack's sign-in page did not open")?;
+    eprintln!("{}", signin::signin_link(&email));
+    eprint!("type the code Slack emails you: ");
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    // A piped code is not echoed: what follows starts a line of its own.
+    if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+        eprintln!();
+    }
+    let code = signin::normalize_code(&line).ok_or_else(|| anyhow!(BAD_CODE))?;
+    s.confirm(&code).await.map_err(|e| anyhow!("{e}"))?;
+    let teams = s.workspaces().await?;
+    if teams.is_empty() {
+        bail!("{}", no_workspace(&email));
+    }
+    let mut out = Vec::new();
+    for t in &teams {
+        out.extend(match why_not(t) {
+            Some(why) => vec![Err((team_name(t).to_string(), why.to_string()))],
+            None => redeemed(vec![(team_name(t).to_string(), s.redeem(t).await)]),
+        });
+    }
+    Ok(out)
 }
 
 /// The guide's first line: the profile it signs in, or that there is no such profile yet (`exists`: it has a
@@ -406,8 +680,23 @@ pub async fn sign_in_again(profile_name: &str, ws: &WorkspaceSession) -> Result<
 pub enum Choice {
     /// A workspace a browser profile is signed in to: group, candidate.
     Candidate(usize, usize),
-    /// `another workspace, or sign in another way…`
-    Other,
+    /// `with a code from your email`
+    Code,
+    /// `in your browser`
+    InBrowser,
+    /// `paste a cookie`
+    Cookie,
+}
+
+/// Whether this machine has browser profiles for the way "in your browser" to watch (Task Y5 finds out).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Browsers {
+    Some,
+    // Task Y5 tells these apart.
+    #[cfg_attr(not(test), allow(dead_code))]
+    None,
+    #[cfg_attr(not(test), allow(dead_code))]
+    OnlyUnreadable,
 }
 
 /// A way to sign in to one workspace (one per item row of [`ways`], in row order).
@@ -419,8 +708,10 @@ enum Way {
     Cookie,
 }
 
-/// The guide's last row.
-const OTHER: &str = "another workspace, or sign in another way…";
+/// The guide's ways to sign in afresh, its last three rows.
+const CODE_WAY: &str = "with a code from your email";
+const IN_BROWSER: &str = "in your browser";
+const PASTE_COOKIE: &str = "paste a cookie";
 /// The ways to sign in to a workspace that is typed in.
 const WINDOW: &str = "in a new browser window";
 const WINDOW_NOTE: &str = "fresh — Google won't know you; may ask for a captcha";
@@ -437,8 +728,9 @@ fn item(text: &str, detail: &str, note: &str, enabled: bool) -> Row {
 }
 
 /// The guide's list: a heading per browser profile (a dim one with its problem when it could not be
-/// looked at), a row per workspace found there, and the last row for anything else.
-pub fn rows(groups: &[Group], profile: &Profile) -> (Vec<Row>, Vec<Choice>) {
+/// looked at), a row per workspace found there, and the three ways to sign in afresh (the browser way
+/// dim with why when `browsers` says there is none to use).
+pub fn rows(groups: &[Group], profile: &Profile, browsers: Browsers) -> (Vec<Row>, Vec<Choice>) {
     let (mut rows, mut choices) = (Vec::new(), Vec::new());
     for (g, group) in groups.iter().enumerate() {
         let label = &group.profile.label;
@@ -469,8 +761,17 @@ pub fn rows(groups: &[Group], profile: &Profile) -> (Vec<Row>, Vec<Choice>) {
     if !rows.is_empty() {
         rows.push(Row::Heading { title: String::new(), detail: String::new() });
     }
-    rows.push(item(OTHER, "", "", true));
-    choices.push(Choice::Other);
+    let browser_note = match browsers {
+        Browsers::Some => "",
+        Browsers::None => "no browser found here — use the code",
+        Browsers::OnlyUnreadable => "Chrome on Windows can't be read — use Firefox, or the code",
+    };
+    rows.push(item(CODE_WAY, "", "phone or any device", true));
+    choices.push(Choice::Code);
+    rows.push(item(IN_BROWSER, "", browser_note, browsers == Browsers::Some));
+    choices.push(Choice::InBrowser);
+    rows.push(item(PASTE_COOKIE, "", "", true));
+    choices.push(Choice::Cookie);
     (rows, choices)
 }
 
@@ -782,6 +1083,7 @@ mod tests {
 
     use crate::login_import::{BrowserProfile, Candidate, Source};
     use slack_core::session::LoggedInTeam;
+    use slack_core::signin::CodeTeam;
 
     fn found(team: &str, name: &str, user: Option<&str>, label: &str) -> Candidate {
         let domain = name.to_lowercase();
@@ -820,7 +1122,7 @@ mod tests {
         profile.upsert(account("T0000000002", "Widgets", "U0000000001"));
         // Another account of Acme is not this one.
         profile.upsert(account("T0000000001", "Acme", "U0000000002"));
-        let (rows, choices) = rows(&groups, &profile);
+        let (rows, choices) = rows(&groups, &profile, Browsers::Some);
         assert_eq!(
             shown(&rows),
             [
@@ -830,25 +1132,78 @@ mod tests {
                 "# Firefox · default | ",
                 "- Widgets | widgets.slack.com | as person-U0000000001  already signed in",
                 "#  | ",
-                "- another workspace, or sign in another way… |  | ",
+                "- with a code from your email |  | phone or any device",
+                "- in your browser |  | ",
+                "- paste a cookie |  | ",
             ]
         );
-        assert_eq!(choices, [Choice::Candidate(0, 0), Choice::Candidate(0, 1), Choice::Candidate(2, 0), Choice::Other]);
+        assert_eq!(choices, [Choice::Candidate(0, 0), Choice::Candidate(0, 1), Choice::Candidate(2, 0), Choice::Code, Choice::InBrowser, Choice::Cookie]);
     }
 
     #[test]
     fn a_problem_group_is_a_dim_heading() {
         let groups = vec![group("Chrome · Work", Some("person@example.com"), Some("can't read Chrome's key: the keyring is locked"), vec![])];
-        let (rows, choices) = rows(&groups, &Profile::default());
-        assert_eq!(shown(&rows), ["#  | Chrome · Work  person@example.com — can't read Chrome's key: the keyring is locked", "#  | ", "- another workspace, or sign in another way… |  | "]);
-        assert_eq!(choices, [Choice::Other]);
+        let (rows, choices) = rows(&groups, &Profile::default(), Browsers::Some);
+        assert_eq!(shown(&rows), ["#  | Chrome · Work  person@example.com — can't read Chrome's key: the keyring is locked", "#  | ", "- with a code from your email |  | phone or any device", "- in your browser |  | ", "- paste a cookie |  | "]);
+        assert_eq!(choices, [Choice::Code, Choice::InBrowser, Choice::Cookie]);
     }
 
     #[test]
     fn nothing_found_still_offers_another_way() {
-        let (rows, choices) = rows(&[], &Profile::default());
-        assert_eq!(shown(&rows), ["- another workspace, or sign in another way… |  | "]);
-        assert_eq!(choices, [Choice::Other]);
+        let (rows, choices) = rows(&[], &Profile::default(), Browsers::Some);
+        assert_eq!(shown(&rows), ["- with a code from your email |  | phone or any device", "- in your browser |  | ", "- paste a cookie |  | "]);
+        assert_eq!(choices, [Choice::Code, Choice::InBrowser, Choice::Cookie]);
+    }
+
+    #[test]
+    fn the_browser_way_is_dim_without_browsers() {
+        let none = shown(&rows(&[], &Profile::default(), Browsers::None).0);
+        assert_eq!(none[1], "- in your browser |  | no browser found here — use the code (dim)");
+        let unreadable = shown(&rows(&[], &Profile::default(), Browsers::OnlyUnreadable).0);
+        assert_eq!(unreadable[1], "- in your browser |  | Chrome on Windows can't be read — use Firefox, or the code (dim)");
+        // The code and the cookie can always be picked.
+        assert!(!unreadable[0].ends_with("(dim)") && !unreadable[2].ends_with("(dim)"));
+    }
+
+    fn code_team(id: &str, name: &str, sso: bool, two_factor: bool) -> CodeTeam {
+        let domain = name.to_lowercase();
+        CodeTeam { team_id: id.into(), name: name.into(), url: format!("https://{domain}.slack.com/"), domain, magic_login_url: "https://example.com/magic".into(), sso_required: sso, two_factor_required: two_factor }
+    }
+
+    #[test]
+    fn code_teams_are_listed_with_why_not() {
+        let teams = vec![code_team("T0000000001", "Acme", false, false), code_team("T0000000003", "Beta", true, false), code_team("T0000000004", "Gamma", false, true), code_team("T0000000002", "Widgets", false, false)];
+        let mut profile = Profile::default();
+        profile.upsert(account("T0000000002", "Widgets", "U0000000001"));
+        let (rows, marked) = team_rows(&teams, &profile, None);
+        assert_eq!(
+            shown(&rows),
+            [
+                "- Acme | acme.slack.com | ",
+                "- Beta | beta.slack.com | needs your browser (SSO) (dim)",
+                "- Gamma | gamma.slack.com | needs your browser (two-factor) (dim)",
+                "- Widgets | widgets.slack.com | already signed in",
+            ]
+        );
+        // Two can be used (signing in again refreshes the one the profile has): none is guessed.
+        assert_eq!(marked, Vec::<usize>::new());
+        // Signing in again names the team: that one.
+        assert_eq!(team_rows(&teams, &profile, Some("T0000000002")).1, [3]);
+        // A hint naming a team that can't be used marks nothing.
+        assert_eq!(team_rows(&teams, &profile, Some("T0000000003")).1, Vec::<usize>::new());
+        // Only one can be used: it is marked.
+        assert_eq!(team_rows(&teams[..2], &profile, None).1, [0]);
+    }
+
+    #[test]
+    fn a_team_that_fails_does_not_stop_the_others() {
+        let (s1, s2) = (account("T0000000001", "Acme", "U0000000001"), account("T0000000003", "Other", "U0000000001"));
+        let out = redeemed(vec![("Acme".into(), Ok(s1)), ("Widgets".into(), Err(anyhow!("Slack did not sign in to Widgets"))), ("Other".into(), Ok(s2))]);
+        let shown: Vec<String> = out.iter().map(|r| match r {
+            Ok(s) => format!("ok {}", s.team_name),
+            Err((team, why)) => format!("err {team}: {why}"),
+        }).collect();
+        assert_eq!(shown, ["ok Acme", "err Widgets: Slack did not sign in to Widgets", "ok Other"]);
     }
 
     #[test]

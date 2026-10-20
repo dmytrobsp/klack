@@ -1,7 +1,5 @@
 //! The QR code of the sign-in link and the layout of the "Sign in with a code" screen: pure, so the
 //! guide only prints the lines.
-// Task Y3 prints `code_screen` in the sign-in guide and removes this.
-#![cfg_attr(not(test), allow(dead_code))]
 
 use qrcode::{Color, EcLevel, QrCode};
 use unicode_width::UnicodeWidthStr;
@@ -56,8 +54,8 @@ pub enum Fit {
 
 /// Lines above the code: the heading, the email and a blank.
 const HEADER_LINES: usize = 3;
-/// Lines Task Y3 prints below the code screen: the code prompt and its hint.
-const PROMPT_LINES: usize = 2;
+/// Lines the guide prints below the code screen: a hint or message line, then the code prompt.
+pub const PROMPT_LINES: usize = 2;
 /// Lines of text beside or under the code (the intro, the link and the two hint lines).
 const TEXT_LINES: usize = 4;
 
@@ -110,6 +108,38 @@ pub fn code_screen(email: &str, width: u16, height: u16) -> Vec<String> {
     lines
 }
 
+/// The text without its SGR and OSC 8 escapes.
+fn visible(s: &str) -> String {
+    let mut out = String::new();
+    let mut it = s.chars().peekable();
+    while let Some(c) = it.next() {
+        if c != '\x1b' {
+            out.push(c);
+        } else if it.peek() == Some(&'[') {
+            for d in it.by_ref() {
+                if d.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            // OSC: up to the string terminator ESC \
+            while let Some(d) = it.next() {
+                if d == '\x1b' {
+                    it.next();
+                    break;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// How many terminal lines `lines` take on a terminal `width` columns wide, the long ones wrapped.
+pub fn rows_on(lines: &[String], width: u16) -> usize {
+    let width = (width as usize).max(1);
+    lines.iter().map(|l| visible(l).width().div_ceil(width).max(1)).sum()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -157,32 +187,6 @@ mod tests {
         assert!(code_screen("person@example.com", 120, 40).join("\n").contains('▀'));
     }
 
-    /// The text without its SGR and OSC 8 escapes.
-    fn visible(s: &str) -> String {
-        let mut out = String::new();
-        let mut it = s.chars().peekable();
-        while let Some(c) = it.next() {
-            if c != '\x1b' {
-                out.push(c);
-            } else if it.peek() == Some(&'[') {
-                for d in it.by_ref() {
-                    if d.is_ascii_alphabetic() {
-                        break;
-                    }
-                }
-            } else {
-                // OSC: up to the string terminator ESC \
-                while let Some(d) = it.next() {
-                    if d == '\x1b' {
-                        it.next();
-                        break;
-                    }
-                }
-            }
-        }
-        out
-    }
-
     #[test]
     fn beside_lines_are_no_wider_than_the_fit_says() {
         let link = slack_core::signin::signin_link("person@example.com");
@@ -195,6 +199,15 @@ mod tests {
             assert!(v.width() >= qr_cols, "{v:?}");
         }
         assert!(visible(&screen[3]).ends_with("or open"));
+    }
+
+    #[test]
+    fn wrapped_lines_are_counted() {
+        // The link is 51 columns: 3 lines on a terminal 20 wide; an empty line is still one.
+        let link = osc8("https://slack.com/signin?email=person%40example.com");
+        assert_eq!(rows_on(&[String::new(), "abc".into(), link], 20), 5);
+        let screen = code_screen("person@example.com", 100, 40);
+        assert_eq!(rows_on(&screen, 100), screen.len());
     }
 
     /// Prints the screen for the live check: `KLACK_QR_OUT=file cargo test -p klack qr_print -- --ignored`.
