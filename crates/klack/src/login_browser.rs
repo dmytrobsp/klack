@@ -28,6 +28,18 @@ impl std::fmt::Display for NoBrowser {
 
 impl std::error::Error for NoBrowser {}
 
+/// Ctrl+C was pressed while waiting for the sign-in in the window.
+#[derive(Debug)]
+pub struct Cancelled;
+
+impl std::fmt::Display for Cancelled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "cancelled")
+    }
+}
+
+impl std::error::Error for Cancelled {}
+
 /// A browser to start: its command and the folder its temporary profile goes under (a flatpak
 /// can only write inside its own folder).
 pub struct Browser {
@@ -105,7 +117,7 @@ pub async fn sign_in(browser: &Browser, workspace_url: &str) -> Result<Workspace
     tracing::info!(profile = %profile.display(), "browser sign-in: {} started", browser.label);
     let result = tokio::select! {
         r = capture(&mut window, workspace_url) => r,
-        _ = tokio::signal::ctrl_c() => Err(anyhow!("cancelled")),
+        _ = tokio::signal::ctrl_c() => Err(Cancelled.into()),
     };
     window.close().await;
     result
@@ -119,14 +131,15 @@ fn window_args(profile: &Path, workspace_url: &str) -> Vec<String> {
     args
 }
 
-/// Seed the temporary profile's settings before the browser starts: browser sign-in off. After a Google sign-in on a
-/// page (Slack's "Sign in with Google") Chrome offers to sign the browser in ("Sign in to Chrome?") or to set up a
+/// Seed the temporary profile's settings before the browser starts: Chrome's own sign-in off. After a Google sign-in
+/// on a page (Slack's "Sign in with Google") Chrome offers to sign the browser in ("Sign in to Chrome?") or to set up a
 /// profile for that account; neither has a command-line switch or a feature to turn off any more (Chromium's
-/// interception feature flags were removed once it launched), but both are skipped when the profile's `signin.allowed`
-/// is false, and `signin.interception_enabled` false turns the profile bubble off on its own. Signing in on the page
-/// itself works as in any window.
+/// interception feature flags were removed once it launched). Both are skipped when the profile's `signin.allowed` is
+/// false — which Chrome sets from `signin.allowed_on_next_startup` each time the profile loads, so that one is false
+/// too — and `signin.interception_enabled` false turns the profile bubble off on its own. This does not stop "Sign in
+/// with Google" on the page itself: only Chrome's offers that follow it.
 fn prepare_profile(profile: &Path) -> Result<()> {
-    let prefs = json!({"signin": {"allowed": false, "interception_enabled": false}, "browser": {"has_seen_welcome_page": true}});
+    let prefs = json!({"signin": {"allowed": false, "allowed_on_next_startup": false, "interception_enabled": false}, "browser": {"has_seen_welcome_page": true}});
     let dir = profile.join("Default");
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     std::fs::write(dir.join("Preferences"), prefs.to_string())?;
@@ -270,6 +283,8 @@ mod tests {
         let prefs: Value = serde_json::from_str(&std::fs::read_to_string(profile.join("Default/Preferences")).unwrap()).unwrap();
         assert_eq!(prefs["signin"]["allowed"], json!(false));
         assert_eq!(prefs["signin"]["interception_enabled"], json!(false));
+        // Chrome sets `signin.allowed` from this one each time the profile loads.
+        assert_eq!(prefs["signin"]["allowed_on_next_startup"], json!(false));
         std::fs::remove_dir_all(&profile).unwrap();
     }
 

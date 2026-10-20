@@ -293,12 +293,23 @@ impl Drop for Session {
     }
 }
 
+/// Throws away input typed before the question was drawn (keys pressed while klack was looking for something): an
+/// Enter typed then would otherwise pick the first row the moment the list appears. Raw mode must be on, so a typed
+/// but unfinished line is given up as well.
+fn drain_input() -> Result<()> {
+    while event::poll(std::time::Duration::ZERO)? {
+        let _ = event::read()?;
+    }
+    Ok(())
+}
+
 /// Asks a list question inline and erases it when answered. Ctrl+C and Esc (without a filter) give `Cancelled`.
 pub fn choose(question: &str, rows: Vec<Row>, multi: bool) -> Result<Outcome> {
     let term_h = terminal::size()?.1 as usize;
     let list_h = rows.len().min(term_h.saturating_sub(2)).max(1);
     let mut picker = Picker::new(rows, multi);
     let mut session = Session::start((list_h + 2) as u16)?;
+    drain_input()?;
     let mut area = Rect::default();
     loop {
         session.term.draw(|f| {
@@ -369,6 +380,7 @@ fn read_line(line: &dyn Fn(&str) -> (String, String, String)) -> Result<Option<S
     }
     enable_raw_mode()?;
     let _raw = Raw;
+    drain_input()?;
     let mut typed = String::new();
     loop {
         draw_prompt(line(&typed))?;

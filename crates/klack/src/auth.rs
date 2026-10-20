@@ -59,7 +59,7 @@ pub async fn login(profile: &str, flags: LoginFlags) -> Result<()> {
         }
     } else if asking {
         // `--workspace` alone: the ways to sign in to it, the browsers signed in to it first.
-        let groups = looking("Looking for Slack in your browsers…", login_import::discover()).await?;
+        let Some(groups) = looking("Looking for Slack in your browsers…", login_import::discover()).await? else { return nothing_signed_in() };
         match by_way(&groups, &url).await? {
             Some(Ok(s)) => Some(s),
             Some(Err((_, why))) => bail!("{why}"),
@@ -149,15 +149,66 @@ async fn window_session(browser: &login_browser::Browser, url: &str) -> Result<W
     Ok(WorkspaceSession { source: Some(SessionSource::Window), ..s })
 }
 
-/// Shows `line` while `work` runs, then erases it.
-async fn looking<T>(line: &str, work: impl std::future::Future<Output = T>) -> Result<T> {
+/// Shows `line` while `work` runs, then erases it; `None` when Ctrl+C was pressed meanwhile (like Esc). Keys pressed
+/// meanwhile are not echoed (an Enter would move the line out of reach of the erase); the question that follows throws
+/// them away.
+async fn looking<T>(line: &str, work: impl std::future::Future<Output = T>) -> Result<Option<T>> {
     use std::io::Write;
     let mut out = std::io::stdout();
     write!(out, "{line}")?;
     out.flush()?;
-    let done = work.await;
+    // Ctrl+C is caught here rather than ending klack, so the echo is always put back.
+    let quiet = NoEcho::start();
+    let done = tokio::select! {
+        d = work => Some(d),
+        _ = tokio::signal::ctrl_c() => None,
+    };
+    drop(quiet);
     crossterm::execute!(out, crossterm::cursor::MoveToColumn(0), crossterm::terminal::Clear(crossterm::terminal::ClearType::CurrentLine))?;
     Ok(done)
+}
+
+/// The terminal's echo off for as long as it lives (Ctrl+C still works); on other systems, and when standard input is
+/// not a terminal, nothing.
+struct NoEcho {
+    #[cfg(unix)]
+    saved: Option<libc::termios>,
+}
+
+impl NoEcho {
+    fn start() -> NoEcho {
+        #[cfg(unix)]
+        {
+            // SAFETY: tcgetattr / tcsetattr only read and write the terminal settings of standard input into a
+            // termios owned here; a failure (not a terminal) leaves them alone.
+            unsafe {
+                let mut t: libc::termios = std::mem::zeroed();
+                if libc::tcgetattr(libc::STDIN_FILENO, &mut t) != 0 {
+                    return NoEcho { saved: None };
+                }
+                let saved = t;
+                t.c_lflag &= !(libc::ECHO | libc::ECHONL);
+                if libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &t) != 0 {
+                    return NoEcho { saved: None };
+                }
+                NoEcho { saved: Some(saved) }
+            }
+        }
+        #[cfg(not(unix))]
+        NoEcho {}
+    }
+}
+
+impl Drop for NoEcho {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        if let Some(saved) = &self.saved {
+            // SAFETY: puts back the settings read in `start`.
+            unsafe {
+                libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, saved);
+            }
+        }
+    }
 }
 
 /// Asks for the workspace (`.slack.com` shown dim after a name) until it names one; `None` on Esc.
@@ -190,7 +241,14 @@ async fn by_way(groups: &[Group], url: &str) -> Result<Option<Result<WorkspaceSe
             Err(e) => Err((host.clone(), e.clone())),
         },
         Way::Window => match &browser {
-            Some(b) => window_session(b, url).await.or_else(failed),
+            Some(b) => match window_session(b, url).await {
+                // Ctrl+C while the window waits: like Esc (on a line of its own, after the terminal's `^C`).
+                Err(e) if e.is::<login_browser::Cancelled>() => {
+                    println!();
+                    return Ok(None);
+                }
+                r => r.or_else(failed),
+            },
             None => Err((host.clone(), login_browser::NoBrowser.to_string())),
         },
         Way::Cookie => match pick::ask_secret(COOKIE_PROMPT)? {
@@ -200,10 +258,27 @@ async fn by_way(groups: &[Group], url: &str) -> Result<Option<Result<WorkspaceSe
     }))
 }
 
+/// Each account (team + user) once, the first time it comes: the same account found in two browser profiles and
+/// marked in both is signed in to once.
+fn once_each(results: Vec<Result<WorkspaceSession, Failed>>) -> Vec<Result<WorkspaceSession, Failed>> {
+    let mut seen: Vec<(String, String)> = Vec::new();
+    results
+        .into_iter()
+        .filter(|r| match r {
+            Ok(s) if seen.iter().any(|(t, u)| *t == s.team_id && *u == s.user_id) => false,
+            Ok(s) => {
+                seen.push((s.team_id.clone(), s.user_id.clone()));
+                true
+            }
+            Err(_) => true,
+        })
+        .collect()
+}
+
 /// Saves the sessions that worked to `profile_name` and prints a line for each workspace:
 /// `✓ Signed in …` or `✗ <workspace>: <why>`. Returns how many were saved.
 fn finish(profile_name: &str, saved: &mut Profile, results: Vec<Result<WorkspaceSession, Failed>>) -> Result<usize> {
-    let (good, bad): (Vec<_>, Vec<_>) = results.into_iter().partition(|r| r.is_ok());
+    let (good, bad): (Vec<_>, Vec<_>) = once_each(results).into_iter().partition(|r| r.is_ok());
     let good: Vec<WorkspaceSession> = good.into_iter().flatten().collect();
     for s in &good {
         saved.upsert(s.clone());
@@ -243,7 +318,10 @@ pub async fn guide(profile_name: &str) -> Result<usize> {
     } else {
         println!("Signing in profile {profile_name}.");
     }
-    let groups = looking("Looking for Slack in your browsers…", login_import::discover()).await?;
+    let Some(groups) = looking("Looking for Slack in your browsers…", login_import::discover()).await? else {
+        nothing_signed_in()?;
+        return Ok(0);
+    };
     let (rows, choices) = rows(&groups, &saved);
     let items = item_rows(&rows);
     let pick::Outcome::Picked(at) = pick::choose("Sign in to:", rows, true)? else {
@@ -262,13 +340,29 @@ pub async fn guide(profile_name: &str) -> Result<usize> {
             Choice::Other => other = true,
         }
     }
-    if other
-        && let Some(url) = ask_workspace()?
-        && let Some(r) = by_way(&groups, &url).await?
-    {
-        results.push(r);
+    // A failure while asking (the terminal) does not lose what was marked and checked already: that is saved first.
+    let mut trouble = None;
+    if other {
+        let asked = async {
+            match ask_workspace()? {
+                Some(url) => by_way(&groups, &url).await,
+                None => Ok(None),
+            }
+        };
+        match asked.await {
+            Ok(Some(r)) => results.push(r),
+            Ok(None) => {}
+            Err(e) => trouble = Some(e),
+        }
     }
-    finish(profile_name, &mut saved, results)
+    let saved_now = match (&trouble, results.is_empty()) {
+        (Some(_), true) => 0,
+        _ => finish(profile_name, &mut saved, results)?,
+    };
+    match trouble {
+        Some(e) => Err(e),
+        None => Ok(saved_now),
+    }
 }
 
 /// Signs `ws`'s account in again, offering where its session came from first: a browser profile
@@ -279,7 +373,13 @@ pub async fn guide(profile_name: &str) -> Result<usize> {
 pub async fn sign_in_again(profile_name: &str, ws: &WorkspaceSession) -> Result<bool> {
     if let Some(SessionSource::Browser { profile, label, .. }) = &ws.source {
         let still = match login_import::browser_profiles().into_iter().find(|b| &b.dir == profile) {
-            Some(b) => still_signed_in(&looking(&format!("Looking at {label}…"), login_import::discover_in(vec![b])).await?, ws),
+            Some(b) => match looking(&format!("Looking at {label}…"), login_import::discover_in(vec![b])).await? {
+                Some(groups) => still_signed_in(&groups, ws),
+                None => {
+                    nothing_signed_in()?;
+                    return Ok(false);
+                }
+            },
             None => None,
         };
         match still {
@@ -327,10 +427,15 @@ pub fn workspace_url(input: &str) -> Result<String, String> {
     let text = input.trim().to_lowercase();
     let rest = text.strip_prefix("https://").or_else(|| text.strip_prefix("http://")).unwrap_or(&text);
     let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    // A pasted https link may carry its port.
+    let host = host.strip_suffix(":443").unwrap_or(host);
     if host.is_empty() {
         return Err("type the workspace's name, like acme".into());
     }
-    if ["slack.com", "app.slack.com", "www.slack.com"].contains(&host) {
+    // Slack's own hosts that are not a workspace (and the sign-in page's).
+    let (first, rest) = host.split_once('.').unwrap_or((host, ""));
+    let slack = ["slack.com", "slack-gov.com"];
+    if slack.contains(&host) || (slack.contains(&rest) && ["app", "www", "api", "edgeapi", "files", "status"].contains(&first)) || host.contains("slack-files") {
         return Err("that link doesn't name the workspace — type its name".into());
     }
     let host = if host.contains('.') { host.to_string() } else { format!("{host}.slack.com") };
@@ -589,12 +694,19 @@ mod tests {
         }
         assert_eq!(workspace_url("acme.enterprise.slack.com").as_deref(), Ok("https://acme.enterprise.slack.com/"));
         assert_eq!(workspace_url("my-team2").as_deref(), Ok("https://my-team2.slack.com/"));
+        // The port of a pasted https link is dropped.
+        assert_eq!(workspace_url("https://acme.slack.com:443/archives/C1").as_deref(), Ok("https://acme.slack.com/"));
     }
 
     #[test]
     fn workspace_url_refuses_what_names_no_workspace() {
         assert_eq!(workspace_url("https://app.slack.com/client/T1/C1"), Err("that link doesn't name the workspace — type its name".to_string()));
         assert!(workspace_url("app.slack.com").is_err());
+        // Slack's own hosts that are not a workspace.
+        for host in ["files.slack.com", "https://status.slack.com/", "api.slack.com/methods", "edgeapi.slack.com", "www.slack.com", "https://slack-files.com/T1-F1-abc", "app.slack-gov.com"] {
+            assert_eq!(workspace_url(host), Err("that link doesn't name the workspace — type its name".to_string()), "{host:?}");
+        }
+        assert!(workspace_url("acme.slack.com:8080").is_err());
         for bad in ["", "   ", "a b", "acme.example.com", "acme..slack.com", "ac_me"] {
             assert!(workspace_url(bad).is_err(), "{bad:?}");
         }
@@ -681,6 +793,20 @@ mod tests {
         // Signed out there, or never signed in there.
         assert!(still_signed_in(&groups, &account("T0000000002", "Widgets", "U0000000001")).is_none());
         assert!(still_signed_in(&groups, &account("T0000000003", "Other", "U0000000001")).is_none());
+    }
+
+    #[test]
+    fn an_account_marked_twice_signs_in_once() {
+        let first = WorkspaceSession { url: "first".into(), ..account("T0000000001", "Acme", "U0000000001") };
+        let second = WorkspaceSession { url: "second".into(), ..account("T0000000001", "Acme", "U0000000001") };
+        let other = account("T0000000001", "Acme", "U0000000002");
+        let failed: Result<WorkspaceSession, Failed> = Err(("acme.slack.com".into(), "no".into()));
+        let kept = once_each(vec![Ok(first), failed, Ok(second), Ok(other)]);
+        let shown: Vec<String> = kept.iter().map(|r| match r {
+            Ok(s) => format!("{} {}", s.user_id, s.url),
+            Err((host, _)) => host.clone(),
+        }).collect();
+        assert_eq!(shown, ["U0000000001 first", "acme.slack.com", "U0000000002 "]);
     }
 
     #[test]

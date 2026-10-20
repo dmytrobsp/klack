@@ -38,7 +38,7 @@ pub struct BrowserProfile {
     /// The browser and the profile's name: "Chrome · Work", "Firefox · default-release".
     pub label: String,
     /// The Google account a Chrome-family profile is signed in to.
-            pub account: Option<String>,
+    pub account: Option<String>,
 }
 
 /// A workspace a browser profile is signed in to, and its session (or why it does not work).
