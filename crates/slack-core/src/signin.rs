@@ -203,7 +203,8 @@ impl CodeSignIn {
 
     /// Follows the team's magic link, which sets the `d` cookie, and turns that into a session.
     pub async fn redeem(&self, team: &CodeTeam) -> Result<WorkspaceSession> {
-        self.http.get(&team.magic_login_url).send().await?;
+        // The link is a one-time secret and reqwest's errors print the URL, so the error is rebuilt without it.
+        self.http.get(&team.magic_login_url).send().await.map_err(|e| anyhow!("Slack did not sign in to {}: {}", team.name, e.without_url()))?;
         let header = self.jar.cookies(&"https://slack.com/".parse()?).and_then(|h| h.to_str().ok().map(str::to_string)).unwrap_or_default();
         let d = cookie_value(&header, "d").ok_or_else(|| anyhow!("Slack did not sign in to {}", team.name))?;
         // A client without the jar, so `session_from_cookie_with` sends the only Cookie header.
@@ -309,6 +310,17 @@ mod tests {
             Err(CodeError::Other(m)) => assert!(m.contains("429") && !m.contains("secret"), "{m}"),
             other => panic!("{other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn a_failed_magic_link_does_not_show_the_link() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let signin = CodeSignIn::at("person@example.com", "http://127.0.0.1:9").unwrap();
+        let team = CodeTeam { team_id: "T0000000001".into(), name: "Acme".into(), domain: "acme".into(), url: "https://acme.slack.com/".into(), magic_login_url: format!("http://127.0.0.1:{port}/magic-login/secret-token-123"), sso_required: false, two_factor_required: false };
+        let text = format!("{:#}", signin.redeem(&team).await.unwrap_err());
+        assert!(text.contains("Acme"), "{text}");
+        assert!(!text.contains("secret") && !text.contains("magic-login") && !text.contains(&port.to_string()), "{text}");
     }
 
     /// Live: Slack's real sign-in page and a wrong code for a made-up address. Sends no email.
