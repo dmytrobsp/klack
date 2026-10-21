@@ -134,7 +134,8 @@ def _mb(mb):
     return f"{mb / 1e3:.1f} GB" if round(mb, 1) >= 1000 else f"{mb:.1f} MB"
 
 
-def fmt_value(v, unit):
+def fmt_value(v, unit, small=False):
+    """small: a percent row with a side under 1 % — two decimals, so a gap like 0.45 vs 0.63 isn't rounded away."""
     if v == 0:
         return "none"
     if unit == "bytes":
@@ -142,7 +143,7 @@ def fmt_value(v, unit):
     if unit == "kB":
         return _mb(v / 1e3)
     if unit == "percent":
-        return f"{v:.1f}%"
+        return f"{v:.2f}%" if small else f"{v:.1f}%"
     if unit == "seconds":
         return f"{v:.2f} s" if v < 10 else f"{v:.1f} s"
     raise ValueError(f"unknown unit {unit!r}")
@@ -152,18 +153,27 @@ def fmt_ratio(r):
     return f"{round(r)}" if round(r, 1) >= 10 else f"{r:.1f}"
 
 
+def classify(r):
+    k, o = r["klack"], r["slack"]
+    if k == 0:
+        return "zero" if o > 0 else "tie"
+    if o / k >= WIN:
+        return "win"
+    return "loss" if k > o else "tie"
+
+
 def _row(r):
     k, o, unit = r["klack"], r["slack"], r["unit"]
-    kv, ov = txt(fmt_value(k, unit)), txt(fmt_value(o, unit))
-    if k == 0 and o > 0:
-        marks, scrawl = True, f'<!-- draft --><span class="scrawl">{txt(ZERO)}</span>'
-    elif k > 0 and o / k >= WIN:
+    small = unit == "percent" and min(k, o) < 1  # both cells of the row share one precision
+    kv, ov = txt(fmt_value(k, unit, small)), txt(fmt_value(o, unit, small))
+    kind = classify(r)
+    marks = kind in ("zero", "win")
+    if kind == "win":
         word = "faster" if unit == "seconds" else "less"
-        marks, scrawl = True, f'<span class="scrawl ratio">{fmt_ratio(o / k)}× {word}</span>'
-    elif k > o:
-        marks, scrawl = False, f'<!-- draft --><span class="scrawl">{txt(LOSSES.get(r["id"], LOSS))}</span>'
-    else:
-        marks, scrawl = False, f'<!-- draft --><span class="scrawl">{txt(TIES.get(r["id"], TIE))}</span>'
+        scrawl = f'<span class="scrawl ratio">{fmt_ratio(o / k)}× {word}</span>'
+    else:  # a bespoke scrawl only ever in its own class: TIES for a tie, LOSSES for a loss
+        line = {"zero": ZERO, "loss": LOSSES.get(r["id"], LOSS), "tie": TIES.get(r["id"], TIE)}[kind]
+        scrawl = f'<!-- draft --><span class="scrawl">{txt(line)}</span>'
     them = f'<span class="crossed">{ov}</span>' if marks else f'<span class="plain">{ov}</span>'
     us = f'<span class="circled">{kv}</span>' if marks else f'<span class="plain">{kv}</span>'
     return (f'<tr class="row" data-id="{esc(r["id"])}"><th scope="row">{txt(r["label"])}</th>'
@@ -188,6 +198,7 @@ def render_measured_note(numbers):
     return (f'<p class="measured">klack {txt(v["klack"])} against the official app {txt(v["slack"])}, '
             f'measured on Linux on {txt(numbers["measured_on"])}: {txt(numbers["machine"])}. '
             "App against app — the terminal klack runs in isn't counted. "
+            "The official app's RAM figures are a lower bound: one of its helper processes couldn't be read. "
             f'<a href="https://github.com/{REPO}/blob/master/tools/site/MEASURING.md">How it was measured</a>.</p>')
 
 

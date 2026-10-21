@@ -271,13 +271,48 @@ class SheetTests(unittest.TestCase):
 
     def test_loss_is_honest(self):
         r = self.rows[4]
-        self.assertIn("0.6%", r)
-        self.assertIn("0.5%", r)
+        self.assertIn("0.63%", r)  # under 1 %: two decimals, so the gap isn't rounded away
+        self.assertIn("0.45%", r)
         self.assertNotIn("crossed", r)
         self.assertNotIn("circled", r)
         self.assertNotIn("×", r)
         self.assertIn("theirs", r)
         self.assertIn("<!-- draft -->", r)
+
+    def test_small_percent_rows_use_two_decimals_on_both_sides(self):
+        self.assertEqual(F.fmt_value(0.45, "percent", small=True), "0.45%")
+        self.assertEqual(F.fmt_value(15.83, "percent", small=True), "15.83%")
+        h = F.render_sheet({**NUMBERS, "rows": [
+            {"id": "other", "label": "x", "unit": "percent", "klack": 0.8, "slack": 15.83}]})
+        self.assertIn('<span class="circled">0.80%</span>', h)
+        self.assertIn('<span class="crossed">15.83%</span>', h)
+        self.assertIn("18.5%", self.rows[5])  # both sides at or above 1 %: one decimal
+        self.assertIn("19.4%", self.rows[5])
+        self.assertNotIn("18.53%", self.rows[5])
+
+    def test_classify(self):
+        row = lambda k, o: {"id": "x", "label": "x", "unit": "percent", "klack": k, "slack": o}
+        self.assertEqual(F.classify(row(0, 5)), "zero")
+        self.assertEqual(F.classify(row(1, 1.5)), "win")
+        self.assertEqual(F.classify(row(1, 1.49)), "tie")
+        self.assertEqual(F.classify(row(1, 1)), "tie")
+        self.assertEqual(F.classify(row(0, 0)), "tie")
+        self.assertEqual(F.classify(row(1.01, 1)), "loss")
+        self.assertEqual(F.classify(row(1, 0)), "loss")
+
+    def test_bespoke_scrawls_only_in_their_own_class(self):
+        def one(id, k, o):
+            return F.render_sheet({**NUMBERS, "rows": [
+                {"id": id, "label": "x", "unit": "seconds", "klack": k, "slack": o}]})
+        lost_startup = one("startup", 2.0, 1.8)  # the startup joke is for a draw, not a loss
+        self.assertIn("fine, this one's theirs.", lost_startup)
+        self.assertNotIn("weekends", lost_startup)
+        tied_idle = one("cpu_idle", 1.0, 1.2)  # the fidget joke is for a loss, not a draw
+        self.assertIn("ok, a tie. it's a chat app.", tied_idle)
+        self.assertNotIn("fidgets", tied_idle)
+        won_idle = one("cpu_idle", 1.0, 3.0)
+        self.assertIn("3.0× faster", won_idle)
+        self.assertNotIn("fidgets", won_idle)
 
     def test_loss_even_when_far_behind(self):
         h = F.render_sheet({**NUMBERS, "rows": [
@@ -309,7 +344,8 @@ class SheetTests(unittest.TestCase):
         n = F.render_measured_note(NUMBERS)
         for s in ("Linux", "measured on Linux", "9.9.9", "1.2.3", "2026-01-02", "Some CPU (8 cores)",
                   "App against app", "the terminal klack runs in isn't counted",
-                  "https://github.com/dmytrobsp/klack/blob/master/tools/site/MEASURING.md"):
+                  "https://github.com/dmytrobsp/klack/blob/master/tools/site/MEASURING.md",
+                  "The official app's RAM figures are a lower bound"):
             self.assertIn(s, n, s)
         self.assertNotRegex(n.lower(), r"workspace|\bteam\b|channel")
 
