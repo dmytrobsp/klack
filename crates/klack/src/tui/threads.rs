@@ -141,6 +141,7 @@ impl Threads {
         f.render_widget(block, popup);
         self.height = (inner.height / 4) as usize;
         let width = inner.width as usize;
+        let mut marked = None;
         let lines = match &self.entries {
             None => vec![Line::styled("Loading…", Style::default().fg(p.dim))],
             Some(entries) if entries.is_empty() => vec![Line::styled("No threads yet: the threads you start, reply in or follow show up here.", Style::default().fg(p.dim))],
@@ -149,6 +150,9 @@ impl Threads {
                 let mut lines = Vec::new();
                 for (n, e) in entries.iter().enumerate().skip(start).take(self.height) {
                     let unread = !e.unread.is_empty();
+                    if n == self.selected {
+                        marked = Some(Rect { y: inner.y + lines.len() as u16, height: 3, ..inner });
+                    }
                     let mut rows = vec![headline(ws, e), quote(ws, &e.root, "", width, unread), e.reply().map_or_else(|| Line::raw(""), |r| quote(ws, r, "↳ ", width, unread)), Line::raw("")];
                     for l in rows.iter_mut().take(3) {
                         l.spans.insert(0, super::sidebar::unread_mark(unread));
@@ -166,6 +170,10 @@ impl Threads {
                 lines
             }
         };
+        // The selected thread's rows are filled edge to edge first; the text's own backgrounds draw over them.
+        if let Some(rect) = marked {
+            f.buffer_mut().set_style(rect.intersection(inner), Style::default().bg(p.selection));
+        }
         f.render_widget(Paragraph::new(lines), inner);
         self.list = inner;
         (self.first, self.shown) = (0, 0);
@@ -282,6 +290,27 @@ mod tests {
         assert_eq!(t.row_at(6, 18), None, "below the last thread");
         assert_eq!(t.row_at(6, 9), None, "the border / title");
         assert_eq!(t.row_at(4, 10), None, "the side border");
+    }
+
+    #[test]
+    fn the_selection_fills_the_whole_row() {
+        let msg = |ts: &str| Message { ts: ts.into(), text: "hi".into(), ..Default::default() };
+        let entry = |ts: &str| Entry { channel: "C1".into(), root: msg(ts), unread: vec![], latest: vec![msg("9.0")] };
+        let mut t = Threads { selected: 0, ..Default::default() };
+        t.add_page(vec![entry("1.0"), entry("2.0")], false);
+        let ws = Workspace::default();
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 30)).unwrap();
+        terminal.draw(|f| t.draw(f, f.area(), &ws)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let p = super::super::theme::p();
+        let (x0, x1) = (t.list.x, t.list.right() - 1);
+        for y in t.list.y..t.list.y + 3 {
+            assert_eq!((buf[(x0, y)].bg, buf[(x1, y)].bg), (p.selection, p.selection), "row {y}: edge to edge");
+        }
+        for y in t.list.y + 3..t.list.y + 8 {
+            assert!((x0..=x1).all(|x| buf[(x, y)].bg != p.selection), "row {y}: not the selected thread");
+        }
+        assert_ne!(buf[(x1 + 1, t.list.y)].bg, p.selection, "not the border");
     }
 
     #[test]

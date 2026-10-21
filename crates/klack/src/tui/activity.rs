@@ -164,6 +164,7 @@ impl Activity {
         let inner = block.inner(popup);
         f.render_widget(block, popup);
         self.height = (inner.height / 3) as usize;
+        let mut marked = None;
         let lines = match &self.items {
             None => vec![Line::styled("Loading…", Style::default().fg(super::theme::p().dim))],
             Some(items) if items.is_empty() => vec![Line::styled("Nothing yet: mentions, reactions to your messages and thread replies show up here.", Style::default().fg(super::theme::p().dim))],
@@ -173,6 +174,9 @@ impl Activity {
                 let mut lines = Vec::new();
                 for (n, it) in items.iter().enumerate().skip(start).take(self.height) {
                     let msg = self.messages.get(&(it.channel.clone(), it.ts.clone()));
+                    if n == self.selected {
+                        marked = Some(Rect { y: inner.y + lines.len() as u16, height: 2, ..inner });
+                    }
                     let mut row = vec![headline(ws, it, msg.and_then(Option::as_ref)), body(ws, msg, width), Line::raw("")];
                     for l in row.iter_mut().take(2) {
                         l.spans.insert(0, super::sidebar::unread_mark(it.unread));
@@ -187,6 +191,10 @@ impl Activity {
                 lines
             }
         };
+        // The selected item's rows are filled edge to edge first; the text's own backgrounds draw over them.
+        if let Some(rect) = marked {
+            f.buffer_mut().set_style(rect.intersection(inner), Style::default().bg(super::theme::p().selection));
+        }
         f.render_widget(Paragraph::new(lines), inner);
         self.list = inner;
         (self.first, self.shown) = (0, 0);
@@ -299,6 +307,25 @@ mod tests {
         assert_eq!(a.row_at(6, 13), Some(6));
         assert_eq!(a.row_at(6, 16), None, "below the last item");
         assert_eq!(a.row_at(6, 9), None, "the border / title");
+    }
+
+    #[test]
+    fn the_selection_fills_the_whole_row() {
+        let item = |ts: &str| Item { key: ts.into(), kind: Kind::Other("x".into()), channel: "C1".into(), ts: ts.into(), author: None, unread: false, when: 0.0 };
+        let mut a = Activity { items: Some(vec![item("1.0"), item("2.0")]), ..Default::default() };
+        let ws = Workspace::default();
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 30)).unwrap();
+        terminal.draw(|f| a.draw(f, f.area(), &ws)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let p = super::super::theme::p();
+        let (x0, x1) = (a.list.x, a.list.right() - 1);
+        for y in a.list.y..a.list.y + 2 {
+            assert_eq!((buf[(x0, y)].bg, buf[(x1, y)].bg), (p.selection, p.selection), "row {y}: edge to edge");
+        }
+        for y in a.list.y + 2..a.list.y + 6 {
+            assert!((x0..=x1).all(|x| buf[(x, y)].bg != p.selection), "row {y}: not the selected item");
+        }
+        assert_ne!(buf[(x1 + 1, a.list.y)].bg, p.selection, "not the border");
     }
 
     #[test]
