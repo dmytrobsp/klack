@@ -1,5 +1,8 @@
 # klack
 
+**[dmytrobsp.github.io/klack](https://dmytrobsp.github.io/klack/)** — what it does, the numbers against the official
+app, and the downloads.
+
 A Slack client for the terminal, written in Rust (ratatui + crossterm). Messaging with
 threads, reactions, autocomplete and formatting; inline images, an image viewer and video with
 sound; desktop notifications; search; and **huddles with audio**.
