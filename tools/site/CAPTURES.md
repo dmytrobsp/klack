@@ -1,4 +1,4 @@
-# How the page's terminal captures were made (LP7, redrawn in LP7b, re-captured in LP12a)
+# How the page's terminal captures were made (LP7, redrawn in LP7b, re-captured in LP12a and LP12b)
 
 `site/captures/{hero,keys,huddle,ssh,signin}.html` are fragments that `python3 tools/site/fill.py site` puts into
 the page's `hero-capture` and `capture-<name>` regions (a region without its file keeps what it has). They are
@@ -37,8 +37,11 @@ Each fragment is a `<div class="term capture">` holding one SVG of the screen on
 ## Names
 
 Everything shown is made up. The conversation was posted for the page in the test workspace by its two test
-accounts (A = `--profile default`, B = `--profile b`): two channels made for it, `#deploys` and `#coffee`, a short exchange
-with a code block, two reactions, a three-reply thread and a link from `#deploys` to a `#coffee` message.
+accounts (A = `--profile default`, B = `--profile b`): channels made for it, `#deploys` and `#coffee`, a short exchange
+with a code block, two reactions, a three-reply thread and a link from `#deploys` to a `#coffee` message. `#deploys` now
+ends in two Slackbot "A huddle started" notes from earlier test huddles, which can't be deleted, so in LP12b the same
+conversation (same messages, authors, reactions, thread and link) was posted again in a new channel, `#prod-deploys`,
+that has never had a huddle; the captures show it under its own name (no rename).
 
 What klack draws from the workspace itself — people, the workspace, its other channels — is replaced at conversion
 time with `~/.config/klack-site/rename.json` (outside the repo, 0600). Its made-up values are exactly as wide as
@@ -52,7 +55,8 @@ of a listed string (only generic words share one: "channel", "search", "staging"
 
 ## The live captures (hero, keys, ssh, huddle)
 
-Re-captured in LP12a so that the person A talks to shows online and has the camera off. klack (debug build) as A
+Re-captured in LP12a so that the person A talks to shows online and has the camera off, and again in LP12b
+(windows `lp-c3`, `lp-c3b`) in `#prod-deploys`, so that no Slackbot huddle note shows. klack (debug build) as A
 in its own kitty window (`--class lp-c2`, remote control on its own socket, floating, on a hidden special
 workspace) and, at the same time, B's own klack in a second one (`lp-c2b`), so that B's presence is active and A's
 sidebar draws B's dot green. Each had its own fake HOME: a copy of that account's session file, sounds off,
@@ -62,15 +66,16 @@ cells (80 × 26 for the SSH one) and each screen taken with `kitty @ get-text --
 was checked against kitty's plain `get-text` of the same screen, row by row: equal (the picture's placeholder cells
 aside). B's window was never captured.
 
-- **hero** — the main view on `#deploys` (reached with Ctrl+K, so `#coffee` stays unread), ↑ three times: the
-  message with the link selected. `#deploys` now ends in two "A huddle started" notes from the earlier huddles.
+- **hero** — the main view on `#prod-deploys` (reached with Ctrl+K), the last message, the one with the link,
+  selected. The channel starts on screen ("beginning of conversation"), and nothing follows the link message.
 - **keys** — then Space: the which-key panel.
 - **ssh** — Esc, then the same main view at 80 × 26, as in an SSH session (the window title says so; klack itself
   ran locally).
-- **huddle** — held in `#coffee`, so `#deploys` gets no third note. B ran
+- **huddle** — held in `#coffee`, never in the channel the other captures show, so it gets no note. B ran
   `klack ctl --profile b huddle-media coffee 300 --share-test` (a synthetic screen share only: no `--video-test`,
   so B's camera is off, and no microphone); A joined with `␣hh` (muted, as always) and opened the huddle view with
-  `␣hv`; afterwards `␣hh` left and B's process was stopped by its PID. No other key was pressed in the huddle.
+  `␣hv`; afterwards `␣hh` left. In LP12b B's ctl ran for a fixed 150 s and left the huddle by itself (its LEAVE),
+nobody was killed, and the sidebar showed no huddle in `#coffee` afterwards. No other key was pressed in the huddle.
   The shared screen is a kitty picture, so the text capture has placeholder cells there: they are blanked and the
   page puts the Swan Lake still over them. Both tiles show a letter instead of a picture: the first letter of the
   real name. `~/.config/klack-site/fixes.json` (0600, next to `rename.json`) puts the made-up names' letters into
@@ -83,14 +88,15 @@ aside). B's window was never captured.
 
 In August 1991 Soviet television showed *Swan Lake* over and over instead of the news; the huddle capture's shared
 screen shows it too: one still of the four little swans under faint scanlines and grain (`.capture .tv` in
-`site/css/site.css`). Nothing moves. It was downloaded once from its Commons file page's "Original file" link into
-an empty scratch folder, its licence read on that page, then cropped to 16 : 9 and scaled with ffmpeg to
-640 × 360 webp — `site/captures/swan.webp`, 13 KB:
+`site/css/site.css`). Nothing moves. It was downloaded from its Commons file page's original file (800 × 533) into
+an empty scratch folder, then (LP12b) cropped to the cygnets with some stage around them (480 × 270 from x 242,
+y 112), scaled to 640 × 360, made greyscale with a touch of contrast (`hue=s=0,eq=contrast=1.12`, baked in, so it
+looks like old television) and saved as webp with ffmpeg — `site/captures/swan.webp`, 15 KB:
 
 - [File:Swanlake010.jpg](https://commons.wikimedia.org/wiki/File:Swanlake010.jpg) — "Swan Lake ballet", the
   cygnets, State Ballet of Georgia, 2007, by Paata Vardanashvili,
-  [CC BY 2.0](https://creativecommons.org/licenses/by/2.0/); cropped and scaled. Credited in the page's footer
-  (title, author, links to the file page and the licence, "cropped").
+  [CC BY 2.0](https://creativecommons.org/licenses/by/2.0/); cropped, scaled and made greyscale. Credited in the
+  page's footer (title, author, links to the file page and the licence, "cropped, greyscale").
 
 ## The sign-in screen (signin)
 

@@ -1,4 +1,4 @@
-"""The page's words: approved lines verbatim, jabs only at Slack, honest claims (LP5, the user's review LP12a)."""
+"""The page's words: approved lines verbatim, jabs only at Slack, honest claims (LP5, the user's reviews LP12a/b)."""
 import re
 import unittest
 import xml.dom.minidom
@@ -12,7 +12,6 @@ README = (ROOT / "README.md").read_text()
 APPROVED = ["SLACK,", "MINUS THE", "BULLSHIT.", "BROWSER.", "YOUR TERMINAL JUST LEARNED TO HUDDLE.",
             "Yes, really.", "NO CHROMIUM WAS HARMED", "Quit with Ctrl+Q. We're not monsters.",
             # the user's second review (LP12a)
-            "It uses how much RAM!? In this economy!?",
             "Three ways in. Pick one.",
             "We can even lift your session straight out of your browser. Just don't tell the cops.",
             "You bet it's keyboard-driven!", "Yes, you can use the mouse. But should you?",
@@ -20,12 +19,17 @@ APPROVED = ["SLACK,", "MINUS THE", "BULLSHIT.", "BROWSER.", "YOUR TERMINAL JUST 
             "All of it in one terminal tab. Not a Chromium in sight.",
             "It's just text. Of course it works over SSH.",
             "Huddles over SSH? Only if you shout really loud.",
-            "Slack over SSH? WHO HURT YOU!?",
-            "WORKS ON MY MACHINE™", "CERTIFIED"]
+            "WORKS ON MY MACHINE™", "CERTIFIED",
+            # the user's third review (LP12b)
+            "Windows XP ran in 64 MB. Slack needs ten of those to show you a list of channels.",
+            "Because a messenger should not require a gaming rig."]
 # the user took these out (LP12a); "Slack Desktop™" and "the Electron thing" are too cheesy
 GONE = ["SSH forwards ports, not vocal cords.", "Chat over SSH: yes.", "You join muted", "Opening your browser",
         "modal dialog", "wire it into CI", "And the rest", "Measured, not guessed", "sound of my freedom",
-        "Every number on this page was measured on Linux", "Slack Desktop", "the Electron thing", "Grow the beans"]
+        "Every number on this page was measured on Linux", "Slack Desktop", "the Electron thing", "Grow the beans",
+        # and these in the third (LP12b)
+        "trench coat", "In this economy", "how much RAM", "WHO HURT YOU", "No installer", "auto-updater",
+        "Slack Helper (Renderer)"]
 BANNED = ["other terminal clients", "other clients", "the others can't"]
 
 VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"}
@@ -165,11 +169,34 @@ class Copy(unittest.TestCase):
         self.assertGreater(found, 0)
 
     def test_every_section_has_a_jab(self):
-        for sid in ("features", "numbers", "ssh", "get"):
+        for sid in ("features", "numbers", "ssh"):
             jabs = [e for e in by_id(self.root, sid).elements() if "jab" in e.classes]
             self.assertTrue(jabs, sid)
             for j in jabs:
                 self.assertTrue(flat(j.text()), sid)
+        # Get it lost its jab in the third review: the download is the point there
+        self.assertFalse([e for e in by_id(self.root, "get").elements() if "jab" in e.classes])
+
+    def jab(self, sid, needle):
+        js = [e for e in by_id(self.root, sid).elements() if "jab" in e.classes and needle in e.text()]
+        self.assertEqual(len(js), 1, needle)
+        return js[0]
+
+    def test_numbers_jab_counts_xp_memory(self):
+        j = self.jab("numbers", "Windows XP")
+        self.assertEqual(flat(j.text()), "Windows XP ran in 64 MB. Slack needs ten of those to show you a list of channels.")
+        self.assertIs(j.parent, by_id(self.root, "numbers"))
+
+    def test_huddles_jab_links_the_gaming_rig_to_the_numbers(self):
+        j = self.jab("features", "gaming rig")
+        self.assertEqual(flat(j.text()), "Because a messenger should not require a gaming rig.")
+        links = [e for e in j.elements() if e.tag == "a"]
+        self.assertEqual([(flat(a.text()), a.attrs.get("href")) for a in links], [("gaming rig", "#numbers")])
+
+    def test_closer_keeps_sight_with_its_word(self):
+        # at 390 px "SIGHT." must not sit alone on the last line
+        raw = (SITE / "index.html").read_text()
+        self.assertIn("Not a Chromium in&nbsp;sight.", raw)
 
     def test_no_grid_and_a_closer(self):
         f = by_id(self.root, "features")
@@ -215,11 +242,19 @@ class Copy(unittest.TestCase):
         ssh = by_id(self.root, "ssh")
         h2 = next(e for e in ssh.elements() if e.tag == "h2")
         self.assertEqual(flat(h2.text()), "It's just text. Of course it works over SSH.")
-        shout = next(e for e in ssh.elements() if "scrawl" in e.classes and "shout" in e.text())
-        self.assertEqual(flat(shout.text()), "Huddles over SSH? Only if you shout really loud.")  # its own line
-        smiley = [e for e in shout.parent.elements() if e.tag == "img" and e.attrs.get("src") == "img/sad-smiley.svg"]
-        self.assertEqual(len(smiley), 1)  # beside the joke
+        shout = self.jab("ssh", "shout")  # the shout is the section's jab, under the one-line body
+        self.assertEqual(flat(shout.text()), "Huddles over SSH? Only if you shout really loud.")
+        row = shout.parent
+        self.assertIn("ssh-shout", row.classes)
+        self.assertIn("words", row.parent.classes)
+        kids = [e for e in row.children if e.kind == "el"]
+        self.assertEqual(kids[0], shout)  # jab text, then the smiley right beside it
+        smiley = kids[1:]
+        self.assertEqual([e.attrs.get("src") for e in smiley], ["img/sad-smiley.svg"])
         self.assertTrue(smiley[0].attrs.get("alt"))
+        jabs = [e for e in ssh.elements() if "jab" in e.classes]
+        self.assertEqual(jabs, [shout])
+        self.assertFalse([e for e in ssh.elements() if "scrawl" in e.classes])  # no separate shout block above
         text = flat(ssh.text(skip_fills=True))
         for s in ("klack auth login", "code"):
             self.assertIn(s, text, s)
@@ -260,6 +295,16 @@ class Copy(unittest.TestCase):
         for d in drafts:
             self.assertTrue(d)
             self.assertNotRegex(d.replace("Apache-2.0", ""), r"\d", d)  # figures live in the spec sheet only
+
+
+class DeadCss(unittest.TestCase):
+    def test_no_rules_for_markup_that_is_gone(self):
+        css = (SITE / "css" / "site.css").read_text()
+        html = (SITE / "index.html").read_text()
+        self.assertNotIn("<kbd", html)
+        self.assertNotRegex(css, r"\bkbd\b")
+        self.assertNotRegex(css, r"\.jab (s|em)\b")
+        self.assertNotIn("#get .jab", css)
 
 
 if __name__ == "__main__":

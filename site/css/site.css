@@ -95,14 +95,11 @@ section h2 { font-family: 'Anton', sans-serif; font-weight: 400; font-size: 44px
 .hero-sticker { position: absolute; left: 700px; top: 575px; }
 
 /* the rest of the page (LP5) */
-code, kbd { font-family: 'Space Mono', monospace; font-size: .92em; }
+code { font-family: 'Space Mono', monospace; font-size: .92em; }
 .nowrap { white-space: nowrap; }
-kbd { color: var(--ink); background: var(--cream); padding: 0 5px; box-shadow: 2px 2px 0 #000; margin: 0 1px; }
 p code, li code, h3 code { color: var(--yellow); }
 .lede { color: #e8dcc4; max-width: 640px; }
 .jab { font-size: 19px; line-height: 1.35; margin: 14px 0 0; max-width: 560px; }
-.jab s { text-decoration: line-through; text-decoration-color: var(--pink); text-decoration-thickness: 3px; color: var(--muted); }
-.jab em { font-style: normal; color: var(--yellow); }
 
 #features > h2 { margin-bottom: 30px; }
 .feature { display: grid; grid-template-columns: 1fr 1fr; gap: 34px; align-items: center; margin: 0 0 64px; }
@@ -156,12 +153,13 @@ p code, li code, h3 code { color: var(--yellow); }
 .note .measured a { color: var(--yellow); }
 .standin-note { border: 2px dashed #3a2a3b; padding: 40px 20px; text-align: center; color: var(--dim); margin: 0; }
 
-.ssh-shout { display: flex; align-items: center; gap: 22px; margin: 0 0 30px 14px; }
-.ssh-shout .scrawl { margin: 0; font-size: 28px; line-height: 1.2; max-width: 460px; }
-.graffiti { width: 150px; height: auto; flex: none; transform: rotate(-6deg); }
+/* the SSH section: the words start level with the capture; the shout jab with the sad smiley right beside it */
+#ssh .feature { align-items: start; }
+.ssh-shout { display: flex; align-items: center; gap: 14px; margin-top: 14px; }
+.ssh-shout .jab { margin: 0; flex: 1 1 auto; min-width: 0; }
+.graffiti { width: 100px; height: auto; flex: none; transform: rotate(-6deg); }
 
 .cmd { font-size: 20px; color: var(--cream); background: #0b0b0d; border-left: 4px solid var(--green); padding: 10px 16px; margin: 8px 0 18px; max-width: 420px; }
-#get .jab { margin-bottom: 26px; }
 .table-wrap { overflow-x: auto; }
 .downloads { width: 100%; border-collapse: collapse; font-size: 12.5px; line-height: 1.45; }
 .downloads thead th { font-family: 'Anton', sans-serif; font-weight: 400; font-size: 15px; letter-spacing: .6px; text-transform: uppercase; text-align: left; color: var(--muted); border-bottom: 2px solid var(--pink); padding: 6px 10px; }
@@ -217,9 +215,8 @@ dialog.zoom .term { cursor: zoom-out; box-shadow: none; }
   .topnav span a { margin: 0 16px 0 0; }
   .feature { grid-template-columns: 1fr; gap: 22px; }
   .feature.flip .words { order: 0; }
-  .ssh-shout { margin-left: 0; gap: 12px; }
-  .ssh-shout .scrawl { font-size: 23px; }
-  .graffiti { width: 96px; }
+  .ssh-shout { gap: 10px; }
+  .graffiti { width: 68px; }
   .closer { font-size: 16px; padding: 14px 16px 16px; }
   .cool-kids { font-size: 18px; margin-left: 4px; }
   #footer { flex-direction: column; align-items: flex-start; }

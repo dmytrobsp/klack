@@ -93,7 +93,7 @@ class Build(unittest.TestCase):
         self.assertIn("Paata Vardanashvili", foot)
         self.assertIn('href="https://creativecommons.org/licenses/by/2.0/"', foot)
         self.assertIn('href="https://commons.wikimedia.org/wiki/File:Swanlake010.jpg"', foot)
-        for s in ("Swan Lake ballet", "(cropped)"):
+        for s in ("Swan Lake ballet", "(cropped, greyscale)"):  # CC BY: say what was changed
             self.assertIn(s, foot, s)
         for s in ("public domain", "Mikhail Bocharov", "Henrich Levogt", "Legnani", "stamp of 1970"):
             self.assertNotIn(s, foot, s)  # the pictures that were removed are not credited
