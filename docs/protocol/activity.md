@@ -14,6 +14,12 @@ snake_case) and live probes with `klack ctl api`.
   - mentions: `item.message = {channel, ts, author_user_id, is_broadcast}`
   - reactions: `item.message = {channel, ts}`, `item.reaction = {name, user}`
   - `thread_v2`: `item.bundle_info.payload.thread_entry = {channel_id, thread_ts, latest_ts, min_unread_ts, unread_msg_count}`
+  - `dm` / `mpdm`: `item.bundle_info.payload.dm_entry.latest_message = {channel, ts}` (the newest message).
+- Pages (2026-10-21): with more items than `limit` the answer has `response_metadata.next_cursor`; `cursor=<it>`
+  gives the next, older page (no overlap). The Activity view (VW5) loads it when the end of its list is on screen.
+- Tabs (VW5): All = `at_user,at_user_group,at_channel,at_everyone,keyword,message_reaction,thread_v2,dm,mpdm`;
+  DMs = `dm,mpdm,bot_dm_bundle` (`bot_dm` fails the whole request); Mentions = the `at_*` types and `keyword`;
+  Threads = `thread_v2`.
 - No message text: fetch it with `conversations.replies channel ts=T latest=T oldest=T inclusive=true limit=1`,
   which returns exactly that message whether it is top level or a reply.
 - Not used yet: `activity.markRead/markUnread` (custom fetcher, args from an `activityItem`),

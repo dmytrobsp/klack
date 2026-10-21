@@ -60,6 +60,7 @@ pub fn translatable() -> Vec<String> {
     out.extend(super::event_loop::LINK_NOTES.iter().map(|n| n.to_string()));
     out.push(super::state::IN_A_HUDDLE.to_string());
     out.extend(super::feed::WORDS.iter().map(|w| w.to_string()));
+    out.extend(super::activity::WORDS.iter().map(|w| w.to_string()));
     let mut seen = std::collections::HashSet::new();
     out.retain(|s| !s.is_empty() && seen.insert(s.clone()));
     out

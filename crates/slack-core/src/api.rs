@@ -65,6 +65,15 @@ fn injected(spec: &str, method: &str) -> Option<anyhow::Error> {
     })
 }
 
+/// `activity.feed`'s arguments: reads and unreads, newest first, of the item `types` (from `cursor` on).
+fn activity_params(types: &str, limit: u32, cursor: Option<&str>) -> Params<'static> {
+    let mut params: Params = vec![("mode", "chrono_reads_and_unreads".into()), ("types", types.into()), ("limit", limit.to_string())];
+    if let Some(cursor) = cursor {
+        params.push(("cursor", cursor.into()));
+    }
+    params
+}
+
 #[derive(Clone)]
 pub struct Client {
     http: reqwest::Client,
@@ -317,7 +326,12 @@ impl Client {
     /// The activity feed, newest first, of the item `types` (comma separated: `at_user`,
     /// `message_reaction`, `thread_v2`, `dm`, …; an unknown one fails the whole request).
     pub async fn activity_feed(&self, types: &str, limit: u32) -> Result<Value> {
-        self.call_raw("activity.feed", &[("mode", "chrono_reads_and_unreads".into()), ("types", types.into()), ("limit", limit.to_string())]).await
+        self.activity_feed_after(types, limit, None).await
+    }
+
+    /// [`Client::activity_feed`] from `cursor` on (the answer's `response_metadata.next_cursor`: the next page).
+    pub async fn activity_feed_after(&self, types: &str, limit: u32, cursor: Option<&str>) -> Result<Value> {
+        self.call_raw("activity.feed", &activity_params(types, limit, cursor)).await
     }
 
     /// The threads you are in (the client's Threads view): unread ones first, then by latest
@@ -648,6 +662,14 @@ fn read_chunks(file: tokio::fs::File, offset: u64, total: u64, progress: std::sy
 #[cfg(test)]
 mod tests {
     use futures_util::StreamExt;
+
+    #[test]
+    fn the_activity_feed_asks_for_the_types_given() {
+        let params = super::activity_params("dm,mpdm,bot_dm_bundle", 50, None);
+        assert_eq!(params, vec![("mode", "chrono_reads_and_unreads".to_string()), ("types", "dm,mpdm,bot_dm_bundle".to_string()), ("limit", "50".to_string())]);
+        let next = super::activity_params("thread_v2", 50, Some("abc"));
+        assert_eq!((next[1].1.as_str(), next.last()), ("thread_v2", Some(&("cursor", "abc".to_string()))), "the next page");
+    }
 
     #[test]
     fn signed_out_errors_are_recognised() {

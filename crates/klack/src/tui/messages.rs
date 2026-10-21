@@ -655,7 +655,7 @@ fn attachment_color(att: &serde_json::Value) -> Option<ratatui::style::Color> {
 /// A reaction as a pill: " 👍 2 " on a shaded background, yours highlighted; the spaces
 /// inside do not break, so a pill never wraps apart. Themes without a code background (the
 /// terminal's own colours) keep "[👍 2]".
-fn reaction_pill(emoji: &str, count: u64, mine: bool) -> Span<'static> {
+pub fn reaction_pill(emoji: &str, count: u64, mine: bool) -> Span<'static> {
     let p = super::theme::p();
     if p.code_bg == ratatui::style::Color::Reset {
         let style = if mine { Style::default().fg(p.mention).add_modifier(Modifier::BOLD) } else { Style::default() };

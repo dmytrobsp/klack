@@ -406,7 +406,7 @@ impl Threads {
 
 /// The scroll (lines above the view) that shows lines `first..=last` of a top-anchored list: moved as little as it
 /// takes; one taller than the view shows from its start.
-fn bring_into_view(scroll: usize, height: usize, first: usize, last: usize) -> usize {
+pub(super) fn bring_into_view(scroll: usize, height: usize, first: usize, last: usize) -> usize {
     if last + 1 - first > height || first < scroll {
         first
     } else if last >= scroll + height {

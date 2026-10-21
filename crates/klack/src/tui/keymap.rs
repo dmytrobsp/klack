@@ -389,6 +389,11 @@ pub enum Action {
     PageDown,
     PrevTab,
     NextTab,
+    Tab1,
+    Tab2,
+    Tab3,
+    Tab4,
+    Unreads,
     Refresh,
     Pause,
     SeekBack,
@@ -611,8 +616,15 @@ actions! {
         Down "down" "next item" "down" "🔽" ["down", "j"]
         PageUp "page_up" "page up" "page up" "⏫" ["pageup"]
         PageDown "page_down" "page down" "page down" "⏬" ["pagedown"]
+        NextTab "next_tab" "next tab (All, DMs, Mentions, Threads)" "next tab" "⏩" ["]"]
+        PrevTab "previous_tab" "previous tab" "previous tab" "⏪" ["["]
+        Tab1 "tab_all" "the All tab" "all" "🔔" ["1"]
+        Tab2 "tab_dms" "the DMs tab: direct and group messages" "DMs" "📩" ["2"]
+        Tab3 "tab_mentions" "the Mentions tab" "mentions" "📣" ["3"]
+        Tab4 "tab_threads" "the Threads tab: replies in threads you follow" "threads" "🧵" ["4"]
+        Unreads "unreads" "only the unread items, or all again" "unreads" "🔵" ["u"]
         Refresh "refresh" "load again" "refresh" "🔄" ["r"]
-        Open "open" "go to the message" "go" "🚀" ["enter"]
+        Open "open" "go there: the DM, the message (its thread for a reply), the thread at its first unread reply" "go" "🚀" ["enter"]
         Help "help" "this help" "help" "❓" ["?"]
     }
     Threads {
@@ -1463,7 +1475,7 @@ pub fn hints_for(context: Context) -> &'static [(Action, &'static str)] {
         Context::Picker => &[(Open, "react"), (Close, "close")],
         Context::Details => &[(NextTab, "next tab"), (Open, "open"), (Close, "close")],
         Context::Profile => &[(Open, "message"), (Huddle, "huddle"), (Vip, "VIP"), (NextTab, "next person"), (Close, "close")],
-        Context::Activity => &[(Open, "open"), (Refresh, "refresh"), (Close, "back"), (Help, "help")],
+        Context::Activity => &[(Open, "open"), (NextTab, "tab"), (Unreads, "unreads"), (Close, "back"), (Help, "help")],
         Context::Threads => &[(Open, "open"), (Type, "reply"), (Refresh, "refresh"), (Close, "back"), (Help, "help")],
         Context::Mover => &[(Open, "move"), (Close, "close")],
         Context::TextField => &[(Open, "done"), (Close, "cancel")],
@@ -1574,6 +1586,18 @@ mod tests {
         // Terminals report Shift with uppercase letters and with BackTab.
         assert_eq!(Key::new(KeyCode::Char('G'), KeyModifiers::SHIFT), Key::parse("G").unwrap());
         assert_eq!(Key::new(KeyCode::BackTab, KeyModifiers::SHIFT), Key::parse("shift+tab").unwrap());
+    }
+
+    #[test]
+    fn the_activity_view_s_tabs_and_filter() {
+        let (map, _) = Keymap::load("");
+        let at = |key: &str| map.resolve(&[Context::Activity, Context::Global], Mode::Normal, &[], k(key));
+        let tab = |a: Action| Resolved::Action(Context::Activity, a);
+        assert_eq!((at("]"), at("[")), (tab(Action::NextTab), tab(Action::PrevTab)));
+        assert_eq!([at("1"), at("2"), at("3"), at("4")], [tab(Action::Tab1), tab(Action::Tab2), tab(Action::Tab3), tab(Action::Tab4)]);
+        assert_eq!(at("u"), tab(Action::Unreads));
+        // Tab still moves the focus between the panes (so the tabs are `]` / `[`).
+        assert_eq!(at("tab"), Resolved::Action(Context::Global, Action::FocusNext));
     }
 
     #[test]

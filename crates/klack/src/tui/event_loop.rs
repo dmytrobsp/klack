@@ -87,8 +87,8 @@ enum Net {
     DndSchedule { error: Option<String>, prefs: Option<Value>, info: Option<Value> },
     /// User prefs fetched again.
     Prefs(Value),
-    /// The activity feed.
-    ActivityFeed(Result<Value, String>),
+    /// A tab of the Activity view.
+    ActivityFeed { tab: super::activity::Tab, more: bool, result: Result<Value, String> },
     /// The activity feed fetched at start, for the sidebar row's unread count.
     ActivityUnread(Result<Value, String>),
     /// The newest page of a previewed channel, fetched again.
@@ -1593,11 +1593,12 @@ impl App {
         if let Some(row) = row_of_view(v) {
             self.sidebar.select_view(&row);
         }
+        let again = self.view == v;
         self.set_view(v);
         self.focus = Focus::Messages;
         match v {
             View::Threads => self.load_threads(false),
-            View::Activity => self.open_activity(),
+            View::Activity => self.open_activity(again),
             View::Huddles | View::Conversation => {}
         }
     }
@@ -1761,10 +1762,23 @@ impl App {
                     Action::Close => self.close_view(),
                     Action::Up => a.move_by(-1),
                     Action::Down => a.move_by(1),
-                    Action::PageUp => a.move_by(-(a.height.max(1) as isize)),
-                    Action::PageDown => a.move_by(a.height.max(1) as isize),
+                    Action::PageUp => a.move_by(-a.page()),
+                    Action::PageDown => a.move_by(a.page()),
                     Action::Refresh => self.open_view(View::Activity),
                     Action::Open => self.open_activity_item(),
+                    Action::NextTab => {
+                        let next = a.tab.next();
+                        self.show_activity_tab(next);
+                    }
+                    Action::PrevTab => {
+                        let prev = a.tab.prev();
+                        self.show_activity_tab(prev);
+                    }
+                    Action::Tab1 => self.show_activity_tab(super::activity::Tab::All),
+                    Action::Tab2 => self.show_activity_tab(super::activity::Tab::Dms),
+                    Action::Tab3 => self.show_activity_tab(super::activity::Tab::Mentions),
+                    Action::Tab4 => self.show_activity_tab(super::activity::Tab::Threads),
+                    Action::Unreads => a.toggle_unread(),
                     _ => {}
                 }
             }
@@ -2040,14 +2054,14 @@ impl App {
         if let Some(n) = self.sidebar.item_at(column, row) {
             return self.sidebar.status_note(&self.ws, n, chrono::Utc::now().timestamp());
         }
-        let (url, app) = self.thread.as_ref().and_then(|_| self.thread_pane.link_under(column, row)).or_else(|| self.messages.link_under(column, row)).or_else(|| self.threads.link_under(column, row))?;
+        let (url, app) = self.thread.as_ref().and_then(|_| self.thread_pane.link_under(column, row)).or_else(|| self.messages.link_under(column, row)).or_else(|| self.threads.link_under(column, row)).or_else(|| self.activity.link_under(column, row))?;
         let here = super::applink::Here { ws: &self.ws, workspaces: &self.addresses, names: &self.workspaces, shown: self.workspace, authors: &self.authors, message: None };
         Some(super::applink::hover_note(&url, app.as_ref(), &here))
     }
 
     /// The link into the profile's workspaces drawn at a terminal position (the thread pane, then the messages).
     fn link_at(&self, column: u16, row: u16) -> Option<super::applink::AppLink> {
-        self.thread.as_ref().and_then(|_| self.thread_pane.link_at(column, row)).or_else(|| self.messages.link_at(column, row)).or_else(|| self.threads.link_under(column, row).and_then(|(_, app)| app))
+        self.thread.as_ref().and_then(|_| self.thread_pane.link_at(column, row)).or_else(|| self.messages.link_at(column, row)).or_else(|| self.threads.link_under(column, row).and_then(|(_, app)| app)).or_else(|| self.activity.link_under(column, row).and_then(|(_, app)| app))
     }
 
     /// Open what a clicked notification is about: the message (or thread reply), or the
@@ -2706,14 +2720,39 @@ impl App {
         });
     }
 
-    /// Load the Activity view's feed afresh (its All tab's types; their unread count is the
-    /// sidebar row's).
-    fn open_activity(&mut self) {
+    /// Load the Activity view afresh: opened, on its All tab (whose unread count is the sidebar row's); `again` (it is
+    /// shown already), the tab shown, as it was filtered.
+    fn open_activity(&mut self, again: bool) {
+        let a = &self.activity;
+        let (tab, unread_only) = if again { (a.tab, a.unread_only) } else { Default::default() };
         self.activity = super::activity::Activity::default();
+        (self.activity.tab, self.activity.unread_only) = (tab, unread_only);
+        self.fetch_activity(tab, None);
+    }
+
+    /// Show tab `tab` of the Activity view (its list as it was, while the view is open) and load it again.
+    fn show_activity_tab(&mut self, tab: super::activity::Tab) {
+        self.activity.set_tab(tab);
+        self.fetch_activity(tab, None);
+    }
+
+    /// Ask for tab `tab` of the activity feed: its first page, or the one at `cursor`.
+    fn fetch_activity(&self, tab: super::activity::Tab, cursor: Option<String>) {
         let (client, tx) = (self.client.clone(), self.net.clone());
         tokio::spawn(async move {
-            let _ = tx.send(Net::ActivityFeed(client.activity_feed(super::activity::ALL_TYPES, 50).await.map_err(|e| e.to_string())));
+            let result = client.activity_feed_after(tab.types(), 50, cursor.as_deref()).await.map_err(|e| e.to_string());
+            let _ = tx.send(Net::ActivityFeed { tab, more: cursor.is_some(), result });
         });
+    }
+
+    /// The Activity view's next page, once the end of its list is on screen.
+    fn request_activity_page(&mut self) {
+        if self.view != View::Activity {
+            return;
+        }
+        if let Some(cursor) = self.activity.next_page() {
+            self.fetch_activity(self.activity.tab, Some(cursor));
+        }
     }
 
     /// Load the Threads view's first page afresh (or, with `more`, the next).
@@ -3393,6 +3432,7 @@ impl App {
             .authors_wanted()
             .chain(self.thread_pane.authors_wanted())
             .chain(self.threads.authors_wanted())
+            .chain(self.activity.authors_wanted())
             .filter(|l| super::applink::workspace_of(l, &self.addresses, shown) == Some(shown))
             .filter_map(|l| match &l.target {
                 super::applink::Target::Message { channel, ts, thread_ts } => Some((channel.clone(), ts.clone(), thread_ts.clone())),
@@ -3418,7 +3458,7 @@ impl App {
     /// Start loading thumbnails that were on screen but not cached yet.
     fn request_thumbs(&mut self) {
         let view = self.huddle_view.as_mut().map(|v| std::mem::take(&mut v.wanted)).unwrap_or_default();
-        let wanted: Vec<_> = self.messages.wanted.drain(..).chain(self.thread_pane.wanted.drain(..)).chain(self.threads.wanted.drain(..)).chain(view).chain(self.call_bar_wanted.take()).chain(self.rail_wanted.drain(..)).collect();
+        let wanted: Vec<_> = self.messages.wanted.drain(..).chain(self.thread_pane.wanted.drain(..)).chain(self.threads.wanted.drain(..)).chain(self.activity.pictures.drain(..)).chain(view).chain(self.call_bar_wanted.take()).chain(self.rail_wanted.drain(..)).collect();
         for (file, size) in wanted {
             if self.media.thumbs.contains_key(&file.id) {
                 continue;
@@ -4068,6 +4108,7 @@ async fn run_workspace(
         app.request_feed_replies();
         app.request_authors();
         app.request_activity_messages();
+        app.request_activity_page();
         app.refresh_dnd();
         let which_key_due = app.which_key_due();
         let recording_due = app.recording_due();
@@ -4821,6 +4862,12 @@ fn handle_main(app: &mut App, ev: Event) -> bool {
                     app.threads.selected = Some((channel, parent));
                     app.open_thread_item();
                     app.closing_click = Some((std::time::Instant::now(), m.column, m.row));
+                } else if let Some(tab) = app.activity.tab_at(m.column, m.row) {
+                    app.show_activity_tab(tab);
+                    app.focus = Focus::Messages;
+                } else if let Some(link) = m.modifiers.is_empty().then(|| app.activity.link_under(m.column, m.row).and_then(|(_, app)| app)).flatten() {
+                    // A plain click on a link into your Slack in an Activity item opens it here.
+                    app.open_app_link(&link);
                 } else if let Some(n) = app.activity.row_at(m.column, m.row) {
                     app.activity.selected = n;
                     app.open_activity_item();
@@ -5635,16 +5682,24 @@ fn handle_net(app: &mut App, msg: Net) {
                 }
             };
         }
-        Net::ActivityFeed(result) => match result {
+        Net::ActivityFeed { tab, more, result } => match result {
             Ok(v) => {
                 let mut items = super::activity::parse(&v);
                 super::activity::apply_seen(&mut items, &app.seen);
-                app.ws.activity_unread = super::activity::unread_count(&items);
-                app.activity.items = Some(items);
+                let cursor = v["response_metadata"]["next_cursor"].as_str().filter(|c| !c.is_empty()).map(String::from);
+                if more {
+                    app.activity.add_page(tab, items, cursor);
+                } else {
+                    // (The sidebar row counts the All tab's first page, as at start.)
+                    if tab == super::activity::Tab::All {
+                        app.ws.activity_unread = super::activity::unread_count(&items);
+                    }
+                    app.activity.set_items(tab, items, cursor);
+                }
             }
             Err(e) => {
                 app.status = format!("activity failed: {e}");
-                app.activity.failed = Some(e);
+                app.activity.fail(tab, e);
             }
         },
         // The sidebar's Activity row, at start.
@@ -5896,7 +5951,10 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
                 app.composer_area = comp;
                 draw_composer(f, comp, app, false);
             }
-            View::Activity => app.activity.draw(f, main, &app.ws, focused),
+            View::Activity => {
+                let here = super::applink::Here { ws: &app.ws, workspaces: &app.addresses, names: &app.workspaces, shown: app.workspace, authors: &app.authors, message: None };
+                app.activity.draw(f, main, &here, focused, &app.media);
+            }
             View::Huddles | View::Conversation => {}
         }
     } else if let (Some(view), Some(call)) = (app.huddle_view.as_mut(), &app.call) {
@@ -7220,9 +7278,28 @@ mod tests {
         assert!(screen[23].starts_with(" ACTIVITY "), "its pill: {:?}", screen[23]);
         assert_eq!((app.composer_area, app.messages.area), (Rect::default(), Rect::default()), "no message pane, no message box");
         assert!(screen[1].contains("Threads") && screen[2].contains("Activity"), "the sidebar's rows: {screen:#?}");
-        // The pointer over an item shades it; the wheel moves the selection.
-        assert!(super::handle_event(&mut app, crossterm::event::Event::Mouse(crossterm::event::MouseEvent { kind: crossterm::event::MouseEventKind::Moved, column: 30, row: 1, modifiers: KeyModifiers::NONE })));
+        assert!(screen[1].contains(" All ") && screen[1].contains(" Threads "), "the tab bar: {screen:#?}");
+        // The pointer over an item (under the tab bar and its date header) shades it.
+        assert!(super::handle_event(&mut app, crossterm::event::Event::Mouse(crossterm::event::MouseEvent { kind: crossterm::event::MouseEventKind::Moved, column: 30, row: 3, modifiers: KeyModifiers::NONE })));
         assert_eq!(app.activity.hover, Some(0));
+        // `]`, `[` and 1–4 switch the tabs, `u` keeps the unread items only.
+        use super::super::activity::Tab;
+        press(&mut app, KeyCode::Char(']'), KeyModifiers::NONE);
+        assert_eq!((app.activity.tab, app.activity.items.is_none()), (Tab::Dms, true));
+        press(&mut app, KeyCode::Char('4'), KeyModifiers::NONE);
+        press(&mut app, KeyCode::Char('['), KeyModifiers::NONE);
+        assert_eq!(app.activity.tab, Tab::Mentions);
+        press(&mut app, KeyCode::Char('1'), KeyModifiers::NONE);
+        assert_eq!((app.activity.tab, app.activity.items.as_ref().map(Vec::len)), (Tab::All, Some(1)), "its list kept");
+        press(&mut app, KeyCode::Char('u'), KeyModifiers::NONE);
+        assert!(app.activity.unread_only);
+        // A click on a tab shows it.
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        let buf = terminal.backend().buffer();
+        let x = (0..buf.area.width).find(|&x| (x..buf.area.width).map(|x| buf[(x, 1)].symbol()).collect::<String>().starts_with("Mentions")).unwrap();
+        click(&mut app, x, 1);
+        assert_eq!((app.view, app.activity.tab), (View::Activity, Tab::Mentions));
+        press(&mut app, KeyCode::Char('1'), KeyModifiers::NONE);
         // A click on the sidebar's Threads row opens Threads there.
         click(&mut app, 3, 1);
         assert_eq!(app.view, View::Threads);
