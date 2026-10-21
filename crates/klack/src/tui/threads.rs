@@ -1,9 +1,10 @@
-//! Threads (Ctrl+T): every thread you are in, from `subscriptions.thread.getView` — unread
-//! ones first, then by latest reply — each with its parent and its newest (or first unread)
-//! reply; Enter opens the thread at that reply. More are loaded at the end of the list.
+//! Threads (Ctrl+T), a view in the main pane: every thread you are in, from
+//! `subscriptions.thread.getView` — unread ones first, then by latest reply — each with its
+//! parent and its newest (or first unread) reply; Enter opens the thread at that reply. More
+//! are loaded at the end of the list.
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Flex, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
@@ -71,9 +72,11 @@ pub struct Threads {
     pub has_more: bool,
     /// A page is being loaded.
     pub loading: bool,
+    /// Why the first page could not be loaded (said in the view).
+    pub failed: Option<String>,
     /// Entries per page on the last draw.
     pub height: usize,
-    /// Last drawn area, for clicks.
+    /// Last drawn area (empty while the view is not shown), for the mouse.
     pub area: Rect,
     /// The list's rows at the last draw, the first thread shown and how many are.
     pub list: Rect,
@@ -130,19 +133,24 @@ impl Threads {
         Some((e.channel.clone(), ts, Some(e.root.ts.clone())))
     }
 
-    pub fn draw(&mut self, f: &mut Frame, area: Rect, ws: &Workspace) {
+    /// Not drawn this time: nothing of it is under the mouse.
+    pub fn hide(&mut self) {
+        (self.area, self.list, self.first, self.shown, self.hover) = (Rect::default(), Rect::default(), 0, 0, None);
+    }
+
+    /// Draw the view into `area` (the main pane), its frame lit while it has the focus.
+    pub fn draw(&mut self, f: &mut Frame, area: Rect, ws: &Workspace, focused: bool) {
         let p = super::theme::p();
-        let [popup] = Layout::horizontal([Constraint::Length(90.min(area.width))]).flex(Flex::Center).areas(area);
-        let [popup] = Layout::vertical([Constraint::Length(30.min(area.height))]).flex(Flex::Center).areas(popup);
-        self.area = popup;
-        super::media::clear_modal(f, popup);
-        let block = Block::default().borders(Borders::ALL).border_style(Style::default().fg(p.accent)).title(format!(" {} ", super::i18n::tr("Threads")));
-        let inner = block.inner(popup);
-        f.render_widget(block, popup);
+        self.area = area;
+        let border = Style::default().fg(if focused { p.accent } else { p.dim });
+        let block = Block::default().borders(Borders::ALL).border_style(border).title(format!(" {} ", super::i18n::tr("Threads")));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
         self.height = (inner.height / 4) as usize;
         let width = inner.width as usize;
         let mut marked = None;
         let lines = match &self.entries {
+            None if self.failed.is_some() => vec![Line::styled(format!("{}: {}", super::i18n::tr("The threads could not be loaded"), self.failed.as_deref().unwrap_or_default()), Style::default().fg(p.danger))],
             None => vec![Line::styled("Loading…", Style::default().fg(p.dim))],
             Some(entries) if entries.is_empty() => vec![Line::styled("No threads yet: the threads you start, reply in or follow show up here.", Style::default().fg(p.dim))],
             Some(entries) => {
@@ -180,7 +188,7 @@ impl Threads {
         if let Some(entries) = &self.entries {
             let start = self.selected.saturating_sub(self.height.saturating_sub(1));
             (self.first, self.shown) = (start, entries.len().saturating_sub(start).min(self.height));
-            super::scroll::indicator_beside(f, popup, inner, start, self.height, entries.len(), Style::default().fg(p.accent));
+            super::scroll::indicator_beside(f, area, inner, start, self.height, entries.len(), border);
         }
     }
 }
@@ -299,8 +307,10 @@ mod tests {
         let mut t = Threads { selected: 0, ..Default::default() };
         t.add_page(vec![entry("1.0"), entry("2.0")], false);
         let ws = Workspace::default();
-        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 30)).unwrap();
-        terminal.draw(|f| t.draw(f, f.area(), &ws)).unwrap();
+        // Drawn into the main pane's whole area: the list fills it inside the view's frame (title on top).
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|f| t.draw(f, f.area(), &ws, true)).unwrap();
+        assert_eq!(t.list, Rect::new(1, 1, 98, 28));
         let buf = terminal.backend().buffer().clone();
         let p = super::super::theme::p();
         let (x0, x1) = (t.list.x, t.list.right() - 1);

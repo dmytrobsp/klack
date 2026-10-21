@@ -306,9 +306,9 @@ impl Client {
 
     // ---- activity (web client method, see docs/protocol/activity.md) ----------------------
 
-    /// The activity feed, newest first: mentions, reactions to your messages, threads.
-    pub async fn activity_feed(&self, limit: u32) -> Result<Value> {
-        let types = "at_user,at_user_group,at_channel,at_everyone,keyword,message_reaction,thread_v2";
+    /// The activity feed, newest first, of the item `types` (comma separated: `at_user`,
+    /// `message_reaction`, `thread_v2`, `dm`, …; an unknown one fails the whole request).
+    pub async fn activity_feed(&self, types: &str, limit: u32) -> Result<Value> {
         self.call_raw("activity.feed", &[("mode", "chrono_reads_and_unreads".into()), ("types", types.into()), ("limit", limit.to_string())]).await
     }
 

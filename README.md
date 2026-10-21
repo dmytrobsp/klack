@@ -69,12 +69,12 @@ bold with a bar in the first column, muted conversations are dimmed and not coun
 messages in the middle with a reply pane for threads on the right (in a narrow terminal the thread
 takes the messages' place until you close it), the composer below, and a status
 line at the bottom: on the left a pill saying which mode you are in (NORMAL, INSERT, or the open
-dialog: JUMP, SEARCH, PREFS, …), then the unread and mention counts, other workspaces, your
+dialog: JUMP, SEARCH, PREFS, …; THREADS or ACTIVITY in those views), then the unread and mention counts, other workspaces, your
 status, and a dot for your presence as in Slack (green `● active`, dim `○ away`; "connecting…" after it while
 the connection is down, a dim `…` when the line is at its narrowest) — a note or a ringing huddle takes their place; on the right
 the keys of a sequence under way (`␣h`, `^␣h` for Ctrl+Space) and the hints of where you are, ending
 in `? help` (`↑/↓ move · Enter thread · i type · ␣ actions · ? help`). A thumb on a pane's right border shows where you are when it scrolls. The selected message is highlighted
-across the whole width of its pane, every row of it, like a selection in a list (so is the selected item of the Threads and Activity popups). A conversation
+across the whole width of its pane, every row of it, like a selection in a list (so is the selected item of the Threads and Activity views). A conversation
 opened with unread messages has a red "new" line above the first of them; while you read further
 up, the bottom border counts the newer messages below ("↓ 3 newer"). With two or more
 workspaces in the profile a rail on the far left has a tile for each — its logo where it has
@@ -207,16 +207,16 @@ actions, on a conversation the conversation's. Its corner, delay, height and ico
 | Alt+Shift+↑ / Alt+Shift+↓ | previous / next unread conversation (muted ones are skipped) |
 | Ctrl+K · `␣␣` | jump to any conversation or person — unread first, then the most recently active (`#` lists every channel, including ones you are not in) |
 | Ctrl+F · `␣fs` | search messages (more results load as you move down the list) |
-| Ctrl+A · `␣fa` | activity: mentions, reactions to your messages, thread replies |
-| Ctrl+T · `␣ft` | threads: every thread you are in, unread ones first (marked with a bar and "2 new"), each with its parent and its first unread (or newest) reply; Enter opens the thread at that reply, `r` loads again, more load at the end of the list. The **Threads** row atop the sidebar opens it too: it turns bold with a bar and the number of unread replies when threads you follow get new ones |
+| Ctrl+A · `␣fa` | the **Activity** view, in the main pane in place of the conversation: mentions, reactions to your messages, thread replies, new direct messages; Enter goes to the item, `r` or Ctrl+A again loads it again, Esc goes back to the conversation you were in. The **Activity** row in the sidebar (under Threads) opens it too: it turns bold with a bar and the number of unread items while the feed has some (counted when the workspace starts and each time the view loads) |
+| Ctrl+T · `␣ft` | the **Threads** view, in the main pane in place of the conversation: every thread you are in, unread ones first (marked with a bar and "2 new"), each with its parent and its first unread (or newest) reply; Enter opens the thread at that reply, `r` or Ctrl+T again loads it again, more load at the end of the list, Esc goes back to the conversation you were in. The **Threads** row atop the sidebar opens it too: it turns bold with a bar and the number of unread replies when threads you follow get new ones. Selecting a conversation in the sidebar (or jumping to one) leaves a view; klack always starts on a conversation, never a view |
 | F6 · `/prefs` | preferences: availability, appearance, messages, region, notifications, audio, keys |
 | F1 · `?` | all keys |
 | Alt+1 … Alt+9 · `␣w1` … | workspace |
 | Ctrl+Q | quit |
 | Enter (on a message) · `␣t` | open its thread |
 | Enter · `i` (sidebar) | type in the conversation |
-| Esc | leave the composer · close the thread or a dialog |
-| mouse | click to select, wheel to scroll (also the help and the preferences; in lists like Ctrl+K, Ctrl+T, Ctrl+A and search it moves the selection), hover shading (the whole message row, edge to edge), right-click for a context menu (messages, sidebar entries); a thumb on a pane's right border shows where you are when it scrolls |
+| Esc | leave the composer · close the thread or a dialog · back from the Threads / Activity view |
+| mouse | click to select, wheel to scroll (also the help and the preferences; in lists like Ctrl+K, search and the Threads and Activity views it moves the selection), hover shading (the whole message row, edge to edge), right-click for a context menu (messages, sidebar entries); a thumb on a pane's right border shows where you are when it scrolls |
 
 After `Space` (written `␣`), on a **message**:
 

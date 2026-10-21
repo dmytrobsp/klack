@@ -112,6 +112,8 @@ pub struct Status {
 pub struct Workspace {
     /// Replies in threads you follow not read yet (the sidebar's Threads row).
     pub thread_unread: ThreadUnread,
+    /// Unread items in the activity feed (the sidebar's Activity row), as of its last load.
+    pub activity_unread: usize,
     /// Custom emoji pictures are drawn in the message pane (set while drawing: the terminal
     /// draws pictures and the settings allow it).
     pub emoji_pictures: bool,

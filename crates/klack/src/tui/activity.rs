@@ -1,11 +1,12 @@
-//! Activity (Ctrl+A): mentions, reactions to your messages and thread updates from
-//! `activity.feed`, newest first. Message texts are fetched per item as they are shown.
+//! Activity (Ctrl+A), a view in the main pane: mentions, reactions to your messages and thread
+//! updates from `activity.feed`, newest first. Message texts are fetched per item as they are
+//! shown.
 
 use std::collections::HashMap;
 
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Flex, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
@@ -23,6 +24,8 @@ pub enum Kind {
     Reaction { name: String, user: String },
     /// New replies in a thread you follow.
     Thread { unread: u64, latest: String },
+    /// New messages in a direct or group message (`dm`, `mpdm`): the newest of them.
+    Dm,
     Other(String),
 }
 
@@ -61,6 +64,10 @@ impl Item {
                 thread["channel_id"].as_str()?,
                 thread["thread_ts"].as_str()?,
             ),
+            "dm" | "mpdm" => {
+                let latest = &it["bundle_info"]["payload"]["dm_entry"]["latest_message"];
+                (Kind::Dm, latest["channel"].as_str()?, latest["ts"].as_str()?)
+            }
             "message_reaction" => (
                 Kind::Reaction { name: it["reaction"]["name"].as_str().unwrap_or_default().to_string(), user: it["reaction"]["user"].as_str().unwrap_or_default().to_string() },
                 it["message"]["channel"].as_str()?,
@@ -85,17 +92,27 @@ pub fn parse(v: &Value) -> Vec<Item> {
     v["items"].as_array().into_iter().flatten().filter_map(Item::from_json).collect()
 }
 
+/// The feed's item types on the All tab (`activity.feed`).
+pub const ALL_TYPES: &str = "at_user,at_user_group,at_channel,at_everyone,keyword,message_reaction,thread_v2,dm,mpdm";
+
+/// How many of `items` are unread (the sidebar's Activity row).
+pub fn unread_count(items: &[Item]) -> usize {
+    items.iter().filter(|it| it.unread).count()
+}
+
 #[derive(Default)]
 pub struct Activity {
     pub items: Option<Vec<Item>>,
     pub selected: usize,
     /// Messages fetched for items, by (channel, ts); None when it is gone.
     pub messages: HashMap<(String, String), Option<Message>>,
+    /// Why the feed could not be loaded (said in the view).
+    pub failed: Option<String>,
     /// Messages asked for (loaded or not).
     pub requested: std::collections::HashSet<(String, String)>,
     /// Items per page on the last draw.
     pub height: usize,
-    /// Last drawn area, for clicks.
+    /// Last drawn area (empty while the view is not shown), for the mouse.
     pub area: Rect,
     /// The list's rows at the last draw, the first item shown and how many are.
     pub list: Rect,
@@ -152,20 +169,22 @@ impl Activity {
         out
     }
 
-    pub fn draw(&mut self, f: &mut Frame, area: Rect, ws: &Workspace) {
-        let [popup] = Layout::horizontal([Constraint::Length(90.min(area.width))]).flex(Flex::Center).areas(area);
-        let [popup] = Layout::vertical([Constraint::Length(30.min(area.height))]).flex(Flex::Center).areas(popup);
-        self.area = popup;
-        super::media::clear_modal(f, popup);
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(super::theme::p().accent))
-            .title(format!(" {} ", super::i18n::tr("Activity")));
-        let inner = block.inner(popup);
-        f.render_widget(block, popup);
+    /// Not drawn this time: nothing of it is under the mouse.
+    pub fn hide(&mut self) {
+        (self.area, self.list, self.first, self.shown, self.hover) = (Rect::default(), Rect::default(), 0, 0, None);
+    }
+
+    /// Draw the view into `area` (the main pane), its frame lit while it has the focus.
+    pub fn draw(&mut self, f: &mut Frame, area: Rect, ws: &Workspace, focused: bool) {
+        self.area = area;
+        let border = Style::default().fg(if focused { super::theme::p().accent } else { super::theme::p().dim });
+        let block = Block::default().borders(Borders::ALL).border_style(border).title(format!(" {} ", super::i18n::tr("Activity")));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
         self.height = (inner.height / 3) as usize;
         let mut marked = None;
         let lines = match &self.items {
+            None if self.failed.is_some() => vec![Line::styled(format!("{}: {}", super::i18n::tr("The activity could not be loaded"), self.failed.as_deref().unwrap_or_default()), Style::default().fg(super::theme::p().danger))],
             None => vec![Line::styled("Loading…", Style::default().fg(super::theme::p().dim))],
             Some(items) if items.is_empty() => vec![Line::styled("Nothing yet: mentions, reactions to your messages and thread replies show up here.", Style::default().fg(super::theme::p().dim))],
             Some(items) => {
@@ -201,7 +220,7 @@ impl Activity {
         if let Some(items) = &self.items {
             let start = self.selected.saturating_sub(self.height.saturating_sub(1));
             (self.first, self.shown) = (start, items.len().saturating_sub(start).min(self.height));
-            super::scroll::indicator_beside(f, popup, inner, start, self.height, items.len(), Style::default().fg(super::theme::p().accent));
+            super::scroll::indicator_beside(f, area, inner, start, self.height, items.len(), border);
         }
     }
 }
@@ -228,6 +247,7 @@ pub fn headline(ws: &Workspace, it: &Item, msg: Option<&Message>) -> Line<'stati
         Kind::Reaction { name, user } => ("", format!("{} {} reacted to your message in {place}", text::emoji(ws, name, None), ws.user_name(user))),
         Kind::Thread { unread, .. } if *unread > 0 => ("💬", format!("{unread} new {} in a thread in {place}", if *unread == 1 { "reply" } else { "replies" })),
         Kind::Thread { .. } => ("💬", format!("Thread in {place}")),
+        Kind::Dm => ("✉", format!("{author} wrote in {place}")),
         Kind::Other(t) => ("•", format!("{t} in {place}")),
     };
     let style = if it.unread { Style::default().add_modifier(Modifier::BOLD).fg(super::theme::p().strong) } else { Style::default().fg(super::theme::p().read) };
@@ -278,10 +298,13 @@ mod tests {
         let v = serde_json::json!({"items": [
             {"feed_ts":"1792326270.026269","is_unread":true,"item":{"bundle_info":{"payload":{"thread_entry":{"channel_id":"D1","latest_ts":"1792326270.026269","min_unread_ts":"1792326270.026269","thread_ts":"1792325783.787339","unread_msg_count":1}}},"type":"thread_v2"},"key":"thread_v2-D1-1792325783.787339"},
             {"feed_ts":"1792326101.733899","is_unread":false,"item":{"message":{"author_user_id":"U2","channel":"C1","is_broadcast":false,"ts":"1792326101.733899"},"type":"at_user"},"key":"at_user-C1-1792326101.733899"},
-            {"feed_ts":"1792323624.000000","is_unread":false,"item":{"message":{"channel":"D1","ts":"1792323487.950999"},"reaction":{"name":"heart","user":"U2"},"type":"message_reaction"},"key":"k3"}
+            {"feed_ts":"1792323624.000000","is_unread":false,"item":{"message":{"channel":"D1","ts":"1792323487.950999"},"reaction":{"name":"heart","user":"U2"},"type":"message_reaction"},"key":"k3"},
+            {"feed_ts":"1792323700.000000","is_unread":true,"is_archived":false,"item":{"bundle_info":{"payload":{"dm_entry":{"latest_message":{"channel":"D2","ts":"1792323699.000100"}}}},"type":"dm"},"key":"dm-D2","version":"1"}
         ]});
         let items = parse(&v);
-        assert_eq!(items.len(), 3);
+        assert_eq!(items.len(), 4);
+        assert_eq!((&items[3].kind, items[3].channel.as_str(), items[3].ts.as_str()), (&Kind::Dm, "D2", "1792323699.000100"), "a DM: its newest message");
+        assert_eq!(unread_count(&items), 2);
         assert_eq!(items[0].kind, Kind::Thread { unread: 1, latest: "1792326270.026269".into() });
         assert_eq!((items[0].channel.as_str(), items[0].ts.as_str(), items[0].unread), ("D1", "1792325783.787339", true));
         assert_eq!((items[1].kind.clone(), items[1].author.as_deref()), (Kind::Mention("at_user".into()), Some("U2")));
@@ -314,8 +337,10 @@ mod tests {
         let item = |ts: &str| Item { key: ts.into(), kind: Kind::Other("x".into()), channel: "C1".into(), ts: ts.into(), author: None, unread: false, when: 0.0 };
         let mut a = Activity { items: Some(vec![item("1.0"), item("2.0")]), ..Default::default() };
         let ws = Workspace::default();
-        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 30)).unwrap();
-        terminal.draw(|f| a.draw(f, f.area(), &ws)).unwrap();
+        // Drawn into the main pane's whole area: the list fills it inside the view's frame (title on top).
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|f| a.draw(f, f.area(), &ws, true)).unwrap();
+        assert_eq!(a.list, Rect::new(1, 1, 98, 28));
         let buf = terminal.backend().buffer().clone();
         let p = super::super::theme::p();
         let (x0, x1) = (a.list.x, a.list.right() - 1);

@@ -89,6 +89,8 @@ enum Net {
     Prefs(Value),
     /// The activity feed.
     ActivityFeed(Result<Value, String>),
+    /// The activity feed fetched at start, for the sidebar row's unread count.
+    ActivityUnread(Result<Value, String>),
     /// The newest page of a previewed channel, fetched again.
     PreviewPage { channel: String, page: slack_core::types::HistoryPage },
     /// Bytes of an upload sent so far.
@@ -129,6 +131,20 @@ enum Focus {
     Thread,
     ThreadComposer,
     Composer,
+}
+
+/// What the main pane shows: the conversation (with its message box), or one of the views
+/// opened from the sidebar's rows atop it. A view gives way to the conversation it was opened
+/// over on Esc, and when a conversation is opened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum View {
+    #[default]
+    Conversation,
+    Threads,
+    Activity,
+    /// Nothing opens it yet (VW7).
+    #[allow(dead_code)]
+    Huddles,
 }
 
 struct App {
@@ -197,12 +213,14 @@ struct App {
     call_bar_area: ratatui::layout::Rect,
     /// A profile picture the call bar wants loaded.
     call_bar_wanted: Option<(slack_core::types::File, (u16, u16))>,
-    /// Open activity view (Ctrl+A).
-    activity: Option<super::activity::Activity>,
+    /// What the main pane shows.
+    view: View,
+    /// The Activity view (Ctrl+A), shown while `view` is Activity.
+    activity: super::activity::Activity,
     /// The save dialog (`␣s`).
     save: Option<super::save::SaveDialog>,
-    /// Open Threads view (Ctrl+T).
-    threads: Option<super::threads::Threads>,
+    /// The Threads view (Ctrl+T), shown while `view` is Threads.
+    threads: super::threads::Threads,
     /// When the previewed channel was last fetched again.
     preview_polled: Option<std::time::Instant>,
     /// When the people shown were last looked up for their statuses, and whether a lookup is
@@ -376,9 +394,14 @@ impl App {
     /// Follow the sidebar selection into the message pane.
     fn sync_current(&mut self) {
         let selected = self.sidebar.selected_id().map(String::from);
-        // On a folded section's header (or the Threads row) the conversation stays as it was.
-        if selected.is_none() && (self.sidebar.selected_folded().is_some() || self.sidebar.on_threads()) {
+        // On a folded section's header (or a view's row) the conversation stays as it was.
+        if selected.is_none() && (self.sidebar.selected_folded().is_some() || self.sidebar.on_view().is_some()) {
             return;
+        }
+        // A view keeps its row selected while it is shown: a conversation selected in the
+        // sidebar (the keys, a click, a jump) is shown instead.
+        if selected.is_some() && self.view != View::Conversation {
+            self.view = View::Conversation;
         }
         if selected != self.current {
             if self.ws.preview.is_some() && self.ws.preview != selected {
@@ -1207,7 +1230,11 @@ impl App {
             Action::HalfPageUp => self.sidebar.move_by(-((self.sidebar.area.height.saturating_sub(2) / 2).max(1) as isize)),
             Action::HalfPageDown => self.sidebar.move_by((self.sidebar.area.height.saturating_sub(2) / 2).max(1) as isize),
             Action::Open if self.sidebar.selected_folded().is_some() => self.sidebar.toggle_selected_fold(&self.ws, self.current.as_deref()),
-            Action::Open if self.sidebar.on_threads() => self.load_threads(false),
+            Action::Open if self.sidebar.on_view().is_some() => {
+                if let Some(v) = self.sidebar.on_view().and_then(|i| view_of_row(&i)) {
+                    self.open_view(v);
+                }
+            }
             Action::Open | Action::Type => self.focus = Focus::Composer,
             // The selected conversation is the current one.
             Action::Details | Action::NotificationLevel | Action::MuteConversation | Action::CopyConversationLink | Action::MarkUnread | Action::LeaveConversation if self.sidebar.selected_id().is_some() => {
@@ -1509,22 +1536,104 @@ impl App {
         self.open_hit(hit);
     }
 
-    /// Close the threads list and open its selected thread (Enter, or a click on it).
+    /// Leave the Threads view for its selected thread (Enter, or a click on it).
     fn open_thread_item(&mut self) {
-        let Some((channel, ts, thread_ts)) = self.threads.as_ref().and_then(|t| t.target()) else { return };
-        self.threads = None;
+        let Some((channel, ts, thread_ts)) = self.threads.target() else { return };
+        self.close_view();
         self.open_hit(super::search::Hit { channel, ts, thread_ts, user: None, text: String::new(), ..Default::default() });
     }
 
-    /// Mark the activity list's selected item seen, close the list and open the item (Enter, or a click on it).
+    /// Mark the Activity view's selected item seen and leave the view for it (Enter, or a click on it).
     fn open_activity_item(&mut self) {
-        let Some(a) = self.activity.as_ref() else { return };
-        if let Some(key) = a.selected_item().map(|it| it.key.clone()) {
+        if let Some(key) = self.activity.selected_item().map(|it| it.key.clone()) {
             self.seen.insert(key, opened_now());
+            if let Some(items) = self.activity.items.as_mut() {
+                super::activity::apply_seen(items, &self.seen);
+                self.ws.activity_unread = super::activity::unread_count(items);
+            }
         }
-        let Some((channel, ts, thread_ts)) = a.target() else { return };
-        self.activity = None;
+        let Some((channel, ts, thread_ts)) = self.activity.target() else { return };
+        self.close_view();
         self.open_hit(super::search::Hit { channel, ts, thread_ts, user: None, text: String::new(), ..Default::default() });
+    }
+
+    /// Show view `v` in the main pane (its sidebar row selected, the focus on it) and load it;
+    /// already shown, it is loaded again.
+    fn open_view(&mut self, v: View) {
+        if let Some(row) = row_of_view(v) {
+            self.sidebar.select_view(&row);
+        }
+        self.view = v;
+        self.focus = Focus::Messages;
+        match v {
+            View::Threads => self.load_threads(false),
+            View::Activity => self.open_activity(),
+            View::Huddles | View::Conversation => {}
+        }
+    }
+
+    /// Back from a view to the conversation it was opened over, on its messages.
+    fn close_view(&mut self) {
+        self.view = View::Conversation;
+        self.focus = Focus::Messages;
+        if let Some(id) = self.current.as_deref() {
+            self.sidebar.select_row_of(id);
+        }
+    }
+
+    /// The keys' context of the view shown in the main pane (none for the conversation).
+    fn view_context(&self) -> Option<Context> {
+        match self.view {
+            View::Threads => Some(Context::Threads),
+            View::Activity => Some(Context::Activity),
+            View::Huddles | View::Conversation => None,
+        }
+    }
+
+    /// An action of the view shown (its keys while the main pane has the focus).
+    fn view_action(&mut self, action: Action) {
+        match self.view {
+            View::Threads => {
+                let t = &mut self.threads;
+                match action {
+                    Action::Close => self.close_view(),
+                    Action::Up => t.move_by(-1),
+                    Action::Down => t.move_by(1),
+                    Action::PageUp => t.move_by(-(t.height.max(1) as isize)),
+                    Action::PageDown => t.move_by(t.height.max(1) as isize),
+                    Action::Refresh => self.open_view(View::Threads),
+                    Action::Open => self.open_thread_item(),
+                    _ => {}
+                }
+                // At the end of the list: the next page.
+                if self.view == View::Threads && self.threads.at_end() {
+                    self.load_threads(true);
+                }
+            }
+            View::Activity => {
+                let a = &mut self.activity;
+                match action {
+                    Action::Close => self.close_view(),
+                    Action::Up => a.move_by(-1),
+                    Action::Down => a.move_by(1),
+                    Action::PageUp => a.move_by(-(a.height.max(1) as isize)),
+                    Action::PageDown => a.move_by(a.height.max(1) as isize),
+                    Action::Refresh => self.open_view(View::Activity),
+                    Action::Open => self.open_activity_item(),
+                    _ => {}
+                }
+            }
+            View::Huddles | View::Conversation => {}
+        }
+    }
+
+    /// The area of the view shown at the last draw (empty for the conversation).
+    fn view_area(&self) -> Rect {
+        match self.view {
+            View::Threads => self.threads.area,
+            View::Activity => self.activity.area,
+            View::Huddles | View::Conversation => Rect::default(),
+        }
     }
 
     /// Run the search overlay's query, or open its highlighted hit if the query is unchanged.
@@ -1567,6 +1676,10 @@ impl App {
 
     /// `open_hit`; `from_link`: a link (or a notification) leads there, so a missing message says so.
     fn open_hit_from(&mut self, hit: super::search::Hit, from_link: bool) {
+        // Its conversation takes the main pane from a view.
+        if self.view != View::Conversation {
+            self.close_view();
+        }
         self.seek_from_link = from_link;
         (self.seek_hit, self.seek_refreshed, self.link_reply) = (None, false, None);
         if self.current.as_deref() == Some(hit.channel.as_str()) {
@@ -1901,6 +2014,10 @@ impl App {
             // Narrow: the view and a thread take turns in the messages' place.
             if self.narrow {
                 self.close_thread();
+            }
+            // It takes the main pane from a view as from the messages.
+            if self.view != View::Conversation {
+                self.close_view();
             }
             self.huddle_view = Some(Default::default());
             self.focus = Focus::Huddle;
@@ -2444,29 +2561,25 @@ impl App {
         });
     }
 
-    /// Open the activity view and load the feed.
+    /// Load the Activity view's feed afresh (its All tab's types; their unread count is the
+    /// sidebar row's).
     fn open_activity(&mut self) {
-        self.activity = Some(super::activity::Activity::default());
+        self.activity = super::activity::Activity::default();
         let (client, tx) = (self.client.clone(), self.net.clone());
         tokio::spawn(async move {
-            let _ = tx.send(Net::ActivityFeed(client.activity_feed(50).await.map_err(|e| e.to_string())));
+            let _ = tx.send(Net::ActivityFeed(client.activity_feed(super::activity::ALL_TYPES, 50).await.map_err(|e| e.to_string())));
         });
     }
 
-    /// Ctrl+T: open the Threads view and load its first page (or, with `more`, the next).
+    /// Load the Threads view's first page afresh (or, with `more`, the next).
     fn load_threads(&mut self, more: bool) {
-        let before = match self.threads.as_mut() {
-            Some(t) if more => match t.next_page() {
-                Some(ts) => {
-                    t.loading = true;
-                    Some(ts)
-                }
-                None => return,
-            },
-            _ => {
-                self.threads = Some(super::threads::Threads { loading: true, ..Default::default() });
-                None
-            }
+        let before = if more {
+            let Some(ts) = self.threads.next_page() else { return };
+            self.threads.loading = true;
+            Some(ts)
+        } else {
+            self.threads = super::threads::Threads { loading: true, ..Default::default() };
+            None
         };
         let (client, tx) = (self.client.clone(), self.net.clone());
         tokio::spawn(async move {
@@ -2475,7 +2588,7 @@ impl App {
         });
     }
 
-    /// The mouse wheel over an open list (Ctrl+K, the section mover, F5, Ctrl+T, search) moves
+    /// The mouse wheel over an open list (Ctrl+K, the section mover, F5, search) moves
     /// its selection a step, like the keys; in the help and the preferences (one-row entries) it
     /// goes three rows, as in the message panes. False when none is open.
     fn wheel_in_popup(&mut self, down: bool) -> bool {
@@ -2499,13 +2612,6 @@ impl App {
             sw.move_by(step, len);
         } else if let Some(m) = self.mover.as_mut().filter(|m| m.naming.is_none()) {
             m.move_by(step);
-        } else if let Some(a) = self.activity.as_mut() {
-            a.move_by(step);
-        } else if let Some(t) = self.threads.as_mut() {
-            t.move_by(step);
-            if t.at_end() {
-                self.load_threads(true);
-            }
         } else if let Some(search) = self.search.as_mut() {
             search.move_by(step);
             if down {
@@ -2517,9 +2623,12 @@ impl App {
         true
     }
 
-    /// Fetch the messages of the activity items around the selection.
+    /// Fetch the messages of the activity items around the selection (while the view is shown).
     fn request_activity_messages(&mut self) {
-        let Some(a) = self.activity.as_mut() else { return };
+        if self.view != View::Activity {
+            return;
+        }
+        let a = &mut self.activity;
         for (channel, ts) in a.wanted() {
             a.requested.insert((channel.clone(), ts.clone()));
             let (client, tx) = (self.client.clone(), self.net.clone());
@@ -2546,11 +2655,13 @@ impl App {
         mode_of(self.overlay(), self.focus)
     }
 
-    /// Forget the hovered row of the sidebar and the message panes.
+    /// Forget the hovered row of the sidebar, the message panes and the views.
     fn clear_main_hover(&mut self) {
         self.sidebar.hover = None;
         self.messages.hover = None;
         self.thread_pane.hover = None;
+        self.threads.hover = None;
+        self.activity.hover = None;
     }
 
     /// Forget the row the pointer was over in every dialog's list.
@@ -2567,8 +2678,6 @@ impl App {
         self.switcher.iter_mut().for_each(|d| d.hover = None);
         self.mover.iter_mut().for_each(|d| d.hover = None);
         self.save.iter_mut().for_each(|d| d.hover = None);
-        self.activity.iter_mut().for_each(|d| d.hover = None);
-        self.threads.iter_mut().for_each(|d| d.hover = None);
         self.search.iter_mut().for_each(|d| d.hover = None);
         if let Some(d) = self.details.as_mut() {
             (d.hover, d.hover_tab) = (None, None);
@@ -2590,10 +2699,6 @@ impl App {
         } else if let Some(d) = self.mover.as_mut() {
             d.hover_at(column, row);
         } else if let Some(d) = self.save.as_mut() {
-            d.hover_at(column, row);
-        } else if let Some(d) = self.activity.as_mut() {
-            d.hover_at(column, row);
-        } else if let Some(d) = self.threads.as_mut() {
             d.hover_at(column, row);
         } else if let Some(d) = self.search.as_mut() {
             d.hover_at(column, row);
@@ -2621,10 +2726,6 @@ impl App {
             m.area
         } else if let Some(d) = &self.save {
             d.area
-        } else if let Some(a) = &self.activity {
-            a.area
-        } else if let Some(t) = &self.threads {
-            t.area
         } else if let Some(card) = &self.profile {
             card.area
         } else if let Some(d) = &self.details {
@@ -2671,10 +2772,6 @@ impl App {
             }
         } else if self.save.is_some() {
             self.save = None;
-        } else if self.activity.is_some() {
-            self.activity = None;
-        } else if self.threads.is_some() {
-            self.threads = None;
         } else if self.profile.is_some() {
             self.profile = None;
         } else if self.details.is_some() {
@@ -2715,10 +2812,6 @@ impl App {
             Some(if m.naming.is_some() { Context::TextField } else { Context::Mover })
         } else if let Some(d) = &self.save {
             Some(if d.editing { Context::TextField } else { Context::Save })
-        } else if self.activity.is_some() {
-            Some(Context::Activity)
-        } else if self.threads.is_some() {
-            Some(Context::Threads)
         } else if self.profile.is_some() {
             Some(Context::Profile)
         } else if self.details.is_some() {
@@ -2753,7 +2846,9 @@ impl App {
             out.push(match self.focus {
                 Focus::Sidebar => Context::Sidebar,
                 Focus::Huddle => Context::Huddle,
-                Focus::Messages | Focus::Thread => Context::Messages,
+                // The main pane: the view shown there, else the conversation's messages.
+                Focus::Messages => self.view_context().unwrap_or(Context::Messages),
+                Focus::Thread => Context::Messages,
                 Focus::Composer | Focus::ThreadComposer => Context::Composer,
             });
         }
@@ -3203,9 +3298,7 @@ impl App {
             || self.prefs.is_some()
             || self.switcher.is_some()
             || self.mover.is_some()
-            || self.activity.is_some()
             || self.save.is_some()
-            || self.threads.is_some()
             || self.profile.is_some()
             || self.details.is_some()
             || self.search.is_some()
@@ -3267,6 +3360,7 @@ impl App {
 }
 
 fn spawn_boot(client: Client, tx: mpsc::UnboundedSender<Net>) {
+    let (activity, unread) = (client.clone(), tx.clone());
     tokio::spawn(async move {
         let result = async {
             let (boot, users, counts) = tokio::join!(client.user_boot(), client.users_list(), client.counts());
@@ -3274,6 +3368,10 @@ fn spawn_boot(client: Client, tx: mpsc::UnboundedSender<Net>) {
         }
         .await;
         let _ = tx.send(result.unwrap_or_else(|e| Net::Error(format!("loading workspace failed: {e}"))));
+    });
+    tokio::spawn(async move {
+        let result = activity.activity_feed(super::activity::ALL_TYPES, 50).await.map_err(|e| e.to_string());
+        let _ = unread.send(Net::ActivityUnread(result));
     });
 }
 
@@ -3669,6 +3767,107 @@ fn workspace_labels(sessions: &[slack_core::session::WorkspaceSession]) -> Vec<S
         .collect()
 }
 
+impl App {
+    /// An app on `client`'s workspace with nothing loaded or open yet, no keys bound and nothing
+    /// kept from earlier runs (the caller fills those in); requests answer on `net`.
+    fn new(client: Client, net: mpsc::UnboundedSender<Net>, rtm_commands: mpsc::UnboundedSender<slack_core::rtm::RtmCommand>, media: super::media::Media, clipboard: super::clipboard::Clipboard) -> App {
+        App {
+            keys: Keymap::default(),
+            key_warnings: Vec::new(),
+            pending: Pending::default(),
+            pending_since: None,
+            which_key: None,
+            which_key_area: Rect::default(),
+            closing_click: None,
+            workspaces: Vec::new(),
+            addresses: Vec::new(),
+            authors: Default::default(),
+            workspace: 0,
+            others: Default::default(),
+            rail: Vec::new(),
+            open_after: Default::default(),
+            start: None,
+            logos: Default::default(),
+            rail_wanted: Vec::new(),
+            switch_to: None,
+            signed_out: Default::default(),
+            signed_out_note: None,
+            media,
+            viewer: None,
+            snippet: None,
+            help: None,
+            switcher: None,
+            search: None,
+            details: None,
+            profile: None,
+            view: View::Conversation,
+            activity: Default::default(),
+            save: None,
+            threads: Default::default(),
+            preview_polled: None,
+            statuses_polled: (None, false),
+            prefs: None,
+            huddle_view: None,
+            parked_huddle: None,
+            call_bar_area: Default::default(),
+            call_bar_wanted: None,
+            menu: None,
+            dnd_refreshing: false,
+            schedule_writes: ScheduleQueue::default(),
+            mover: None,
+            huddle_after_open: None,
+            rejoined: false,
+            autosave: (None, None, std::time::Instant::now(), true),
+            presence_subscribed: false,
+            followed: Default::default(),
+            call: None,
+            pending_hit: None,
+            ringing: None,
+            seeking: None,
+            seek_from_link: false,
+            seek_hit: None,
+            seek_refreshed: false,
+            link_reply: None,
+            drafts: Default::default(),
+            player: None,
+            screen: Default::default(),
+            narrow: false,
+            terminal_focused: true,
+            completion: None,
+            completion_dismissed: None,
+            path_suggestions: None,
+            seen: Default::default(),
+            composer_area: Default::default(),
+            thread_composer_area: Default::default(),
+            thread: None,
+            thread_pane: MessagePane::thread(),
+            thread_composer: Composer::default(),
+            broadcast: false,
+            clipboard,
+            confirm: None,
+            confirm_area: Default::default(),
+            picker: None,
+            rtm_commands,
+            connected: false,
+            last_typing_sent: None,
+            marked: Default::default(),
+            focus: Focus::Messages,
+            composer: Composer::default(),
+            client,
+            net,
+            ws: Workspace::default(),
+            sidebar: Sidebar::default(),
+            messages: MessagePane::default(),
+            current: None,
+            status: "loading workspace…".into(),
+            link_note: None,
+            pointer: None,
+            status_shown: (String::new(), std::time::Instant::now()),
+            loading: true,
+        }
+    }
+}
+
 /// One workspace until quit (None) or a switch (Some(index)); hands back what outlives it.
 async fn run_workspace(
     client: Client,
@@ -3686,105 +3885,12 @@ async fn run_workspace(
     let mut rtm = slack_core::rtm::spawn(client.clone());
     media.thumbs.clear();
     let team_name = if workspaces.0.len() > 1 { format!("{}/{} {}", workspaces.1 + 1, workspaces.0.len(), workspaces.0[workspaces.1]) } else { client.session.team_name.clone() };
-    let mut app = App {
-        keys: keymap.0.clone(),
-        key_warnings: keymap.1.clone(),
-        pending: Pending::default(),
-        pending_since: None,
-        which_key: None,
-        which_key_area: Rect::default(),
-        closing_click: None,
-        workspaces: workspaces.0,
-        addresses: workspaces.6,
-        authors: Default::default(),
-        workspace: workspaces.1,
-        others: workspaces.2,
-        rail: Vec::new(),
-        open_after: workspaces.3,
-        start: None,
-        logos: workspaces.4,
-        rail_wanted: Vec::new(),
-        switch_to: None,
-        signed_out: workspaces.5,
-        signed_out_note: None,
-        media,
-        viewer: None,
-        snippet: None,
-        help: None,
-        switcher: None,
-        search: None,
-        details: None,
-        profile: None,
-        activity: None,
-        save: None,
-        threads: None,
-        preview_polled: None,
-        statuses_polled: (None, false),
-        prefs: None,
-        huddle_view: None,
-        parked_huddle: None,
-        call_bar_area: Default::default(),
-        call_bar_wanted: None,
-        menu: None,
-        dnd_refreshing: false,
-        schedule_writes: ScheduleQueue::default(),
-        mover: None,
-        huddle_after_open: None,
-        rejoined: false,
-        autosave: (None, None, std::time::Instant::now(), true),
-        presence_subscribed: false,
-        followed: Default::default(),
-        call: None,
-        pending_hit: None,
-        ringing: None,
-        seeking: None,
-        seek_from_link: false,
-        seek_hit: None,
-        seek_refreshed: false,
-        link_reply: None,
-        drafts: super::drafts::load(&client.session.team_id, &client.session.user_id),
-        player: None,
-        screen: Default::default(),
-        narrow: false,
-        terminal_focused: true,
-        completion: None,
-        completion_dismissed: None,
-        path_suggestions: None,
-        seen: Default::default(),
-        composer_area: Default::default(),
-        thread_composer_area: Default::default(),
-        thread: None,
-        thread_pane: MessagePane::thread(),
-        thread_composer: Composer::default(),
-        broadcast: false,
-        clipboard,
-        confirm: None,
-        confirm_area: Default::default(),
-        picker: None,
-        rtm_commands: rtm.commands.clone(),
-        connected: false,
-        last_typing_sent: None,
-        marked: Default::default(),
-        focus: Focus::Messages,
-        composer: Composer::default(),
-        client: client.clone(),
-        net: net_tx.clone(),
-        ws: Workspace {
-            team_name,
-            team_id: client.session.team_id.clone(),
-            self_id: client.session.user_id.clone(),
-            settings: settings.clone(),
-            ..Default::default()
-        },
-        sidebar: Sidebar::for_account(&client.session.team_id, &client.session.user_id),
-        messages: MessagePane::default(),
-        current: None,
-        status: "loading workspace…".into(),
-        link_note: None,
-        pointer: None,
-        status_shown: (String::new(), std::time::Instant::now()),
-        loading: true,
-    };
+    let mut app = App::new(client.clone(), net_tx.clone(), rtm.commands.clone(), media, clipboard);
+    (app.keys, app.key_warnings) = keymap.clone();
+    (app.workspaces, app.workspace, app.others, app.open_after, app.logos, app.signed_out, app.addresses) = workspaces;
+    app.drafts = super::drafts::load(&client.session.team_id, &client.session.user_id);
+    app.ws = Workspace { team_name, team_id: client.session.team_id.clone(), self_id: client.session.user_id.clone(), settings: settings.clone(), ..Default::default() };
+    app.sidebar = Sidebar::for_account(&client.session.team_id, &client.session.user_id);
 
     let mut tick = tokio::time::interval(Duration::from_millis(500));
     let mut video_tick = tokio::time::interval(Duration::from_millis(40));
@@ -3892,7 +3998,8 @@ async fn run_workspace(
         }
         app.sync_current();
         app.autosave_drafts();
-        if app.current.as_ref().and_then(|c| app.ws.timelines.get(c)).is_some_and(|t| t.loaded) {
+        // Not while a view hides it: what comes meanwhile stays unread.
+        if app.view == View::Conversation && app.current.as_ref().and_then(|c| app.ws.timelines.get(c)).is_some_and(|t| t.loaded) {
             app.mark_current_read();
         }
         app.mark_thread_read();
@@ -4225,38 +4332,6 @@ fn handle_dialog(app: &mut App, ev: &Event) -> bool {
                 _ => {}
             }
         }
-        Event::Key(k) if k.kind != KeyEventKind::Release && app.activity.is_some() => {
-            let action = app.action_in(Context::Activity, &k);
-            let Some(a) = app.activity.as_mut() else { return true };
-            match action {
-                Some(Action::Close) => app.activity = None,
-                Some(Action::Up) => a.move_by(-1),
-                Some(Action::Down) => a.move_by(1),
-                Some(Action::PageUp) => a.move_by(-(a.height.max(1) as isize)),
-                Some(Action::PageDown) => a.move_by(a.height.max(1) as isize),
-                Some(Action::Refresh) => app.open_activity(),
-                Some(Action::Open) => app.open_activity_item(),
-                _ => {}
-            }
-        }
-        Event::Key(k) if k.kind != KeyEventKind::Release && app.threads.is_some() => {
-            let action = app.action_in(Context::Threads, &k);
-            let Some(t) = app.threads.as_mut() else { return true };
-            match action {
-                Some(Action::Close) => app.threads = None,
-                Some(Action::Up) => t.move_by(-1),
-                Some(Action::Down) => t.move_by(1),
-                Some(Action::PageUp) => t.move_by(-(t.height.max(1) as isize)),
-                Some(Action::PageDown) => t.move_by(t.height.max(1) as isize),
-                Some(Action::Refresh) => app.load_threads(false),
-                Some(Action::Open) => app.open_thread_item(),
-                _ => {}
-            }
-            // At the end of the list: the next page.
-            if app.threads.as_ref().is_some_and(|t| t.at_end()) {
-                app.load_threads(true);
-            }
-        }
         Event::Key(k) if k.kind != KeyEventKind::Release && app.profile.is_some() => {
             let action = app.action_in(Context::Profile, &k);
             let Some(card) = app.profile.as_mut() else { return true };
@@ -4408,7 +4483,7 @@ fn handle_dialog(app: &mut App, ev: &Event) -> bool {
             app.clear_dialog_hover();
             app.wheel_in_popup(m.kind == MouseEventKind::ScrollDown);
         }
-        // A click in the preferences, or on a row of jump to, activity, threads or search, as Enter does.
+        // A click in the preferences, or on a row of jump to or search, as Enter does.
         Event::Mouse(m) if m.kind == MouseEventKind::Down(MouseButton::Left) && app.prefs.is_some() && app.click_prefs(m.column, m.row) => {}
         Event::Mouse(m) if m.kind == MouseEventKind::Down(MouseButton::Left) && app.prefs.is_none() && click_row(app, m.column, m.row) => {}
         Event::Mouse(m) if m.kind == MouseEventKind::Down(MouseButton::Left) && app.profile.is_none() && app.click_details(m.column, m.row) => {}
@@ -4424,22 +4499,13 @@ fn handle_dialog(app: &mut App, ev: &Event) -> bool {
     true
 }
 
-/// A left click at a position on a row of the topmost jump to / activity / threads / search
-/// list: selects it and does what Enter does (which closes the list). False when no such list
-/// has a row there.
+/// A left click at a position on a row of the topmost jump to / search list: selects it and
+/// does what Enter does (which closes the list). False when no such list has a row there.
 fn click_row(app: &mut App, column: u16, row: u16) -> bool {
     if let Some(sw) = app.switcher.as_mut() {
         let Some(n) = sw.row_at(column, row) else { return false };
         sw.selected = n;
         app.switch();
-    } else if let Some(a) = app.activity.as_mut() {
-        let Some(n) = a.row_at(column, row) else { return false };
-        a.selected = n;
-        app.open_activity_item();
-    } else if let Some(t) = app.threads.as_mut() {
-        let Some(n) = t.row_at(column, row) else { return false };
-        t.selected = n;
-        app.open_thread_item();
     } else if let Some(search) = app.search.as_mut() {
         let Some(n) = search.row_at(column, row) else { return false };
         search.selected = n;
@@ -4461,7 +4527,7 @@ fn handle_main(app: &mut App, ev: Event) -> bool {
             let resolved = app.resolve(&k);
             match resolved {
                 Resolved::Action(Context::Global, action) => return run_global(app, action),
-                Resolved::Action(Context::Sidebar | Context::Messages | Context::Huddle, Action::Help) => {
+                Resolved::Action(Context::Sidebar | Context::Messages | Context::Huddle | Context::Activity | Context::Threads, Action::Help) => {
                     app.help = Some(super::help::Help::default());
                     return true;
                 }
@@ -4516,6 +4582,12 @@ fn handle_main(app: &mut App, ev: Event) -> bool {
                         }
                     }
                 }
+                // The main pane shows a view: its keys.
+                Focus::Messages if app.view != View::Conversation => {
+                    if let Some(action) = action {
+                        app.view_action(action);
+                    }
+                }
                 Focus::Messages | Focus::Thread => {
                     if let Some(action) = action {
                         app.message_action(action, app.focus == Focus::Thread);
@@ -4551,6 +4623,9 @@ fn handle_main(app: &mut App, ev: Event) -> bool {
             app.sidebar.hover = app.sidebar.hover_at(c, r);
             app.messages.hover = app.messages.message_at(c, r);
             app.thread_pane.hover = if app.thread.is_some() { app.thread_pane.message_at(c, r) } else { None };
+            // (A view not shown has no rows to hover.)
+            app.threads.hover_at(c, r);
+            app.activity.hover_at(c, r);
         }
         Event::Mouse(m) if m.kind == MouseEventKind::Down(MouseButton::Right) => app.open_menu(m.column, m.row),
         Event::Mouse(m) => match m.kind {
@@ -4572,12 +4647,23 @@ fn handle_main(app: &mut App, ev: Event) -> bool {
                     app.focus = Focus::Huddle;
                 } else if let Some(i) = app.rail.iter().position(|r| r.contains((m.column, m.row).into())) {
                     app.switch_workspace(i);
-                } else if app.sidebar.threads_at(m.column, m.row) {
-                    app.load_threads(false);
+                } else if let Some(v) = app.sidebar.view_at(m.column, m.row).and_then(|i| view_of_row(&i)) {
+                    app.open_view(v);
                 } else if let Some(name) = app.sidebar.header_at(m.column, m.row) {
                     app.sidebar.toggle_fold_keeping(&app.ws, &name, app.current.as_deref());
                 } else if app.sidebar.click(m.column, m.row) {
                     // On its messages in NORMAL, as Jump to (`i` types).
+                    app.focus = Focus::Messages;
+                } else if let Some(n) = app.threads.row_at(m.column, m.row) {
+                    // A view's item: selected and opened, as Enter does.
+                    app.threads.selected = n;
+                    app.open_thread_item();
+                    app.closing_click = Some((std::time::Instant::now(), m.column, m.row));
+                } else if let Some(n) = app.activity.row_at(m.column, m.row) {
+                    app.activity.selected = n;
+                    app.open_activity_item();
+                    app.closing_click = Some((std::time::Instant::now(), m.column, m.row));
+                } else if app.view_area().contains((m.column, m.row).into()) {
                     app.focus = Focus::Messages;
                 } else if let Some(link) = m.modifiers.is_empty().then(|| app.link_at(m.column, m.row)).flatten() {
                     // A plain click on a link into your Slack opens it here (Ctrl+Shift+click stays the terminal's).
@@ -4600,6 +4686,12 @@ fn handle_main(app: &mut App, ev: Event) -> bool {
                 if let Some(v) = app.huddle_view.as_mut() {
                     v.scroll += 1;
                 }
+            }
+            // The wheel over a view moves its selection a step, like the keys.
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown if app.view_area().contains((m.column, m.row).into()) => {
+                app.threads.hover = None;
+                app.activity.hover = None;
+                app.view_action(if m.kind == MouseEventKind::ScrollDown { Action::Down } else { Action::Up });
             }
             MouseEventKind::ScrollUp if app.sidebar.area.contains((m.column, m.row).into()) => app.sidebar.move_by(-1),
             MouseEventKind::ScrollDown if app.sidebar.area.contains((m.column, m.row).into()) => app.sidebar.move_by(1),
@@ -4785,8 +4877,8 @@ fn run_global(app: &mut App, action: Action) -> bool {
         Action::Preferences => app.prefs = Some(super::prefs::Prefs::new()),
         Action::Switcher => app.switcher = Some(super::switcher::Switcher::default()),
         Action::Search => app.search = Some(super::search::Search::default()),
-        Action::Activity => app.open_activity(),
-        Action::Threads => app.load_threads(false),
+        Action::Activity => app.open_view(View::Activity),
+        Action::Threads => app.open_view(View::Threads),
         Action::Details => app.open_details(),
         Action::Star => {
             if let Some(id) = app.current.clone() {
@@ -4967,7 +5059,8 @@ fn handle_rtm(app: &mut App, ev: slack_core::rtm::RtmEvent) {
                 let in_view = if m.is_reply() {
                     app.thread.as_ref().is_some_and(|(c, t)| *c == channel && m.thread_ts.as_ref() == Some(t))
                 } else {
-                    app.current.as_deref() == Some(channel.as_str())
+                    // (A view in the main pane hides the conversation.)
+                    app.view == View::Conversation && app.current.as_deref() == Some(channel.as_str())
                 };
                 let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64();
                 let note = super::notify::notification(&app.ws, &channel, &m, app.terminal_focused && in_view, now);
@@ -5369,16 +5462,24 @@ fn handle_net(app: &mut App, msg: Net) {
         }
         Net::ActivityFeed(result) => match result {
             Ok(v) => {
-                if let Some(a) = app.activity.as_mut() {
-                    let mut items = super::activity::parse(&v);
-                    super::activity::apply_seen(&mut items, &app.seen);
-                    a.items = Some(items);
-                }
+                let mut items = super::activity::parse(&v);
+                super::activity::apply_seen(&mut items, &app.seen);
+                app.ws.activity_unread = super::activity::unread_count(&items);
+                app.activity.items = Some(items);
             }
             Err(e) => {
-                app.activity = None;
                 app.status = format!("activity failed: {e}");
+                app.activity.failed = Some(e);
             }
+        },
+        // The sidebar's Activity row, at start.
+        Net::ActivityUnread(result) => match result {
+            Ok(v) => {
+                let mut items = super::activity::parse(&v);
+                super::activity::apply_seen(&mut items, &app.seen);
+                app.ws.activity_unread = super::activity::unread_count(&items);
+            }
+            Err(e) => tracing::warn!("activity feed for the sidebar: {e}"),
         },
         Net::PreviewPage { channel, page } => {
             if let Some(tl) = app.ws.timelines.get_mut(&channel) {
@@ -5390,24 +5491,25 @@ fn handle_net(app: &mut App, msg: Net) {
         }
         Net::ThreadView { result, more } => match result {
             Ok(v) => {
-                if let Some(t) = app.threads.as_mut() {
-                    let (mut page, has_more) = super::threads::parse(&v);
-                    super::threads::apply_seen(&mut page, &app.seen);
-                    if !more {
-                        t.entries = None;
-                    }
-                    t.add_page(page, has_more);
+                let t = &mut app.threads;
+                let (mut page, has_more) = super::threads::parse(&v);
+                super::threads::apply_seen(&mut page, &app.seen);
+                if !more {
+                    t.entries = None;
                 }
+                t.add_page(page, has_more);
             }
             Err(e) => {
-                app.threads = None;
                 app.status = format!("threads failed: {e}");
+                app.threads.loading = false;
+                // A next page that failed leaves what is listed.
+                if !more {
+                    app.threads.failed = Some(e);
+                }
             }
         },
         Net::ActivityMessage { channel, ts, message } => {
-            if let Some(a) = app.activity.as_mut() {
-                a.messages.insert((channel, ts), message);
-            }
+            app.activity.messages.insert((channel, ts), message);
         }
         Net::SnippetText { id, result } => {
             if let Some(v) = app.snippet.as_mut().filter(|v| v.file.id == id) {
@@ -5518,6 +5620,12 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     if app.huddle_view.is_none() && app.focus == Focus::Huddle {
         app.focus = Focus::Messages;
     }
+    // A view gives way to the conversation once its message box gets the focus (a command put
+    // into it, …): no view has a message box of its own.
+    if app.view != View::Conversation && app.focus == Focus::Composer {
+        app.close_view();
+        app.focus = Focus::Composer;
+    }
     let mode = app.mode();
     let call_rows = app.call.as_ref().map_or(0, |call| call.bar_rows(&app.ws, &app.media, f.area().width));
     let [body, call_bar, status] = bottom_rows(f.area(), call_rows);
@@ -5578,10 +5686,27 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         app.thread_pane.hide();
     }
 
+    // Only the view shown can be pointed at.
+    if app.view != View::Threads || alone {
+        app.threads.hide();
+    }
+    if app.view != View::Activity || alone {
+        app.activity.hide();
+    }
     if alone {
         // Nothing of the message pane is on screen, so the mouse must not find it.
         app.messages.hide();
         app.composer_area = Default::default();
+    } else if app.view != View::Conversation {
+        // A view in the main pane, in place of the messages and their box.
+        app.messages.hide();
+        app.composer_area = Default::default();
+        let focused = app.focus == Focus::Messages;
+        match app.view {
+            View::Threads => app.threads.draw(f, main, &app.ws, focused),
+            View::Activity => app.activity.draw(f, main, &app.ws, focused),
+            View::Huddles | View::Conversation => {}
+        }
     } else if let (Some(view), Some(call)) = (app.huddle_view.as_mut(), &app.call) {
         // Nothing of the message pane is on screen, so the mouse must not find it.
         app.messages.hide();
@@ -5635,12 +5760,6 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     }
     if let Some(d) = app.details.as_mut() {
         d.draw(f, body, &app.ws);
-    }
-    if let Some(t) = app.threads.as_mut() {
-        t.draw(f, body, &app.ws);
-    }
-    if let Some(a) = app.activity.as_mut() {
-        a.draw(f, body, &app.ws);
     }
     if let Some(card) = app.profile.as_mut() {
         card.draw(f, body, &app.ws);
@@ -5723,6 +5842,24 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     };
     let showcmd = app.keys.show(app.pending.typed());
     f.render_widget(Paragraph::new(super::status::line(pill, &info, &showcmd, &hints, status.width)), status);
+}
+
+/// The view a sidebar row opens.
+fn view_of_row(item: &super::sidebar::Item) -> Option<View> {
+    match item {
+        super::sidebar::Item::Threads => Some(View::Threads),
+        super::sidebar::Item::Activity => Some(View::Activity),
+        _ => None,
+    }
+}
+
+/// The sidebar row of a view (none for the conversation, nor yet for Huddles).
+fn row_of_view(v: View) -> Option<super::sidebar::Item> {
+    match v {
+        View::Threads => Some(super::sidebar::Item::Threads),
+        View::Activity => Some(super::sidebar::Item::Activity),
+        View::Huddles | View::Conversation => None,
+    }
 }
 
 /// The mode for the topmost dialog (`overlay`) and the focused pane: a dialog owns all input;
@@ -6577,5 +6714,98 @@ mod tests {
         assert!(ws.unread["D1"].has_unreads, "leaving does not read it");
         ws.timelines.get_mut("D1").unwrap().messages.pop();
         assert_eq!(read_mark_target(&ws, "D1", &marked), Some(ts(4)), "the cache of what was marked is forgotten");
+    }
+
+    /// An app on a workspace that answers nothing (every request is refused at once), with the
+    /// default keys; what its requests bring back arrives on the receiver.
+    fn test_app() -> (super::App, tokio::sync::mpsc::UnboundedReceiver<super::Net>) {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let session = WorkspaceSession { url: "http://127.0.0.1:9/".into(), team_id: "T0".into(), user_id: "U0".into(), ..Default::default() };
+        let (net, rx) = tokio::sync::mpsc::unbounded_channel();
+        let (rtm, _) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = super::App::new(super::Client::new(session).unwrap(), net, rtm, super::super::media::Media::with(ratatui_image::picker::Picker::halfblocks()), Default::default());
+        app.keys = super::Keymap::load("").0;
+        (app, rx)
+    }
+
+    fn press(app: &mut super::App, code: crossterm::event::KeyCode, mods: crossterm::event::KeyModifiers) {
+        assert!(super::handle_event(app, crossterm::event::Event::Key(crossterm::event::KeyEvent::new(code, mods))));
+    }
+
+    fn click(app: &mut super::App, column: u16, row: u16) {
+        use crossterm::event::{Event, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+        assert!(super::handle_event(app, Event::Mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column, row, modifiers: KeyModifiers::NONE })));
+    }
+
+    #[tokio::test]
+    async fn ctrl_t_opens_the_threads_view_and_esc_goes_back() {
+        use super::{run_global, Action, Context, Focus, Mode, Net, View};
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let (mut app, mut net) = test_app();
+        app.current = Some("C1".into());
+        app.focus = Focus::Sidebar;
+        assert!(run_global(&mut app, Action::Threads));
+        assert_eq!((app.view, app.mode(), app.focus), (View::Threads, Mode::Normal, Focus::Messages), "a place in the main pane, not a dialog");
+        assert_eq!(app.active_contexts()[0], Context::Threads, "its keys");
+        // Esc: back to the conversation it was in.
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!((app.view, app.current.as_deref(), app.focus), (View::Conversation, Some("C1"), Focus::Messages));
+        assert_eq!(app.active_contexts()[0], Context::Messages);
+        // Ctrl+T again, then its key in the view: still there, loaded afresh.
+        run_global(&mut app, Action::Threads);
+        app.threads.selected = 3;
+        press(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
+        assert_eq!(app.view, View::Threads);
+        assert!(app.threads.loading && app.threads.entries.is_none() && app.threads.selected == 0, "refreshed");
+        // Each opening asked for the first page.
+        for n in 0..3 {
+            let msg = tokio::time::timeout(std::time::Duration::from_secs(10), net.recv()).await.expect("a request");
+            assert!(matches!(msg, Some(Net::ThreadView { more: false, .. })), "request {n}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_views_take_the_main_pane() {
+        use super::{run_global, Action, Focus, View};
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use ratatui::layout::Rect;
+        let (mut app, _net) = test_app();
+        app.current = Some("C1".into());
+        app.sidebar.rebuild(&app.ws);
+        let rows = |t: &ratatui::Terminal<ratatui::backend::TestBackend>| {
+            let buf = t.backend().buffer();
+            (0..buf.area.height).map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect::<String>()).collect::<Vec<_>>()
+        };
+        // An 80-column terminal: the sidebar takes 20, the view the rest down to the status line.
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+        run_global(&mut app, Action::Activity);
+        let item = super::super::activity::Item { key: "k1".into(), kind: super::super::activity::Kind::Mention("at_user".into()), channel: "C1".into(), ts: "1.0".into(), author: None, unread: true, when: 0.0 };
+        app.activity.items = Some(vec![item]);
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        let screen = rows(&terminal);
+        assert_eq!(app.activity.area, Rect::new(20, 0, 60, 23));
+        assert!(screen[0].chars().skip(20).collect::<String>().starts_with("┌ Activity "), "{screen:#?}");
+        assert!(screen[23].starts_with(" ACTIVITY "), "its pill: {:?}", screen[23]);
+        assert_eq!((app.composer_area, app.messages.area), (Rect::default(), Rect::default()), "no message pane, no message box");
+        assert!(screen[1].contains("Threads") && screen[2].contains("Activity"), "the sidebar's rows: {screen:#?}");
+        // The pointer over an item shades it; the wheel moves the selection.
+        assert!(super::handle_event(&mut app, crossterm::event::Event::Mouse(crossterm::event::MouseEvent { kind: crossterm::event::MouseEventKind::Moved, column: 30, row: 1, modifiers: KeyModifiers::NONE })));
+        assert_eq!(app.activity.hover, Some(0));
+        // A click on the sidebar's Threads row opens Threads there.
+        click(&mut app, 3, 1);
+        assert_eq!(app.view, View::Threads);
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        assert!(rows(&terminal)[0].chars().skip(20).collect::<String>().starts_with("┌ Threads "));
+        assert_eq!((app.threads.area, app.activity.area), (Rect::new(20, 0, 60, 23), Rect::default()), "the hidden view cannot be clicked");
+        // From the sidebar, a click on the Activity row, then Enter on its item: the conversation.
+        app.focus = Focus::Sidebar;
+        click(&mut app, 3, 2);
+        app.activity.items = Some(vec![super::super::activity::Item { key: "k1".into(), kind: super::super::activity::Kind::Mention("at_user".into()), channel: "C1".into(), ts: "1.0".into(), author: None, unread: true, when: 0.0 }]);
+        assert_eq!((app.view, app.focus), (View::Activity, Focus::Messages));
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!((app.view, app.current.as_deref()), (View::Conversation, Some("C1")));
+        assert!(app.seen.contains_key("k1"), "the item is seen");
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        assert_ne!(app.composer_area, Rect::default(), "the conversation and its message box are back");
     }
 }

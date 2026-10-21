@@ -470,8 +470,8 @@ actions! {
         Camera "camera" "switch your camera on or off in the huddle (chosen in F6)" "camera" "📷" ["<leader> h c"]
         ShareScreen "share_screen" "share your screen in the huddle, or stop (the desktop asks what to share)" "share screen" "💻" ["<leader> h s"]
         DeclineHuddle "decline_huddle" "decline the huddle invitation that is ringing (the huddle key joins it)" "decline" "📵" ["<leader> h d"]
-        Activity "activity" "mentions, reactions, threads" "activity" "🔔" ["ctrl+a", "<leader> f a"]
-        Threads "threads" "every thread you are in, unread first" "threads" "🧵" ["ctrl+t", "<leader> f t"]
+        Activity "activity" "the Activity view: mentions, reactions, threads, DMs (in it: load again)" "activity" "🔔" ["ctrl+a", "<leader> f a"]
+        Threads "threads" "the Threads view: every thread you are in, unread first (in it: load again)" "threads" "🧵" ["ctrl+t", "<leader> f t"]
         Preferences "preferences" "preferences" "preferences" "🔧" ["f6"]
         PrevConversation "previous_conversation" "previous conversation" "previous" "🔼" ["alt+up"]
         NextConversation "next_conversation" "next conversation" "next" "🔽" ["alt+down"]
@@ -498,7 +498,7 @@ actions! {
         Bottom "bottom" "last conversation" "bottom" "🔚" ["end", "G"]
         HalfPageUp "half_page_up" "half a page up" "half page up" "⏫" ["ctrl+u"]
         HalfPageDown "half_page_down" "half a page down" "half page down" "⏬" ["ctrl+d"]
-        Open "open" "type in the conversation; on a header: fold / unfold; Threads: open it" "open" "📂" ["enter"]
+        Open "open" "type in the conversation; on a header: fold / unfold; Threads / Activity: open it" "open" "📂" ["enter"]
         Type "type" "type in the conversation" "type" "💬" ["i"]
         Star "star" "star / unstar" "star" "⭐" ["<leader> s"]
         MoveToSection "move_to_section" "move to a section (or a new one)" "move" "📦" ["<leader> m"]
@@ -606,22 +606,24 @@ actions! {
         Vip "vip" "add to / remove from your VIPs" "VIP" "💎" ["<leader> v"]
     }
     Activity {
-        Close "close" "close" "close" "❎" ["esc", "ctrl+a", "q"]
+        Close "close" "back to the conversation" "back" "❎" ["esc", "q"]
         Up "up" "previous item" "up" "🔼" ["up", "k"]
         Down "down" "next item" "down" "🔽" ["down", "j"]
         PageUp "page_up" "page up" "page up" "⏫" ["pageup"]
         PageDown "page_down" "page down" "page down" "⏬" ["pagedown"]
         Refresh "refresh" "load again" "refresh" "🔄" ["r"]
         Open "open" "go to the message" "go" "🚀" ["enter"]
+        Help "help" "this help" "help" "❓" ["?"]
     }
     Threads {
-        Close "close" "close" "close" "❎" ["esc", "ctrl+t", "q"]
+        Close "close" "back to the conversation" "back" "❎" ["esc", "q"]
         Up "up" "previous thread" "up" "🔼" ["up", "k"]
         Down "down" "next thread" "down" "🔽" ["down", "j"]
         PageUp "page_up" "page up" "page up" "⏫" ["pageup"]
         PageDown "page_down" "page down" "page down" "⏬" ["pagedown"]
         Refresh "refresh" "load again" "refresh" "🔄" ["r"]
         Open "open" "open the thread at the reply shown" "open" "🧵" ["enter"]
+        Help "help" "this help" "help" "❓" ["?"]
     }
     Mover {
         Close "close" "close" "close" "❎" ["esc", "q"]
@@ -960,7 +962,7 @@ impl Keymap {
         }
         // Where a [global] sequence counts in a pane's or dialog's lookup.
         let applies = |context: Context, seq: &[Key], name: &str| match context {
-            Context::Sidebar | Context::Messages | Context::Huddle => true,
+            Context::Sidebar | Context::Messages | Context::Huddle | Context::Activity | Context::Threads => true,
             Context::Composer | Context::Completion => !seq[0].is_text(),
             _ => !seq[0].is_text() && (seq[0] == LEADER || name == "quit"),
         };
@@ -987,7 +989,7 @@ impl Keymap {
         // A user's single key on a leader: the default insert leader gives way to it; otherwise
         // the leader starts sequences where it acts, so the binding can't be reached there (it is
         // kept: where nothing starts with the leader, the key falls through to it).
-        let normal = |c: Context| matches!(c, Context::Global | Context::Sidebar | Context::Messages | Context::Huddle);
+        let normal = |c: Context| matches!(c, Context::Global | Context::Sidebar | Context::Messages | Context::Huddle | Context::Activity | Context::Threads);
         for (context, seq, name, _) in bound.iter().filter(|(_, s, _, user)| *user && s.len() == 1) {
             let (key, section) = (seq[0].label(), context.name());
             if Some(seq[0]) == map.insert_leader {
@@ -1232,7 +1234,7 @@ impl Keymap {
     /// message box and dialogs the insert leader, else a leader that never types.
     pub fn leader_in(&self, context: Context) -> Option<Key> {
         match context {
-            Context::Global | Context::Sidebar | Context::Messages | Context::Huddle => self.leader_key(),
+            Context::Global | Context::Sidebar | Context::Messages | Context::Huddle | Context::Activity | Context::Threads => self.leader_key(),
             _ => self.insert_leader.or(self.leader.filter(|k| !k.is_text())),
         }
     }
@@ -1460,7 +1462,7 @@ pub fn hints_for(context: Context) -> &'static [(Action, &'static str)] {
         Context::Picker => &[(Open, "react"), (Close, "close")],
         Context::Details => &[(NextTab, "next tab"), (Open, "open"), (Close, "close")],
         Context::Profile => &[(Open, "message"), (Huddle, "huddle"), (Vip, "VIP"), (NextTab, "next person"), (Close, "close")],
-        Context::Activity | Context::Threads => &[(Open, "open"), (Refresh, "refresh"), (Close, "close")],
+        Context::Activity | Context::Threads => &[(Open, "open"), (Refresh, "refresh"), (Close, "back"), (Help, "help")],
         Context::Mover => &[(Open, "move"), (Close, "close")],
         Context::TextField => &[(Open, "done"), (Close, "cancel")],
         Context::Snippet => &[(PageDown, "page"), (Copy, "copy"), (Close, "close")],
@@ -1499,7 +1501,7 @@ impl Keymap {
             } else {
                 self.first_key(context, *action)
             };
-            if *action == Action::Help && matches!(context, Context::Sidebar | Context::Messages | Context::Huddle) && self.leader_key().is_some() {
+            if *action == Action::Help && matches!(context, Context::Sidebar | Context::Messages | Context::Huddle | Context::Activity | Context::Threads) && self.leader_key().is_some() {
                 out.push((self.show(&[LEADER]), super::i18n::tr("actions").into_owned()));
             }
             if let Some(key) = key {
@@ -1545,7 +1547,7 @@ mod tests {
     /// `key` after `pending` in one context alone, in the mode that context is used in.
     fn one(map: &Keymap, context: Context, pending: &[Key], key: Key) -> Resolved {
         let mode = match context {
-            Context::Global | Context::Sidebar | Context::Messages | Context::Huddle => Mode::Normal,
+            Context::Global | Context::Sidebar | Context::Messages | Context::Huddle | Context::Activity | Context::Threads => Mode::Normal,
             Context::Composer | Context::Completion => Mode::Insert,
             _ => Mode::Dialog,
         };
@@ -1678,7 +1680,7 @@ mod tests {
         // Defaults may do it on purpose; a printable global key does not act where it types.
         assert!(Keymap::load("").1.is_empty());
         let (map, warnings) = Keymap::load("[global]\nmute = \"j\"\n");
-        assert_eq!(warnings.len(), 3, "sidebar, messages, huddle view: {warnings:?}");
+        assert_eq!(warnings.len(), 5, "sidebar, messages, the huddle, Threads and Activity views: {warnings:?}");
         assert!(warnings.iter().all(|w| w.contains("default j of down gives way to [global] mute")), "{warnings:?}");
         assert_eq!(map.resolve(&[Context::Messages, Context::Global], Mode::Normal, &[], k("j")), Resolved::Action(Context::Global, Action::Mute));
         assert_eq!(map.resolve(&[Context::Messages, Context::Global], Mode::Normal, &[], k("down")), Resolved::Action(Context::Messages, Action::Down));
@@ -1953,7 +1955,7 @@ mod tests {
         for key in ["f2", "f3", "f4", "f5", "f7", "f8", "f9", "f10", "shift+f3", "shift+f10", "menu"] {
             for c in Context::ALL {
                 let mode = match c {
-                    Global | Sidebar | Messages | Huddle => Mode::Normal,
+                    Global | Sidebar | Messages | Huddle | Activity | Threads => Mode::Normal,
                     Composer | Completion => Mode::Insert,
                     _ => Mode::Dialog,
                 };

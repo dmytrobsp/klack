@@ -10,8 +10,10 @@ use super::state::Workspace;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Item {
-    /// The row atop the list that opens Threads (Ctrl+T).
+    /// The rows atop the list that open the views in the main pane: Threads (Ctrl+T), then
+    /// Activity (Ctrl+A).
     Threads,
+    Activity,
     Header(String),
     Conversation(String),
     /// A blank row between sections.
@@ -116,7 +118,7 @@ impl Sidebar {
         let keep = self.items.get(self.selected).cloned();
         self.items.clear();
         self.hidden.clear();
-        self.items.push(Item::Threads);
+        self.items.extend(VIEWS.iter().cloned());
         for (header, ids) in ws.sidebar_groups() {
             // Sections stand apart: a blank row before each (none in compact mode).
             if !self.items.is_empty() && !ws.settings.appearance.compact {
@@ -146,21 +148,41 @@ impl Sidebar {
     /// Where the selection can stop: a conversation, or a folded section's header.
     fn is_stop(&self, item: &Item) -> bool {
         match item {
-            Item::Conversation(_) | Item::Threads => true,
+            Item::Conversation(_) | Item::Threads | Item::Activity => true,
             Item::Header(h) => self.folded.contains(h),
             Item::Gap => false,
         }
     }
 
-    /// The Threads row is selected.
-    pub fn on_threads(&self) -> bool {
-        self.items.get(self.selected) == Some(&Item::Threads)
+    /// The view's row that is selected (Threads, Activity), if one is.
+    pub fn on_view(&self) -> Option<Item> {
+        self.items.get(self.selected).filter(|i| VIEWS.contains(i)).cloned()
     }
 
-    /// The Threads row is drawn at a terminal position.
-    pub fn threads_at(&self, column: u16, row: u16) -> bool {
+    /// The view's row drawn at a terminal position, if one is.
+    pub fn view_at(&self, column: u16, row: u16) -> Option<Item> {
         let inner = self.area.inner(ratatui::layout::Margin { horizontal: 1, vertical: 1 });
-        inner.contains((column, row).into()) && self.items.get(self.offset + (row - inner.y) as usize) == Some(&Item::Threads)
+        if !inner.contains((column, row).into()) {
+            return None;
+        }
+        self.items.get(self.offset + (row - inner.y) as usize).filter(|i| VIEWS.contains(i)).cloned()
+    }
+
+    /// Select conversation `id`'s row, or the header of the folded section it is in (left
+    /// folded).
+    pub fn select_row_of(&mut self, id: &str) {
+        let section = self.hidden.iter().find(|(_, ids)| ids.iter().any(|i| i == id)).map(|(h, _)| Item::Header(h.clone()));
+        let row = Item::Conversation(id.to_string());
+        if let Some(n) = self.items.iter().position(|i| *i == row || Some(i) == section.as_ref()) {
+            self.selected = n;
+        }
+    }
+
+    /// Select the row of view `item` (Threads, Activity).
+    pub fn select_view(&mut self, item: &Item) {
+        if let Some(n) = self.items.iter().position(|i| i == item) {
+            self.selected = n;
+        }
     }
 
     /// The folded section whose header is selected.
@@ -252,14 +274,14 @@ impl Sidebar {
         }
     }
 
-    /// The row the pointer is over, for the hover shade: a conversation or the Threads row.
+    /// The row the pointer is over, for the hover shade: a conversation or a view's row.
     pub fn hover_at(&self, column: u16, row: u16) -> Option<usize> {
         let inner = self.area.inner(ratatui::layout::Margin { horizontal: 1, vertical: 1 });
         if !inner.contains((column, row).into()) {
             return None;
         }
         let n = self.offset + (row - inner.y) as usize;
-        matches!(self.items.get(n), Some(Item::Conversation(_) | Item::Threads)).then_some(n)
+        matches!(self.items.get(n), Some(Item::Conversation(_) | Item::Threads | Item::Activity)).then_some(n)
     }
 
     /// The conversation item drawn at a terminal position.
@@ -321,7 +343,7 @@ impl Sidebar {
             .skip(self.offset)
             .take(height)
             .map(|(n, item)| match item {
-                Item::Threads => threads_line(ws, n == self.selected, n != self.selected && self.hover == Some(n)),
+                Item::Threads | Item::Activity => view_line(ws, item, n == self.selected, n != self.selected && self.hover == Some(n)),
                 Item::Header(h) => match self.hidden.get(h) {
                     Some(ids) => folded_line(ws, &shown_name(ws, h), ids, n == self.selected, width),
                     None => header_line(&shown_name(ws, h), width),
@@ -356,18 +378,26 @@ fn header_line(name: &str, width: usize) -> Line<'static> {
     ])
 }
 
-/// "💬 Threads", with how many replies you have not read and the mentions among them.
-fn threads_line(ws: &Workspace, selected: bool, hover: bool) -> Line<'static> {
+/// The views' rows, in the order shown atop the sidebar.
+const VIEWS: [Item; 2] = [Item::Threads, Item::Activity];
+
+/// A view's row: "💬 Threads", with how many replies you have not read and the mentions among
+/// them; "🔔 Activity", with how many items of the feed are unread.
+fn view_line(ws: &Workspace, item: &Item, selected: bool, hover: bool) -> Line<'static> {
     let p = super::theme::p();
     let t = &ws.thread_unread;
-    let name = if t.has_unreads { Style::default().add_modifier(Modifier::BOLD).fg(p.strong) } else { Style::default().fg(p.read) };
-    let mut spans = vec![unread_mark(t.has_unreads), Span::raw("💬"), Span::styled(super::i18n::tr("Threads"), name)];
-    if t.has_unreads && t.replies > 0 {
-        spans.push(Span::styled(format!(" {}", t.replies), Style::default().fg(p.strong).add_modifier(Modifier::BOLD)));
+    let (icon, name, unread, count, mentions) = match item {
+        Item::Activity => ("🔔", "Activity", ws.activity_unread > 0, ws.activity_unread as u64, 0),
+        _ => ("💬", "Threads", t.has_unreads, if t.has_unreads { t.replies } else { 0 }, t.mentions),
+    };
+    let style = if unread { Style::default().add_modifier(Modifier::BOLD).fg(p.strong) } else { Style::default().fg(p.read) };
+    let mut spans = vec![unread_mark(unread), Span::raw(icon), Span::styled(super::i18n::tr(name), style)];
+    if count > 0 {
+        spans.push(Span::styled(format!(" {count}"), Style::default().fg(p.strong).add_modifier(Modifier::BOLD)));
     }
-    if t.mentions > 0 {
+    if mentions > 0 {
         spans.push(Span::raw(" "));
-        spans.push(Span::styled(format!(" {} ", t.mentions), Style::default().fg(p.badge_fg).bg(p.badge_bg).add_modifier(Modifier::BOLD)));
+        spans.push(Span::styled(format!(" {mentions} "), Style::default().fg(p.badge_fg).bg(p.badge_bg).add_modifier(Modifier::BOLD)));
     }
     let line = Line::from(spans);
     if selected { line.style(Style::default().bg(p.selection)) } else if hover { line.style(super::theme::hover_style()) } else { line }
@@ -639,9 +669,9 @@ mod tests {
         s.move_by(5);
         assert_eq!(s.selected_id(), Some("D1"));
         s.move_by(-10);
-        assert!(s.on_threads(), "the Threads row on top");
-        s.move_by(1);
-        assert_eq!(s.selected_id(), Some("C1"));
+        assert_eq!(s.on_view(), Some(Item::Threads), "the Threads row on top");
+        s.move_by(2);
+        assert_eq!(s.selected_id(), Some("C1"), "past the Activity row");
     }
 
     #[test]
@@ -651,11 +681,12 @@ mod tests {
         s.rebuild(&w);
         let kinds: Vec<String> = s.items.iter().map(|i| match i {
             Item::Threads => "{Threads}".into(),
+            Item::Activity => "{Activity}".into(),
             Item::Header(h) => format!("[{h}]"),
             Item::Conversation(id) => id.clone(),
             Item::Gap => "".into(),
         }).collect();
-        assert_eq!(kinds, ["{Threads}", "", "[Channels]", "C1", "C2", "", "[Direct messages]", "D1"], "the Threads row, then a gap before every section");
+        assert_eq!(kinds, ["{Threads}", "{Activity}", "", "[Channels]", "C1", "C2", "", "[Direct messages]", "D1"], "the views' rows, then a gap before every section");
         w.settings.appearance.compact = true;
         s.rebuild(&w);
         assert!(!s.items.contains(&Item::Gap), "compact: no gaps");
@@ -665,31 +696,73 @@ mod tests {
         // Scrolling up to a section's first conversation shows its header and the gap above.
         s.rebuild(&ws());
         s.select_id(&ws(), "D1");
-        s.offset = 8;
+        s.offset = 9;
         let backend = ratatui::backend::TestBackend::new(30, 5);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal.draw(|f| s.draw(f, f.area(), &ws(), false)).unwrap();
-        assert_eq!(s.offset, 5);
+        assert_eq!(s.offset, 6);
     }
 
     #[test]
     fn the_threads_row() {
         let mut w = ws();
         let text = |l: &Line| l.spans.iter().map(|s| s.content.to_string()).collect::<String>();
-        assert_eq!(text(&threads_line(&w, false, false)), " 💬Threads", "nothing unread: no bar, no count");
+        assert_eq!(text(&view_line(&w, &Item::Threads, false, false)), " 💬Threads", "nothing unread: no bar, no count");
         w.apply_counts(&serde_json::json!({"threads": {"has_unreads": true, "mention_count": 1, "unread_count_by_channel": {"C1": 2, "D1": 1}}}));
-        let line = threads_line(&w, false, false);
+        let line = view_line(&w, &Item::Threads, false, false);
         assert_eq!(text(&line), "▌💬Threads 3  1 ", "the bar, three unread replies, one mention");
         assert!(line.spans[2].style.add_modifier.contains(Modifier::BOLD));
         // Live: read elsewhere.
         super::super::live::apply(&mut w, &serde_json::json!({"type": "update_global_thread_state", "has_unreads": false, "mention_count": 0, "unread_count_by_channel": {}}), None);
-        assert_eq!(text(&threads_line(&w, false, false)), " 💬Threads");
+        assert_eq!(text(&view_line(&w, &Item::Threads, false, false)), " 💬Threads");
         // It is a stop for the selection, and keeps the conversation shown.
         let mut s = Sidebar::default();
         s.rebuild(&w);
         assert_eq!(s.selected_id(), Some("C1"), "the first conversation, not the Threads row");
-        s.move_by(-1);
-        assert!(s.on_threads() && s.selected_id().is_none());
+        s.move_by(-2);
+        assert!(s.on_view() == Some(Item::Threads) && s.selected_id().is_none());
+    }
+
+    #[test]
+    fn views_on_top() {
+        let mut w = ws();
+        let mut s = Sidebar::default();
+        s.rebuild(&w);
+        assert_eq!(s.items[..3], [Item::Threads, Item::Activity, Item::Gap], "the views' rows on top, Threads first");
+        w.settings.appearance.compact = true;
+        s.rebuild(&w);
+        assert_eq!(s.items[..3], [Item::Threads, Item::Activity, Item::Header("Channels".into())], "compact: no gap");
+        // ↓ from Threads stops on Activity, then the first conversation.
+        s.selected = 0;
+        s.move_by(1);
+        assert_eq!((s.on_view(), s.selected_id()), (Some(Item::Activity), None));
+        s.move_by(1);
+        assert_eq!((s.on_view(), s.selected_id()), (None, Some("C1")));
+        s.move_by(-2);
+        assert_eq!(s.on_view(), Some(Item::Threads));
+        // A rebuild keeps a view's row selected.
+        s.move_by(1);
+        s.rebuild(&w);
+        assert_eq!(s.on_view(), Some(Item::Activity));
+        // Drawn: their rows map to the views, the pointer shades them.
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(30, 10)).unwrap();
+        terminal.draw(|f| s.draw(f, f.area(), &w, false)).unwrap();
+        assert_eq!((s.view_at(3, 1), s.view_at(3, 2), s.view_at(3, 3), s.view_at(0, 1)), (Some(Item::Threads), Some(Item::Activity), None, None));
+        assert_eq!((s.hover_at(3, 2), s.hover_at(3, 3)), (Some(1), None), "hover reaches the Activity row, not a header");
+        // The Activity row: a bar and the count while the feed has unread items.
+        let text = |l: &Line| l.spans.iter().map(|s| s.content.to_string()).collect::<String>();
+        assert_eq!(text(&view_line(&w, &Item::Activity, false, false)), " 🔔Activity", "nothing unread: no bar, no count");
+        w.activity_unread = 4;
+        let line = view_line(&w, &Item::Activity, false, false);
+        assert_eq!(text(&line), "▌🔔Activity 4");
+        assert_eq!((line.spans[0].style.fg, line.spans[2].style.add_modifier.contains(Modifier::BOLD)), (Some(crate::tui::theme::p().accent), true), "the same mark as Threads");
+        assert_ne!(view_line(&w, &Item::Activity, false, true).style, line.style, "the hovered row is shaded");
+        // A narrow sidebar (an 80-column terminal): the rows stay on one line each.
+        let mut narrow = ratatui::Terminal::new(ratatui::backend::TestBackend::new(20, 6)).unwrap();
+        narrow.draw(|f| s.draw(f, f.area(), &w, false)).unwrap();
+        let buf = narrow.backend().buffer().clone();
+        let row = |y: u16| (0..20).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>();
+        assert!(row(1).contains("Threads") && row(2).contains("Activity 4"), "{:?} {:?}", row(1), row(2));
     }
 
     #[test]
@@ -710,7 +783,7 @@ mod tests {
         s.rebuild(&w);
         s.select_id(&w, "C2");
         s.toggle_selected_fold(&w, Some("C2"));
-        assert_eq!(s.items, [Item::Threads, Item::Gap, Item::Header("Channels".into()), Item::Gap, Item::Header("Direct messages".into()), Item::Conversation("D1".into())]);
+        assert_eq!(s.items, [Item::Threads, Item::Activity, Item::Gap, Item::Header("Channels".into()), Item::Gap, Item::Header("Direct messages".into()), Item::Conversation("D1".into())]);
         assert_eq!((s.selected_id(), s.selected_folded()), (None, Some("Channels")), "the selection moves onto the folded header");
         let text = |l: Line| l.spans.iter().map(|s| s.content.to_string()).collect::<String>();
         assert_eq!(text(folded_line(&w, "Channels", &["C1".into(), "C2".into()], false, 24)), "▌▸ Channels ──────── 1 2", "one unread conversation, two mentions");
@@ -726,14 +799,14 @@ mod tests {
         s.rebuild(&w);
         assert_eq!(s.selected_id(), Some("D1"), "a rebuild keeps it folded and the selection");
         // Drawn: the header row is clickable.
-        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(30, 8)).unwrap();
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(30, 9)).unwrap();
         terminal.draw(|f| s.draw(f, f.area(), &w, false)).unwrap();
-        assert_eq!((s.header_at(3, 3), s.header_at(3, 5), s.header_at(3, 6)), (Some("Channels".into()), Some("Direct messages".into()), None));
-        assert!(s.threads_at(3, 1) && !s.threads_at(3, 2), "and the Threads row");
+        assert_eq!((s.header_at(3, 4), s.header_at(3, 6), s.header_at(3, 7)), (Some("Channels".into()), Some("Direct messages".into()), None));
+        assert!(s.view_at(3, 1) == Some(Item::Threads) && s.view_at(3, 3).is_none(), "and the Threads row");
         // The pointer over the Threads row shades it (the selection stays).
-        assert_eq!((s.hover_at(3, 1), s.hover_at(3, 2)), (Some(0), None), "hover reaches the Threads row, not a gap");
-        assert_ne!(threads_line(&w, false, true).style, threads_line(&w, false, false).style, "the hovered Threads row is shaded");
-        assert_eq!(threads_line(&w, true, true).style, threads_line(&w, true, false).style, "the selection wins over the hover");
+        assert_eq!((s.hover_at(3, 1), s.hover_at(3, 3)), (Some(0), None), "hover reaches the Threads row, not a gap");
+        assert_ne!(view_line(&w, &Item::Threads, false, true).style, view_line(&w, &Item::Threads, false, false).style, "the hovered Threads row is shaded");
+        assert_eq!(view_line(&w, &Item::Threads, true, true).style, view_line(&w, &Item::Threads, true, false).style, "the selection wins over the hover");
         // Unfolding the selected section: back on the conversation still shown in it, else
         // on its first.
         s.move_by(-1);
