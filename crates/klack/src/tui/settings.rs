@@ -14,6 +14,23 @@ pub struct Settings {
     pub video: Video,
     pub huddle: Huddle,
     pub which_key: WhichKey,
+    pub threads: Threads,
+}
+
+/// The Threads view (Ctrl+T).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Threads {
+    /// A thread in the feed is marked read once its block (its unread replies, when it is taller
+    /// than the view) has been on screen this long, in seconds; 0: only when it is opened or
+    /// replied to.
+    pub read_after_secs: u32,
+}
+
+impl Default for Threads {
+    fn default() -> Self {
+        Threads { read_after_secs: 2 }
+    }
 }
 
 /// The panel of next keys while a key sequence is under way.

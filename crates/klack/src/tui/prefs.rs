@@ -46,6 +46,7 @@ pub enum Field {
     LargeAvatars,
     PreviewRefresh,
     StatusRefresh,
+    ThreadRead,
     Graphics,
     EmojiAsNames,
     CustomEmojiPictures,
@@ -107,6 +108,8 @@ const RING_TIMEOUTS: &[u32] = &[15, 30, 45, 60, 90, 120];
 /// Seconds between fetches of a previewed channel (0: off).
 const PREVIEW_REFRESH: &[u32] = &[0, 5, 10, 15, 30, 60, 120];
 const STATUS_REFRESH: &[u32] = &[0, 15, 30, 60, 120, 300];
+/// Seconds a thread's block is on screen in the Threads feed before it is marked read (0: only when opened).
+const THREAD_READ: &[u32] = &[0, 1, 2, 3, 5, 10];
 /// Days without a message before a conversation leaves the sidebar (0: never).
 const HIDE_INACTIVE: &[u32] = &[0, 1, 7, 14, 30, 60, 90];
 
@@ -122,7 +125,7 @@ const UNKNOWN_SCHEDULE: &str = "unknown to klack — change it in Slack";
 pub const CATEGORIES: &[(&str, &[Field])] = &[
     ("Availability", &[Field::Status, Field::Away, Field::Notifications, Field::Schedule]),
     ("Appearance", &[Field::Theme, Field::WorkspaceTheme, Field::Compact, Field::HideInactive]),
-    ("Messages & media", &[Field::InlineImages, Field::Avatars, Field::LargeAvatars, Field::PreviewRefresh, Field::StatusRefresh, Field::Graphics, Field::EmojiAsNames, Field::CustomEmojiPictures, Field::SaveDir]),
+    ("Messages & media", &[Field::InlineImages, Field::Avatars, Field::LargeAvatars, Field::PreviewRefresh, Field::StatusRefresh, Field::ThreadRead, Field::Graphics, Field::EmojiAsNames, Field::CustomEmojiPictures, Field::SaveDir]),
     ("Language & region", &[Field::Clock24, Field::DateFormat, Field::TimeZone, Field::Language]),
     ("Notifications", &[Field::Desktop, Field::Sound, Field::ConversationLevel, Field::ChannelDefault, Field::Keywords, Field::Vips]),
     ("Audio & video", &[Field::Input, Field::Output, Field::HuddleVolume, Field::SoundVolume, Field::MicGain, Field::SpeakingThreshold, Field::NoiseSuppression, Field::EchoCancellation, Field::Camera]),
@@ -185,6 +188,7 @@ impl Field {
             Field::LargeAvatars => "Two-row profile pictures",
             Field::PreviewRefresh => "Refresh previewed channels",
             Field::StatusRefresh => "Refresh people's statuses",
+            Field::ThreadRead => "Mark feed threads read",
             Field::Graphics => "Draw pictures with",
             Field::EmojiAsNames => "Show emoji as :names:",
             Field::CustomEmojiPictures => "Custom emoji as pictures",
@@ -265,6 +269,10 @@ impl Field {
             Field::StatusRefresh => match s.messages.status_refresh_secs {
                 0 => "off".into(),
                 n => format!("every {n} s"),
+            },
+            Field::ThreadRead => match s.threads.read_after_secs {
+                0 => "only when opened".into(),
+                n => format!("after {n} s on screen"),
             },
             Field::Graphics => s.messages.graphics.clone(),
             Field::EmojiAsNames => yes(s.messages.emoji_as_names),
@@ -362,6 +370,7 @@ impl Field {
             Field::AloneSecs => s.huddle.alone_secs = step(ALONE_SECS, s.huddle.alone_secs, up, wrap),
             Field::PreviewRefresh => s.messages.preview_refresh_secs = step(PREVIEW_REFRESH, s.messages.preview_refresh_secs, up, wrap),
             Field::StatusRefresh => s.messages.status_refresh_secs = step(STATUS_REFRESH, s.messages.status_refresh_secs, up, wrap),
+            Field::ThreadRead => s.threads.read_after_secs = step(THREAD_READ, s.threads.read_after_secs, up, wrap),
             Field::HideInactive => s.appearance.hide_inactive_days = step(HIDE_INACTIVE, s.appearance.hide_inactive_days, up, wrap),
             Field::MicGain => a.mic_gain = step(GAINS, a.mic_gain, up, wrap),
             Field::SpeakingThreshold => a.speaking_threshold_db = step(THRESHOLDS, a.speaking_threshold_db, up, wrap),
@@ -402,7 +411,7 @@ impl Field {
             Field::InlineImages => s.messages.inline_images ^= true,
             Field::Avatars => s.messages.avatars ^= true,
             Field::LargeAvatars => s.messages.large_avatars ^= true,
-            Field::PreviewRefresh | Field::StatusRefresh | Field::HideInactive => {
+            Field::PreviewRefresh | Field::StatusRefresh | Field::ThreadRead | Field::HideInactive => {
                 self.adjust(s, true, true);
             }
             Field::Graphics => {
@@ -591,7 +600,7 @@ fn recording_label(keys: &Keymap, seq: &[Key]) -> String {
 /// Category names and fixed labels, for translation templates.
 pub fn translatable() -> Vec<String> {
     let all = [
-        Field::Theme, Field::WorkspaceTheme, Field::Compact, Field::HideInactive, Field::InlineImages, Field::Avatars, Field::LargeAvatars, Field::PreviewRefresh, Field::StatusRefresh, Field::Graphics, Field::EmojiAsNames, Field::CustomEmojiPictures, Field::SaveDir, Field::Clock24, Field::DateFormat, Field::TimeZone, Field::Language, Field::Desktop, Field::Sound,
+        Field::Theme, Field::WorkspaceTheme, Field::Compact, Field::HideInactive, Field::InlineImages, Field::Avatars, Field::LargeAvatars, Field::PreviewRefresh, Field::StatusRefresh, Field::ThreadRead, Field::Graphics, Field::EmojiAsNames, Field::CustomEmojiPictures, Field::SaveDir, Field::Clock24, Field::DateFormat, Field::TimeZone, Field::Language, Field::Desktop, Field::Sound,
         Field::ConversationLevel, Field::ChannelDefault, Field::Keywords, Field::Vips, Field::Status, Field::Away, Field::Notifications, Field::Schedule, Field::ScheduleHours, Field::Input, Field::Output,
         Field::HuddleVolume, Field::SoundVolume, Field::MicGain, Field::SpeakingThreshold, Field::NoiseSuppression, Field::EchoCancellation, Field::Camera, Field::JoinSound, Field::SomeoneJoined, Field::SomeoneLeft, Field::RingSound, Field::RingTimeout, Field::AutoDecline, Field::AloneSound, Field::AloneSecs,
     ];
@@ -1277,6 +1286,29 @@ mod tests {
         s.messages.status_refresh_secs = 0;
         assert_eq!(ws(&s), "off");
         assert!(CATEGORIES.iter().any(|c| c.0 == "Messages & media" && c.1.contains(&Field::StatusRefresh)));
+    }
+
+    #[test]
+    fn thread_read_steps() {
+        let mut s = Settings::default();
+        assert_eq!(s.threads.read_after_secs, 2, "two seconds by default");
+        let ws = |s: &Settings| {
+            let mut ws = Workspace::default();
+            ws.settings = s.clone();
+            Field::ThreadRead.value(&ws, None, &Default::default())
+        };
+        assert_eq!(ws(&s), "after 2 s on screen");
+        let steps: Vec<u32> = (0..5)
+            .map(|_| {
+                Field::ThreadRead.change(&mut s, &Default::default());
+                s.threads.read_after_secs
+            })
+            .collect();
+        assert_eq!(steps, [3, 5, 10, 0, 1], "on up, then round to only when opened");
+        s.threads.read_after_secs = 0;
+        assert_eq!(ws(&s), "only when opened");
+        assert!(CATEGORIES.iter().any(|c| c.0 == "Messages & media" && c.1.contains(&Field::ThreadRead)));
+        assert!(translatable().iter().any(|t| t == "Mark feed threads read"));
     }
 
     #[test]

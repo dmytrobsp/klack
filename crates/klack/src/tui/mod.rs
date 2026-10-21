@@ -11,6 +11,7 @@ pub mod composer;
 pub mod details;
 pub mod drafts;
 pub mod event_loop;
+pub mod feed;
 pub mod files;
 pub mod help;
 pub mod highlight;

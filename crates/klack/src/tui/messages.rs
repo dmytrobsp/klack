@@ -34,7 +34,7 @@ pub type ThumbSize<'a> = &'a dyn Fn(&File, u16) -> Option<(u16, u16)>;
 const GROUP_WINDOW: f64 = 300.0;
 
 /// Columns left of every message row; your own messages get a bar there.
-const GUTTER: u16 = 2;
+pub const GUTTER: u16 = 2;
 
 /// What stands before an author's name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -328,9 +328,7 @@ impl MessagePane {
         if let Some(first) = &first_new {
             if let Some(at) = owners.iter().position(|o| o.as_ref() == Some(first)) {
                 new_line = Some(at);
-                let label = " new ";
-                let side = width.saturating_sub(label.len()) / 2;
-                lines.insert(at, Line::styled(format!("{}{label}{}", "─".repeat(side), "─".repeat(side)), Style::default().fg(super::theme::p().danger)));
+                lines.insert(at, new_rule(width));
                 owners.insert(at, None);
                 for slot in slots.iter_mut().filter(|s| s.line >= at) {
                     slot.line += 1;
@@ -413,29 +411,9 @@ impl MessagePane {
             n => block.title_bottom(Line::styled(format!(" ↓ {n} newer "), Style::default().fg(super::theme::p().accent)).right_aligned()),
         };
         // The selected message (and the one being edited) is highlighted from edge to edge, like a
-        // list selection: its rows are filled first; the text's own backgrounds draw over them.
+        // list selection; the message under the pointer is shaded the same way.
         let marked = [self.selected.as_ref().filter(|_| focused), self.editing.as_ref()];
-        // The message under the pointer is shaded the same way (the selection wins over it).
-        let shade = Style::default().bg(super::theme::p().hover);
-        let shaded = |owner: &Option<String>| owner.is_some() && (marked.contains(&owner.as_ref()) || owner.as_ref() == self.hover.as_ref());
-        for (n, owner) in self.rows.iter().enumerate() {
-            if owner.is_some() && marked.contains(&owner.as_ref()) {
-                f.buffer_mut().set_style(Rect { y: inner.y + n as u16, height: 1, ..inner }, highlight);
-            } else if owner.is_some() && owner.as_ref() == self.hover.as_ref() {
-                f.buffer_mut().set_style(Rect { y: inner.y + n as u16, height: 1, ..inner }, shade);
-            }
-        }
-        // A picture keeps the pane's background behind it (seen through its transparent parts).
-        for slot in slots.iter().filter(|s| matches!(media.thumbs.get(&s.file.id), Some(Thumb::Ready(_)))) {
-            let top = slot.line as isize - start as isize + pad as isize;
-            let (from, to) = (top.max(0), (top + slot.size.1 as isize).min(height as isize));
-            if from >= to || !self.rows.get(from as usize).is_some_and(shaded) {
-                continue;
-            }
-            let x = inner.x + GUTTER + slot.col;
-            let width = slot.size.0.min(inner.right().saturating_sub(x));
-            f.buffer_mut().set_style(Rect { x, y: inner.y + from as u16, width, height: (to - from) as u16 }, Style::default().bg(ratatui::style::Color::Reset));
-        }
+        fill_rows(f, inner, &self.rows, &marked, self.hover.as_ref(), &slots, start, pad, media);
         f.render_widget(Paragraph::new(visible).block(block), area);
         // Links the terminal can open on its own click.
         if let Some(t) = timeline {
@@ -450,30 +428,74 @@ impl MessagePane {
         if let (Some(top), Some(bottom)) = (on_screen.first().and_then(index), on_screen.last().and_then(index)) {
             super::scroll::indicator(f, area, top, bottom + 1 - top, order.len(), border);
         }
-        // Thumbnails over their reserved rows, sliced when partly scrolled out.
-        self.wanted.clear();
-        for slot in slots {
-            let top = slot.line as isize - start as isize + pad as isize;
-            if top + slot.size.1 as isize <= 0 || top >= height as isize {
-                continue;
-            }
-            match media.thumbs.get(&slot.file.id) {
-                Some(Thumb::Ready(proto)) => {
-                    let position = SignedPosition { x: slot.col as i16, y: top as i16 };
-                    let beside = Rect { x: inner.x + GUTTER, width: inner.width.saturating_sub(GUTTER), ..inner };
-                    f.render_widget(SlicedImage::new(proto, position), beside);
-                }
-                // Say why instead of leaving the rows blank (not for profile pictures).
-                Some(Thumb::Failed(reason)) if !slot.file.id.starts_with(super::media::AVATAR_PREFIX) && !slot.file.id.starts_with(super::media::EMOJI_PREFIX) => {
-                    let x = inner.x + GUTTER + slot.col;
-                    let row = Rect { x, y: inner.y + top.max(0) as u16, width: inner.right().saturating_sub(x), height: 1 };
-                    f.render_widget(Paragraph::new(failed_thumb(reason)).style(Style::default().fg(super::theme::p().dim)), row);
-                }
-                Some(_) => {}
-                None => self.wanted.push((slot.file, slot.size)),
-            }
+        self.wanted = draw_pictures(f, inner, slots, start, pad, media);
+    }
+}
+
+/// The "— new —" rule `width` wide, above the first unread message.
+pub fn new_rule(width: usize) -> Line<'static> {
+    let label = " new ";
+    let side = width.saturating_sub(label.len()) / 2;
+    Line::styled(format!("{}{label}{}", "─".repeat(side), "─".repeat(side)), Style::default().fg(super::theme::p().danger))
+}
+
+/// Fill the rows of a message list drawn in `inner` (`rows`: the message owning each row) from edge to edge: those of
+/// a `marked` message (the selection, the one being edited) in the selection colour, those of `hover`'s in the hover
+/// shade (the selection wins); the text's own backgrounds draw over them. A picture over such a row keeps the pane's
+/// background behind it (seen through its transparent parts). `slots` are placed as in [`draw_pictures`].
+#[allow(clippy::too_many_arguments)]
+pub fn fill_rows<T: PartialEq>(f: &mut Frame, inner: Rect, rows: &[Option<T>], marked: &[Option<&T>], hover: Option<&T>, slots: &[ImageSlot], start: usize, pad: usize, media: &Media) {
+    let highlight = Style::default().bg(super::theme::p().selection);
+    let shade = Style::default().bg(super::theme::p().hover);
+    let is_marked = |owner: &Option<T>| owner.as_ref().is_some_and(|o| marked.contains(&Some(o)));
+    let is_hovered = |owner: &Option<T>| owner.is_some() && owner.as_ref() == hover;
+    for (n, owner) in rows.iter().enumerate() {
+        if is_marked(owner) {
+            f.buffer_mut().set_style(Rect { y: inner.y + n as u16, height: 1, ..inner }, highlight);
+        } else if is_hovered(owner) {
+            f.buffer_mut().set_style(Rect { y: inner.y + n as u16, height: 1, ..inner }, shade);
         }
     }
+    let height = inner.height as isize;
+    for slot in slots.iter().filter(|s| matches!(media.thumbs.get(&s.file.id), Some(Thumb::Ready(_)))) {
+        let top = slot.line as isize - start as isize + pad as isize;
+        let (from, to) = (top.max(0), (top + slot.size.1 as isize).min(height));
+        if from >= to || !rows.get(from as usize).is_some_and(|o| is_marked(o) || is_hovered(o)) {
+            continue;
+        }
+        let x = inner.x + GUTTER + slot.col;
+        let width = slot.size.0.min(inner.right().saturating_sub(x));
+        f.buffer_mut().set_style(Rect { x, y: inner.y + from as u16, width, height: (to - from) as u16 }, Style::default().bg(ratatui::style::Color::Reset));
+    }
+}
+
+/// Draw the pictures of a message list drawn in `inner` from line `start` of its lines (after `pad` blank rows) over
+/// their reserved rows, past the gutter, sliced when partly scrolled out; returns those not loaded yet (to ask for).
+pub fn draw_pictures(f: &mut Frame, inner: Rect, slots: Vec<ImageSlot>, start: usize, pad: usize, media: &Media) -> Vec<(File, (u16, u16))> {
+    let height = inner.height as isize;
+    let mut wanted = Vec::new();
+    for slot in slots {
+        let top = slot.line as isize - start as isize + pad as isize;
+        if top + slot.size.1 as isize <= 0 || top >= height {
+            continue;
+        }
+        match media.thumbs.get(&slot.file.id) {
+            Some(Thumb::Ready(proto)) => {
+                let position = SignedPosition { x: slot.col as i16, y: top as i16 };
+                let beside = Rect { x: inner.x + GUTTER, width: inner.width.saturating_sub(GUTTER), ..inner };
+                f.render_widget(SlicedImage::new(proto, position), beside);
+            }
+            // Say why instead of leaving the rows blank (not for profile pictures).
+            Some(Thumb::Failed(reason)) if !slot.file.id.starts_with(super::media::AVATAR_PREFIX) && !slot.file.id.starts_with(super::media::EMOJI_PREFIX) => {
+                let x = inner.x + GUTTER + slot.col;
+                let row = Rect { x, y: inner.y + top.max(0) as u16, width: inner.right().saturating_sub(x), height: 1 };
+                f.render_widget(Paragraph::new(failed_thumb(reason)).style(Style::default().fg(super::theme::p().dim)), row);
+            }
+            Some(_) => {}
+            None => wanted.push((slot.file, slot.size)),
+        }
+    }
+    wanted
 }
 
 /// The scroll (lines hidden below the view) that shows lines `first..=last` of `total`: moved as
@@ -540,7 +562,7 @@ fn mark_editing(lines: &mut [Line<'static>], owners: &[Option<String>], ts: &str
 /// Prefix every line with the gutter: a bar down each message, heavier where it starts — yours (`own`, `▌` then `▎`)
 /// in the theme's own colour, others' (`▎` then `▏`) thinner and dim in their name's colour (`authors`: message →
 /// user), so yours stand out; system messages get none.
-fn add_gutter(lines: &mut [Line<'static>], owners: &[Option<String>], own: &std::collections::HashSet<&str>, system: &std::collections::HashSet<&str>, authors: &std::collections::HashMap<&str, &str>) {
+pub fn add_gutter(lines: &mut [Line<'static>], owners: &[Option<String>], own: &std::collections::HashSet<&str>, system: &std::collections::HashSet<&str>, authors: &std::collections::HashMap<&str, &str>) {
     let mut previous: Option<&str> = None;
     for (line, owner) in lines.iter_mut().zip(owners.iter().chain(std::iter::repeat(&None))) {
         let owner = owner.as_deref();
@@ -565,7 +587,7 @@ fn ts_after(a: &str, b: &str) -> bool {
     key(a) > key(b)
 }
 
-fn day_label(ws: &Workspace, ts: f64) -> String {
+pub fn day_label(ws: &Workspace, ts: f64) -> String {
     super::clock::at(ts as i64).map(|d| d.format(&ws.settings.region.date_format).to_string()).unwrap_or_default()
 }
 
@@ -744,24 +766,36 @@ pub fn build_lines_from(ws: &Workspace, t: &Timeline, from: usize, width: usize,
 /// `break_before`: a message that starts an author group of its own (with its header), as the
 /// first one under the "— new —" line does.
 pub fn build_lines_range(here: &Here, t: &Timeline, from: usize, to: usize, width: usize, thread: bool, thumb_size: ThumbSize, avatars: Avatars, break_before: Option<&str>) -> (Vec<Line<'static>>, Vec<Option<String>>, Vec<ImageSlot>) {
+    let shown: Vec<&Message> = shown_messages(t, thread).collect();
+    // A thread's "N replies" rule under its parent.
+    let replies = thread.then(|| {
+        let replies = t.messages.len().saturating_sub(1);
+        let label = format!(" {replies} {} ", if replies == 1 { "reply" } else { "replies" });
+        Line::styled(format!("{label}{}", "─".repeat(width.saturating_sub(label.chars().count()))), Style::default().fg(super::theme::p().dim))
+    });
+    build_shown(here, &shown, from, to, width, thread, replies, thumb_size, avatars, break_before)
+}
+
+/// [`build_lines_range`] of the messages `shown` (oldest first), as a conversation shows them; with `thread`, the
+/// first is a thread's parent: no day separator above it, no reply summaries, and `under_parent` (the thread pane's
+/// "N replies", the Threads feed's "N more replies") below it, which starts a new author group.
+#[allow(clippy::too_many_arguments)]
+pub fn build_shown(here: &Here, shown: &[&Message], from: usize, to: usize, width: usize, thread: bool, under_parent: Option<Line<'static>>, thumb_size: ThumbSize, avatars: Avatars, break_before: Option<&str>) -> (Vec<Line<'static>>, Vec<Option<String>>, Vec<ImageSlot>) {
     let ws = here.ws;
     let mut out: Vec<Line<'static>> = Vec::new();
     let mut owners: Vec<Option<String>> = Vec::new();
     let mut slots: Vec<ImageSlot> = Vec::new();
-    let shown: Vec<&Message> = shown_messages(t, thread).collect();
     let before = from.checked_sub(1).and_then(|i| shown.get(i).copied());
     // What the whole build would carry over: a system message ends a group.
     let mut prev: Option<&Message> = before.filter(|p| !is_system(p));
     let mut last_day: Option<f64> = before.map(|p| p.time());
     // Statuses are checked against the clock on every build (an expired one is gone).
     let now = chrono::Utc::now().timestamp();
-    for (n, m) in shown.into_iter().enumerate().skip(from).take(to.saturating_sub(from)) {
+    for (n, &m) in shown.iter().enumerate().skip(from).take(to.saturating_sub(from)) {
         let ts = m.time();
         owners.resize(out.len(), None);
-        if thread && n == 1 {
-            let replies = t.messages.len() - 1;
-            let label = format!(" {replies} {} ", if replies == 1 { "reply" } else { "replies" });
-            out.push(Line::styled(format!("{label}{}", "─".repeat(width.saturating_sub(label.chars().count()))), Style::default().fg(super::theme::p().dim)));
+        if let Some(line) = under_parent.as_ref().filter(|_| thread && n == 1) {
+            out.push(line.clone());
             owners.resize(out.len(), None);
             prev = None;
         }

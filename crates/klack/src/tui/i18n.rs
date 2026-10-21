@@ -59,6 +59,7 @@ pub fn translatable() -> Vec<String> {
     out.extend(super::menu::OPENER_HEADINGS.iter().map(|h| h.to_string()));
     out.extend(super::event_loop::LINK_NOTES.iter().map(|n| n.to_string()));
     out.push(super::state::IN_A_HUDDLE.to_string());
+    out.extend(super::feed::WORDS.iter().map(|w| w.to_string()));
     let mut seen = std::collections::HashSet::new();
     out.retain(|s| !s.is_empty() && seen.insert(s.clone()));
     out
@@ -90,7 +91,7 @@ mod tests {
         let template = template();
         assert!(template.contains("\"Preferences\" = \"\"") && template.contains("\"add a reaction\" = \"\""));
         assert!(parse(&template).unwrap().is_empty(), "the template parses and translates nothing");
-        for s in ["In klack", "In the browser", "Files", "that message isn't there any more, or you can't see it", "looking for the message… ({} loaded)", "opens {} in klack", "klack can't show that file here", "In a huddle"] {
+        for s in ["In klack", "In the browser", "Files", "that message isn't there any more, or you can't see it", "looking for the message… ({} loaded)", "opens {} in klack", "klack can't show that file here", "In a huddle", "Reply in {where} thread", "message not available"] {
             assert!(template.contains(&format!("\"{s}\" = \"\"")), "{s}");
         }
     }

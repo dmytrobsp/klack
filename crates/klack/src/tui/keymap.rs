@@ -617,12 +617,13 @@ actions! {
     }
     Threads {
         Close "close" "back to the conversation" "back" "❎" ["esc", "q"]
-        Up "up" "previous thread" "up" "🔼" ["up", "k"]
-        Down "down" "next thread" "down" "🔽" ["down", "j"]
+        Up "up" "previous message" "up" "🔼" ["up", "k"]
+        Down "down" "next message" "down" "🔽" ["down", "j"]
         PageUp "page_up" "page up" "page up" "⏫" ["pageup"]
         PageDown "page_down" "page down" "page down" "⏬" ["pagedown"]
         Refresh "refresh" "load again" "refresh" "🔄" ["r"]
-        Open "open" "open the thread at the reply shown" "open" "🧵" ["enter"]
+        Open "open" "open the whole thread at the selected message" "open" "🧵" ["enter"]
+        Type "type" "reply in the selected message's thread (the box under the feed)" "reply" "💬" ["i"]
         Help "help" "this help" "help" "❓" ["?"]
     }
     Mover {
@@ -1462,7 +1463,8 @@ pub fn hints_for(context: Context) -> &'static [(Action, &'static str)] {
         Context::Picker => &[(Open, "react"), (Close, "close")],
         Context::Details => &[(NextTab, "next tab"), (Open, "open"), (Close, "close")],
         Context::Profile => &[(Open, "message"), (Huddle, "huddle"), (Vip, "VIP"), (NextTab, "next person"), (Close, "close")],
-        Context::Activity | Context::Threads => &[(Open, "open"), (Refresh, "refresh"), (Close, "back"), (Help, "help")],
+        Context::Activity => &[(Open, "open"), (Refresh, "refresh"), (Close, "back"), (Help, "help")],
+        Context::Threads => &[(Open, "open"), (Type, "reply"), (Refresh, "refresh"), (Close, "back"), (Help, "help")],
         Context::Mover => &[(Open, "move"), (Close, "close")],
         Context::TextField => &[(Open, "done"), (Close, "cancel")],
         Context::Snippet => &[(PageDown, "page"), (Copy, "copy"), (Close, "close")],

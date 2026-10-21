@@ -221,6 +221,9 @@ struct App {
     save: Option<super::save::SaveDialog>,
     /// The Threads view (Ctrl+T), shown while `view` is Threads.
     threads: super::threads::Threads,
+    /// The thread (channel, its parent's ts) the composer under the Threads feed replies in, once the Type key chose
+    /// it there; its draft is in the composer meanwhile.
+    feed_reply: Option<(String, String)>,
     /// When the previewed channel was last fetched again.
     preview_polled: Option<std::time::Instant>,
     /// When the people shown were last looked up for their statuses, and whether a lookup is
@@ -401,6 +404,7 @@ impl App {
         // A view keeps its row selected while it is shown: a conversation selected in the
         // sidebar (the keys, a click, a jump) is shown instead.
         if selected.is_some() && self.view != View::Conversation {
+            self.set_feed_reply(None);
             self.view = View::Conversation;
         }
         if selected != self.current {
@@ -538,6 +542,12 @@ impl App {
         let Some((channel, parent)) = self.thread.clone().filter(|(c, _)| !self.ws.is_outside(c)) else { return };
         let key = super::state::thread_key(&channel, &parent);
         let Some(latest) = self.ws.threads.get(&key).and_then(|t| thread_mark_target(t, &parent)) else { return };
+        self.mark_thread_on_slack(channel, parent, latest);
+    }
+
+    /// Mark thread `parent` of `channel` read on Slack up to reply `latest` (once per reply).
+    fn mark_thread_on_slack(&mut self, channel: String, parent: String, latest: String) {
+        let key = super::state::thread_key(&channel, &parent);
         if self.marked.get(&key) == Some(&latest) {
             return;
         }
@@ -581,8 +591,10 @@ impl App {
 
     /// Tell the other side we are typing (at most every 3 s), in the thread from the reply box.
     fn notify_typing(&mut self, thread: bool) {
-        let (channel, thread_ts) = match (thread, self.thread.clone()) {
-            (true, Some((channel, ts))) => (channel, Some(ts)),
+        let feed = self.feed_reply.clone().filter(|_| self.view == View::Threads);
+        let (channel, thread_ts) = match (thread, self.thread.clone(), feed) {
+            (true, Some((channel, ts)), _) => (channel, Some(ts)),
+            (false, _, Some((channel, ts))) => (channel, Some(ts)),
             _ => match self.current.clone() {
                 Some(c) => (c, None),
                 None => return,
@@ -603,7 +615,9 @@ impl App {
     /// Send a composer's contents: the channel composer posts to the current conversation,
     /// the thread composer replies in the open thread (optionally also to the channel).
     fn send(&mut self, thread: bool) {
-        let Some(channel) = self.current.clone() else { return };
+        // Under the Threads feed, the composer replies in the thread chosen there.
+        let feed = self.feed_reply.clone().filter(|_| !thread && self.view == View::Threads);
+        let Some(channel) = feed.as_ref().map(|(c, _)| c.clone()).or_else(|| self.current.clone()) else { return };
         // Signed out: what is typed stays in the composer; only klack's own commands run.
         if self.signed_out_note.is_some() {
             let c = self.composer_for(thread);
@@ -612,7 +626,7 @@ impl App {
                 return;
             }
         }
-        let thread_ts = if thread { self.thread.as_ref().map(|(_, ts)| ts.clone()) } else { None };
+        let thread_ts = if thread { self.thread.as_ref().map(|(_, ts)| ts.clone()) } else { feed.map(|(_, ts)| ts) };
         if thread && thread_ts.is_none() {
             return;
         }
@@ -1022,6 +1036,10 @@ impl App {
     /// message selected.
     fn leave_composer(&mut self, thread: bool) {
         self.focus = if thread { Focus::Thread } else { Focus::Messages };
+        // Under the Threads feed: back to the feed, its selection as it was.
+        if !thread && self.view == View::Threads {
+            return;
+        }
         let timeline = match (&self.thread, thread) {
             (Some((c, ts)), true) => self.ws.threads.get(&super::state::thread_key(c, ts)),
             _ => self.current.as_ref().and_then(|c| self.ws.timelines.get(c)),
@@ -1501,7 +1519,8 @@ impl App {
             self.completion = None;
             return;
         }
-        let conversation = if thread { self.thread.as_ref().map(|(c, _)| c.clone()) } else { self.current.clone() };
+        let feed = self.feed_reply.as_ref().filter(|_| self.view == View::Threads).map(|(c, _)| c.clone());
+        let conversation = if thread { self.thread.as_ref().map(|(c, _)| c.clone()) } else { feed.or_else(|| self.current.clone()) };
         // A folder is read once per path typed, not at every event (pointer moves included).
         let items = match (&trigger, &self.path_suggestions) {
             (super::composer::Trigger::Path { .. }, Some((seen, items))) if *seen == trigger => items.clone(),
@@ -1560,6 +1579,9 @@ impl App {
     /// Show view `v` in the main pane (its sidebar row selected, the focus on it) and load it;
     /// already shown, it is loaded again.
     fn open_view(&mut self, v: View) {
+        if v != View::Threads {
+            self.set_feed_reply(None);
+        }
         if let Some(row) = row_of_view(v) {
             self.sidebar.select_view(&row);
         }
@@ -1574,10 +1596,63 @@ impl App {
 
     /// Back from a view to the conversation it was opened over, on its messages.
     fn close_view(&mut self) {
+        self.set_feed_reply(None);
         self.view = View::Conversation;
         self.focus = Focus::Messages;
         if let Some(id) = self.current.as_deref() {
             self.sidebar.select_row_of(id);
+        }
+    }
+
+    /// The composer's draft key: the thread it replies in under the Threads feed, else the conversation.
+    fn composer_key(&self) -> Option<String> {
+        match &self.feed_reply {
+            Some((c, ts)) => Some(super::state::thread_key(c, ts)),
+            None => self.current.clone(),
+        }
+    }
+
+    /// Make the composer reply in `target` under the Threads feed (None: back to the conversation's), keeping the
+    /// draft of the one it leaves and taking up the one it goes to.
+    fn set_feed_reply(&mut self, target: Option<(String, String)>) {
+        let old = self.composer_key();
+        self.feed_reply = target;
+        let new = self.composer_key();
+        if old == new {
+            return;
+        }
+        if let Some(old) = &old {
+            stash(&mut self.drafts, old, &mut self.composer);
+        }
+        if let Some(d) = new.and_then(|k| self.drafts.remove(&k)) {
+            self.composer.restore(d);
+        }
+        self.save_drafts();
+    }
+
+    /// Thread `parent` of `channel` in the Threads feed was read there (on screen long enough, or replied to): marked
+    /// read on Slack up to its newest reply, and here.
+    fn mark_feed_read(&mut self, channel: String, parent: String) {
+        self.seen.insert(super::state::thread_key(&channel, &parent), opened_now());
+        self.threads.mark_read(&channel, &parent);
+        if self.ws.is_outside(&channel) {
+            return;
+        }
+        if let Some(latest) = self.threads.newest_reply(&channel, &parent) {
+            self.mark_thread_on_slack(channel, parent, latest);
+        }
+    }
+
+    /// The Threads feed after a draw: threads on screen long enough are marked read, and the next page is loaded
+    /// once the end of the feed is on screen.
+    fn feed_tick(&mut self, now: std::time::Instant) {
+        let shown = self.view == View::Threads && self.threads.area != Rect::default() && self.overlay().is_none();
+        let after = Duration::from_secs(self.ws.settings.threads.read_after_secs as u64);
+        for (channel, parent) in self.threads.tick(shown, now, after) {
+            self.mark_feed_read(channel, parent);
+        }
+        if shown && self.threads.at_end() {
+            self.load_threads(true);
         }
     }
 
@@ -1599,15 +1674,18 @@ impl App {
                     Action::Close => self.close_view(),
                     Action::Up => t.move_by(-1),
                     Action::Down => t.move_by(1),
-                    Action::PageUp => t.move_by(-(t.height.max(1) as isize)),
-                    Action::PageDown => t.move_by(t.height.max(1) as isize),
+                    Action::PageUp => t.move_by(-t.page()),
+                    Action::PageDown => t.move_by(t.page()),
                     Action::Refresh => self.open_view(View::Threads),
                     Action::Open => self.open_thread_item(),
+                    // The composer under the feed, replying in the selected message's thread.
+                    Action::Type => {
+                        if let Some(thread) = self.threads.selected_thread() {
+                            self.set_feed_reply(Some(thread));
+                            self.focus = Focus::Composer;
+                        }
+                    }
                     _ => {}
-                }
-                // At the end of the list: the next page.
-                if self.view == View::Threads && self.threads.at_end() {
-                    self.load_threads(true);
                 }
             }
             View::Activity => {
@@ -1895,14 +1973,14 @@ impl App {
         if let Some(n) = self.sidebar.item_at(column, row) {
             return self.sidebar.status_note(&self.ws, n, chrono::Utc::now().timestamp());
         }
-        let (url, app) = self.thread.as_ref().and_then(|_| self.thread_pane.link_under(column, row)).or_else(|| self.messages.link_under(column, row))?;
+        let (url, app) = self.thread.as_ref().and_then(|_| self.thread_pane.link_under(column, row)).or_else(|| self.messages.link_under(column, row)).or_else(|| self.threads.link_under(column, row))?;
         let here = super::applink::Here { ws: &self.ws, workspaces: &self.addresses, names: &self.workspaces, shown: self.workspace, authors: &self.authors, message: None };
         Some(super::applink::hover_note(&url, app.as_ref(), &here))
     }
 
     /// The link into the profile's workspaces drawn at a terminal position (the thread pane, then the messages).
     fn link_at(&self, column: u16, row: u16) -> Option<super::applink::AppLink> {
-        self.thread.as_ref().and_then(|_| self.thread_pane.link_at(column, row)).or_else(|| self.messages.link_at(column, row))
+        self.thread.as_ref().and_then(|_| self.thread_pane.link_at(column, row)).or_else(|| self.messages.link_at(column, row)).or_else(|| self.threads.link_under(column, row).and_then(|(_, app)| app))
     }
 
     /// Open what a clicked notification is about: the message (or thread reply), or the
@@ -2578,7 +2656,8 @@ impl App {
             self.threads.loading = true;
             Some(ts)
         } else {
-            self.threads = super::threads::Threads { loading: true, ..Default::default() };
+            self.threads = Default::default();
+            self.threads.loading = true;
             None
         };
         let (client, tx) = (self.client.clone(), self.net.clone());
@@ -3246,6 +3325,7 @@ impl App {
             .messages
             .authors_wanted()
             .chain(self.thread_pane.authors_wanted())
+            .chain(self.threads.authors_wanted())
             .filter(|l| super::applink::workspace_of(l, &self.addresses, shown) == Some(shown))
             .filter_map(|l| match &l.target {
                 super::applink::Target::Message { channel, ts, thread_ts } => Some((channel.clone(), ts.clone(), thread_ts.clone())),
@@ -3271,7 +3351,7 @@ impl App {
     /// Start loading thumbnails that were on screen but not cached yet.
     fn request_thumbs(&mut self) {
         let view = self.huddle_view.as_mut().map(|v| std::mem::take(&mut v.wanted)).unwrap_or_default();
-        let wanted: Vec<_> = self.messages.wanted.drain(..).chain(self.thread_pane.wanted.drain(..)).chain(view).chain(self.call_bar_wanted.take()).chain(self.rail_wanted.drain(..)).collect();
+        let wanted: Vec<_> = self.messages.wanted.drain(..).chain(self.thread_pane.wanted.drain(..)).chain(self.threads.wanted.drain(..)).chain(view).chain(self.call_bar_wanted.take()).chain(self.rail_wanted.drain(..)).collect();
         for (file, size) in wanted {
             if self.media.thumbs.contains_key(&file.id) {
                 continue;
@@ -3605,8 +3685,8 @@ impl App {
     /// Save the drafts, with what is in the open composers, for the next run.
     fn save_drafts(&self) {
         let mut drafts = self.drafts.clone();
-        if let Some((c, d)) = self.current.as_ref().zip(self.composer.draft()) {
-            drafts.insert(c.clone(), d);
+        if let Some((c, d)) = self.composer_key().zip(self.composer.draft()) {
+            drafts.insert(c, d);
         }
         if let Some(((c, t), d)) = self.thread.as_ref().zip(self.thread_composer.draft()) {
             drafts.insert(super::state::thread_key(c, t), d);
@@ -3804,6 +3884,7 @@ impl App {
             activity: Default::default(),
             save: None,
             threads: Default::default(),
+            feed_reply: None,
             preview_polled: None,
             statuses_polled: (None, false),
             prefs: None,
@@ -4003,6 +4084,7 @@ async fn run_workspace(
             app.mark_current_read();
         }
         app.mark_thread_read();
+        app.feed_tick(std::time::Instant::now());
         app.refresh_preview();
         app.refresh_statuses();
     }
@@ -4606,6 +4688,8 @@ fn handle_main(app: &mut App, ev: Event) -> bool {
                         KeyOutcome::Submit if app.composer_for(thread).editing.is_some() => app.save_edit(thread),
                         KeyOutcome::Submit => app.send(thread),
                         KeyOutcome::Leave => app.leave_composer(thread),
+                        // (Not under the Threads feed: the conversation's messages are not on screen.)
+                        KeyOutcome::UpWhenEmpty if !thread && app.view == View::Threads => {}
                         KeyOutcome::UpWhenEmpty => {
                             if let Some(ts) = app.last_own_message(thread) {
                                 app.start_edit(&ts, thread);
@@ -4654,9 +4738,16 @@ fn handle_main(app: &mut App, ev: Event) -> bool {
                 } else if app.sidebar.click(m.column, m.row) {
                     // On its messages in NORMAL, as Jump to (`i` types).
                     app.focus = Focus::Messages;
-                } else if let Some(n) = app.threads.row_at(m.column, m.row) {
-                    // A view's item: selected and opened, as Enter does.
-                    app.threads.selected = n;
+                } else if let Some(link) = m.modifiers.is_empty().then(|| app.threads.link_under(m.column, m.row).and_then(|(_, app)| app)).flatten() {
+                    // A plain click on a link into your Slack in the Threads feed opens it here.
+                    app.open_app_link(&link);
+                } else if let Some(at) = app.threads.message_at(m.column, m.row) {
+                    // A message in the Threads feed: selected, as in a conversation.
+                    app.threads.selected = Some(at);
+                    app.focus = Focus::Messages;
+                } else if let Some((channel, parent)) = app.threads.thread_at(m.column, m.row) {
+                    // A thread's header (or its "more replies"): the whole thread, at its parent.
+                    app.threads.selected = Some((channel, parent));
                     app.open_thread_item();
                     app.closing_click = Some((std::time::Instant::now(), m.column, m.row));
                 } else if let Some(n) = app.activity.row_at(m.column, m.row) {
@@ -4686,6 +4777,10 @@ fn handle_main(app: &mut App, ev: Event) -> bool {
                 if let Some(v) = app.huddle_view.as_mut() {
                     v.scroll += 1;
                 }
+            }
+            // The wheel over the Threads feed scrolls it, as in a conversation.
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown if app.view == View::Threads && app.threads.area.contains((m.column, m.row).into()) => {
+                app.threads.scroll_by(if m.kind == MouseEventKind::ScrollDown { 3 } else { -3 });
             }
             // The wheel over a view moves its selection a step, like the keys.
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown if app.view_area().contains((m.column, m.row).into()) => {
@@ -5056,6 +5151,9 @@ fn handle_rtm(app: &mut App, ev: slack_core::rtm::RtmEvent) {
                 }
             }
             if let Some((channel, m)) = fx.incoming {
+                // A reply in a thread of the Threads feed: into its block, unread when someone else's.
+                let mine = m.user.as_deref() == Some(app.ws.self_id.as_str());
+                app.threads.add_reply(&channel, &m, !mine);
                 let in_view = if m.is_reply() {
                     app.thread.as_ref().is_some_and(|(c, t)| *c == channel && m.thread_ts.as_ref() == Some(t))
                 } else {
@@ -5237,6 +5335,12 @@ fn handle_net(app: &mut App, msg: Net) {
         }
         Net::Posted { channel, message } => {
             super::live::add_message(&mut app.ws, &channel, &message);
+            // A reply from the feed: into its block; replying marks the thread read.
+            if app.threads.add_reply(&channel, &message, false) {
+                if let Some(parent) = message.thread_ts.clone() {
+                    app.mark_feed_read(channel.clone(), parent);
+                }
+            }
             if app.ws.note_activity(&channel, message.time()) && app.ws.conversations.get(&channel).is_some_and(|c| c.is_dm()) {
                 app.sidebar.rebuild(&app.ws);
             }
@@ -5281,7 +5385,7 @@ fn handle_net(app: &mut App, msg: Net) {
         Net::FileDone(message) => app.status = message,
         Net::SendFailed { thread, key, draft, error } => {
             app.status = error;
-            let here = if thread { app.thread.as_ref().map(|(c, ts)| super::state::thread_key(c, ts)) } else { app.current.clone() };
+            let here = if thread { app.thread.as_ref().map(|(c, ts)| super::state::thread_key(c, ts)) } else { app.composer_key() };
             if here.as_deref() == Some(key.as_str()) {
                 let composer = app.composer_for(thread);
                 if composer.draft().is_none() {
@@ -5621,8 +5725,11 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         app.focus = Focus::Messages;
     }
     // A view gives way to the conversation once its message box gets the focus (a command put
-    // into it, …): no view has a message box of its own.
-    if app.view != View::Conversation && app.focus == Focus::Composer {
+    // into it, …): only the Threads feed has one, once a thread to reply in was chosen there.
+    if app.view != View::Threads && app.feed_reply.is_some() {
+        app.set_feed_reply(None);
+    }
+    if app.view != View::Conversation && app.focus == Focus::Composer && app.feed_reply.is_none() {
         app.close_view();
         app.focus = Focus::Composer;
     }
@@ -5698,12 +5805,20 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         app.messages.hide();
         app.composer_area = Default::default();
     } else if app.view != View::Conversation {
-        // A view in the main pane, in place of the messages and their box.
+        // A view in the main pane, in place of the messages and their box (the Threads feed keeps the box, to reply
+        // in its threads).
         app.messages.hide();
         app.composer_area = Default::default();
         let focused = app.focus == Focus::Messages;
         match app.view {
-            View::Threads => app.threads.draw(f, main, &app.ws, focused),
+            View::Threads => {
+                let composer_h = app.composer.height(main.width.saturating_sub(2) as usize);
+                let [feed, comp] = Layout::vertical([Constraint::Min(3), Constraint::Length(composer_h)]).areas(main);
+                let here = super::applink::Here { ws: &app.ws, workspaces: &app.addresses, names: &app.workspaces, shown: app.workspace, authors: &app.authors, message: None };
+                app.threads.draw(f, feed, &here, focused, &app.media);
+                app.composer_area = comp;
+                draw_composer(f, comp, app, false);
+            }
             View::Activity => app.activity.draw(f, main, &app.ws, focused),
             View::Huddles | View::Conversation => {}
         }
@@ -5929,8 +6044,12 @@ fn draw_composer(f: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &App,
     let focused = app.focus == (if thread { Focus::ThreadComposer } else { Focus::Composer }) && app.mode() == Mode::Insert;
     let border = if focused { Style::default().fg(super::theme::p().good) } else { Style::default().fg(super::theme::p().dim) };
     let target = app.current.as_deref().map(|c| app.ws.channel_label(c)).unwrap_or_default();
+    // Under the Threads feed: the thread it replies in (chosen with the Type key), else the selected message's.
+    let feed = (!thread && app.view == View::Threads).then(|| app.feed_reply.clone().filter(|_| focused || !composer.is_empty()).or_else(|| app.threads.selected_thread())).flatten();
     let typing = if thread {
         app.thread.as_ref().map(|(c, ts)| app.ws.typing_in(&super::state::thread_key(c, ts))).unwrap_or_default()
+    } else if let Some((c, ts)) = &feed {
+        app.ws.typing_in(&super::state::thread_key(c, ts))
     } else {
         app.current.as_deref().map(|c| app.ws.typing_in(c)).unwrap_or_default()
     };
@@ -5943,6 +6062,10 @@ fn draw_composer(f: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &App,
     } else if thread {
         let key = app.keys.first_key(Context::Composer, Action::AlsoToChannel).unwrap_or_default();
         reply_title(app.broadcast, &key, room)
+    } else if let Some((c, _)) = &feed {
+        format!(" {} ", super::i18n::tr(super::feed::REPLY_IN).replace("{where}", &super::feed::place(&app.ws, c)))
+    } else if app.view == View::Threads {
+        String::new()
     } else if app.current.as_deref().and_then(|c| app.ws.conversations.get(c)).is_some_and(|c| c.is_archived) {
         format!(" #{target} is archived ")
     } else if app.current.as_deref().is_some_and(|c| app.ws.is_outside(c)) {
@@ -5977,6 +6100,8 @@ fn draw_composer(f: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &App,
     let text = if composer.text().is_empty() && !focused {
         let hint = if thread {
             format!("{} to reply", app.keys.first_key(Context::Messages, Action::Type).unwrap_or_default())
+        } else if app.view == View::Threads {
+            super::i18n::tr(super::feed::PRESS_TO_REPLY).replace("{key}", &app.keys.first_key(Context::Threads, Action::Type).unwrap_or_default())
         } else {
             format!("Press {} to type", app.keys.first_key(Context::Messages, Action::Type).unwrap_or_default())
         };
@@ -6728,6 +6853,112 @@ mod tests {
         (app, rx)
     }
 
+    /// [`test_app`] whose Slack is at `url`.
+    fn test_app_at(url: &str) -> (super::App, tokio::sync::mpsc::UnboundedReceiver<super::Net>) {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let session = WorkspaceSession { url: url.into(), team_id: "T0".into(), user_id: "U0".into(), ..Default::default() };
+        let (net, rx) = tokio::sync::mpsc::unbounded_channel();
+        let (rtm, _) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = super::App::new(super::Client::new(session).unwrap(), net, rtm, super::super::media::Media::with(ratatui_image::picker::Picker::halfblocks()), Default::default());
+        app.keys = super::Keymap::load("").0;
+        (app, rx)
+    }
+
+    /// A Slack on a local port that answers every call `ok` (chat.postMessage with `posted`) and passes on each
+    /// request it was sent (method and form).
+    async fn fake_slack(posted: &'static str) -> (String, tokio::sync::mpsc::UnboundedReceiver<String>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                let mut req = Vec::new();
+                let mut buf = [0u8; 8192];
+                loop {
+                    let n = sock.read(&mut buf).await.unwrap_or(0);
+                    if n == 0 {
+                        break;
+                    }
+                    req.extend_from_slice(&buf[..n]);
+                    let text = String::from_utf8_lossy(&req).to_string();
+                    if let Some(h) = text.find("\r\n\r\n") {
+                        let len = text[..h].lines().find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").and_then(|v| v.trim().parse::<usize>().ok())).unwrap_or(0);
+                        if req.len() >= h + 4 + len {
+                            break;
+                        }
+                    }
+                }
+                let text = String::from_utf8_lossy(&req).to_string();
+                let body = if text.contains("chat.postMessage") { posted } else { r#"{"ok":true}"# };
+                let _ = tx.send(text);
+                let reply = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                let _ = sock.write_all(reply.as_bytes()).await;
+            }
+        });
+        (url, rx)
+    }
+
+    #[tokio::test]
+    async fn i_replies_to_the_selected_thread() {
+        use super::{run_global, Action, Focus, Net, View};
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use slack_core::types::Message;
+        let (url, mut asked) = fake_slack(r#"{"ok":true,"channel":"C1","message":{"type":"message","ts":"1729450000.000100","thread_ts":"1729440000.000100","user":"U0","text":"on it"}}"#).await;
+        let (mut app, mut net) = test_app_at(&url);
+        app.ws.conversations.insert("C1".into(), slack_core::types::Conversation { id: "C1".into(), name: "general".into(), is_channel: true, is_member: true, ..Default::default() });
+        app.current = Some("C2".into());
+        app.composer.insert_str("a draft for C2");
+        run_global(&mut app, Action::Threads);
+        let m = |ts: &str, parent: &str, text: &str| Message { ts: ts.into(), thread_ts: Some(parent.into()), user: Some("U1".into()), text: text.into(), ..Default::default() };
+        let t1 = super::super::threads::Entry { channel: "C1".into(), root: Message { reply_count: 1, ..m("1729440000.000100", "1729440000.000100", "the parent") }, latest: vec![m("1729440000.000200", "1729440000.000100", "a reply")], ..Default::default() };
+        let t2 = super::super::threads::Entry { channel: "C3".into(), root: m("1729440500.000100", "1729440500.000100", "another"), ..Default::default() };
+        app.threads.add_page(vec![t1, t2], false);
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        // The second message of the feed: the reply in C1's thread.
+        press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        assert_eq!(app.threads.selected, Some(("C1".into(), "1729440000.000200".into())));
+        press(&mut app, KeyCode::Char('i'), KeyModifiers::NONE);
+        assert_eq!((app.focus, app.view), (Focus::Composer, View::Threads), "the box under the feed, the feed stays");
+        assert_eq!(app.feed_reply, Some(("C1".to_string(), "1729440000.000100".to_string())));
+        assert_eq!(app.composer.text(), "", "C2's draft is not the thread's");
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        assert_eq!(app.view, View::Threads, "typing there keeps the view");
+        let screen: Vec<String> = { let buf = terminal.backend().buffer(); (0..buf.area.height).map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect::<String>()).collect() };
+        assert!(screen.iter().any(|l| l.contains("Reply in #general thread")), "{screen:#?}");
+        assert!(app.composer_area.y > app.threads.area.y && app.composer_area.width == app.threads.area.width, "under the feed");
+        for c in "on it".chars() {
+            press(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        // It is posted in the thread.
+        let post = loop {
+            let req = tokio::time::timeout(std::time::Duration::from_secs(10), asked.recv()).await.expect("a request").unwrap();
+            if req.contains("chat.postMessage") {
+                break req;
+            }
+        };
+        assert!(post.contains("channel=C1") && post.contains("thread_ts=1729440000.000100") && post.contains("text=on+it"), "{post}");
+        // The block shows it once Slack has it.
+        loop {
+            match tokio::time::timeout(std::time::Duration::from_secs(10), net.recv()).await.expect("the answer").unwrap() {
+                msg @ Net::Posted { .. } => {
+                    super::handle_net(&mut app, msg);
+                    break;
+                }
+                _ => {}
+            }
+        }
+        let e = &app.threads.entries.as_ref().unwrap()[0];
+        assert!(e.latest.iter().any(|r| r.ts == "1729450000.000100") && e.root.reply_count == 2 && e.read, "the reply is in its block, the thread read");
+        // Back from the view: the conversation's own draft again, the thread's kept.
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!((app.view, app.feed_reply.clone()), (View::Conversation, None));
+        assert_eq!(app.composer.text(), "a draft for C2");
+    }
+
     fn press(app: &mut super::App, code: crossterm::event::KeyCode, mods: crossterm::event::KeyModifiers) {
         assert!(super::handle_event(app, crossterm::event::Event::Key(crossterm::event::KeyEvent::new(code, mods))));
     }
@@ -6753,10 +6984,10 @@ mod tests {
         assert_eq!(app.active_contexts()[0], Context::Messages);
         // Ctrl+T again, then its key in the view: still there, loaded afresh.
         run_global(&mut app, Action::Threads);
-        app.threads.selected = 3;
+        app.threads.selected = Some(("C1".into(), "3.0".into()));
         press(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
         assert_eq!(app.view, View::Threads);
-        assert!(app.threads.loading && app.threads.entries.is_none() && app.threads.selected == 0, "refreshed");
+        assert!(app.threads.loading && app.threads.entries.is_none() && app.threads.selected.is_none(), "refreshed");
         // Each opening asked for the first page.
         for n in 0..3 {
             let msg = tokio::time::timeout(std::time::Duration::from_secs(10), net.recv()).await.expect("a request");
@@ -6796,7 +7027,8 @@ mod tests {
         assert_eq!(app.view, View::Threads);
         terminal.draw(|f| super::draw(f, &mut app)).unwrap();
         assert!(rows(&terminal)[0].chars().skip(20).collect::<String>().starts_with("┌ Threads "));
-        assert_eq!((app.threads.area, app.activity.area), (Rect::new(20, 0, 60, 23), Rect::default()), "the hidden view cannot be clicked");
+        assert_eq!((app.threads.area, app.activity.area), (Rect::new(20, 0, 60, 20), Rect::default()), "the hidden view cannot be clicked");
+        assert_eq!(app.composer_area, Rect::new(20, 20, 60, 3), "the Threads feed keeps the box under it, to reply");
         // From the sidebar, a click on the Activity row, then Enter on its item: the conversation.
         app.focus = Focus::Sidebar;
         click(&mut app, 3, 2);

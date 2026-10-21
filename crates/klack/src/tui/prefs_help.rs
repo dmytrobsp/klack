@@ -220,6 +220,10 @@ fn build(field: Field, _ws: &Workspace, keys: &Keymap, tr: &dyn Fn(&'static str)
             b.text("Slack does not send klack people's status changes, so the people shown — the direct messages and group DMs in the sidebar, the authors in the open conversation and thread — are looked up again this often. An expired status goes at once either way.").blank();
             b.step("off, or every 15, 30, 60, 120 or 300 seconds");
         }
+        Field::ThreadRead => {
+            b.text("In the Threads view (Ctrl+T), a thread is marked read on Slack once its whole block — or, for one taller than the view, its unread replies — has been on screen this long, not while you scroll past. Opening it (Enter) or replying in it marks it read as well.").blank();
+            b.step("only when opened, or after 1, 2, 3, 5 or 10 seconds");
+        }
         Field::Graphics => {
             graphics_values(&mut b, super::media::drawable());
             b.change("the next way");
