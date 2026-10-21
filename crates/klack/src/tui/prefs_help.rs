@@ -217,8 +217,7 @@ fn build(field: Field, _ws: &Workspace, keys: &Keymap, tr: &dyn Fn(&'static str)
             b.step("off, or every 5, 10, 15, 30, 60 or 120 seconds");
         }
         Field::Graphics => {
-            b.text("How pictures are drawn in the terminal. KLACK_GRAPHICS, when set, wins over this.").blank();
-            b.value("auto", "ask the terminal what it can draw").value("kitty", "the kitty graphics protocol").value("sixel", "sixel graphics").value("iterm2", "the iTerm2 image protocol").value("halfblocks", "coloured blocks: works everywhere, but no profile pictures").blank();
+            graphics_values(&mut b, super::media::drawable());
             b.change("the next way");
         }
         Field::EmojiAsNames => {
@@ -408,6 +407,23 @@ fn build(field: Field, _ws: &Workspace, keys: &Keymap, tr: &dyn Fn(&'static str)
 }
 
 /// How to record, remove or reset a leader.
+/// The help of "Draw pictures with": every way, the ones this terminal cannot draw (not in
+/// `drawable`) marked, and how to force one.
+fn graphics_values(b: &mut Builder, drawable: &[&str]) {
+    b.text("How pictures are drawn in the terminal. Only the ways this terminal said it can draw are offered. To force another (over ssh or tmux the terminal may not answer), start klack with KLACK_GRAPHICS set to its name: it wins over this.").blank();
+    let not_here = (b.tr)("not available in this terminal");
+    let ways = [("auto", "ask the terminal what it can draw"), ("kitty", "the kitty graphics protocol"), ("sixel", "sixel graphics"), ("iterm2", "the iTerm2 image protocol"), ("halfblocks", "coloured blocks: works everywhere, but no profile pictures")];
+    for (name, meaning) in ways {
+        b.value(name, meaning);
+        if !drawable.contains(&name) {
+            if let Some(HelpLine::Value { meaning, .. }) = b.lines.last_mut() {
+                meaning.push_str(&format!(" — {not_here}"));
+            }
+        }
+    }
+    b.blank();
+}
+
 fn leader_keys(b: &mut Builder) {
     let (open, unbind, reset) = (b.key_of(Action::Open), b.key_of(Action::Unbind), b.key_of(Action::Reset));
     b.key(open, "record the new key (until a 1 s pause; any key counts)");
@@ -567,6 +583,26 @@ mod tests {
             assert_eq!(h.title, field.label(), "{field:?}: the title is the row's label");
             assert!(texts(&h) >= 1, "{field:?} says what it does");
         }
+    }
+
+    #[test]
+    fn graphics_marks_what_this_terminal_cannot_draw() {
+        let map = keys();
+        let tr = |s: &'static str| s.to_string();
+        let mut b = Builder { tr: &tr, keys: &map, lines: Vec::new() };
+        graphics_values(&mut b, &["auto", "kitty", "halfblocks"]);
+        let h = Help { title: "t".into(), lines: b.lines };
+        assert_eq!(values(&h), ["auto", "kitty", "sixel", "iterm2", "halfblocks"], "every way is listed");
+        assert_eq!(value_of(&h, "kitty"), Some("the kitty graphics protocol"));
+        assert_eq!(value_of(&h, "sixel"), Some("sixel graphics — not available in this terminal"));
+        assert_eq!(value_of(&h, "iterm2"), Some("the iTerm2 image protocol — not available in this terminal"));
+        assert!(!value_of(&h, "halfblocks").unwrap().contains("not available"));
+        let HelpLine::Text(first) = &h.lines[0] else { panic!("{h:?}") };
+        assert!(first.contains("KLACK_GRAPHICS"), "{first}");
+        // Before detection (and in tests) every way counts as drawable.
+        let h = help(Field::Graphics, &Workspace::default(), &map);
+        assert!(h.lines.iter().all(|l| !matches!(l, HelpLine::Value { meaning, .. } if meaning.contains("not available"))));
+        assert!(strings().contains(&"not available in this terminal"), "translatable");
     }
 
     #[test]

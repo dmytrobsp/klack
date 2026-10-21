@@ -398,8 +398,8 @@ impl Field {
                 self.adjust(s, true, true);
             }
             Field::Graphics => {
-                let i = super::media::GRAPHICS.iter().position(|g| *g == s.messages.graphics).map_or(0, |i| (i + 1) % super::media::GRAPHICS.len());
-                s.messages.graphics = super::media::GRAPHICS[i].into();
+                // Only the ways this terminal can draw.
+                s.messages.graphics = super::media::next_mode(&s.messages.graphics, super::media::drawable()).into();
             }
             Field::EmojiAsNames => s.messages.emoji_as_names ^= true,
             Field::CustomEmojiPictures => s.messages.custom_emoji_pictures ^= true,

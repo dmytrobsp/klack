@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use ratatui::layout::Size;
 use ratatui_image::FontSize;
-use ratatui_image::picker::{Picker, ProtocolType};
+use ratatui_image::picker::{Capability, Picker, ProtocolType};
 use ratatui_image::sliced::SlicedProtocol;
 use slack_core::types::File;
 
@@ -26,6 +26,18 @@ pub struct Media {
     pub avatars: bool,
     /// What the terminal said it can do (for "auto").
     detected: ProtocolType,
+    /// The [`GRAPHICS`] this terminal can draw (see [`drawable_modes`]).
+    drawable: Vec<&'static str>,
+    /// What to tell the user once about the graphics setting (a mode this terminal cannot draw).
+    pub note: Option<String>,
+}
+
+/// [`drawable_modes`] of this terminal, worked out at start (every mode before that, and in tests).
+static DRAWABLE: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
+
+/// The [`GRAPHICS`] this terminal can draw (F6 offers only these).
+pub fn drawable() -> &'static [&'static str] {
+    DRAWABLE.get().map_or(GRAPHICS, |d| d.as_slice())
 }
 
 /// The ways of drawing pictures to choose from ("auto": ask the terminal).
@@ -107,7 +119,8 @@ impl Media {
         // A terminal that does not report its cell size (xterm by default) loses its sixel
         // support in the query above; ask for it on its own and take the size from the
         // window's pixel size.
-        if picker.protocol_type() == ProtocolType::Halfblocks && sixel_advertised() {
+        let da1_sixel = picker.protocol_type() == ProtocolType::Halfblocks && sixel_advertised();
+        if da1_sixel {
             tracing::info!("the terminal advertises sixel but did not report its cell size: using sixel");
             picker.set_protocol_type(ProtocolType::Sixel);
         }
@@ -116,30 +129,37 @@ impl Media {
             tracing::info!("{term_program} answers the kitty query but cannot draw kitty's placeholders: using {better:?}");
             picker.set_protocol_type(better);
         }
-        tracing::info!(protocol = ?picker.protocol_type(), font = ?picker.font_size(), capabilities = ?picker.capabilities(), "terminal graphics");
         let detected = picker.protocol_type();
-        let mut media = Media { picker, thumbs: HashMap::new(), avatars: false, detected };
-        media.choose(choice);
+        let drawable = drawable_modes(detected, picker.capabilities(), da1_sixel, &term_program);
+        tracing::info!(protocol = ?detected, font = ?picker.font_size(), capabilities = ?picker.capabilities(), drawable = ?drawable, "terminal graphics");
+        let _ = DRAWABLE.set(drawable.clone());
+        let mut media = Media { picker, thumbs: HashMap::new(), avatars: false, detected, drawable, note: None };
+        media.note = media.choose(choice);
         media
     }
 
-    /// Pictures drawn with `picker`, without profile pictures (for tests).
+    /// Pictures drawn with `picker`, without profile pictures (for tests); every mode can be chosen.
     #[cfg(test)]
     pub fn with(picker: Picker) -> Media {
         let detected = picker.protocol_type();
-        Media { picker, thumbs: HashMap::new(), avatars: false, detected }
+        Media { picker, thumbs: HashMap::new(), avatars: false, detected, drawable: GRAPHICS.to_vec(), note: None }
     }
 
-    /// Draw pictures as `choice` says ("auto": as detected; `KLACK_GRAPHICS` wins);
-    /// pictures made the other way are dropped.
-    pub fn choose(&mut self, choice: &str) {
+    /// Draw pictures as `choice` says ("auto": as detected; `KLACK_GRAPHICS` wins, even with a
+    /// mode the terminal did not report); pictures made the other way are dropped. A `choice`
+    /// this terminal cannot draw draws as "auto", and what to tell the user about it comes back.
+    pub fn choose(&mut self, choice: &str) -> Option<String> {
         let env = std::env::var(GRAPHICS_ENV).ok().filter(|v| !v.trim().is_empty());
-        let protocol = protocol_named(env.as_deref().unwrap_or(choice)).unwrap_or(self.detected);
+        let (protocol, note) = pick_protocol(choice, env.as_deref(), self.detected, &self.drawable);
+        if let Some(note) = &note {
+            tracing::warn!("{note}");
+        }
         if protocol != self.picker.protocol_type() {
             self.thumbs.clear();
         }
         self.picker.set_protocol_type(protocol);
         self.avatars = protocol != ProtocolType::Halfblocks && std::env::var("KLACK_AVATARS").map_or(true, |v| v != "0");
+        note
     }
 
     /// The terminal draws real pictures (not half blocks).
@@ -163,6 +183,61 @@ fn protocol_named(name: &str) -> Option<ProtocolType> {
         "halfblocks" | "half blocks" => Some(ProtocolType::Halfblocks),
         _ => None,
     }
+}
+
+/// The protocol to draw with for the graphics setting `choice` and `KLACK_GRAPHICS` (`env`),
+/// given what auto draws with (`detected`) and the [`drawable_modes`]; plus a note for the user
+/// when the setting names a mode this terminal cannot draw, or no mode at all (it draws as auto
+/// then). `env` forces its mode (detection can miss over ssh or tmux), with a warning in the log
+/// when the terminal did not report it.
+fn pick_protocol(choice: &str, env: Option<&str>, detected: ProtocolType, drawable: &[&str]) -> (ProtocolType, Option<String>) {
+    let can_draw = |p: ProtocolType| drawable.iter().any(|g| protocol_named(g) == Some(p));
+    if let Some(name) = env {
+        let Some(p) = protocol_named(name) else { return (detected, None) };
+        if !can_draw(p) {
+            tracing::warn!("{GRAPHICS_ENV}={name}: the terminal did not report it, drawing with it anyway");
+        }
+        return (p, None);
+    }
+    match protocol_named(choice) {
+        Some(p) if can_draw(p) => (p, None),
+        Some(_) => (detected, Some(format!("cannot draw {} pictures here: using auto (settings.toml graphics)", choice.trim()))),
+        None if choice.trim().eq_ignore_ascii_case("auto") => (detected, None),
+        None => (detected, Some(format!("settings.toml: graphics = \"{}\" is not a way of drawing pictures: using auto", choice.trim()))),
+    }
+}
+
+/// The [`GRAPHICS`] this terminal can draw, in that order, from what detection learnt: the
+/// protocol "auto" draws with (`detected`, after the sixel and WezTerm corrections), the
+/// terminal's answers to the query (`capabilities`), whether it listed sixel in its device
+/// attributes when asked on its own (`da1_sixel`; never asked on Windows) and `$TERM_PROGRAM`.
+/// "auto" and "halfblocks" are always in it; nothing the terminal did not report is guessed,
+/// except iTerm2's protocol where ratatui-image or [`override_for`] already rely on it.
+pub fn drawable_modes(detected: ProtocolType, capabilities: &[Capability], da1_sixel: bool, term_program: &str) -> Vec<&'static str> {
+    let reported = |c: &Capability| capabilities.contains(c);
+    // The query was answered with a cell size (without it no protocol is drawn).
+    let answered = capabilities.iter().any(|c| matches!(c, Capability::CellSize(Some(_))));
+    // WezTerm answers the kitty query but cannot draw kitty's placeholders.
+    let kitty = (reported(&Capability::Kitty) || detected == ProtocolType::Kitty) && override_for(ProtocolType::Kitty, term_program).is_none();
+    let sixel = reported(&Capability::Sixel) || da1_sixel || detected == ProtocolType::Sixel;
+    // iTerm2 and WezTerm are known by name (as ratatui-image knows them), also when they answer sixel.
+    let iterm2 = detected == ProtocolType::Iterm2 || (answered && (term_program.contains("iTerm") || term_program == "WezTerm"));
+    GRAPHICS
+        .iter()
+        .copied()
+        .filter(|g| match *g {
+            "kitty" => kitty,
+            "sixel" => sixel,
+            "iterm2" => iterm2,
+            _ => true,
+        })
+        .collect()
+}
+
+/// The graphics mode after `current` among `drawable` (the first, auto, when `current` is not one).
+pub fn next_mode(current: &str, drawable: &[&'static str]) -> &'static str {
+    let i = drawable.iter().position(|g| *g == current).map_or(0, |i| (i + 1) % drawable.len());
+    drawable.get(i).copied().unwrap_or("auto")
 }
 
 /// Whether a primary device attributes reply (`ESC [ ? 63 ; 1 ; 2 ; 4 ; … c`) lists sixel (4).
@@ -486,6 +561,68 @@ mod tests {
         assert_eq!(protocol_named("Sixel"), Some(ProtocolType::Sixel));
         assert_eq!(protocol_named("auto"), None);
         assert!(GRAPHICS.iter().skip(1).all(|g| protocol_named(g).is_some()), "every choice but auto names a protocol");
+    }
+
+    #[test]
+    fn only_what_the_terminal_reports_can_be_chosen() {
+        use Capability::{CellSize, Kitty, Sixel};
+        let cell = CellSize(Some((10, 20)));
+        // kitty: answers the kitty query, not sixel.
+        assert_eq!(drawable_modes(ProtocolType::Kitty, &[Kitty, cell.clone()], false, "kitty"), ["auto", "kitty", "halfblocks"]);
+        // A terminal answering both.
+        assert_eq!(drawable_modes(ProtocolType::Kitty, &[Kitty, Sixel, cell.clone()], false, ""), ["auto", "kitty", "sixel", "halfblocks"]);
+        // xterm as a VT340: no cell size, so the query gives nothing; DA1 on its own lists sixel.
+        assert_eq!(drawable_modes(ProtocolType::Sixel, &[], true, ""), ["auto", "sixel", "halfblocks"]);
+        // foot: sixel in the query's answer.
+        assert_eq!(drawable_modes(ProtocolType::Sixel, &[Sixel, cell.clone()], false, ""), ["auto", "sixel", "halfblocks"]);
+        // WezTerm answering the kitty query (then drawn with iTerm2's protocol): no kitty, no sixel unless reported.
+        assert_eq!(drawable_modes(ProtocolType::Iterm2, &[Kitty, cell.clone()], false, "WezTerm"), ["auto", "iterm2", "halfblocks"]);
+        assert_eq!(drawable_modes(ProtocolType::Iterm2, &[Kitty, Sixel, cell.clone()], false, "WezTerm"), ["auto", "sixel", "iterm2", "halfblocks"]);
+        // WezTerm itself (kitty and sixel left out of the query by ratatui-image).
+        assert_eq!(drawable_modes(ProtocolType::Iterm2, &[cell.clone()], false, "WezTerm"), ["auto", "iterm2", "halfblocks"]);
+        // iTerm2 answering sixel: its own protocol too.
+        assert_eq!(drawable_modes(ProtocolType::Sixel, &[Sixel, cell.clone()], false, "iTerm.app"), ["auto", "sixel", "iterm2", "halfblocks"]);
+        // No answer (a failed query, a console that does not pass the replies on): half blocks only,
+        // whatever the environment says.
+        assert_eq!(drawable_modes(ProtocolType::Halfblocks, &[], false, ""), ["auto", "halfblocks"]);
+        assert_eq!(drawable_modes(ProtocolType::Halfblocks, &[], false, "iTerm.app"), ["auto", "halfblocks"]);
+        assert_eq!(drawable_modes(ProtocolType::Halfblocks, &[CellSize(None)], false, "WezTerm"), ["auto", "halfblocks"]);
+        // Windows: DA1 is never asked on its own (`sixel_advertised` is false there), so only the query counts —
+        // Windows PowerShell's console answers nothing; Windows Terminal answers sixel.
+        assert!(!cfg!(windows) || !sixel_advertised());
+        assert_eq!(drawable_modes(ProtocolType::Halfblocks, &[], false, ""), ["auto", "halfblocks"]);
+        assert_eq!(drawable_modes(ProtocolType::Sixel, &[Sixel, cell], false, ""), ["auto", "sixel", "halfblocks"]);
+    }
+
+    #[test]
+    fn a_mode_the_terminal_cannot_draw_draws_as_auto() {
+        let kitty = ["auto", "kitty", "halfblocks"];
+        assert_eq!(pick_protocol("kitty", None, ProtocolType::Kitty, &kitty), (ProtocolType::Kitty, None));
+        assert_eq!(pick_protocol("halfblocks", None, ProtocolType::Kitty, &kitty), (ProtocolType::Halfblocks, None));
+        assert_eq!(pick_protocol("auto", None, ProtocolType::Kitty, &kitty), (ProtocolType::Kitty, None));
+        let (p, note) = pick_protocol("sixel", None, ProtocolType::Kitty, &kitty);
+        assert_eq!(p, ProtocolType::Kitty, "as auto");
+        assert_eq!(note.as_deref(), Some("cannot draw sixel pictures here: using auto (settings.toml graphics)"));
+        let (p, note) = pick_protocol("sixel", None, ProtocolType::Halfblocks, &["auto", "halfblocks"]);
+        assert_eq!(p, ProtocolType::Halfblocks);
+        assert!(note.is_some());
+        let (p, note) = pick_protocol("pictures", None, ProtocolType::Kitty, &kitty);
+        assert_eq!((p, note.is_some()), (ProtocolType::Kitty, true), "not a mode: auto, and said so");
+        // KLACK_GRAPHICS forces its mode, reported or not, with nothing to tell (only the log).
+        assert_eq!(pick_protocol("auto", Some("sixel"), ProtocolType::Kitty, &kitty), (ProtocolType::Sixel, None));
+        assert_eq!(pick_protocol("sixel", Some("iterm2"), ProtocolType::Halfblocks, &["auto", "halfblocks"]), (ProtocolType::Iterm2, None));
+        assert_eq!(pick_protocol("halfblocks", Some("bogus"), ProtocolType::Kitty, &kitty), (ProtocolType::Kitty, None), "an unknown name: auto");
+    }
+
+    #[test]
+    fn the_next_mode_skips_what_cannot_be_drawn() {
+        let kitty = ["auto", "kitty", "halfblocks"];
+        assert_eq!(next_mode("auto", &kitty), "kitty");
+        assert_eq!(next_mode("kitty", &kitty), "halfblocks");
+        assert_eq!(next_mode("halfblocks", &kitty), "auto");
+        assert_eq!(next_mode("sixel", &kitty), "auto", "from a mode it cannot draw: back to auto");
+        assert_eq!(next_mode("auto", &["auto", "halfblocks"]), "halfblocks");
+        assert_eq!(next_mode("iterm2", GRAPHICS), "halfblocks");
     }
 
     #[test]

@@ -3570,6 +3570,8 @@ pub async fn run(profile: slack_core::session::Profile, account: Option<(&str, &
         // Keys may have been rebound in the preferences meanwhile.
         let mut keymap = super::keymap::load_user();
         keymap.1.extend(settings_problem);
+        // A graphics mode this terminal cannot draw: said once, at the first workspace.
+        keymap.1.extend(media.note.take());
         super::messages::set_open_key(keymap.0.first_shown(Context::Messages, Action::Open).unwrap_or_default());
         let (next, kept_media, kept_clipboard) = run_workspace(client, (labels.clone(), index, badges.clone(), open_after.clone(), logos.clone(), signed_out.clone(), addresses.clone()), &mut clicks, &keymap, &settings, &mut terminal, &mut events, media, clipboard).await?;
         (media, clipboard) = (kept_media, kept_clipboard);

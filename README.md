@@ -393,7 +393,7 @@ on Windows only from an SSH session, where `gdigrab` cannot capture (no desktop)
 | `KLACK_DOWNLOAD_DIR` | where `␣s` saves attachments first, over F6 → Messages & media → Save files to (default: your downloads folder) |
 | `KLACK_OPEN_WITH` | the program `␣o` opens links with, given the address (default: the system's opener — `xdg-open`, `open`, Windows' URL handler); only web and mail links are opened |
 | `KLACK_AVATARS=0` | initials instead of profile pictures next to names (as on terminals without real graphics; F6 → Messages & media → Show profile pictures turns both off, Two-row profile pictures makes them bigger) |
-| `KLACK_GRAPHICS` | how pictures are drawn: `kitty`, `sixel`, `iterm2` or `halfblocks` (default: asked from the terminal; also F6 → Messages & media → Draw pictures with) |
+| `KLACK_GRAPHICS` | how pictures are drawn: `kitty`, `sixel`, `iterm2` or `halfblocks` (default: asked from the terminal). F6 → Messages & media → Draw pictures with (`[messages] graphics` in `settings.toml`) offers only the ways the terminal said at start it can draw — `auto` and `halfblocks` always — and its help marks the others "not available in this terminal"; a `settings.toml` naming one of those draws as `auto`, with a note in the status bar (the file is left as it is). `KLACK_GRAPHICS` still forces the way it names, for when the terminal is not asked right (over ssh or tmux) — with a warning in the log when the terminal did not report it |
 
 ### Themes
 
