@@ -176,13 +176,23 @@ p code, li code, h3 code { color: var(--yellow); }
 .notes { margin: 18px 0 0; padding-left: 18px; color: #e8dcc4; font-size: 13.5px; }
 .notes li { margin-bottom: 8px; }
 
-/* terminal captures (LP7): the grid of --cols cells scaled to the box; non-ASCII runs and pictures sit on the cells */
-.capture .screen { container-type: inline-size; padding: 8px 10px 10px; }
-.capture { --lh: 1.25; }
-.capture .grid { position: relative; font-size: calc(100cqw / var(--cols) / 0.6125); line-height: var(--lh); }
-.term.capture pre { padding: 0; overflow: hidden; font: inherit; line-height: inherit; }
-.capture pre i { display: inline-block; width: calc(var(--n, 1) * 1ch); height: calc(var(--lh) * 1em); vertical-align: top; overflow: hidden; font-style: normal; white-space: pre; }
-.capture .tile { position: absolute; left: calc(var(--c) * 1ch); top: calc(var(--r) * var(--lh) * 1em); width: calc(var(--w) * 1ch); height: calc(var(--h) * var(--lh) * 1em); object-fit: cover; display: block; }
+/* terminal captures (LP7b): the screen as an SVG on kitty's cell grid (tools/site/ansi2html.py), scaled so --cols
+   cells fill the box; the padding is the terminal's own background, as in kitty. Pictures sit over their cells. */
+.capture .screen { container-type: inline-size; padding: 8px 10px 10px; background: #1e1e2e; }
+.capture .grid { position: relative; font-size: calc(100cqw / var(--cols) / 0.6125); line-height: 1; }
+.capture svg.cells { display: block; width: 100%; height: auto; }
+.capture .tile { position: absolute; left: calc(var(--c) / var(--cols) * 100%); top: calc(var(--r) / var(--rows) * 100%); width: calc(var(--w) / var(--cols) * 100%); height: calc(var(--h) / var(--rows) * 100%); object-fit: cover; display: block; }
+/* the shared screen on the huddle capture: Swan Lake, a few seconds a picture, a faint grain and scanlines (6 fps) */
+.capture .tv { overflow: hidden; background: #000; --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' seed='7'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23g)'/%3E%3C/svg%3E"); }
+.capture .tv img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0; animation: tv-swan 16s linear infinite; }
+.capture .tv img:nth-child(2) { animation-delay: -12s; }
+.capture .tv img:nth-child(3) { animation-delay: -8s; }
+.capture .tv img:nth-child(4) { animation-delay: -4s; }
+@keyframes tv-swan { 0%, 24.6% { opacity: 1; } 25%, 100% { opacity: 0; } }
+.capture .tv::before { content: ""; position: absolute; inset: 0; z-index: 1; pointer-events: none; background: repeating-linear-gradient(to bottom, rgba(0, 0, 0, .22) 0 1px, transparent 1px 3px); }
+.capture .tv::after { content: ""; position: absolute; inset: -40%; z-index: 2; pointer-events: none; background: var(--grain); background-size: 120px 120px; opacity: .16; mix-blend-mode: overlay; animation: tv-grain 1s steps(1, end) infinite; }
+@keyframes tv-grain { 0% { transform: translate(0, 0); } 16.7% { transform: translate(-9%, 5%); } 33.3% { transform: translate(6%, -7%); } 50% { transform: translate(-4%, -10%); } 66.7% { transform: translate(10%, 3%); } 83.3% { transform: translate(-7%, 9%); } 100% { transform: translate(0, 0); } }
+@media (prefers-reduced-motion: reduce) { .capture .tv img, .capture .tv::after { animation: none; } .capture .tv img:first-child { opacity: 1; } }
 
 /* captures zoom (js/zoom.js): a click, a tap, Enter or Space opens one enlarged; Esc or a click closes it.
    While it is open the page behind does not scroll. */
@@ -197,6 +207,7 @@ dialog.zoom .term { cursor: zoom-out; box-shadow: none; }
 
 #footer { position: relative; margin-top: 40px; padding: 34px 0 60px; border-top: 2px dashed #3a2a3b; display: flex; gap: 28px; align-items: center; font-size: 12.5px; color: var(--muted); }
 #footer p { margin: 0 0 6px; }
+#footer .credit { font-size: 11px; }
 .foot-sticker { flex: none; }
 
 @media (max-width: 759px) {

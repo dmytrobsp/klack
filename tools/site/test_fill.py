@@ -160,7 +160,7 @@ class FillTests(unittest.TestCase):
         for n in ("hero", "huddle", "signin", "keys", "ssh"):
             t = (ROOT / "site/captures" / f"{n}.html").read_text()
             self.assertTrue(t.startswith('<div class="term capture"'), n)
-            self.assertIn("<pre>", t)
+            self.assertIn('<svg class="cells"', t)
 
     def test_cli_failed_fetch_keeps_file(self):
         with tempfile.TemporaryDirectory() as d:
