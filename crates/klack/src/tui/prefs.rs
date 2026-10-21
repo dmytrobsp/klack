@@ -45,6 +45,7 @@ pub enum Field {
     Avatars,
     LargeAvatars,
     PreviewRefresh,
+    StatusRefresh,
     Graphics,
     EmojiAsNames,
     CustomEmojiPictures,
@@ -105,6 +106,7 @@ pub const ALONE_VOLUME: u32 = 40;
 const RING_TIMEOUTS: &[u32] = &[15, 30, 45, 60, 90, 120];
 /// Seconds between fetches of a previewed channel (0: off).
 const PREVIEW_REFRESH: &[u32] = &[0, 5, 10, 15, 30, 60, 120];
+const STATUS_REFRESH: &[u32] = &[0, 15, 30, 60, 120, 300];
 /// Days without a message before a conversation leaves the sidebar (0: never).
 const HIDE_INACTIVE: &[u32] = &[0, 1, 7, 14, 30, 60, 90];
 
@@ -120,7 +122,7 @@ const UNKNOWN_SCHEDULE: &str = "unknown to klack — change it in Slack";
 pub const CATEGORIES: &[(&str, &[Field])] = &[
     ("Availability", &[Field::Status, Field::Away, Field::Notifications, Field::Schedule]),
     ("Appearance", &[Field::Theme, Field::WorkspaceTheme, Field::Compact, Field::HideInactive]),
-    ("Messages & media", &[Field::InlineImages, Field::Avatars, Field::LargeAvatars, Field::PreviewRefresh, Field::Graphics, Field::EmojiAsNames, Field::CustomEmojiPictures, Field::SaveDir]),
+    ("Messages & media", &[Field::InlineImages, Field::Avatars, Field::LargeAvatars, Field::PreviewRefresh, Field::StatusRefresh, Field::Graphics, Field::EmojiAsNames, Field::CustomEmojiPictures, Field::SaveDir]),
     ("Language & region", &[Field::Clock24, Field::DateFormat, Field::TimeZone, Field::Language]),
     ("Notifications", &[Field::Desktop, Field::Sound, Field::ConversationLevel, Field::ChannelDefault, Field::Keywords, Field::Vips]),
     ("Audio & video", &[Field::Input, Field::Output, Field::HuddleVolume, Field::SoundVolume, Field::MicGain, Field::SpeakingThreshold, Field::NoiseSuppression, Field::EchoCancellation, Field::Camera]),
@@ -182,6 +184,7 @@ impl Field {
             Field::Avatars => "Show profile pictures",
             Field::LargeAvatars => "Two-row profile pictures",
             Field::PreviewRefresh => "Refresh previewed channels",
+            Field::StatusRefresh => "Refresh people's statuses",
             Field::Graphics => "Draw pictures with",
             Field::EmojiAsNames => "Show emoji as :names:",
             Field::CustomEmojiPictures => "Custom emoji as pictures",
@@ -256,6 +259,10 @@ impl Field {
             Field::Avatars => yes(s.messages.avatars),
             Field::LargeAvatars => yes(s.messages.large_avatars),
             Field::PreviewRefresh => match s.messages.preview_refresh_secs {
+                0 => "off".into(),
+                n => format!("every {n} s"),
+            },
+            Field::StatusRefresh => match s.messages.status_refresh_secs {
                 0 => "off".into(),
                 n => format!("every {n} s"),
             },
@@ -354,6 +361,7 @@ impl Field {
             Field::RingTimeout => s.huddle.ring_timeout_secs = step(RING_TIMEOUTS, s.huddle.ring_timeout_secs, up, wrap),
             Field::AloneSecs => s.huddle.alone_secs = step(ALONE_SECS, s.huddle.alone_secs, up, wrap),
             Field::PreviewRefresh => s.messages.preview_refresh_secs = step(PREVIEW_REFRESH, s.messages.preview_refresh_secs, up, wrap),
+            Field::StatusRefresh => s.messages.status_refresh_secs = step(STATUS_REFRESH, s.messages.status_refresh_secs, up, wrap),
             Field::HideInactive => s.appearance.hide_inactive_days = step(HIDE_INACTIVE, s.appearance.hide_inactive_days, up, wrap),
             Field::MicGain => a.mic_gain = step(GAINS, a.mic_gain, up, wrap),
             Field::SpeakingThreshold => a.speaking_threshold_db = step(THRESHOLDS, a.speaking_threshold_db, up, wrap),
@@ -394,7 +402,7 @@ impl Field {
             Field::InlineImages => s.messages.inline_images ^= true,
             Field::Avatars => s.messages.avatars ^= true,
             Field::LargeAvatars => s.messages.large_avatars ^= true,
-            Field::PreviewRefresh | Field::HideInactive => {
+            Field::PreviewRefresh | Field::StatusRefresh | Field::HideInactive => {
                 self.adjust(s, true, true);
             }
             Field::Graphics => {
@@ -583,7 +591,7 @@ fn recording_label(keys: &Keymap, seq: &[Key]) -> String {
 /// Category names and fixed labels, for translation templates.
 pub fn translatable() -> Vec<String> {
     let all = [
-        Field::Theme, Field::WorkspaceTheme, Field::Compact, Field::HideInactive, Field::InlineImages, Field::Avatars, Field::LargeAvatars, Field::PreviewRefresh, Field::Graphics, Field::EmojiAsNames, Field::CustomEmojiPictures, Field::SaveDir, Field::Clock24, Field::DateFormat, Field::TimeZone, Field::Language, Field::Desktop, Field::Sound,
+        Field::Theme, Field::WorkspaceTheme, Field::Compact, Field::HideInactive, Field::InlineImages, Field::Avatars, Field::LargeAvatars, Field::PreviewRefresh, Field::StatusRefresh, Field::Graphics, Field::EmojiAsNames, Field::CustomEmojiPictures, Field::SaveDir, Field::Clock24, Field::DateFormat, Field::TimeZone, Field::Language, Field::Desktop, Field::Sound,
         Field::ConversationLevel, Field::ChannelDefault, Field::Keywords, Field::Vips, Field::Status, Field::Away, Field::Notifications, Field::Schedule, Field::ScheduleHours, Field::Input, Field::Output,
         Field::HuddleVolume, Field::SoundVolume, Field::MicGain, Field::SpeakingThreshold, Field::NoiseSuppression, Field::EchoCancellation, Field::Camera, Field::JoinSound, Field::SomeoneJoined, Field::SomeoneLeft, Field::RingSound, Field::RingTimeout, Field::AutoDecline, Field::AloneSound, Field::AloneSecs,
     ];
@@ -1247,6 +1255,28 @@ mod tests {
         assert_eq!(fit("日本語のテキスト", 7, false), "日本語…", "wide characters count two cells");
         assert_eq!(fit("abc", 0, false), "");
         assert_eq!(fit("abcdef", 1, false), "…");
+    }
+
+    #[test]
+    fn status_refresh_steps() {
+        let mut s = Settings::default();
+        assert_eq!(s.messages.status_refresh_secs, 60, "a minute by default");
+        let ws = |s: &Settings| {
+            let mut ws = Workspace::default();
+            ws.settings = s.clone();
+            Field::StatusRefresh.value(&ws, None, &Default::default())
+        };
+        assert_eq!(ws(&s), "every 60 s");
+        let steps: Vec<u32> = (0..5)
+            .map(|_| {
+                Field::StatusRefresh.change(&mut s, &Default::default());
+                s.messages.status_refresh_secs
+            })
+            .collect();
+        assert_eq!(steps, [120, 300, 0, 15, 30], "on up, then round to off");
+        s.messages.status_refresh_secs = 0;
+        assert_eq!(ws(&s), "off");
+        assert!(CATEGORIES.iter().any(|c| c.0 == "Messages & media" && c.1.contains(&Field::StatusRefresh)));
     }
 
     #[test]

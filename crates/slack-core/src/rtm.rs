@@ -29,6 +29,27 @@ pub enum RtmCommand {
     Raw(Value),
     /// Subscribe to presence changes of these users.
     PresenceSub { users: Vec<String> },
+    /// Ask for `user_change` events of these users (at most [`USER_CHANGE_SUB_MAX`]), as the
+    /// web client does for the people it shows: Slack sends them only for people asked for.
+    UserChangeSub { users: Vec<String> },
+}
+
+/// The most users one `user_change` subscription names (the web client's limit).
+pub const USER_CHANGE_SUB_MAX: usize = 100;
+
+/// The websocket frame for a command, with request id `id`.
+fn frame(cmd: RtmCommand, id: u64) -> Value {
+    match cmd {
+        RtmCommand::Typing { channel, thread_ts: None } => json!({"id": id, "type": "typing", "channel": channel}),
+        // RTM's `typing` drops `thread_ts`; the web client's `user_typing` keeps it.
+        RtmCommand::Typing { channel, thread_ts: Some(ts) } => json!({"id": id, "type": "user_typing", "channel": channel, "thread_ts": ts}),
+        RtmCommand::Raw(mut v) => {
+            v["id"] = json!(id);
+            v
+        }
+        RtmCommand::PresenceSub { users } => json!({"id": id, "type": "presence_sub", "ids": users}),
+        RtmCommand::UserChangeSub { users } => json!({"id": id, "type": "subscription_update", "subtype": "user_change_subscribe_request", "ids": users}),
+    }
 }
 
 pub struct Rtm {
@@ -147,17 +168,7 @@ async fn run_once(client: &Client, ev_tx: &mpsc::UnboundedSender<RtmEvent>, cmd_
             cmd = cmd_rx.recv() => {
                 let Some(cmd) = cmd else { return Ok(()) };
                 next_id += 1;
-                let frame = match cmd {
-                    RtmCommand::Typing { channel, thread_ts: None } => json!({"id": next_id, "type": "typing", "channel": channel}),
-                    // RTM's `typing` drops `thread_ts`; the web client's `user_typing` keeps it.
-                    RtmCommand::Typing { channel, thread_ts: Some(ts) } => json!({"id": next_id, "type": "user_typing", "channel": channel, "thread_ts": ts}),
-                    RtmCommand::Raw(mut v) => {
-                        v["id"] = json!(next_id);
-                        v
-                    }
-                    RtmCommand::PresenceSub { users } => json!({"id": next_id, "type": "presence_sub", "ids": users}),
-                };
-                sink.send(WsMessage::Text(frame.to_string().into())).await?;
+                sink.send(WsMessage::Text(frame(cmd, next_id).to_string().into())).await?;
             }
         }
     }
@@ -166,6 +177,13 @@ async fn run_once(client: &Client, ev_tx: &mpsc::UnboundedSender<RtmEvent>, cmd_
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn user_change_subscription_frame() {
+        let f = frame(RtmCommand::UserChangeSub { users: vec!["U2".into(), "U3".into()] }, 7);
+        assert_eq!(f, json!({"id": 7, "type": "subscription_update", "subtype": "user_change_subscribe_request", "ids": ["U2", "U3"]}));
+        assert_eq!(frame(RtmCommand::PresenceSub { users: vec!["U2".into()] }, 8), json!({"id": 8, "type": "presence_sub", "ids": ["U2"]}));
+    }
 
     #[test]
     fn the_rtm_loop_stops_when_signed_out() {

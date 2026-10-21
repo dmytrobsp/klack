@@ -96,6 +96,9 @@ impl Timeline {
     }
 }
 
+/// The status text of someone in a huddle (through `tr`).
+pub const IN_A_HUDDLE: &str = "In a huddle";
+
 /// What a person's status shows next to their name.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Status {
@@ -432,7 +435,7 @@ impl Workspace {
         if !emoji.is_empty() && p.status_expiration.is_none_or(|t| t == 0 || t > now) {
             return Some(Status { emoji: emoji.to_string(), text: p.status_text.clone(), in_huddle: false });
         }
-        (p.huddle_state == "in_a_huddle" && p.huddle_state_expiration_ts > now).then(|| Status { emoji: "headphones".into(), text: "In a huddle".into(), in_huddle: true })
+        (p.huddle_state == "in_a_huddle" && p.huddle_state_expiration_ts > now).then(|| Status { emoji: "headphones".into(), text: super::i18n::tr(IN_A_HUDDLE).into_owned(), in_huddle: true })
     }
 
     /// A person's name for lists, with " (You)" for yourself.
@@ -441,20 +444,65 @@ impl Workspace {
         if id == self.self_id { format!("{name} (You)") } else { name }
     }
 
+    /// The people of a group DM besides you, by its name (mpdm-me--alice--bob-1 → Alice, Bob):
+    /// each one's name (display name where known) and id (when known).
+    pub fn mpim_people(&self, c: &Conversation) -> Vec<(String, Option<String>)> {
+        let me = self.users.get(&self.self_id).map(|u| u.name.as_str());
+        let core = c.name.trim_start_matches("mpdm-").trim_end_matches("-1");
+        core.split("--")
+            .filter(|h| Some(*h) != me)
+            .map(|h| match self.users.values().find(|u| u.name == h) {
+                Some(u) => (u.display().to_string(), Some(u.id.clone())),
+                None => (h.to_string(), None),
+            })
+            .collect()
+    }
+
+    /// The people whose profile changes klack asks Slack for (`user_change`): those of the DMs
+    /// and group DMs and the authors of loaded messages — not you, bots or Slackbot; sorted.
+    pub fn people_to_follow(&self) -> Vec<String> {
+        let mut ids: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for c in self.conversations.values().filter(|c| !c.is_archived) {
+            if c.is_im {
+                ids.extend(c.user.clone());
+            } else if c.is_mpim {
+                ids.extend(self.mpim_people(c).into_iter().filter_map(|(_, id)| id));
+            }
+        }
+        for t in self.timelines.values().chain(self.threads.values()) {
+            ids.extend(t.messages.iter().filter_map(|m| m.user.clone()));
+        }
+        ids.into_iter().filter(|id| self.is_person(id)).collect()
+    }
+
+    /// The people shown: those of `conversations` (DMs, group DMs) and the authors of the
+    /// `timelines` (timeline or thread keys) — not you, bots or Slackbot; sorted.
+    pub fn people_shown(&self, conversations: &[&str], timelines: &[&str]) -> Vec<String> {
+        let mut ids: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for c in conversations.iter().filter_map(|id| self.conversations.get(*id)) {
+            if c.is_im {
+                ids.extend(c.user.clone());
+            } else if c.is_mpim {
+                ids.extend(self.mpim_people(c).into_iter().filter_map(|(_, id)| id));
+            }
+        }
+        for t in timelines.iter().filter_map(|k| self.timelines.get(*k).or_else(|| self.threads.get(*k))) {
+            ids.extend(t.messages.iter().filter_map(|m| m.user.clone()));
+        }
+        ids.into_iter().filter(|id| self.is_person(id)).collect()
+    }
+
+    /// Someone else whose profile can change: not you, a bot, Slackbot or a deleted account.
+    fn is_person(&self, id: &str) -> bool {
+        id != self.self_id && id != "USLACKBOT" && (id.starts_with('U') || id.starts_with('W')) && self.users.get(id).is_none_or(|u| !u.is_bot && !u.deleted)
+    }
+
     /// Sidebar label for a conversation.
     pub fn conversation_label(&self, c: &Conversation) -> String {
         if c.is_im {
             c.user.as_deref().map(|u| self.person_label(u)).unwrap_or_else(|| c.id.clone())
         } else if c.is_mpim {
-            // mpdm-me--alice--bob-1 → Alice, Bob (without ourselves, display names where known)
-            let me = self.users.get(&self.self_id).map(|u| u.name.as_str());
-            let core = c.name.trim_start_matches("mpdm-").trim_end_matches("-1");
-            let names: Vec<String> = core
-                .split("--")
-                .filter(|h| Some(*h) != me)
-                .map(|h| self.users.values().find(|u| u.name == h).map(|u| u.display().to_string()).unwrap_or_else(|| h.to_string()))
-                .collect();
-            names.join(", ")
+            self.mpim_people(c).into_iter().map(|(name, _)| name).collect::<Vec<_>>().join(", ")
         } else {
             c.name.clone()
         }
@@ -883,6 +931,45 @@ mod tests {
         let ev = serde_json::json!({"type": "user_profile_changed", "user": {"id": "U2", "name": "bob", "profile": {"status_emoji": ":palm_tree:", "status_text": "Vacationing"}}});
         crate::tui::live::apply(&mut w, &ev, None);
         assert_eq!(w.status_of("U2", 600).map(|s| s.emoji), Some("palm_tree".into()));
+    }
+
+    #[test]
+    fn a_changed_profile_is_merged_into_the_user() {
+        let mut ws = Workspace::default();
+        let mut bob = User { id: "U2".into(), name: "bob".into(), real_name: Some("Bob Stone".into()), tz: Some("Europe/Kyiv".into()), ..Default::default() };
+        (bob.profile.real_name, bob.profile.display_name, bob.profile.image_48) = ("Bob Stone".into(), "bobby".into(), Some("https://avatars.slack-edge.com/b_48.png".into()));
+        ws.users.insert("U2".into(), bob);
+        // Only the id and the fields that changed.
+        let ev = serde_json::json!({"type": "user_profile_changed", "user": {"id": "U2", "profile": {"status_emoji": ":palm_tree:", "status_text": "Vacationing", "huddle_state": null}}});
+        crate::tui::live::apply(&mut ws, &ev, None);
+        let u = &ws.users["U2"];
+        assert_eq!((u.name.as_str(), u.real_name.as_deref(), u.tz.as_deref()), ("bob", Some("Bob Stone"), Some("Europe/Kyiv")), "the rest of the user stays");
+        assert_eq!((u.profile.display_name.as_str(), u.profile.real_name.as_str(), u.profile.image_48.as_deref()), ("bobby", "Bob Stone", Some("https://avatars.slack-edge.com/b_48.png")));
+        assert_eq!((u.profile.status_emoji.as_str(), u.profile.status_text.as_str()), (":palm_tree:", "Vacationing"));
+        // Someone not known yet: taken as they come.
+        crate::tui::live::apply(&mut ws, &serde_json::json!({"type": "user_profile_changed", "user": {"id": "U3", "name": "cy", "profile": {"status_emoji": ":x:"}}}), None);
+        assert_eq!(ws.users["U3"].profile.status_emoji, ":x:");
+    }
+
+    #[test]
+    fn the_people_to_follow() {
+        let mut ws = Workspace { self_id: "UME".into(), ..Default::default() };
+        for (id, name, bot) in [("UME", "me", false), ("U2", "bob", false), ("U3", "cy", false), ("U4", "dee", false), ("U5", "eve", false), ("UB", "deploybot", true)] {
+            ws.users.insert(id.into(), User { id: id.into(), name: name.into(), is_bot: bot, ..Default::default() });
+        }
+        ws.conversations.insert("D1".into(), Conversation { id: "D1".into(), is_im: true, user: Some("U2".into()), ..Default::default() });
+        ws.conversations.insert("D2".into(), Conversation { id: "D2".into(), is_im: true, user: Some("USLACKBOT".into()), ..Default::default() });
+        ws.conversations.insert("G1".into(), Conversation { id: "G1".into(), is_mpim: true, name: "mpdm-me--cy--dee-1".into(), ..Default::default() });
+        let mut t = Timeline::default();
+        for (ts, user) in [("1.0", "U5"), ("2.0", "UB"), ("3.0", "UME"), ("4.0", "U5")] {
+            t.upsert(Message { ts: ts.into(), user: Some(user.into()), ..Default::default() });
+        }
+        ws.timelines.insert("C1".into(), t);
+        assert_eq!(ws.people_to_follow(), ["U2", "U3", "U4", "U5"], "DM people, group DM people, message authors; not you, bots or Slackbot");
+        // Shown: the people of the listed conversations and the authors of the open timelines.
+        ws.timelines.insert("C2".into(), Timeline::default());
+        assert_eq!(ws.people_shown(&["G1", "D2"], &["C2"]), ["U3", "U4"]);
+        assert_eq!(ws.people_shown(&["D1"], &["C1", "C9"]), ["U2", "U5"]);
     }
 
     #[test]

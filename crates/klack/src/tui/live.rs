@@ -307,6 +307,19 @@ pub fn apply(ws: &mut Workspace, ev: &Value, current: Option<&str>) -> Effects {
                 fx.rebuild_sidebar = true;
             }
         }
+        // Only the profile (maybe only its changed fields): merged into the person's, the rest kept.
+        "user_profile_changed" if ev["user"]["id"].as_str().is_some_and(|id| ws.users.contains_key(id)) => {
+            let id = ev["user"]["id"].as_str().unwrap_or_default().to_string();
+            if let (Some(u), Some(changed)) = (ws.users.get_mut(&id), ev["user"]["profile"].as_object()) {
+                let mut profile = serde_json::to_value(&u.profile).unwrap_or_default();
+                if let Some(p) = profile.as_object_mut() {
+                    p.extend(changed.iter().map(|(k, v)| (k.clone(), v.clone())));
+                }
+                if let Ok(p) = serde_json::from_value(profile) {
+                    u.profile = p;
+                }
+            }
+        }
         "user_change" | "team_join" | "user_profile_changed" => {
             if let Ok(u) = serde_json::from_value::<User>(ev["user"].clone()) {
                 // Your own zone is the schedule's.

@@ -83,12 +83,15 @@ the shown one marked by an accent bar and the others with unread messages by a t
 one, and below such a tile `@3` for three unread DMs or mentions there; a click on a tile switches, like Alt+1…9.
 
 **Statuses.** A person's status emoji stands right after their name — in the sidebar's direct messages
-(a long name is shortened to keep it) and on their messages (a custom emoji as its picture where the
-terminal draws pictures) — and a DM's title adds the text ("Name — 🌴 Vacationing"); hovering their DM in
-the sidebar shows it in the status line. Someone in a huddle without a status emoji of their own shows 🎧
-("In a huddle"). An expired status is gone at once, without waiting for Slack. Statuses come with the
-people at start and with profile-change events; Slack does not push every change to klack's connection,
-so one set later may only show after a restart.
+(a long name is shortened to keep it), after each person's name in a group DM while there is room (the
+last ones' go first), and on their messages (a custom emoji as its picture where the terminal draws
+pictures) — and a DM's title adds the text ("Name — 🌴 Vacationing"); hovering their DM in the sidebar
+shows it in the status line. Someone in a huddle without a status emoji of their own shows 🎧 ("In a
+huddle"). An expired status is gone at once, without waiting for Slack. klack asks Slack for the profile
+changes of the people it shows, as Slack's own client does, but Slack does not send them to klack's
+connection, so the people shown (the sidebar's DMs and group DMs, the authors in the open conversation and
+thread, up to 50) are looked up again every minute: F6 → Messages & media → Refresh people's statuses
+(`[messages] status_refresh_secs`, 0 = off).
 
 ## Signing in
 

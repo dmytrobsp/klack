@@ -32,6 +32,8 @@ enum Net {
     NotificationClicked(super::notify::Target),
     /// A person looked up with `users.info`.
     UserInfo(User),
+    /// The people shown, looked up again for their statuses (`status_refresh_secs`).
+    Profiles(Vec<User>),
     /// Public channels, including those we are not in.
     Channels(Vec<slack_core::types::Conversation>),
     /// `users.channelSections.list`.
@@ -172,6 +174,9 @@ struct App {
     call: Option<super::call::Call>,
     /// Presence subscription sent on the current RTM connection.
     presence_subscribed: bool,
+    /// People whose `user_change` events were asked for on the current RTM connection, and
+    /// when the list was last checked for new ones.
+    followed: (std::collections::HashSet<String>, Option<std::time::Instant>),
     /// Open conversation details (␣cd).
     details: Option<super::details::Details>,
     /// Open profile card.
@@ -200,6 +205,9 @@ struct App {
     threads: Option<super::threads::Threads>,
     /// When the previewed channel was last fetched again.
     preview_polled: Option<std::time::Instant>,
+    /// When the people shown were last looked up for their statuses, and whether a lookup is
+    /// under way.
+    statuses_polled: (Option<std::time::Instant>, bool),
     /// Open "move to section" picker.
     mover: Option<super::sections::MovePicker>,
     /// Join the huddle of the DM with this person once it is open.
@@ -458,6 +466,47 @@ impl App {
                 }
                 Err(e) => tracing::debug!("refreshing the previewed channel: {e}"),
             }
+        });
+    }
+
+    /// Slack does not push people's status changes to klack's connection: look the people shown
+    /// (the sidebar's DMs and group DMs, the authors of the open conversation and thread) up
+    /// again every `status_refresh_secs` — the first time a full interval after start.
+    fn refresh_statuses(&mut self) {
+        let secs = self.ws.settings.messages.status_refresh_secs;
+        if secs == 0 || !self.connected || self.ws.users.is_empty() || self.statuses_polled.1 {
+            return;
+        }
+        match self.statuses_polled.0 {
+            Some(at) if at.elapsed() < Duration::from_secs(secs as u64) => return,
+            None => {
+                self.statuses_polled.0 = Some(std::time::Instant::now());
+                return;
+            }
+            Some(_) => self.statuses_polled.0 = Some(std::time::Instant::now()),
+        }
+        let conversations: Vec<&str> = self.sidebar.items.iter().filter_map(|i| match i {
+            super::sidebar::Item::Conversation(id) => Some(id.as_str()),
+            _ => None,
+        }).collect();
+        let thread = self.thread.as_ref().map(|(c, ts)| super::state::thread_key(c, ts));
+        let timelines: Vec<&str> = self.current.as_deref().into_iter().chain(thread.as_deref()).collect();
+        let people: Vec<String> = self.ws.people_shown(&conversations, &timelines).into_iter().take(STATUS_REFRESH_MAX).collect();
+        if people.is_empty() {
+            return;
+        }
+        self.statuses_polled.1 = true;
+        let (client, tx) = (self.client.clone(), self.net.clone());
+        tokio::spawn(async move {
+            // One after another: a gentle pace for Slack.
+            let mut users = Vec::new();
+            for id in people {
+                match client.user_info(&id).await {
+                    Ok(u) => users.push(u),
+                    Err(e) => tracing::debug!("refreshing a status: {e}"),
+                }
+            }
+            let _ = tx.send(Net::Profiles(users));
         });
     }
 
@@ -1821,6 +1870,25 @@ impl App {
         let users: Vec<String> = self.ws.users.values().filter(|u| !u.deleted && !u.is_bot && u.id != "USLACKBOT").map(|u| u.id.clone()).take(500).collect();
         if self.rtm_commands.send(slack_core::rtm::RtmCommand::PresenceSub { users }).is_ok() {
             self.presence_subscribed = true;
+        }
+    }
+
+    /// Ask Slack for the profile changes (statuses, huddle state) of the people shown — DMs, group
+    /// DMs, message authors — as the web client does (it gets `user_change` only for people it
+    /// asked for). Slack acknowledges it on klack's connection but no event was seen there yet,
+    /// hence also [`Self::refresh_statuses`]. New people are added every couple of seconds, in
+    /// batches of Slack's limit.
+    fn follow_profiles(&mut self, now: std::time::Instant) {
+        if !self.connected || self.ws.users.is_empty() || self.followed.1.is_some_and(|t| now.duration_since(t) < FOLLOW_EVERY) {
+            return;
+        }
+        self.followed.1 = Some(now);
+        let new: Vec<String> = self.ws.people_to_follow().into_iter().filter(|id| !self.followed.0.contains(id)).collect();
+        for chunk in new.chunks(slack_core::rtm::USER_CHANGE_SUB_MAX) {
+            if self.rtm_commands.send(slack_core::rtm::RtmCommand::UserChangeSub { users: chunk.to_vec() }).is_err() {
+                return;
+            }
+            self.followed.0.extend(chunk.iter().cloned());
         }
     }
 
@@ -3231,6 +3299,10 @@ struct Ring {
 
 /// How often the ring sound repeats.
 const RING_EVERY: Duration = Duration::from_millis(2500);
+/// The most people one status refresh looks up.
+const STATUS_REFRESH_MAX: usize = 50;
+/// How often the people shown are checked for ones whose profile changes are not asked for yet.
+const FOLLOW_EVERY: Duration = Duration::from_secs(2);
 
 /// "uploading a.mp4… 42% (3.1 of 7.4 MB)"; once all is sent, Slack still has to file it.
 /// Now in epoch seconds, for `App::seen` (Slack's clock, not a debug offset).
@@ -3647,6 +3719,7 @@ async fn run_workspace(
         save: None,
         threads: None,
         preview_polled: None,
+        statuses_polled: (None, false),
         prefs: None,
         huddle_view: None,
         parked_huddle: None,
@@ -3660,6 +3733,7 @@ async fn run_workspace(
         rejoined: false,
         autosave: (None, None, std::time::Instant::now(), true),
         presence_subscribed: false,
+        followed: Default::default(),
         call: None,
         pending_hit: None,
         ringing: None,
@@ -3718,6 +3792,7 @@ async fn run_workspace(
     let mut call_tick = tokio::time::interval(Duration::from_millis(100));
     loop {
         app.expire_status(std::time::Instant::now());
+        app.follow_profiles(std::time::Instant::now());
         app.ring_tick();
         app.sync_which_key(std::time::Instant::now());
         app.sync_recording(std::time::Instant::now());
@@ -3822,6 +3897,7 @@ async fn run_workspace(
         }
         app.mark_thread_read();
         app.refresh_preview();
+        app.refresh_statuses();
     }
     app.save_drafts();
     let App { switch_to, media, clipboard, .. } = app;
@@ -4843,6 +4919,9 @@ fn handle_rtm(app: &mut App, ev: slack_core::rtm::RtmEvent) {
             app.connected = true;
             app.presence_subscribed = false;
             app.subscribe_presence();
+            // A new connection knows of no subscription.
+            app.followed = Default::default();
+            app.follow_profiles(std::time::Instant::now());
         }
         RtmEvent::Disconnected(reason) => {
             app.connected = false;
@@ -4980,6 +5059,13 @@ fn handle_net(app: &mut App, msg: Net) {
         }
         Net::UserInfo(u) => {
             app.ws.users.insert(u.id.clone(), u);
+            app.sidebar.rebuild(&app.ws);
+        }
+        Net::Profiles(users) => {
+            app.statuses_polled.1 = false;
+            for u in users {
+                app.ws.users.insert(u.id.clone(), u);
+            }
             app.sidebar.rebuild(&app.ws);
         }
         Net::Sections(v) => {

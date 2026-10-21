@@ -216,6 +216,10 @@ fn build(field: Field, _ws: &Workspace, keys: &Keymap, tr: &dyn Fn(&'static str)
             b.text("A channel you only preview (you haven't joined it) gets no live events, so it is fetched again this often.").blank();
             b.step("off, or every 5, 10, 15, 30, 60 or 120 seconds");
         }
+        Field::StatusRefresh => {
+            b.text("Slack does not send klack people's status changes, so the people shown — the direct messages and group DMs in the sidebar, the authors in the open conversation and thread — are looked up again this often. An expired status goes at once either way.").blank();
+            b.step("off, or every 15, 30, 60, 120 or 300 seconds");
+        }
         Field::Graphics => {
             graphics_values(&mut b, super::media::drawable());
             b.change("the next way");

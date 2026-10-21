@@ -436,9 +436,12 @@ fn conversation_line(ws: &Workspace, id: &str, selected: bool, draft: bool, widt
     let label = ws.conversation_label(c);
     let draft = if draft { " ✎" } else { "" };
     // A person's status emoji right after their name (re-checked against the clock every draw).
-    let status = c.user.as_deref().filter(|_| c.is_im).and_then(|u| ws.status_of(u, chrono::Utc::now().timestamp())).map(|s| format!(" {}", super::text::emoji(ws, &s.emoji, None))).unwrap_or_default();
+    let now = chrono::Utc::now().timestamp();
+    let status_of = |u: &str| ws.status_of(u, now).map(|s| format!(" {}", super::text::emoji(ws, &s.emoji, None)));
+    let status = c.user.as_deref().filter(|_| c.is_im).and_then(status_of).unwrap_or_default();
     let status_w = unicode_width::UnicodeWidthStr::width(status.as_str());
     let room = width.saturating_sub(3 + badge.chars().count() + huddle.chars().count() + preview.chars().count() + draft.chars().count() + status_w + 1);
+    let label = if c.is_mpim { group_label(&ws.mpim_people(c), &status_of, room).unwrap_or(label) } else { label };
     let label: String = if label.chars().count() > room { label.chars().take(room.saturating_sub(1)).chain(['…']).collect() } else { label };
     let mut spans = vec![unread_mark(fresh), sigil, Span::styled(label, name_style)];
     if !status.is_empty() {
@@ -461,6 +464,14 @@ fn conversation_line(ws: &Workspace, id: &str, selected: bool, draft: bool, widt
         line = line.style(Style::default().bg(super::theme::p().selection));
     }
     line
+}
+
+/// A group DM's label with each person's status emoji after their name, as many as fit in
+/// `room` (dropped from the last person on); None when none has one or none fits.
+fn group_label(people: &[(String, Option<String>)], status_of: &dyn Fn(&str) -> Option<String>, room: usize) -> Option<String> {
+    let emoji: Vec<String> = people.iter().map(|(_, id)| id.as_deref().and_then(status_of).unwrap_or_default()).collect();
+    let with = emoji.iter().rposition(|e| !e.is_empty())?;
+    (0..=with).rev().map(|upto| people.iter().zip(&emoji).enumerate().map(|(n, ((name, _), e))| if n <= upto { format!("{name}{e}") } else { name.clone() }).collect::<Vec<_>>().join(", ")).find(|l| unicode_width::UnicodeWidthStr::width(l.as_str()) <= room)
 }
 
 #[cfg(test)]
@@ -595,6 +606,25 @@ mod tests {
         let general = s.items.iter().position(|i| *i == Item::Conversation("C1".into())).unwrap();
         assert_eq!(s.status_note(&w, dm, 0).as_deref(), Some("Bartholomew Longname-Smithson — 🌴 Vacationing"));
         assert_eq!(s.status_note(&w, general, 0), None);
+    }
+
+    #[test]
+    fn group_dm_row_shows_each_status_emoji() {
+        let mut w = ws();
+        w.self_id = "UME".into();
+        w.conversations.insert("G1".into(), Conversation { id: "G1".into(), name: "mpdm-me--cy--dee-1".into(), is_mpim: true, is_member: true, ..Default::default() });
+        for (id, name, emoji) in [("UME", "me", ""), ("U3", "cy", ":palm_tree:"), ("U4", "dee", ":house:")] {
+            let mut u = slack_core::types::User { id: id.into(), name: name.into(), ..Default::default() };
+            u.profile.status_emoji = emoji.into();
+            w.users.insert(id.into(), u);
+        }
+        let text = |l: Line| l.spans.iter().map(|s| s.content.to_string()).collect::<String>();
+        assert_eq!(text(conversation_line(&w, "G1", false, false, 30)), " ◎ cy 🌴, dee 🏠", "each person's emoji after their name");
+        // Short of room: the emoji go from the end first, then the names are cut.
+        assert_eq!(text(conversation_line(&w, "G1", false, false, 16)), " ◎ cy 🌴, dee");
+        assert_eq!(text(conversation_line(&w, "G1", false, false, 12)), " ◎ cy, dee");
+        let narrow = text(conversation_line(&w, "G1", false, false, 9));
+        assert!(narrow.ends_with('…') && !narrow.contains('🌴'), "{narrow:?}");
     }
 
     #[test]
