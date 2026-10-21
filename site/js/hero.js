@@ -225,35 +225,40 @@ function draw(el, p, flicker) {
 }
 
 /**
- * Run the loop in the headline's SVG layer. Under reduced motion: draw the hanging scrap once, start nothing.
+ * Run the loop in the headline's SVG layer. It starts at 0 s whenever it first starts (however slow the load).
+ * Under reduced motion: the hanging scrap, drawn once, and no timer — and the page follows the setting when it
+ * changes (switching to reduce stops the loop on the hanging pose; switching back resumes it).
  * Otherwise one setTimeout chain at 1000 / FPS, paused while the headline is off screen or the tab is hidden.
+ * Options (for tests): `media` (a MediaQueryList), `reduced` (overrides its first value), `now` (ms clock).
  */
-export function startHero(svg, { reduced = matchMedia('(prefers-reduced-motion: reduce)').matches } = {}) {
+export function startHero(svg, {
+  media = typeof matchMedia === 'function' ? matchMedia('(prefers-reduced-motion: reduce)') : null,
+  reduced = media ? media.matches : false,
+  now = () => performance.now(),
+} = {}) {
   const doc = svg.ownerDocument, $ = id => doc.getElementById('hero-' + id);
   const el = {
     cloth: $('cloth'), clip: $('clip'), print: $('print'), tape: $('tape'), hand: $('hand'), slap: $('slap'),
     neon: $('neon'), roll: $('roll'), rollbody: $('rollbody'), rl1: $('rl1'), rl2: $('rl2'),
     folds: [...$('folds').children],
   };
-  if (reduced) {
-    draw(el, HANG_POSE, false);
-    return { stop() {} };
-  }
-  // the loop runs on the document's clock (0 = navigation start) until it is first paused
-  const now = () => performance.now();
-  let t0 = 0, heldAt = null, timer = null, onScreen = true, stopped = false;
-  const running = () => !stopped && onScreen && !doc.hidden;
+  // heldAt: the stage time to go on from when the loop (re)starts — 0 the first time
+  let t0 = 0, heldAt = 0, timer = null, onScreen = true, stopped = false, hanging = false;
+  const running = () => !stopped && !reduced && onScreen && !doc.hidden;
   function tick() {
     const t = quantize((now() - t0) / 1000, FPS);
     draw(el, pose(t, (Math.random() - .5) * 1.5), true);
     timer = setTimeout(tick, 1000 / FPS);
   }
   function update() {
-    if (running() && timer === null) { if (heldAt !== null) t0 = now() - heldAt * 1000; tick(); }
+    if (running() && timer === null) { hanging = false; t0 = now() - heldAt * 1000; tick(); }
     else if (!running() && timer !== null) { clearTimeout(timer); timer = null; heldAt = wrap((now() - t0) / 1000); }
+    if (reduced && !hanging && !stopped) { draw(el, HANG_POSE, false); hanging = true; }
   }
   const onVis = () => update();
+  const onMotion = e => { reduced = e.matches; update(); };
   doc.addEventListener('visibilitychange', onVis);
+  if (media) media.addEventListener ? media.addEventListener('change', onMotion) : media.addListener(onMotion);
   let io = null;
   if (typeof IntersectionObserver === 'function') {
     io = new IntersectionObserver(es => { onScreen = es[es.length - 1].isIntersecting; update(); });
@@ -264,6 +269,7 @@ export function startHero(svg, { reduced = matchMedia('(prefers-reduced-motion: 
     stop() {
       stopped = true; update();
       doc.removeEventListener('visibilitychange', onVis);
+      if (media) media.removeEventListener ? media.removeEventListener('change', onMotion) : media.removeListener(onMotion);
       if (io) io.disconnect();
     },
   };

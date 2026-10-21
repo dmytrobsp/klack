@@ -159,3 +159,96 @@ test('without JavaScript the page already shows the scrap flat over the word', (
   assert.ok(html.includes(`id="hero-cloth" d="${d}"`), 'the cloth is drawn in the markup');
   assert.ok(html.includes(`id="hero-clip" d="${d}"`), 'and so is its clip');
 });
+
+// a fake timer world: setTimeout/clearTimeout/IntersectionObserver/Math.random swapped for the test's own
+function timers() {
+  const real = { st: globalThis.setTimeout, ct: globalThis.clearTimeout, io: globalThis.IntersectionObserver, rnd: Math.random };
+  const pending = new Map(); let next = 1;
+  const w = { pending, observer: null };
+  globalThis.setTimeout = fn => { pending.set(next, fn); return next++; };
+  globalThis.clearTimeout = id => { pending.delete(id); };
+  globalThis.IntersectionObserver = class { constructor(cb) { w.observer = this; this.cb = cb; } observe() {} disconnect() { this.off = true; } };
+  Math.random = () => .5;   // no jitter, no flicker: frames are exact
+  w.fire = () => { const [[id, fn]] = pending; pending.delete(id); fn(); };
+  w.restore = () => { globalThis.setTimeout = real.st; globalThis.clearTimeout = real.ct; globalThis.IntersectionObserver = real.io; Math.random = real.rnd; };
+  return w;
+}
+const fakeMedia = matches => ({
+  matches, fn: null,
+  addEventListener(type, fn) { assert.equal(type, 'change'); this.fn = fn; },
+  removeEventListener(type, fn) { if (this.fn === fn) this.fn = null; },
+  flip(m) { this.matches = m; this.fn({ matches: m }); },
+});
+
+test('the loop starts at 0 s when it first starts, however late the page got there', () => {
+  const { svg, els } = fakeDom(), w = timers();
+  let clock = 9876;   // the document clock says 9.876 s (1.876 s into a loop: mid-peel)
+  try {
+    const h = startHero(svg, { reduced: false, now: () => clock });
+    assert.equal(els.get('hero-cloth').attrs.d, scrapPath(pose(0)), 'the first frame is 0 s');
+    clock += 4250; w.fire();
+    assert.equal(els.get('hero-cloth').attrs.d, scrapPath(pose(quantize(4.25, FPS))), '4.25 s later: 4.25 s in');
+    // off screen for a minute: it goes on from where it was, not from the clock
+    w.observer.cb([{ isIntersecting: false }]);
+    clock += 60000;
+    w.observer.cb([{ isIntersecting: true }]);
+    assert.equal(els.get('hero-cloth').attrs.d, scrapPath(pose(quantize(4.25, FPS))));
+    h.stop();
+  } finally { w.restore(); }
+});
+
+test('reduced motion follows the setting: switching to reduce hangs the scrap and stops, switching back resumes', () => {
+  const { svg, els } = fakeDom(), w = timers(), media = fakeMedia(false);
+  let clock = 0;
+  try {
+    const h = startHero(svg, { media, now: () => clock });
+    assert.equal(w.pending.size, 1, 'moving');
+    clock += 2000; w.fire();
+    media.flip(true);
+    assert.equal(w.pending.size, 0, 'reduce: no timer');
+    assert.equal(els.get('hero-cloth').attrs.d, scrapPath(HANG_POSE), 'reduce: the hanging pose');
+    assert.equal(els.get('hero-hand').style.opacity, '0');
+    w.observer.cb([{ isIntersecting: false }]); w.observer.cb([{ isIntersecting: true }]);
+    assert.equal(w.pending.size, 0, 'scrolling back does not restart it under reduce');
+    clock += 30000;
+    media.flip(false);
+    assert.equal(w.pending.size, 1, 'back: moving again');
+    assert.equal(els.get('hero-cloth').attrs.d, scrapPath(pose(2)), '…from where it stopped');
+    h.stop();
+    assert.equal(w.pending.size, 0);
+    assert.equal(media.fn, null, 'the listener is removed');
+  } finally { w.restore(); }
+});
+
+test('starting under reduced motion: hangs, and moves (from 0 s) once the setting is switched off', () => {
+  const { svg, els } = fakeDom(), w = timers(), media = fakeMedia(true);
+  try {
+    const h = startHero(svg, { media, now: () => 12345 });
+    assert.equal(w.pending.size, 0);
+    assert.equal(els.get('hero-cloth').attrs.d, scrapPath(HANG_POSE));
+    media.flip(false);
+    assert.equal(w.pending.size, 1);
+    assert.equal(els.get('hero-cloth').attrs.d, scrapPath(pose(0)));
+    h.stop();
+  } finally { w.restore(); }
+});
+
+test('the hanging scrap never covers the pitch under it', () => {
+  // the pitch block's box on the stage, from the stylesheet
+  const css = readFileSync(new URL('../../site/css/site.css', import.meta.url), 'utf8');
+  const rule = css.match(/\.stage \.sub \{([^}]*)\}/)[1];
+  const px = k => Number(rule.match(new RegExp(`(?:^|[;\\s])${k}:\\s*(\\d+)px`))[1]);
+  const left = px('left'), top = px('top'), width = px('width');
+  const SHADOW = 3;
+  // from the fall to the catch, with the drawing's jitter either way
+  for (let f = 3 * FPS; f <= 5.3 * FPS; f++) {
+    for (const j of [-.75, 0, .75]) {
+      const nums = scrapPath(pose(f / FPS, j)).match(/-?\d+(\.\d+)?/g).map(Number);
+      for (let i = 0; i < nums.length; i += 2) {
+        const [x, y] = [nums[i], nums[i + 1]];
+        if (x + SHADOW >= left && x <= left + width)
+          assert.ok(y + SHADOW < top, `at ${(f / FPS).toFixed(2)} s the scrap reaches y=${y} over the pitch (top ${top})`);
+      }
+    }
+  }
+});
