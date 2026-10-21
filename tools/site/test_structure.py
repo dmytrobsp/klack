@@ -128,7 +128,22 @@ class Structure(unittest.TestCase):
             self.assertTrue(a["url"].startswith(OWN + "/releases/download/v0.8.0/"))
             self.assertIsInstance(a["size"], int)
         self.assertTrue(r["sums_url"].endswith("/SHA256SUMS"))
-        self.assertEqual(json.loads((SITE / "data" / "numbers.json").read_text()), {"rows": []})
+
+    def test_numbers_json(self):
+        n = json.loads((SITE / "data" / "numbers.json").read_text())
+        for key in ("measured_on", "machine", "versions", "rows"):
+            self.assertIn(key, n)
+        self.assertEqual(n["versions"]["klack"], "0.8.0")
+        ids = [r["id"] for r in n["rows"]]
+        for want in ("download", "disk", "ram_rest", "ram_busy", "cpu_idle", "startup", "cpu_share", "ram_share"):
+            self.assertIn(want, ids)
+        self.assertEqual(len(ids), len(set(ids)))
+        for r in n["rows"]:
+            self.assertIn(r["unit"], ("bytes", "kB", "percent", "seconds"))
+            self.assertIsInstance(r["label"], str)
+            for side in ("klack", "slack"):
+                self.assertIsInstance(r[side], (int, float))
+                self.assertGreaterEqual(r[side], 0)
 
 
 if __name__ == "__main__":
