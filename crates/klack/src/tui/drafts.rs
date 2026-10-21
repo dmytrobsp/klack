@@ -9,8 +9,29 @@ use super::composer::Draft;
 
 pub type Drafts = HashMap<String, Draft>;
 
+/// klack's local data folder (drafts, the sidebar's folds). In tests a temporary folder of the
+/// test's own thread, removed when the test ends (even when it fails), never the real one.
+pub fn data_dir() -> Option<PathBuf> {
+    #[cfg(not(test))]
+    return slack_core::session::project_dirs().map(|d| d.data_local_dir().to_path_buf());
+    #[cfg(test)]
+    {
+        struct Scratch(PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        thread_local!(static DIR: Scratch = {
+            static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+            Scratch(std::env::temp_dir().join(format!("klack-test-data-{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed))))
+        });
+        Some(DIR.with(|d| d.0.clone()))
+    }
+}
+
 fn path(team: &str, user: &str) -> Option<PathBuf> {
-    slack_core::session::project_dirs().map(|d| d.data_local_dir().join("drafts").join(format!("{team}-{user}.json")))
+    data_dir().map(|d| d.join("drafts").join(format!("{team}-{user}.json")))
 }
 
 /// The saved drafts (none when there is no file; a broken file is reported and ignored).
@@ -68,5 +89,20 @@ mod tests {
         c.restore(d);
         assert_eq!(c.cursor(), 2);
         assert!(parse("not json").is_err());
+    }
+
+    #[test]
+    fn tests_keep_drafts_out_of_the_real_data_folder() {
+        let mut c = super::super::composer::Composer::default();
+        c.set("kept");
+        let mut drafts = Drafts::new();
+        drafts.insert("D1".into(), c.take_draft().unwrap());
+        save("T0", "U0", &drafts);
+        let at = path("T0", "U0").unwrap();
+        assert!(at.exists() && at.starts_with(std::env::temp_dir()), "{at:?}");
+        assert_eq!(load("T0", "U0"), drafts);
+        if let Some(real) = slack_core::session::project_dirs() {
+            assert!(!at.starts_with(real.data_local_dir()));
+        }
     }
 }

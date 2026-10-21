@@ -292,6 +292,11 @@ impl Call {
         Ok(format!("camera on: {}", info.name))
     }
 
+    /// The form of `rooms.leave` for this call, as the web client sends it.
+    pub fn leave_request(&self) -> Vec<(&'static str, String)> {
+        vec![("channel_id", self.channel.clone()), ("call_id", self.creds.room_id.clone()), ("attendee_id", self.self_attendee.clone()), ("reason", "user_initiated".into())]
+    }
+
     pub fn leave(&mut self) {
         self.leaving = true;
         self.mic = None;

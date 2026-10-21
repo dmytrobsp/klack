@@ -83,9 +83,8 @@ the shown one marked by an accent bar and the others with unread messages by a t
 one, and below such a tile `@3` for three unread DMs or mentions there; a click on a tile switches, like Alt+1…9.
 
 **Statuses.** A person's status emoji stands right after their name — in the sidebar's direct messages (a
-long name is shortened to keep it), after each person's name in a group DM while there is room (the last
-ones' go first; in the sidebar a custom emoji, or any with emoji shown as names, is a dim ◆), and on their
-messages (a custom emoji as its picture where the terminal draws pictures) — and a DM's title adds the
+long name is shortened to keep it; group DMs show none, neither on their rows nor in a hover note; a
+custom emoji, or any with emoji shown as names, is a dim ◆), and on their messages (a custom emoji as its picture where the terminal draws pictures) — and a DM's title adds the
 text ("Name — 🌴 Vacationing"); hovering their DM in the sidebar shows it in the status line. Someone in a
 huddle without a status emoji of their own shows 🎧 ("In a huddle"; not on a sidebar row that shows the
 huddle already). An expired status is gone at once, without waiting for Slack. klack asks Slack for the
@@ -338,7 +337,7 @@ beats the default.
 joins) a huddle in that message's thread; you join **muted**, and the
 microphone is only opened while you are unmuted (`␣hm`). While you are in a huddle, others see you
 "In a huddle" (🎧 when you have no status emoji) as with Slack's own app: Slack sets it when you join and
-clears it when you leave, and klack renews it every ~4 minutes, as Slack's app does — only when your Slack
+clears it when you leave (leaving, or quitting klack in a huddle, also tells Slack with `rooms.leave`, as its own client does, so the huddle's list drops you at once), and klack renews it every ~4 minutes, as Slack's app does — only when your Slack
 preference for it (`huddles_set_status`) is on, and never touching your status. The call bar at the bottom shows that you are
 still in the huddle — where, how many are there, your microphone (🎙 live with your level, or 🔇
 muted), your camera and a screen share — and the picture and name of whoever is talking, or talked

@@ -2310,6 +2310,15 @@ impl App {
     /// Join (or start) the huddle of the current conversation, or leave the one we are in.
     fn toggle_huddle(&mut self) {
         if let Some(call) = self.call.as_mut() {
+            // Slack is told too (the session ending alone does not), once; a failure is benign.
+            if !call.leaving {
+                let (client, params) = (self.client.clone(), call.leave_request());
+                tokio::spawn(async move {
+                    if let Err(e) = client.call_raw("rooms.leave", &params).await {
+                        tracing::info!("rooms.leave: {e}");
+                    }
+                });
+            }
             call.leave();
             self.status = "leaving the huddle…".into();
             return;
@@ -4337,6 +4346,12 @@ async fn run_workspace(
         app.feed_tick(std::time::Instant::now());
         app.refresh_preview();
         app.refresh_statuses();
+    }
+    // Quitting in a huddle: tell Slack we left (best effort, not holding the quit for long).
+    if let Some(call) = app.call.as_mut().filter(|c| !c.leaving) {
+        call.leave();
+        let params = call.leave_request();
+        let _ = tokio::time::timeout(Duration::from_secs(1), app.client.call_raw("rooms.leave", &params)).await;
     }
     app.save_drafts();
     let App { switch_to, media, clipboard, .. } = app;
@@ -7220,6 +7235,33 @@ mod tests {
             }
         });
         (url, rx)
+    }
+
+    /// A call on the fake meeting `R9` as attendee `A9` (nothing connects; no speaker is opened).
+    fn test_call(channel: &str) -> super::super::call::Call {
+        let creds = huddle::signaling::Credentials::from_rooms_join(&serde_json::json!({"call": {"call_id": "R9", "free_willy": {
+            "meeting": {"MeetingId": "M9", "MediaPlacement": {"AudioHostUrl": "x", "SignalingUrl": "ws://127.0.0.1:9/", "TurnControlUrl": null}},
+            "attendee": {"AttendeeId": "A9", "ExternalUserId": "U0", "JoinToken": "t"}}}})).unwrap();
+        let audio = super::super::settings::Audio::default();
+        super::super::call::Call::start(channel.into(), creds, (None, Some("no such speaker".into())), &audio)
+    }
+
+    #[tokio::test]
+    async fn i_leaving_a_huddle_tells_slack() {
+        use super::{run_global, Action};
+        let (url, mut asked) = fake_slack(&[]).await;
+        let (mut app, _net) = test_app_at(&url);
+        app.call = Some(test_call("C1"));
+        run_global(&mut app, Action::Huddle);
+        assert!(app.call.as_ref().unwrap().leaving);
+        let req = tokio::time::timeout(std::time::Duration::from_secs(10), asked.recv()).await.expect("a request").unwrap();
+        assert!(req.contains("/api/rooms.leave "), "{req}");
+        for want in ["channel_id=C1", "call_id=R9", "attendee_id=A9", "reason=user_initiated"] {
+            assert!(req.contains(want), "{want} in {req}");
+        }
+        // Pressing the key again while leaving does not send it twice.
+        run_global(&mut app, Action::Huddle);
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(300), asked.recv()).await.is_err(), "sent once");
     }
 
     #[tokio::test]
