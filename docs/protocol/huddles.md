@@ -158,3 +158,8 @@ Research: `slack-rea/notes/huddles-list.md` §1–2. Verified live on the test w
   nobody else joined are left out of the history.
 - Unknown: whether a running huddle with two or more people is in `huddles.history` (with `has_ended` false) — klack
   keeps `ended` so a list can leave such items out.
+- OBSERVED (2026-10-21, VW7, `ctl listen` keys only): RTM `sh_room_join` / `sh_room_update` / `sh_room_leave` are
+  `{type, user, huddle {channel_id}, room {…}, ts, event_ts}`, `room` with the 37 keys of a `huddle_thread` message's
+  room, `date_start` (int s, set) among them. A DM huddle B started and A never answered (B alone) did not show in A's
+  `huddles.history`, not even with `missed_huddles_only=true`, though older missed DM huddles are there — the same
+  rule as above. `ended_huddle_update` / `huddle_start` did not arrive at A for those solo huddles (A was in neither).

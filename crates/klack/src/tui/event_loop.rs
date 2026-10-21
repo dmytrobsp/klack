@@ -91,6 +91,12 @@ enum Net {
     ActivityFeed { tab: super::activity::Tab, more: bool, result: Result<Value, String> },
     /// The activity feed fetched at start, for the sidebar row's unread count.
     ActivityUnread(Result<Value, String>),
+    /// The huddles going on now (at start, after a reconnect, when one starts, when the Huddles view opens).
+    LiveHuddles(Result<Vec<slack_core::types::LiveHuddle>, String>),
+    /// A page of the Huddles view's recent huddles (`more`: added to what is listed) for its load `generation`.
+    HuddleHistory { generation: u64, more: bool, result: Result<(Vec<slack_core::types::PastHuddle>, Option<String>), String> },
+    /// How many replies a recent huddle's thread has (None: its message could not be had).
+    HuddleReplies { channel: String, ts: String, count: Option<u64> },
     /// The newest page of a previewed channel, fetched again.
     PreviewPage { channel: String, page: slack_core::types::HistoryPage },
     /// Bytes of an upload sent so far.
@@ -143,8 +149,6 @@ enum View {
     Conversation,
     Threads,
     Activity,
-    /// Nothing opens it yet (VW7).
-    #[allow(dead_code)]
     Huddles,
 }
 
@@ -222,6 +226,8 @@ struct App {
     save: Option<super::save::SaveDialog>,
     /// The Threads view (Ctrl+T), shown while `view` is Threads.
     threads: super::threads::Threads,
+    /// The Huddles view (␣fh), shown while `view` is Huddles.
+    huddles: super::huddles::Huddles,
     /// The thread (channel, its parent's ts) the composer under the Threads feed replies in, once the Type key chose
     /// it there; its draft is in the composer meanwhile.
     feed_reply: Option<(String, String)>,
@@ -1599,7 +1605,78 @@ impl App {
         match v {
             View::Threads => self.load_threads(false),
             View::Activity => self.open_activity(again),
-            View::Huddles | View::Conversation => {}
+            View::Huddles => self.load_huddles(),
+            View::Conversation => {}
+        }
+    }
+
+    /// Load the Huddles view afresh: the huddles going on now, and the first page of the recent ones.
+    fn load_huddles(&mut self) {
+        self.fetch_live_huddles();
+        let generation = self.huddles.reload();
+        self.fetch_huddle_history(generation, None);
+    }
+
+    /// Ask Slack for the huddles going on now (they replace those kept).
+    fn fetch_live_huddles(&self) {
+        let (client, tx) = (self.client.clone(), self.net.clone());
+        tokio::spawn(async move {
+            let result = client.huddles_live().await.map_err(|e| e.to_string());
+            let _ = tx.send(Net::LiveHuddles(result));
+        });
+    }
+
+    /// Ask for a page of the recent huddles (the first, or the one at `cursor`) for load `generation`.
+    fn fetch_huddle_history(&self, generation: u64, cursor: Option<String>) {
+        let (client, tx) = (self.client.clone(), self.net.clone());
+        tokio::spawn(async move {
+            let result = client.huddles_history(cursor.as_deref(), super::huddles::PAGE).await.map_err(|e| e.to_string());
+            let _ = tx.send(Net::HuddleHistory { generation, more: cursor.is_some(), result });
+        });
+    }
+
+    /// The Huddles view's next page, once the end of its list is on screen; and the reply counts of the threads
+    /// of the recent huddles on screen.
+    fn request_huddles(&mut self) {
+        if self.view != View::Huddles {
+            return;
+        }
+        if let Some(cursor) = self.huddles.next_page() {
+            self.fetch_huddle_history(self.huddles.generation, Some(cursor));
+        }
+        for (channel, ts) in self.huddles.wanted() {
+            self.huddles.requested.insert((channel.clone(), ts.clone()));
+            let (client, tx) = (self.client.clone(), self.net.clone());
+            tokio::spawn(async move {
+                let count = match client.message_at(&channel, &ts).await {
+                    Ok(m) => m.map(|m| m.reply_count),
+                    Err(e) => {
+                        tracing::warn!("a huddle's thread: {e}");
+                        None
+                    }
+                };
+                let _ = tx.send(Net::HuddleReplies { channel, ts, count });
+            });
+        }
+    }
+
+    /// Leave the Huddles view for its selected row (Enter, or a click on it): a live huddle's conversation, a recent
+    /// one's thread (its conversation when it has none).
+    fn open_huddle_item(&mut self) {
+        match self.huddles.target() {
+            Some(super::huddles::Row::Live(channel)) => {
+                self.close_view();
+                self.jump_to(&channel);
+            }
+            Some(super::huddles::Row::Past(n)) => {
+                let Some(h) = self.huddles.past_at(n).cloned() else { return };
+                self.close_view();
+                match h.thread_ts {
+                    Some(ts) => self.open_hit(super::search::Hit { channel: h.channel, ts: ts.clone(), thread_ts: Some(ts), user: None, text: String::new(), ..Default::default() }),
+                    None => self.jump_to(&h.channel),
+                }
+            }
+            None => {}
         }
     }
 
@@ -1729,7 +1806,8 @@ impl App {
         match self.view {
             View::Threads => Some(Context::Threads),
             View::Activity => Some(Context::Activity),
-            View::Huddles | View::Conversation => None,
+            View::Huddles => Some(Context::Huddles),
+            View::Conversation => None,
         }
     }
 
@@ -1782,7 +1860,20 @@ impl App {
                     _ => {}
                 }
             }
-            View::Huddles | View::Conversation => {}
+            View::Huddles => {
+                let h = &mut self.huddles;
+                match action {
+                    Action::Close => self.close_view(),
+                    Action::Up => h.move_by(-1),
+                    Action::Down => h.move_by(1),
+                    Action::PageUp => h.move_by(-h.page()),
+                    Action::PageDown => h.move_by(h.page()),
+                    Action::Refresh => self.open_view(View::Huddles),
+                    Action::Open => self.open_huddle_item(),
+                    _ => {}
+                }
+            }
+            View::Conversation => {}
         }
     }
 
@@ -1791,7 +1882,8 @@ impl App {
         match self.view {
             View::Threads => self.threads.area,
             View::Activity => self.activity.area,
-            View::Huddles | View::Conversation => Rect::default(),
+            View::Huddles => self.huddles.area,
+            View::Conversation => Rect::default(),
         }
     }
 
@@ -2219,6 +2311,18 @@ impl App {
         if let Some(ring) = self.ringing.take() {
             self.jump_to(&ring.channel);
             self.join_huddle(ring.channel, None);
+            return;
+        }
+        // In the Huddles view: the live huddle selected (never the conversation hidden under the view).
+        if self.view == View::Huddles {
+            match self.huddles.target() {
+                Some(super::huddles::Row::Live(channel)) => {
+                    self.close_view();
+                    self.jump_to(&channel);
+                    self.join_huddle(channel, None);
+                }
+                _ => self.status = "choose a live huddle to join".into(),
+            }
             return;
         }
         if let Some(channel) = self.current.clone() {
@@ -3991,6 +4095,7 @@ impl App {
             activity: Default::default(),
             save: None,
             threads: Default::default(),
+            huddles: Default::default(),
             feed_reply: None,
             feed_typing: false,
             preview_polled: None,
@@ -4109,6 +4214,7 @@ async fn run_workspace(
         app.request_authors();
         app.request_activity_messages();
         app.request_activity_page();
+        app.request_huddles();
         app.refresh_dnd();
         let which_key_due = app.which_key_due();
         let recording_due = app.recording_due();
@@ -4721,7 +4827,7 @@ fn handle_main(app: &mut App, ev: Event) -> bool {
             let resolved = app.resolve(&k);
             match resolved {
                 Resolved::Action(Context::Global, action) => return run_global(app, action),
-                Resolved::Action(Context::Sidebar | Context::Messages | Context::Huddle | Context::Activity | Context::Threads, Action::Help) => {
+                Resolved::Action(Context::Sidebar | Context::Messages | Context::Huddle | Context::Activity | Context::Threads | Context::Huddles, Action::Help) => {
                     app.help = Some(super::help::Help::default());
                     return true;
                 }
@@ -4822,6 +4928,7 @@ fn handle_main(app: &mut App, ev: Event) -> bool {
             // (A view not shown has no rows to hover.)
             app.threads.hover_at(c, r);
             app.activity.hover_at(c, r);
+            app.huddles.hover_at(c, r);
         }
         Event::Mouse(m) if m.kind == MouseEventKind::Down(MouseButton::Right) => app.open_menu(m.column, m.row),
         Event::Mouse(m) => match m.kind {
@@ -4872,6 +4979,10 @@ fn handle_main(app: &mut App, ev: Event) -> bool {
                     app.activity.selected = n;
                     app.open_activity_item();
                     app.closing_click = Some((std::time::Instant::now(), m.column, m.row));
+                } else if let Some(row) = app.huddles.row_at(m.column, m.row) {
+                    app.huddles.selected = Some(row);
+                    app.open_huddle_item();
+                    app.closing_click = Some((std::time::Instant::now(), m.column, m.row));
                 } else if app.view_area().contains((m.column, m.row).into()) {
                     app.focus = Focus::Messages;
                 } else if let Some(link) = m.modifiers.is_empty().then(|| app.link_at(m.column, m.row)).flatten() {
@@ -4904,6 +5015,7 @@ fn handle_main(app: &mut App, ev: Event) -> bool {
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown if app.view_area().contains((m.column, m.row).into()) => {
                 app.threads.hover = None;
                 app.activity.hover = None;
+                app.huddles.hover = None;
                 app.view_action(if m.kind == MouseEventKind::ScrollDown { Action::Down } else { Action::Up });
             }
             MouseEventKind::ScrollUp if app.sidebar.area.contains((m.column, m.row).into()) => app.sidebar.move_by(-1),
@@ -5092,6 +5204,7 @@ fn run_global(app: &mut App, action: Action) -> bool {
         Action::Search => app.search = Some(super::search::Search::default()),
         Action::Activity => app.open_view(View::Activity),
         Action::Threads => app.open_view(View::Threads),
+        Action::Huddles => app.open_view(View::Huddles),
         Action::Details => app.open_details(),
         Action::Star => {
             if let Some(id) = app.current.clone() {
@@ -5227,6 +5340,8 @@ fn handle_rtm(app: &mut App, ev: slack_core::rtm::RtmEvent) {
             // A new connection knows of no subscription.
             app.followed = Default::default();
             app.follow_profiles(std::time::Instant::now());
+            // Huddles that started or ended while it was away (at start: those going on).
+            app.fetch_live_huddles();
         }
         RtmEvent::Disconnected(reason) => {
             app.connected = false;
@@ -5243,6 +5358,14 @@ fn handle_rtm(app: &mut App, ev: slack_core::rtm::RtmEvent) {
             }
             if fx.rebuild_sidebar {
                 app.sidebar.rebuild(&app.ws);
+            }
+            if fx.refetch_live_huddles {
+                app.fetch_live_huddles();
+            }
+            // (As the official client does: an ended huddle may now be among the recent ones.)
+            if fx.huddle_ended && app.view == View::Huddles {
+                let generation = app.huddles.reload();
+                app.fetch_huddle_history(generation, None);
             }
             if let Some((channel, user)) = fx.huddle_started {
                 let in_it = app.call.as_ref().is_some_and(|c| c.channel == channel);
@@ -5702,6 +5825,26 @@ fn handle_net(app: &mut App, msg: Net) {
                 app.activity.fail(tab, e);
             }
         },
+        Net::LiveHuddles(result) => match result {
+            Ok(live) => {
+                app.ws.set_live_huddles(live);
+                app.sidebar.rebuild(&app.ws);
+            }
+            // The huddles kept from the live events stay.
+            Err(e) => tracing::warn!("the huddles going on: {e}"),
+        },
+        Net::HuddleHistory { generation, more, result } => match result {
+            Ok((page, cursor)) => app.huddles.add_page(generation, more, page, cursor),
+            Err(e) => {
+                app.status = format!("recent huddles failed: {e}");
+                app.huddles.fail(generation, e);
+            }
+        },
+        Net::HuddleReplies { channel, ts, count } => {
+            if let Some(n) = count {
+                app.huddles.replies.insert((channel, ts), n);
+            }
+        }
         // The sidebar's Activity row, at start.
         Net::ActivityUnread(result) => match result {
             Ok(v) => {
@@ -5891,6 +6034,7 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     let [side, main] = Layout::horizontal([Constraint::Length(side_w), Constraint::Min(10)]).areas(body);
     // A thread's draft counts for its conversation.
     app.sidebar.drafts = app.drafts.keys().map(|k| k.split('/').next().unwrap_or(k).to_string()).collect();
+    app.sidebar.in_call = app.call.as_ref().map(|c| c.channel.clone());
     app.sidebar.draw(f, side, &app.ws, app.focus == Focus::Sidebar);
     // Too narrow for a thread beside the messages (as Slack does): the thread takes their place
     // until it is closed, or until the messages or their composer get the focus; the huddle
@@ -5932,6 +6076,9 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     if app.view != View::Activity || alone {
         app.activity.hide();
     }
+    if app.view != View::Huddles || alone {
+        app.huddles.hide();
+    }
     if alone {
         // Nothing of the message pane is on screen, so the mouse must not find it.
         app.messages.hide();
@@ -5955,7 +6102,11 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
                 let here = super::applink::Here { ws: &app.ws, workspaces: &app.addresses, names: &app.workspaces, shown: app.workspace, authors: &app.authors, message: None };
                 app.activity.draw(f, main, &here, focused, &app.media);
             }
-            View::Huddles | View::Conversation => {}
+            View::Huddles => {
+                let me_in = app.call.as_ref().map(|c| c.channel.clone());
+                app.huddles.draw(f, main, &app.ws, focused, &app.media, me_in.as_deref(), chrono::Utc::now().timestamp());
+            }
+            View::Conversation => {}
         }
     } else if let (Some(view), Some(call)) = (app.huddle_view.as_mut(), &app.call) {
         // Nothing of the message pane is on screen, so the mouse must not find it.
@@ -6099,16 +6250,18 @@ fn view_of_row(item: &super::sidebar::Item) -> Option<View> {
     match item {
         super::sidebar::Item::Threads => Some(View::Threads),
         super::sidebar::Item::Activity => Some(View::Activity),
+        super::sidebar::Item::Huddles => Some(View::Huddles),
         _ => None,
     }
 }
 
-/// The sidebar row of a view (none for the conversation, nor yet for Huddles).
+/// The sidebar row of a view (none for the conversation).
 fn row_of_view(v: View) -> Option<super::sidebar::Item> {
     match v {
         View::Threads => Some(super::sidebar::Item::Threads),
         View::Activity => Some(super::sidebar::Item::Activity),
-        View::Huddles | View::Conversation => None,
+        View::Huddles => Some(super::sidebar::Item::Huddles),
+        View::Conversation => None,
     }
 }
 
@@ -6143,6 +6296,7 @@ fn mode_label(top: Context, focus: Focus) -> super::status::Pill {
         Context::Mover => Dialog("SECTION"),
         Context::Activity => Dialog("ACTIVITY"),
         Context::Threads => Dialog("THREADS"),
+        Context::Huddles => Dialog("HUDDLES"),
         Context::Profile => Dialog("PROFILE"),
         Context::Details => Dialog("DETAILS"),
         Context::Search => Dialog("SEARCH"),
@@ -7252,6 +7406,82 @@ mod tests {
             let msg = tokio::time::timeout(std::time::Duration::from_secs(10), net.recv()).await.expect("a request");
             assert!(matches!(msg, Some(Net::ThreadView { more: false, .. })), "request {n}");
         }
+    }
+
+    #[tokio::test]
+    async fn the_huddles_view_lists_the_live_ones_and_goes_there() {
+        use super::{Context, Focus, Net, View};
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let (mut app, mut net) = test_app();
+        for id in ["C1", "C2"] {
+            app.ws.conversations.insert(id.into(), slack_core::types::Conversation { id: id.into(), name: format!("chan{id}"), is_channel: true, is_member: true, ..Default::default() });
+        }
+        let now = chrono::Utc::now().timestamp();
+        app.ws.huddles.insert("C2".into(), super::super::state::Huddle { room: "R1".into(), participants: vec!["U2".into()], thread: None, start: now - 120 });
+        app.current = Some("C1".into());
+        app.sidebar.rebuild(&app.ws);
+        app.sidebar.select_id(&app.ws, "C1");
+        app.focus = Focus::Messages;
+        // ␣fh opens it, in place of the conversation.
+        for c in [' ', 'f', 'h'] {
+            assert!(super::handle_terminal(&mut app, crossterm::event::Event::Key(crossterm::event::KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))));
+        }
+        assert_eq!((app.view, app.focus, app.active_contexts()[0]), (View::Huddles, Focus::Messages, Context::Huddles));
+        assert!(app.huddles.loading, "the recent ones are being loaded");
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        let rows: Vec<String> = { let buf = terminal.backend().buffer(); (0..buf.area.height).map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect::<String>()).collect() };
+        assert!(rows[0].chars().skip(20).collect::<String>().starts_with("┌ Huddles "), "{rows:#?}");
+        assert!(rows[23].starts_with(" HUDDLES "), "its pill: {:?}", rows[23]);
+        assert!(rows[3].contains("Huddles") && rows[3].contains(" 1 "), "the sidebar row with its badge: {rows:#?}");
+        assert!(rows.iter().any(|r| r.contains("● Live  #chanC2 · 2 min")), "{rows:#?}");
+        // Esc: back. Then Enter on the live one: its conversation.
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!((app.view, app.current.as_deref()), (View::Conversation, Some("C1")));
+        super::run_global(&mut app, super::Action::Huddles);
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        app.sync_current();
+        assert_eq!((app.view, app.current.as_deref()), (View::Conversation, Some("C2")));
+        // The huddle key there joins the live one selected (not the conversation under the view).
+        app.sidebar.select_id(&app.ws, "C1");
+        app.sync_current();
+        super::run_global(&mut app, super::Action::Huddles);
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        super::run_global(&mut app, super::Action::Huddle);
+        assert_eq!((app.view, app.status.as_str()), (View::Conversation, "joining the huddle…"));
+        let mut joined = None;
+        while let Ok(Some(msg)) = tokio::time::timeout(std::time::Duration::from_secs(10), net.recv()).await {
+            if let Net::HuddleJoined { channel, .. } = msg {
+                joined = Some(channel);
+                break;
+            }
+        }
+        assert_eq!(joined.as_deref(), Some("C2"));
+    }
+
+    #[tokio::test]
+    async fn a_reconnect_asks_for_the_live_huddles_again() {
+        use super::Net;
+        let (mut app, mut net) = test_app();
+        app.ws.conversations.insert("C1".into(), slack_core::types::Conversation { id: "C1".into(), name: "c".into(), is_channel: true, is_member: true, ..Default::default() });
+        // One kept from the live events that ended while the connection was away.
+        app.ws.huddles.insert("C1".into(), super::super::state::Huddle { room: "R1".into(), participants: vec!["U2".into()], ..Default::default() });
+        super::handle_rtm(&mut app, slack_core::rtm::RtmEvent::Connected);
+        let mut asked = false;
+        while let Ok(Some(msg)) = tokio::time::timeout(std::time::Duration::from_secs(10), net.recv()).await {
+            if matches!(msg, Net::LiveHuddles(_)) {
+                asked = true;
+                break;
+            }
+        }
+        assert!(asked, "the live huddles are asked for");
+        super::handle_net(&mut app, Net::LiveHuddles(Ok(vec![])));
+        assert!(app.ws.huddles.is_empty() && app.ws.joinable_live(None).is_empty(), "no stale live huddle survives");
+        // A failed fetch keeps what the events said.
+        app.ws.huddles.insert("C1".into(), super::super::state::Huddle { room: "R2".into(), participants: vec!["U2".into()], ..Default::default() });
+        super::handle_net(&mut app, Net::LiveHuddles(Err("offline".into())));
+        assert_eq!(app.ws.joinable_live(None), ["C1"]);
     }
 
     #[tokio::test]

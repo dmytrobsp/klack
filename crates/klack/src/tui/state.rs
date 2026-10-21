@@ -172,6 +172,8 @@ pub struct Huddle {
     pub participants: Vec<String>,
     /// Its thread (the "A huddle started" message), once Slack has posted it.
     pub thread: Option<String>,
+    /// When it started (unix seconds; 0: not known).
+    pub start: i64,
 }
 
 /// Desktop notification levels: `everything`, `mentions_dms` ("just mentions") or `nothing`.
@@ -892,6 +894,38 @@ impl Workspace {
         (1..=n).map(|k| if down { (at.unwrap_or(n - 1) + k) % n } else { (at.unwrap_or(0) + n - k % n) % n }).map(|i| &order[i]).find(|id| unread(id)).cloned()
     }
 
+    /// The live huddles you can join (the Huddles row's badge): in a conversation you are a member of (a DM is
+    /// yours), not muted, someone in it, not the one you are in (`me_in`). Channel ids, sorted.
+    pub fn joinable_live(&self, me_in: Option<&str>) -> Vec<&str> {
+        let mut out: Vec<&str> = self.live_huddles().filter(|c| Some(*c) != me_in).collect();
+        out.sort();
+        out
+    }
+
+    /// The Huddles view's "Live now": the huddle you are in (`me_in`) first, then those you can join, the newest first.
+    pub fn live_list(&self, me_in: Option<&str>) -> Vec<String> {
+        let mut out: Vec<&str> = self.joinable_live(me_in);
+        out.sort_by_key(|c| std::cmp::Reverse(self.huddles.get(*c).map_or(0, |h| h.start)));
+        me_in.filter(|c| self.huddles.contains_key(*c)).into_iter().chain(out).map(String::from).collect()
+    }
+
+    /// The live huddles the official client lists: member (or a DM), not muted, at least one person in it.
+    fn live_huddles(&self) -> impl Iterator<Item = &str> {
+        self.huddles.iter().filter(|(c, h)| !h.participants.is_empty() && !self.muted.contains(*c) && self.conversations.get(*c).is_some_and(|c| c.is_member || c.is_dm())).map(|(c, _)| c.as_str())
+    }
+
+    /// The huddles happening now as Slack listed them (at start, after a reconnect): they replace those kept, a
+    /// thread known for the same room staying.
+    pub fn set_live_huddles(&mut self, live: Vec<slack_core::types::LiveHuddle>) {
+        let old = std::mem::take(&mut self.huddles);
+        for h in live {
+            let known = old.get(&h.channel).filter(|o| o.room == h.call_id);
+            let thread = h.thread_ts.or_else(|| known.and_then(|o| o.thread.clone()));
+            let start = if h.start > 0 { h.start } else { known.map_or(0, |o| o.start) };
+            self.huddles.insert(h.channel, Huddle { room: h.call_id, participants: h.members, thread, start });
+        }
+    }
+
     /// Typing users (active within 6 s) for a channel.
     pub fn typing_in(&self, channel: &str) -> Vec<String> {
         self.typing
@@ -904,6 +938,43 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn joinable_live_rules() {
+        let mut w = Workspace::default();
+        let chan = |id: &str, member: bool| Conversation { id: id.into(), name: id.to_lowercase(), is_channel: true, is_member: member, ..Default::default() };
+        for (id, member) in [("C1", true), ("C2", true), ("C3", false), ("C4", true), ("C5", true)] {
+            w.conversations.insert(id.into(), chan(id, member));
+        }
+        w.conversations.insert("D1".into(), Conversation { id: "D1".into(), is_im: true, user: Some("U2".into()), ..Default::default() });
+        let huddle = |people: &[&str], start: i64| Huddle { room: "R1".into(), participants: people.iter().map(|p| p.to_string()).collect(), thread: None, start };
+        w.huddles.insert("C1".into(), huddle(&["U2", "U3"], 100));
+        w.huddles.insert("C2".into(), huddle(&["U2"], 200));
+        w.muted.insert("C2".into());
+        w.huddles.insert("C3".into(), huddle(&["U2"], 300));
+        w.huddles.insert("C4".into(), huddle(&[], 400));
+        w.huddles.insert("C5".into(), huddle(&["U2", "UME"], 500));
+        w.huddles.insert("D1".into(), huddle(&["U2"], 600));
+        w.huddles.insert("C9".into(), huddle(&["U2"], 700));
+        // Member + unmuted + people: counted (a DM is yours); muted, not a member, empty, unknown: not.
+        assert_eq!(w.joinable_live(None), ["C1", "C5", "D1"]);
+        assert_eq!(w.joinable_live(Some("C5")), ["C1", "D1"], "not the one I'm in");
+        // The Live now list: mine first, then the newest first.
+        assert_eq!(w.live_list(Some("C5")), ["C5", "D1", "C1"]);
+        assert_eq!(w.live_list(None), ["D1", "C5", "C1"]);
+    }
+
+    #[test]
+    fn a_fetched_live_list_replaces_the_one_kept() {
+        let mut w = Workspace::default();
+        w.huddles.insert("C1".into(), Huddle { room: "R1".into(), participants: vec!["U2".into()], thread: Some("1.000100".into()), start: 0 });
+        w.huddles.insert("C2".into(), Huddle { room: "R2".into(), participants: vec!["U2".into()], thread: None, start: 0 });
+        let live = |channel: &str, call: &str, start: i64, thread: Option<&str>| slack_core::types::LiveHuddle { channel: channel.into(), call_id: call.into(), members: vec!["U2".into(), "U3".into()], start, thread_ts: thread.map(String::from) };
+        w.set_live_huddles(vec![live("C1", "R1", 100, None), live("C3", "R3", 300, Some("3.000100"))]);
+        assert!(!w.huddles.contains_key("C2"), "one that ended meanwhile is gone");
+        assert_eq!(w.huddles["C1"], Huddle { room: "R1".into(), participants: vec!["U2".into(), "U3".into()], thread: Some("1.000100".into()), start: 100 }, "the thread known stays");
+        assert_eq!((w.huddles["C3"].thread.as_deref(), w.huddles["C3"].start), (Some("3.000100"), 300));
+    }
 
     #[test]
     fn status_rules() {

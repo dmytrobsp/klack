@@ -126,9 +126,13 @@ mod tests {
             live_object("C0000000001", "R0000000001", &["U0000000001", "U0000000002", "U0000000003"], &["U0000000002"]),
             live_object("D0000000001", "R0000000002", &["U0000000004"], &[])]});
         assert_eq!(LiveHuddle::from_info(&v), vec![
-            LiveHuddle { channel: "C0000000001".into(), call_id: "R0000000001".into(), members: vec!["U0000000001".into(), "U0000000003".into()] },
-            LiveHuddle { channel: "D0000000001".into(), call_id: "R0000000002".into(), members: vec!["U0000000004".into()] },
-        ], "members are the active ones less the dropped ones");
+            LiveHuddle { channel: "C0000000001".into(), call_id: "R0000000001".into(), members: vec!["U0000000001".into(), "U0000000003".into()], start: 1_700_000_000, thread_ts: Some("1700000000.000100".into()) },
+            LiveHuddle { channel: "D0000000001".into(), call_id: "R0000000002".into(), members: vec!["U0000000004".into()], start: 1_700_000_000, thread_ts: Some("1700000000.000100".into()) },
+        ], "members are the active ones less the dropped ones; when it started, its thread");
+        // Slack writes zeros for a thread not posted yet.
+        let mut early = live_object("C0000000001", "R0000000001", &["U0000000001"], &[]);
+        early["thread_root_ts"] = "0000000000.000000".into();
+        assert_eq!(LiveHuddle::from_info(&serde_json::json!({"huddles": [early]}))[0].thread_ts, None);
         // `huddles/list` sends the same objects; the channels are asked again with `huddles/info`, once each.
         let list = serde_json::json!({"ok": true, "huddles": [live_object("C0000000001", "R0000000001", &[], &[]), live_object("C0000000001", "R0000000001", &[], &[]), live_object("D0000000001", "R0000000002", &[], &[])]});
         assert_eq!(LiveHuddle::listed_channels(&list), ["C0000000001", "D0000000001"]);
@@ -387,6 +391,10 @@ pub struct LiveHuddle {
     pub call_id: String,
     /// Who is in it now: the active members less the dropped ones, as Slack's client counts them.
     pub members: Vec<String>,
+    /// When it started (unix seconds; 0: not said).
+    pub start: i64,
+    /// Its thread (the "A huddle started" message), once Slack has posted it.
+    pub thread_ts: Option<String>,
 }
 
 impl LiveHuddle {
@@ -412,7 +420,9 @@ impl LiveHuddle {
                 let text = |k: &str| h[k].as_str().filter(|s| !s.is_empty()).map(String::from);
                 let dropped = ids(h, "dropped_members");
                 let members = ids(h, "active_members").into_iter().filter(|m| !dropped.contains(m)).collect();
-                Some(LiveHuddle { channel: text("channel_id")?, call_id: text("call_id")?, members })
+                // (Zeros until the thread's message exists.)
+                let thread_ts = text("thread_root_ts").filter(|t| t.trim_start_matches(['0', '.']).len() > 0);
+                Some(LiveHuddle { channel: text("channel_id")?, call_id: text("call_id")?, members, start: h["start_date"].as_i64().unwrap_or_default(), thread_ts })
             })
             .collect()
     }

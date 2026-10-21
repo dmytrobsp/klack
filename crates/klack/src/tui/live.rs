@@ -17,6 +17,10 @@ pub struct Effects {
     pub huddle_invite: Option<(String, String, String)>,
     /// The invitation in this channel is over (the huddle ended, or it was answered).
     pub invite_cancelled: Option<String>,
+    /// A huddle ended (the Huddles view's recent list is loaded again).
+    pub huddle_ended: bool,
+    /// A huddle started: ask Slack for the live ones again.
+    pub refetch_live_huddles: bool,
 }
 
 fn parse_message(v: &Value, channel: &str) -> Option<Message> {
@@ -167,14 +171,30 @@ pub fn apply(ws: &mut Workspace, ev: &Value, current: Option<&str>) -> Effects {
                     fx.huddle_started = Some((c.to_string(), user.to_string()));
                 }
                 if ended {
-                    ws.huddles.remove(c);
+                    fx.huddle_ended |= ws.huddles.remove(c).is_some();
                 } else {
-                    let known = ws.huddles.get(c).and_then(|h| h.thread.clone());
-                    ws.huddles.insert(c.to_string(), super::state::Huddle { room: id.clone(), participants: participants.clone(), thread: thread.clone().or(known) });
+                    let known = ws.huddles.get(c).filter(|h| h.room == id);
+                    let thread = thread.clone().or(known.and_then(|h| h.thread.clone()));
+                    // (Seen as it starts when Slack does not say: a reconnect's fetch knows better.)
+                    let start = room["date_start"].as_i64().filter(|t| *t > 0).or(known.map(|h| h.start)).unwrap_or_else(|| chrono::Utc::now().timestamp());
+                    ws.huddles.insert(c.to_string(), super::state::Huddle { room: id.clone(), participants: participants.clone(), thread, start });
                 }
             }
             fx.rebuild_sidebar = true;
         }
+        // A huddle is over: it leaves the live list (its room only; a newer one in the channel stays).
+        "ended_huddle_update" => {
+            let h = &ev["huddle"];
+            let room = h["id"].as_str().unwrap_or_default();
+            for c in h["channels"].as_array().into_iter().flatten().filter_map(|c| c.as_str()) {
+                if ws.huddles.get(c).is_some_and(|live| room.is_empty() || live.room == room) {
+                    ws.huddles.remove(c);
+                }
+            }
+            (fx.huddle_ended, fx.rebuild_sidebar) = (true, true);
+        }
+        // Who is in it comes with `sh_room_join`; the list is asked for again so nothing is missed.
+        "huddle_start" => fx.refetch_live_huddles = true,
         "pin_added" | "pin_removed" => {
             let added = ev["type"] == "pin_added";
             let item = &ev["item"];
@@ -526,6 +546,29 @@ mod tests {
         assert!(fx.huddle_started.is_none(), "joining a running huddle is not a start");
         apply(&mut w, &json!({"type":"sh_room_leave","user":"U2","room":{"id":"R1","channels":["C1"],"participants":[],"has_ended":false}}), None);
         assert!(w.huddles.is_empty());
+    }
+
+    #[test]
+    fn ended_huddle_clears_live() {
+        let mut w = ws();
+        w.conversations.insert("C2".into(), Conversation { id: "C2".into(), name: "two".into(), is_member: true, ..Default::default() });
+        let join = |c: &str, room: &str| json!({"type":"sh_room_join","user":"U2","room":{"id":room,"channels":[c],"participants":["U2","U3"],"has_ended":false,"date_start":1_700_000_000,"thread_root_ts":"0000000000.000000"}});
+        apply(&mut w, &join("C1", "R1"), None);
+        apply(&mut w, &join("C2", "R2"), None);
+        assert_eq!(w.huddles["C1"].start, 1_700_000_000, "when it started");
+        assert_eq!(w.joinable_live(None).len(), 2);
+        // Ended in an update: it leaves the live list, the badge drops.
+        let fx = apply(&mut w, &json!({"type":"sh_room_update","user":"U2","room":{"id":"R1","channels":["C1"],"participants":["U2"],"has_ended":true}}), None);
+        assert!(!w.huddles.contains_key("C1") && fx.rebuild_sidebar && fx.huddle_ended);
+        assert_eq!(w.joinable_live(None), ["C2"]);
+        // `ended_huddle_update` says so too (its room only: a newer one in the channel stays).
+        apply(&mut w, &json!({"type":"ended_huddle_update","huddle":{"id":"R9","channels":["C2"],"has_ended":true}}), None);
+        assert!(w.huddles.contains_key("C2"), "another room's end");
+        let fx = apply(&mut w, &json!({"type":"ended_huddle_update","huddle":{"id":"R2","channels":["C2"],"has_ended":true}}), None);
+        assert!(w.huddles.is_empty() && w.joinable_live(None).is_empty() && fx.rebuild_sidebar && fx.huddle_ended);
+        // A huddle that starts: the live list is asked for again (who is in it comes with sh_room_join too).
+        let fx = apply(&mut w, &json!({"type":"huddle_start","channel_id":"C1"}), None);
+        assert!(fx.refetch_live_huddles);
     }
 
     #[test]
