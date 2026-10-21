@@ -540,12 +540,7 @@ pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
             println!("{} huddles now", live.len());
         }
         Ctl::Get { url, out } => {
-            // The session (cookie + token) is only ever sent to Slack's own hosts.
-            let host = url.strip_prefix("https://").and_then(|r| r.split('/').next()).unwrap_or_default();
-            if !(host == "slack.com" || host.ends_with(".slack.com")) {
-                return Err(anyhow!("refusing to send the session to {host}"));
-            }
-            let bytes = client.download(&url).await?;
+            let bytes = client.download(get_target(&url)?.as_str()).await?;
             std::fs::write(&out, &bytes)?;
             println!("{} bytes", bytes.len());
         }
@@ -647,6 +642,12 @@ impl Masker {
     fn masks(&mut self, ids: &[String]) -> String {
         if ids.is_empty() { "-".into() } else { ids.iter().map(|id| self.mask(id)).collect::<Vec<_>>().join(",") }
     }
+}
+
+/// The address `ctl get` downloads `url` from, parsed as the request will be: the session (cookie + token) is
+/// only ever sent to Slack's own https hosts.
+fn get_target(url: &str) -> Result<slack_core::reqwest::Url> {
+    slack_core::api::slack_https_url(url).ok_or_else(|| anyhow!("refusing to send the session there: not a Slack https address"))
 }
 
 /// Whether an object key is a Slack id (`U0…`, `C0…`): such keys (a user → something map) are values, not names.
@@ -763,6 +764,14 @@ mod tests {
         }
         assert_eq!(super::shape_of(&v), serde_json::json!({"ok": "bool", "empty": "[] (empty)", "huddles": ["1 items like", {"channel_id": "str(11)",
             "active_members": ["2 items like", "str(11)"], "date": "float", "missed_participants": {"<2 ids>": "str(11)"}, "notes": "null"}]}));
+    }
+
+    #[test]
+    fn get_sends_the_session_only_to_slack() {
+        assert_eq!(super::get_target("https://files.slack.com/files-pri/T0-F0/x.png").unwrap().as_str(), "https://files.slack.com/files-pri/T0-F0/x.png");
+        for url in ["https://evil.example\\.slack.com/x", "https://files.slack.com@evil.example/x", "http://files.slack.com/x", "https://example.org/"] {
+            assert!(super::get_target(url).is_err(), "{url}");
+        }
     }
 
     #[test]

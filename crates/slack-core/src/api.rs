@@ -98,15 +98,22 @@ impl FlannelUrl {
     }
 }
 
+/// `url` parsed the way the request will be (WHATWG: `\` is `/`, what comes before `@` is a user name), when it
+/// is safe to send the session to: https on Slack's own hosts (`slack.com`, `slack-gov.com` and their
+/// subdomains), the default port, no user name or password.
+pub fn slack_https_url(url: &str) -> Option<reqwest::Url> {
+    let parsed = reqwest::Url::parse(url).ok()?;
+    let host = parsed.host_str()?;
+    let slack = ["slack.com", "slack-gov.com"].iter().any(|d| host == *d || host.ends_with(&format!(".{d}")));
+    let plain = parsed.scheme() == "https" && parsed.port().is_none() && parsed.username().is_empty() && parsed.password().is_none();
+    (slack && plain).then_some(parsed)
+}
+
 /// The Flannel address and how many seconds it holds, from `api.getFlannelHttpUrl`'s answer. The session goes
-/// to it, so it must be one of Slack's own https hosts.
+/// to it, so it must be one of Slack's own https hosts ([`slack_https_url`]).
 fn flannel_answer(v: &Value) -> Result<(String, u64)> {
-    let url = v["url"].as_str().ok_or_else(|| anyhow!("api.getFlannelHttpUrl: no url"))?.trim_end_matches('/');
-    let host = url.strip_prefix("https://").and_then(|r| r.split(['/', '?', '#']).next()).unwrap_or_default();
-    if !["slack.com", "slack-gov.com"].iter().any(|d| host.ends_with(&format!(".{d}"))) {
-        return Err(anyhow!("api.getFlannelHttpUrl: not a Slack address"));
-    }
-    Ok((url.to_string(), v["ttl_seconds"].as_u64().unwrap_or(0)))
+    let url = v["url"].as_str().and_then(slack_https_url).ok_or_else(|| anyhow!("api.getFlannelHttpUrl: no Slack address"))?;
+    Ok((url.as_str().trim_end_matches('/').to_string(), v["ttl_seconds"].as_u64().unwrap_or(0)))
 }
 
 #[derive(Clone)]
@@ -173,7 +180,8 @@ impl Client {
     /// Slack's answer after the `ok` check.
     async fn answer(&self, method: &str, request: impl Fn() -> reqwest::RequestBuilder) -> Result<Value> {
         for attempt in 0..5 {
-            let resp = request().send().await.with_context(|| format!("{method}: request failed"))?;
+            // reqwest's errors name the address (a Flannel one holds the team's id): leave it out.
+            let resp = request().send().await.map_err(reqwest::Error::without_url).with_context(|| format!("{method}: request failed"))?;
             if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
                 let wait = resp
                     .headers()
@@ -185,7 +193,7 @@ impl Client {
                 tokio::time::sleep(Duration::from_secs(wait)).await;
                 continue;
             }
-            let body: Value = resp.json().await.with_context(|| format!("{method}: invalid JSON"))?;
+            let body: Value = resp.json().await.map_err(reqwest::Error::without_url).with_context(|| format!("{method}: invalid JSON"))?;
             if body["ok"].as_bool() == Some(true) {
                 return Ok(body);
             }
@@ -680,8 +688,9 @@ impl Client {
             _ => return Err(anyhow!("{method}: the body must be a JSON object")),
         };
         body.insert("token".into(), self.session.token.clone().into());
-        let url = format!("{}/{method}", self.flannel_url().await?);
-        self.answer(method, || self.http.post(&url).header(reqwest::header::COOKIE, self.session.cookie_header()).json(&body)).await
+        // Checked again with the method added, and sent as parsed.
+        let url = slack_https_url(&format!("{}/{method}", self.flannel_url().await?)).ok_or_else(|| anyhow!("{method}: not a Slack address"))?;
+        self.answer(method, || self.http.post(url.clone()).header(reqwest::header::COOKIE, self.session.cookie_header()).json(&body)).await
     }
 
     /// The huddles happening now that this account can see (Flannel `huddles/list`, then `huddles/info` for their
@@ -769,11 +778,43 @@ mod tests {
         assert_eq!(answer("https://edgeapi.slack.com/cache/E0000000001/").unwrap(), ("https://edgeapi.slack.com/cache/E0000000001".to_string(), 600));
         assert!(answer("https://edgeapi.slack-gov.com/cache/T0").is_ok());
         // The session cookie and token go there: nowhere else.
-        for url in ["http://edgeapi.slack.com/cache/T0", "https://slack.com.example.org/cache", "https://example.org/x.slack.com", "https://evilslack.com/cache", ""] {
+        for url in [
+            "http://edgeapi.slack.com/cache/T0",
+            "https://slack.com.example.org/cache",
+            "https://example.org/x.slack.com",
+            "https://evilslack.com/cache",
+            "",
+            // Browsers and reqwest read `\` as `/`: the host is evil.example.
+            "https://evil.example\\.slack.com/cache/E0",
+            // Before the `@` is a user name: the host is evil.example.
+            "https://edgeapi.slack.com@evil.example/cache/E0",
+            "https://user:pw@edgeapi.slack.com/cache/E0",
+            "https://edgeapi.slack.com:8443/cache/E0",
+        ] {
             assert!(answer(url).is_err(), "{url}");
         }
         assert!(super::flannel_answer(&serde_json::json!({"ok": true})).is_err(), "no url");
         assert_eq!(super::flannel_answer(&serde_json::json!({"url": "https://edgeapi.slack.com/cache/T0"})).unwrap().1, 0, "no ttl: not kept");
+    }
+
+    #[test]
+    fn slack_urls_are_parsed_like_reqwest_does() {
+        assert_eq!(super::slack_https_url("https://files.slack.com/files-pri/T0-F0/x.png").map(|u| u.to_string()).as_deref(), Some("https://files.slack.com/files-pri/T0-F0/x.png"));
+        assert!(super::slack_https_url("https://slack.com/api/x").is_some());
+        for url in ["https://evil.example\\.slack.com/x", "https://a.slack.com@evil.example/", "http://a.slack.com/", "https://u@a.slack.com/", "not a url"] {
+            assert!(super::slack_https_url(url).is_none(), "{url}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failed_request_does_not_name_its_address() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        // Nothing listens on port 1: the request fails at once.
+        let session = crate::session::WorkspaceSession { url: "http://127.0.0.1:1/T0SECRET".into(), ..Default::default() };
+        let e = super::Client::new(session).unwrap().call_raw("auth.test", &[]).await.unwrap_err();
+        let text = format!("{e:#} {e:?}");
+        assert!(text.starts_with("auth.test: request failed"), "{text}");
+        assert!(!text.contains("127.0.0.1") && !text.contains("T0SECRET"), "{text}");
     }
 
     #[test]
