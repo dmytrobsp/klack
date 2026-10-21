@@ -73,7 +73,8 @@ dialog: JUMP, SEARCH, PREFS, …), then the unread and mention counts, other wor
 status, and a dot for your presence as in Slack (green `● active`, dim `○ away`; "connecting…" after it while
 the connection is down, a dim `…` when the line is at its narrowest) — a note or a ringing huddle takes their place; on the right
 the keys of a sequence under way (`␣h`, `^␣h` for Ctrl+Space) and the hints of where you are, ending
-in `? help` (`↑/↓ move · Enter thread · i type · ␣ actions · ? help`). A thumb on a pane's right border shows where you are when it scrolls. A conversation
+in `? help` (`↑/↓ move · Enter thread · i type · ␣ actions · ? help`). A thumb on a pane's right border shows where you are when it scrolls. The selected message is highlighted
+across the whole width of its pane, every row of it, like a selection in a list. A conversation
 opened with unread messages has a red "new" line above the first of them; while you read further
 up, the bottom border counts the newer messages below ("↓ 3 newer"). With two or more
 workspaces in the profile a rail on the far left has a tile for each — its logo where it has

@@ -420,6 +420,25 @@ impl MessagePane {
             0 => block,
             n => block.title_bottom(Line::styled(format!(" ↓ {n} newer "), Style::default().fg(super::theme::p().accent)).right_aligned()),
         };
+        // The selected message (and the one being edited) is highlighted from edge to edge, like a
+        // list selection: its rows are filled first; the text's own backgrounds draw over them.
+        let marked = [self.selected.as_ref().filter(|_| focused), self.editing.as_ref()];
+        for (n, owner) in self.rows.iter().enumerate() {
+            if owner.is_some() && marked.contains(&owner.as_ref()) {
+                f.buffer_mut().set_style(Rect { y: inner.y + n as u16, height: 1, ..inner }, highlight);
+            }
+        }
+        // A picture keeps the pane's background behind it (seen through its transparent parts).
+        for slot in slots.iter().filter(|s| matches!(media.thumbs.get(&s.file.id), Some(Thumb::Ready(_)))) {
+            let top = slot.line as isize - start as isize + pad as isize;
+            let (from, to) = (top.max(0), (top + slot.size.1 as isize).min(height as isize));
+            if from >= to || !self.rows.get(from as usize).is_some_and(|o| o.is_some() && marked.contains(&o.as_ref())) {
+                continue;
+            }
+            let x = inner.x + GUTTER + slot.col;
+            let width = slot.size.0.min(inner.right().saturating_sub(x));
+            f.buffer_mut().set_style(Rect { x, y: inner.y + from as u16, width, height: (to - from) as u16 }, Style::default().bg(ratatui::style::Color::Reset));
+        }
         f.render_widget(Paragraph::new(visible).block(block), area);
         // Links the terminal can open on its own click.
         if let Some(t) = timeline {
@@ -1131,6 +1150,81 @@ mod tests {
         pane.scroll_up(6);
         terminal.draw(|f| pane.draw(f, f.area(), &here, "t", Some(&t), true, &media)).unwrap();
         assert_eq!(pane.link_under(x + 3, y), None, "scrolled away: nothing under the pointer any more");
+    }
+
+    #[test]
+    fn the_selection_fills_the_whole_row() {
+        let ws = Workspace::default();
+        let mut t = Timeline { loaded: true, ..Default::default() };
+        t.upsert(msg("1729440000.000100", "U2", "hi"));
+        t.upsert(msg("1729440000.000200", "U3", "```code```"));
+        let (workspaces, names) = (vec![], vec![]);
+        let authors = crate::tui::applink::Authors::new();
+        let here = Here { ws: &ws, workspaces: &workspaces, names: &names, shown: 0, authors: &authors, message: None };
+        let media = Media::with(ratatui_image::picker::Picker::halfblocks());
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 10)).unwrap();
+        let p = crate::tui::theme::p();
+        let rows_of = |pane: &MessagePane, ts: &str| (0..pane.rows.len()).filter(|&n| pane.rows[n].as_deref() == Some(ts)).map(|n| n as u16 + 1).collect::<Vec<u16>>();
+        let mut pane = MessagePane { selected: Some("1729440000.000100".into()), ..Default::default() };
+        terminal.draw(|f| pane.draw(f, f.area(), &here, "t", Some(&t), true, &media)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let (first, second) = (rows_of(&pane, "1729440000.000100"), rows_of(&pane, "1729440000.000200"));
+        assert!(!first.is_empty() && !second.is_empty());
+        for &y in &first {
+            assert_eq!((buf[(1, y)].bg, buf[(38, y)].bg), (p.selection, p.selection), "row {y}: from the left inner edge to the right one");
+            assert_ne!(buf[(39, y)].bg, p.selection, "row {y}: not the border");
+        }
+        for &y in &second {
+            assert!((1..39).all(|x| buf[(x, y)].bg != p.selection), "row {y}: the other message is not highlighted");
+        }
+        // Selected, the code block keeps its own background over the selection.
+        pane.selected = Some("1729440000.000200".into());
+        terminal.draw(|f| pane.draw(f, f.area(), &here, "t", Some(&t), true, &media)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let (body, code) = rows_of(&pane, "1729440000.000200").into_iter().find_map(|y| (1..38).find(|&x| buf[(x, y)].symbol() == "c" && buf[(x + 1, y)].symbol() == "o").map(|x| (y, x))).expect("the code block is drawn");
+        assert_eq!(buf[(code, body)].bg, p.code_bg);
+        assert_eq!(buf[(38, body)].bg, p.selection);
+        assert!(rows_of(&pane, "1729440000.000100").iter().all(|&y| (1..39).all(|x| buf[(x, y)].bg != p.selection)), "the first one is no longer highlighted");
+        // Not focused: no selection at all.
+        terminal.draw(|f| pane.draw(f, f.area(), &here, "t", Some(&t), false, &media)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        assert!((1..9).all(|y| (1..39).all(|x| buf[(x, y)].bg != p.selection)));
+    }
+
+    #[test]
+    fn a_selected_picture_keeps_the_pane_background() {
+        let ws = Workspace::default();
+        let mut t = Timeline { loaded: true, ..Default::default() };
+        let image = File { id: "F1".into(), name: "p.png".into(), mimetype: "image/png".into(), thumb_360: Some("https://x/t.png".into()), original_w: Some(80), original_h: Some(40), ..Default::default() };
+        t.upsert(Message { files: vec![image], ..msg("1729440000.000100", "U2", "look") });
+        let (workspaces, names) = (vec![], vec![]);
+        let authors = crate::tui::applink::Authors::new();
+        let here = Here { ws: &ws, workspaces: &workspaces, names: &names, shown: 0, authors: &authors, message: None };
+        // kitty's placeholder cells keep the background under them (half blocks paint their own).
+        let mut picker = ratatui_image::picker::Picker::halfblocks();
+        picker.set_protocol_type(ratatui_image::picker::ProtocolType::Kitty);
+        let mut media = Media::with(picker);
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 16)).unwrap();
+        let mut pane = MessagePane { selected: Some("1729440000.000100".into()), ..Default::default() };
+        terminal.draw(|f| pane.draw(f, f.area(), &here, "t", Some(&t), true, &media)).unwrap();
+        let (file, size) = pane.wanted.first().cloned().expect("the picture is asked for");
+        let font = media.picker.font_size();
+        let img = image::DynamicImage::new_rgb8(size.0 as u32 * font.width as u32, size.1 as u32 * font.height as u32);
+        let proto = ratatui_image::sliced::SlicedProtocol::new(&media.picker, img, Some(ratatui::layout::Size::new(size.0, size.1))).unwrap();
+        media.thumbs.insert(file.id.clone(), Thumb::Ready(proto));
+        terminal.draw(|f| pane.draw(f, f.area(), &here, "t", Some(&t), true, &media)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let p = crate::tui::theme::p();
+        let rows: Vec<u16> = (0..pane.rows.len()).filter(|&n| pane.rows[n].is_some()).map(|n| n as u16 + 1).collect();
+        let picture: Vec<u16> = rows.iter().copied().filter(|&y| buf[(1 + GUTTER, y)].symbol().contains('\u{10EEEE}')).collect();
+        assert_eq!(picture.len(), size.1 as usize, "the picture is drawn");
+        for &y in &rows {
+            assert_eq!(buf[(38, y)].bg, p.selection, "row {y} is highlighted to the edge");
+        }
+        for &y in &picture {
+            assert!((1 + GUTTER..1 + GUTTER + size.0).all(|x| buf[(x, y)].bg != p.selection), "row {y}: not behind the picture");
+            assert_eq!(buf[(1, y)].bg, p.selection, "row {y}: the gutter is");
+        }
     }
 
     #[test]
