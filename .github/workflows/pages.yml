@@ -1,0 +1,54 @@
+# The landing page (site/) on GitHub Pages. Rebuilt when the site changes and after every successful Release, so
+# the download links, sizes and version always name the latest release (fill.py --fetch-release). The privacy
+# check (tools/site/check_private.py) needs a list that is not in the repo: it runs locally before every commit.
+name: Pages
+
+on:
+  push:
+    branches: [master]
+    paths: ["site/**", "tools/site/**", ".github/workflows/pages.yml"]
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Tests
+        run: |
+          python3 -m unittest discover -s tools/site -p 'test_*.py'
+          node --test "tools/site/*.test.mjs"
+      - name: Fill in the latest release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 tools/site/fill.py site --fetch-release
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
