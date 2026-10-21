@@ -85,8 +85,7 @@ Selection moves message by message through the feed (↑/↓, mouse), with the f
 opens the whole thread in the thread pane at that message (as today). The Type key (`i`) on a selected message opens the
 shared composer at the bottom, labelled with where it goes ("Reply in #channel thread" or the like); sending posts a reply
 to that thread and the block updates. **Read-marking (user: "let's try your suggestion"):** a thread in the feed is marked read on Slack (the same call
-opening it makes today, `subscriptions.thread.mark`) once its **whole block has been on screen for a moment** (about a
-second, builder's call; not while scrolling past quickly); its "new" line then fades on the next refresh as in a
+opening it makes today, `subscriptions.thread.mark`) once its **whole block has been on screen for a moment** (**2 seconds**, the user's number — a setting like klack's other times; not while scrolling past quickly); its "new" line then fades on the next refresh as in a
 conversation. A block too tall to fit counts once its unread replies have all been on screen. Opening the thread (Enter)
 or replying marks it read as today.
 
