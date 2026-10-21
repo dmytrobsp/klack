@@ -3,9 +3,10 @@
 
     python3 tools/site/captures.py RAW_DIR site/captures
 
-RAW_DIR holds <name>.ansi (`kitty @ get-text --extent screen --ansi`); the made-up names come from
-~/.config/klack-site/rename.json (outside the repo, never printed). See CAPTURES.md for how the raw captures
-were made.
+RAW_DIR holds <name>.ansi (`kitty @ get-text --extent screen --ansi`). Outside the repo (0600, never printed or
+committed): ~/.config/klack-site/rename.json, the made-up names, and ~/.config/klack-site/fixes.json, single cells
+to overwrite after renaming ({"huddle": {"row,col": "letter"}} — a letter drawn from a real name). See
+CAPTURES.md for how the raw captures were made.
 """
 import html
 import json
@@ -27,7 +28,9 @@ CAPTURES = {
         "klack after pressing Space on a message: the which-key panel lists what each next key does")),
     "ssh": dict(cols=80, rows=26, title="ssh box — klack", label=(
         "The same main view of klack in an 80-column terminal, as in an SSH session")),
-    "huddle": dict(cols=110, rows=32, title="klack — huddle", label=HUDDLE_LABEL, pictures=("tv", "tile")),
+    # A's own tile shows the first letter of the real name: the capture is not built without its fix
+    "huddle": dict(cols=110, rows=32, title="klack — huddle", label=HUDDLE_LABEL, pictures=("tv", "tile"),
+                   needs_fixes=True),
     "signin": dict(cols=120, rows=29, title="klack auth login", label=(
         "klack's sign-in guide, the code way: a QR code for the phone, the link, and the ___-___ prompt for "
         "the emailed code, for demo@example.com")),
@@ -59,8 +62,12 @@ def build(name, ansi, rename=None, fixes=None):
     """One capture's fragment. `fixes`: {(row, col): text} put into single cells after renaming (a letter
     drawn from a real name, say)."""
     c = CAPTURES[name]
+    if c.get("needs_fixes") and not fixes:
+        raise ValueError(f"{name}: needs its cell fixes (~/.config/klack-site/fixes.json) and has none")
     _, screen = convert(ansi, rename, c["cols"], c["rows"])
     for (r, col), ch in (fixes or {}).items():
+        if not (0 <= r < screen.rows and 0 <= col < screen.cols) or not screen.cells[r][col][0].strip():
+            raise ValueError(f"{name}: a fix at {r},{col} has no character to replace (the layout moved?)")
         screen.cells[r][col][0] = ch
     kinds = c.get("pictures", ())
     if len(screen.pictures) != len(kinds):
@@ -72,7 +79,8 @@ def build(name, ansi, rename=None, fixes=None):
 def main(argv):
     raw, out = Path(argv[0]), Path(argv[1])
     rename = json.loads((Path.home() / ".config/klack-site/rename.json").read_text())
-    fixes = json.loads((raw / "fixes.json").read_text()) if (raw / "fixes.json").is_file() else {}
+    fx = Path.home() / ".config/klack-site/fixes.json"
+    fixes = json.loads(fx.read_text()) if fx.is_file() else {}
     for name in CAPTURES:
         src = raw / f"{name}.ansi"
         if not src.is_file():

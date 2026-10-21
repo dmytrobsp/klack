@@ -25,7 +25,7 @@ class Build(unittest.TestCase):
         old = C.CAPTURES["huddle"]
         C.CAPTURES["huddle"] = dict(old, cols=12, rows=6)
         try:
-            out = C.build("huddle", screen(6, 12, [(1, 1, 1, 3), (2, 4, 7, 2)]))
+            out = C.build("huddle", "D" + screen(6, 12, [(1, 1, 1, 3), (2, 4, 7, 2)])[1:], fixes={(0, 0): "H"})
         finally:
             C.CAPTURES["huddle"] = old
         self.assertTrue(out.startswith('<div class="term capture" style="--cols:12;--rows:6" role="img"'))
@@ -40,7 +40,20 @@ class Build(unittest.TestCase):
         C.CAPTURES["huddle"] = dict(old, cols=12, rows=6)
         try:
             with self.assertRaises(ValueError):
-                C.build("huddle", screen(6, 12, [(1, 1, 1, 3)]))
+                C.build("huddle", screen(6, 12, [(1, 1, 1, 3)]), fixes={(0, 0): "H"})
+        finally:
+            C.CAPTURES["huddle"] = old
+
+    def test_a_capture_that_needs_fixes_fails_without_them(self):
+        old = C.CAPTURES["huddle"]
+        C.CAPTURES["huddle"] = dict(old, cols=12, rows=6)
+        try:
+            pics = "D" + screen(6, 12, [(1, 1, 1, 3), (2, 4, 7, 2)])[1:]
+            for fixes in (None, {}):
+                with self.assertRaises(ValueError):
+                    C.build("huddle", pics, fixes=fixes)
+            with self.assertRaises(ValueError):  # a fix on a blank cell: the layout moved
+                C.build("huddle", pics, fixes={(3, 3): "H"})
         finally:
             C.CAPTURES["huddle"] = old
 
@@ -69,6 +82,8 @@ class Build(unittest.TestCase):
         self.assertIn('href="https://creativecommons.org/licenses/by/2.0/"', foot)
         self.assertIn('href="https://commons.wikimedia.org/wiki/File:Swanlake010.jpg"', foot)
         self.assertIn("public domain", foot)
+        for s in ("Swan Lake ballet", "Mikhail Bocharov", "Henrich Levogt", "(cropped)"):
+            self.assertIn(s, foot, s)
 
 
 if __name__ == "__main__":

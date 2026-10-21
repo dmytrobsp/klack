@@ -184,11 +184,14 @@ p code, li code, h3 code { color: var(--yellow); }
 .capture .tile { position: absolute; left: calc(var(--c) / var(--cols) * 100%); top: calc(var(--r) / var(--rows) * 100%); width: calc(var(--w) / var(--cols) * 100%); height: calc(var(--h) / var(--rows) * 100%); object-fit: cover; display: block; }
 /* the shared screen on the huddle capture: Swan Lake, a few seconds a picture, a faint grain and scanlines (6 fps) */
 .capture .tv { overflow: hidden; background: #000; --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' seed='7'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23g)'/%3E%3C/svg%3E"); }
-.capture .tv img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0; animation: tv-swan 16s linear infinite; }
+.capture .tv img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0; animation: tv-swan 16s step-end infinite; }
 .capture .tv img:nth-child(2) { animation-delay: -12s; }
 .capture .tv img:nth-child(3) { animation-delay: -8s; }
 .capture .tv img:nth-child(4) { animation-delay: -4s; }
-@keyframes tv-swan { 0%, 24.6% { opacity: 1; } 25%, 100% { opacity: 0; } }
+@keyframes tv-swan { 0% { opacity: 1; } 25%, 100% { opacity: 0; } }
+/* off screen (js/tv.js) the loop waits; the enlarged copy in the zoom always runs */
+.capture .tv.paused img, .capture .tv.paused::after { animation-play-state: paused; }
+dialog.zoom .capture .tv img, dialog.zoom .capture .tv::after { animation-play-state: running; }
 .capture .tv::before { content: ""; position: absolute; inset: 0; z-index: 1; pointer-events: none; background: repeating-linear-gradient(to bottom, rgba(0, 0, 0, .22) 0 1px, transparent 1px 3px); }
 .capture .tv::after { content: ""; position: absolute; inset: -40%; z-index: 2; pointer-events: none; background: var(--grain); background-size: 120px 120px; opacity: .16; mix-blend-mode: overlay; animation: tv-grain 1s steps(1, end) infinite; }
 @keyframes tv-grain { 0% { transform: translate(0, 0); } 16.7% { transform: translate(-9%, 5%); } 33.3% { transform: translate(6%, -7%); } 50% { transform: translate(-4%, -10%); } 66.7% { transform: translate(10%, 3%); } 83.3% { transform: translate(-7%, 9%); } 100% { transform: translate(0, 0); } }
