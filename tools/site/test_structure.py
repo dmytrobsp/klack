@@ -121,11 +121,12 @@ class Structure(unittest.TestCase):
 
     def test_release_json(self):
         r = json.loads((SITE / "data" / "release.json").read_text())
-        self.assertEqual(r["version"], "0.8.0")
+        v = r["version"]
+        self.assertRegex(v, r"^\d+\.\d+\.\d+$")
         self.assertEqual(len(r["assets"]), 4)
         for a in r["assets"]:
-            self.assertEqual(a["name"], "klack-0.8.0-%s.zip" % a["platform"])
-            self.assertTrue(a["url"].startswith(OWN + "/releases/download/v0.8.0/"))
+            self.assertEqual(a["name"], "klack-%s-%s.zip" % (v, a["platform"]))
+            self.assertTrue(a["url"].startswith(OWN + "/releases/download/v%s/" % v))
             self.assertIsInstance(a["size"], int)
         self.assertTrue(r["sums_url"].endswith("/SHA256SUMS"))
 

@@ -6,7 +6,7 @@ name: Pages
 on:
   push:
     branches: [master]
-    paths: ["site/**", "tools/site/**", ".github/workflows/pages.yml"]
+    paths: ["site/**", "tools/site/**", "README.md", ".github/workflows/pages.yml"]
   workflow_run:
     workflows: [Release]
     types: [completed]
@@ -35,7 +35,7 @@ jobs:
       - name: Fill in the latest release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: python3 tools/site/fill.py site --fetch-release
+        run: python3 tools/site/fill.py site --fetch-release --strict
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site

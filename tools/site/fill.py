@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Fills the generated regions of site/index.html from data (stdlib only).
 
-    python3 tools/site/fill.py site [--fetch-release]
+    python3 tools/site/fill.py site [--fetch-release [--strict]]
 """
 import html as _html
 import json
@@ -120,7 +120,7 @@ def release_from_api(repo, token, urlopen=urllib.request.urlopen):
 
 # --- the spec sheet (LP10): the official app's numbers crossed out only where klack wins by WIN or more
 WIN = 1.5
-PLACEHOLDER = ('<!-- draft --><p class="standin-note">measuring… no number goes up here until '
+PLACEHOLDER = ('<p class="standin-note">measuring… no number goes up here until '
                "it's been measured.</p>")
 TIES = {"startup": "a draw. not bad for a weekend.",
         "cpu_share": "video costs what it costs. even in a terminal."}
@@ -129,8 +129,6 @@ TIE = "ok, a tie. it's a chat app."
 LOSSES = {"cpu_idle": "yeah, okay. now look at the next one"}
 LOSS = "fine, this one's theirs."
 ZERO = "it's text."
-# the user's own lines: not drafts
-USER_LINES = {TIES["startup"], LOSSES["cpu_idle"]}
 
 
 def _mb(mb):
@@ -178,8 +176,7 @@ def _row(r):
         scrawl = f'<span class="scrawl ratio">{fmt_ratio(o / k)}× {word}{what}</span>'
     else:  # a bespoke scrawl only ever in its own class: TIES for a tie, LOSSES for a loss
         line = {"zero": ZERO, "loss": LOSSES.get(r["id"], LOSS), "tie": TIES.get(r["id"], TIE)}[kind]
-        draft = "" if line in USER_LINES else "<!-- draft -->"
-        scrawl = f'{draft}<span class="scrawl">{txt(line)}</span>'
+        scrawl = f'<span class="scrawl">{txt(line)}</span>'
         if kind == "loss" and cpu and o > 0:  # a CPU loss leads with how much, honestly
             scrawl = f'<span class="scrawl ratio more">{fmt_ratio(k / o)}× more CPU</span>' + scrawl
     them = f'<span class="crossed">{ov}</span>' if marks else f'<span class="plain">{ov}</span>'
@@ -194,7 +191,7 @@ def render_sheet(numbers):
     rows = numbers.get("rows") or []
     if not rows:
         return PLACEHOLDER
-    return ('<div class="sheet paper"><table><thead><tr><th scope="col"><!-- draft --><span>lower is better</span></th>'
+    return ('<div class="sheet paper"><table><thead><tr><th scope="col"><span>lower is better</span></th>'
             '<th scope="col" class="them">the official app</th><th scope="col" class="us">klack</th>'
             '<td></td></tr></thead>'
             f'<tbody>{"".join(_row(r) for r in rows)}</tbody></table></div>')
@@ -253,6 +250,9 @@ def main(argv, urlopen=urllib.request.urlopen, stderr=sys.stderr, readme=None):
             release = release_from_api(REPO, os.environ.get("GITHUB_TOKEN"), urlopen=urlopen)
             (site / "data/release.json").write_text(json.dumps(release, indent=2) + "\n")
         except ReleaseFetchError as e:
+            if "--strict" in argv:  # a deploy must not quietly go out with stale links: the last good one stays live
+                print(f"release fetch failed: {e}", file=stderr)
+                return 1
             print(f"release fetch failed: {e}; keeping site/data/release.json", file=stderr)
             release = None
     needs = readme_needs(Path(readme).read_text()) if readme else None

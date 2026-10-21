@@ -263,18 +263,10 @@ class Copy(unittest.TestCase):
         self.assertTrue([e for e in f.elements() if "stamp" in e.classes])
         self.assertIn("https://github.com/dmytrobsp/klack", [e.attrs.get("href") for e in f.elements()])
 
-    def test_drafts_marked_and_state_no_figures(self):
-        drafts = []
+    def test_no_draft_comments(self):  # the copy is approved and published
         for parent in [self.root, *self.root.elements()]:
-            kids = [c for c in parent.children if not (c.kind == "text" and not c.data.strip())]
-            for i, c in enumerate(kids):
-                if c.kind == "comment" and c.data.strip() == "draft":
-                    self.assertTrue(i + 1 < len(kids) and kids[i + 1].kind == "el", "draft marks no element")
-                    drafts.append(flat(kids[i + 1].text()))
-        self.assertGreater(len(drafts), 10)
-        for d in drafts:
-            self.assertTrue(d)
-            self.assertNotRegex(d.replace("Apache-2.0", ""), r"\d", d)  # figures live in the spec sheet only
+            for c in parent.children:
+                self.assertFalse(c.kind == "comment" and c.data.strip() == "draft", "a <!-- draft --> is left")
 
 
 class DeadCss(unittest.TestCase):

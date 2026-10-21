@@ -50,7 +50,7 @@ section h2 { font-family: 'Anton', sans-serif; font-weight: 400; font-size: 44px
 .sticker { display: inline-block; font-family: 'Permanent Marker', cursive; padding: 16px; border-radius: 50%; text-align: center; line-height: 1.05; box-shadow: 3px 3px 0 #000; background: var(--yellow); color: var(--ink); transform: rotate(var(--r, -10deg)); font-size: 14px; }
 
 .scrawl { font-family: 'Permanent Marker', cursive; color: var(--yellow); display: inline-block; transform: rotate(-3deg); font-size: 24px; }
-.jab { font-family: 'Permanent Marker', cursive; color: var(--cream); transform: rotate(-1.5deg); display: inline-block; font-size: 22px; }
+.jab { font-family: 'Permanent Marker', cursive; color: var(--cream); transform: rotate(-1.5deg); display: inline-block; font-size: 19px; line-height: 1.35; margin: 14px 0 0; max-width: 560px; }
 .jab::before { content: '\2192\00a0'; color: var(--pink); }
 
 .term { background: #0b0b0d; border: 1px solid #3a2a3b; border-radius: 8px; box-shadow: 0 18px 40px rgba(0,0,0,.6); overflow: hidden; color: #d8d8d8; font-size: 11px; line-height: 1.45; }
@@ -99,7 +99,6 @@ code { font-family: 'Space Mono', monospace; font-size: .92em; }
 .nowrap { white-space: nowrap; }
 p code, li code, h3 code { color: var(--yellow); }
 .lede { color: #e8dcc4; max-width: 640px; }
-.jab { font-size: 19px; line-height: 1.35; margin: 14px 0 0; max-width: 560px; }
 
 #features > h2 { margin-bottom: 30px; }
 .feature { display: grid; grid-template-columns: 1fr 1fr; gap: 34px; align-items: center; margin: 0 0 64px; }

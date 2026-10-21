@@ -13,7 +13,9 @@ import fill as F  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 RELEASE = json.loads((ROOT / "site/data/release.json").read_text())
-LINUX = "https://github.com/dmytrobsp/klack/releases/download/v0.8.0/klack-0.8.0-x86_64-linux.zip"
+VER = RELEASE["version"]
+LINUX = next(a["url"] for a in RELEASE["assets"] if a["platform"] == "x86_64-linux")
+LINUX_SIZE = next(a["size"] for a in RELEASE["assets"] if a["platform"] == "x86_64-linux")
 
 
 class Resp(io.BytesIO):
@@ -43,17 +45,17 @@ class FillTests(unittest.TestCase):
     def test_button(self):
         h = F.render_download_button(RELEASE)
         self.assertIn(f'<a class="dl" data-os="linux" href="{LINUX}">DOWNLOAD FOR LINUX</a>', h)
-        self.assertIn("v0.8.0 · 12.7 MB · ", h)
+        self.assertIn(f"v{VER} · {F.fmt_size(LINUX_SIZE)} · ", h)
         self.assertIn('<span class="dl-others">', h)
-        self.assertIn("klack-0.8.0-aarch64-macos.zip\">macOS</a>", h)
-        self.assertIn("klack-0.8.0-x86_64-windows.zip\">Windows</a>", h)
+        self.assertIn(f"klack-{VER}-aarch64-macos.zip\">macOS</a>", h)
+        self.assertIn(f"klack-{VER}-x86_64-windows.zip\">Windows</a>", h)
         self.assertIn('<a href="#get">all downloads</a>', h)
 
     NEEDS = {"x86_64-linux": ("glibc 2.34+", "libasound <b>"), }
 
     def test_downloads_order_and_unknown_last(self):
         r = copy.deepcopy(RELEASE)
-        r["assets"].insert(0, {"name": "klack-0.8.0-riscv64-linux.zip", "platform": "riscv64-linux",
+        r["assets"].insert(0, {"name": f"klack-{VER}-riscv64-linux.zip", "platform": "riscv64-linux",
                                "url": "https://example.test/r.zip", "size": 5_000_000})
         h = F.render_downloads(r, self.NEEDS)
         pos = [h.index(p) for p in ("x86_64-linux.zip", "aarch64-macos.zip", "x86_64-macos.zip",
@@ -178,6 +180,23 @@ class FillTests(unittest.TestCase):
             self.assertIn("keeping site/data/release.json", err.getvalue())
             self.assertEqual((site / "data/release.json").read_bytes(), raw)
 
+    def test_cli_strict_failed_fetch_exits_nonzero_and_writes_nothing(self):
+        with tempfile.TemporaryDirectory() as d:
+            site = Path(d)
+            (site / "data").mkdir()
+            page = "<!-- fill:download-button -->old<!-- /fill:download-button --><!-- fill:downloads --><!-- /fill:downloads -->"
+            (site / "index.html").write_text(page)
+            raw = (ROOT / "site/data/release.json").read_bytes()
+            (site / "data/release.json").write_bytes(raw)
+            def boom(req, timeout=None):
+                raise urllib.error.URLError("offline")
+            err = io.StringIO()
+            code = F.main([str(site), "--fetch-release", "--strict"], urlopen=boom, stderr=err, readme=ROOT / "README.md")
+            self.assertNotEqual(code, 0)
+            self.assertIn("release fetch failed:", err.getvalue())
+            self.assertEqual((site / "index.html").read_text(), page)
+            self.assertEqual((site / "data/release.json").read_bytes(), raw)
+
 
 NUMBERS = {
     "measured_on": "2026-01-02",
@@ -245,8 +264,6 @@ class SheetTests(unittest.TestCase):
         self.assertIn("46× less", self.rows[3])
         self.assertIn("3.2× faster", self.rows[7])
         self.assertIn('<span class="crossed">40.0 s</span>', self.rows[7])
-        for r in (self.rows[0], self.rows[1], self.rows[3], self.rows[7]):
-            self.assertNotIn("<!-- draft -->", r)  # a figure is never a draft
 
     def test_near_tie_no_marks_and_weekend_scrawl(self):
         r = self.rows[2]
@@ -256,11 +273,9 @@ class SheetTests(unittest.TestCase):
         self.assertNotIn("circled", r)
         self.assertNotIn("×", r)
         self.assertIn('<span class="scrawl">a draw. not bad for a weekend.</span>', r)
-        self.assertNotIn("<!-- draft -->", r)  # the user's line, not a draft
         share = self.rows[5]
         self.assertNotIn("crossed", share)
         self.assertNotIn("×", share)
-        self.assertIn("<!-- draft -->", share)
         self.assertNotIn("weekend", share)
 
     def test_default_tie_scrawl(self):
@@ -277,10 +292,9 @@ class SheetTests(unittest.TestCase):
         self.assertNotIn("circled", r)
         self.assertIn('<span class="scrawl ratio more">1.4× more CPU</span>'
                       '<span class="scrawl">yeah, okay. now look at the next one</span>', r)  # how much, then the user's line
-        self.assertNotIn("<!-- draft -->", r)  # neither the figure nor the user's line is a draft
         other = F.render_sheet({**NUMBERS, "rows": [
             {"id": "other", "label": "x", "unit": "percent", "klack": 0.63, "slack": 0.45}]})
-        self.assertIn('<!-- draft --><span class="scrawl">fine, this one\'s theirs.</span>', other)
+        self.assertIn('<span class="scrawl">fine, this one\'s theirs.</span>', other)
 
     def test_the_next_one_is_a_win(self):
         # "now look at the next one" points at the row after CPU at rest: it has to be there and be a win
@@ -371,10 +385,9 @@ class SheetTests(unittest.TestCase):
         self.assertNotRegex(h, r"\d")
         self.assertEqual(F.render_measured_note({**NUMBERS, "rows": []}), "")
 
-    def test_drafts_carry_no_figures(self):
-        import re
-        for m in re.finditer(r"<!-- draft --><span[^>]*>([^<]*)</span>", self.h):
-            self.assertNotRegex(m.group(1), r"\d", m.group(1))
+    def test_no_draft_comments(self):
+        self.assertNotIn("<!-- draft -->", self.h)
+        self.assertNotIn("<!-- draft -->", F.render_sheet({**NUMBERS, "rows": []}))
 
     def test_note(self):
         n = F.render_measured_note(NUMBERS)

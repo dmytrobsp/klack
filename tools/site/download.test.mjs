@@ -61,8 +61,9 @@ test('enhance rewrites the region for the visitor', () => {
   let d = fakeDoc();
   enhance(d, rel, { userAgent: UA.win, platform: 'Win32', maxTouchPoints: 0 });
   assert.match(d.area.innerHTML, /class="dl" data-os="windows" href="[^"]*x86_64-windows\.zip">DOWNLOAD FOR WINDOWS</);
-  assert.match(d.area.innerHTML, /v0\.8\.0/);
-  assert.match(d.area.innerHTML, /10\.6 MB|11\.1 MB/);
+  assert.ok(d.area.innerHTML.includes(`v${rel.version}`));
+  const win = rel.assets.find(a => a.platform === 'x86_64-windows');
+  assert.ok(d.area.innerHTML.includes(`${(win.size / 1e6).toFixed(1)} MB`));
 
   d = fakeDoc();
   enhance(d, rel, { userAgent: UA.mac, platform: 'MacIntel', maxTouchPoints: 0 });
