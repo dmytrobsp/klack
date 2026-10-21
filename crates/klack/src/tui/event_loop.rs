@@ -1727,8 +1727,12 @@ impl App {
         }
     }
 
-    /// The hover note for the link drawn at a terminal position (the thread pane, then the messages), if any.
+    /// The hover note for the link drawn at a terminal position (the thread pane, then the
+    /// messages), or for a person's status over their DM in the sidebar, if any.
     fn link_note_at(&self, column: u16, row: u16) -> Option<String> {
+        if let Some(n) = self.sidebar.item_at(column, row) {
+            return self.sidebar.status_note(&self.ws, n, chrono::Utc::now().timestamp());
+        }
         let (url, app) = self.thread.as_ref().and_then(|_| self.thread_pane.link_under(column, row)).or_else(|| self.messages.link_under(column, row))?;
         let here = super::applink::Here { ws: &self.ws, workspaces: &self.addresses, names: &self.workspaces, shown: self.workspace, authors: &self.authors, message: None };
         Some(super::applink::hover_note(&url, app.as_ref(), &here))
@@ -5503,7 +5507,7 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         let [msgs, comp] = Layout::vertical([Constraint::Min(3), Constraint::Length(composer_h)]).areas(main);
         let current = app.current.clone();
         let timeline = current.as_deref().and_then(|c| app.ws.timelines.get(c));
-        let title = current.as_deref().map(|c| app.ws.channel_label(c)).unwrap_or_default();
+        let title = current.as_deref().map(|c| super::text::conversation_title(&app.ws, c, chrono::Utc::now().timestamp())).unwrap_or_default();
         app.messages.editing = app.composer.editing.clone();
         let here = super::applink::Here { ws: &app.ws, workspaces: &app.addresses, names: &app.workspaces, shown: app.workspace, authors: &app.authors, message: None };
         app.messages.draw(f, msgs, &here, &title, timeline, app.focus == Focus::Messages, &app.media);

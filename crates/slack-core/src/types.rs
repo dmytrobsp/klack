@@ -78,6 +78,17 @@ impl SlashCommand {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn profile_reads_huddle_state() {
+        let p: super::UserProfile = serde_json::from_value(serde_json::json!({"huddle_state": "in_a_huddle", "huddle_state_expiration_ts": 1000})).unwrap();
+        assert_eq!((p.huddle_state.as_str(), p.huddle_state_expiration_ts), ("in_a_huddle", 1000));
+        let p: super::UserProfile = serde_json::from_value(serde_json::json!({"display_name": "bob"})).unwrap();
+        assert_eq!((p.huddle_state.as_str(), p.huddle_state_expiration_ts), ("", 0));
+        // Slack also sends null (one person's null must not lose the whole user list).
+        let p: super::UserProfile = serde_json::from_value(serde_json::json!({"huddle_state": null, "huddle_state_expiration_ts": null, "display_name": "bob"})).unwrap();
+        assert_eq!((p.huddle_state.as_str(), p.huddle_state_expiration_ts, p.display_name.as_str()), ("", 0, "bob"));
+    }
+
+    #[test]
     fn slash_commands_from_slack() {
         use super::SlashCommand;
         let v = serde_json::json!({"ok": true, "commands": {
@@ -116,6 +127,17 @@ pub struct UserProfile {
     pub api_app_id: Option<String>,
     /// When the status clears (epoch seconds, 0 = never).
     pub status_expiration: Option<i64>,
+    /// `in_a_huddle` while the person is in one (else empty).
+    #[serde(default, deserialize_with = "null_as_default")]
+    pub huddle_state: String,
+    /// Until when `huddle_state` holds (epoch seconds).
+    #[serde(default, deserialize_with = "null_as_default")]
+    pub huddle_state_expiration_ts: i64,
+}
+
+/// A field Slack may send as null: its default then.
+fn null_as_default<'de, D: serde::Deserializer<'de>, T: Default + Deserialize<'de>>(d: D) -> Result<T, D::Error> {
+    Ok(Option::<T>::deserialize(d)?.unwrap_or_default())
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

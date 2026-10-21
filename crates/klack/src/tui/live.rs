@@ -307,7 +307,7 @@ pub fn apply(ws: &mut Workspace, ev: &Value, current: Option<&str>) -> Effects {
                 fx.rebuild_sidebar = true;
             }
         }
-        "user_change" | "team_join" => {
+        "user_change" | "team_join" | "user_profile_changed" => {
             if let Ok(u) = serde_json::from_value::<User>(ev["user"].clone()) {
                 // Your own zone is the schedule's.
                 if let Some(zone) = u.tz.as_deref().and_then(|z| z.parse().ok()).filter(|_| u.id == ws.self_id) {

@@ -272,6 +272,14 @@ impl Sidebar {
         matches!(self.items.get(n), Some(Item::Conversation(_))).then_some(n)
     }
 
+    /// The hover note for item `n`: a DM's person and their status ("Name — 🌴 Vacationing").
+    pub fn status_note(&self, ws: &Workspace, n: usize, now: i64) -> Option<String> {
+        let Some(Item::Conversation(id)) = self.items.get(n) else { return None };
+        let c = ws.conversations.get(id).filter(|c| c.is_im)?;
+        let status = super::text::status_line(ws, c.user.as_deref()?, now)?;
+        Some(format!("{} — {status}", ws.conversation_label(c)))
+    }
+
     /// The section header drawn at a terminal position.
     pub fn header_at(&self, column: u16, row: u16) -> Option<String> {
         let inner = self.area.inner(ratatui::layout::Margin { horizontal: 1, vertical: 1 });
@@ -427,9 +435,15 @@ fn conversation_line(ws: &Workspace, id: &str, selected: bool, draft: bool, widt
     };
     let label = ws.conversation_label(c);
     let draft = if draft { " ✎" } else { "" };
-    let room = width.saturating_sub(3 + badge.chars().count() + huddle.chars().count() + preview.chars().count() + draft.chars().count() + 1);
+    // A person's status emoji right after their name (re-checked against the clock every draw).
+    let status = c.user.as_deref().filter(|_| c.is_im).and_then(|u| ws.status_of(u, chrono::Utc::now().timestamp())).map(|s| format!(" {}", super::text::emoji(ws, &s.emoji, None))).unwrap_or_default();
+    let status_w = unicode_width::UnicodeWidthStr::width(status.as_str());
+    let room = width.saturating_sub(3 + badge.chars().count() + huddle.chars().count() + preview.chars().count() + draft.chars().count() + status_w + 1);
     let label: String = if label.chars().count() > room { label.chars().take(room.saturating_sub(1)).chain(['…']).collect() } else { label };
     let mut spans = vec![unread_mark(fresh), sigil, Span::styled(label, name_style)];
+    if !status.is_empty() {
+        spans.push(Span::raw(status));
+    }
     if !draft.is_empty() {
         spans.push(Span::styled(draft, Style::default().fg(super::theme::p().dim)));
     }
@@ -557,6 +571,30 @@ mod tests {
         // A long name makes room for the marker.
         let line = text(conversation_line(&w, "C2", false, true, 10));
         assert!(line.ends_with(" ✎") && line.contains('…'), "{line:?}");
+    }
+
+    #[test]
+    fn dm_row_shows_the_status_emoji() {
+        let mut w = ws();
+        let text = |l: Line| l.spans.iter().map(|s| s.content.to_string()).collect::<String>();
+        let mut bob = slack_core::types::User { id: "U1".into(), name: "bob".into(), ..Default::default() };
+        (bob.profile.status_emoji, bob.profile.status_text) = (":palm_tree:".into(), "Vacationing".into());
+        w.users.insert("U1".into(), bob.clone());
+        assert_eq!(text(conversation_line(&w, "D1", false, false, 30)), " ○ bob 🌴", "the glyph right after the name");
+        // A long name is cut so the emoji still fits.
+        bob.profile.display_name = "Bartholomew Longname-Smithson".into();
+        w.users.insert("U1".into(), bob);
+        let line = text(conversation_line(&w, "D1", false, false, 20));
+        assert!(line.ends_with("… 🌴") && unicode_width::UnicodeWidthStr::width(line.as_str()) <= 20, "{line:?}");
+        // Channels have no status.
+        assert_eq!(text(conversation_line(&w, "C1", false, false, 30)), " # general");
+        // The status text is the hover note over the row.
+        let mut s = Sidebar::default();
+        s.rebuild(&w);
+        let dm = s.items.iter().position(|i| *i == Item::Conversation("D1".into())).unwrap();
+        let general = s.items.iter().position(|i| *i == Item::Conversation("C1".into())).unwrap();
+        assert_eq!(s.status_note(&w, dm, 0).as_deref(), Some("Bartholomew Longname-Smithson — 🌴 Vacationing"));
+        assert_eq!(s.status_note(&w, general, 0), None);
     }
 
     #[test]

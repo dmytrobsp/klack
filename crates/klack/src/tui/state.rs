@@ -96,6 +96,15 @@ impl Timeline {
     }
 }
 
+/// What a person's status shows next to their name.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Status {
+    /// The emoji's name without colons ("headphones" while in a huddle).
+    pub emoji: String,
+    pub text: String,
+    pub in_huddle: bool,
+}
+
 #[derive(Debug, Default)]
 pub struct Workspace {
     /// Replies in threads you follow not read yet (the sidebar's Threads row).
@@ -413,6 +422,17 @@ impl Workspace {
             None if id.starts_with('B') => "bot".into(),
             None => id.to_string(),
         }
+    }
+
+    /// The status person `user` shows at `now` (epoch seconds): their own emoji while it has not
+    /// expired, else headphones while they are in a huddle.
+    pub fn status_of(&self, user: &str, now: i64) -> Option<Status> {
+        let p = &self.users.get(user)?.profile;
+        let emoji = p.status_emoji.trim_matches(':');
+        if !emoji.is_empty() && p.status_expiration.is_none_or(|t| t == 0 || t > now) {
+            return Some(Status { emoji: emoji.to_string(), text: p.status_text.clone(), in_huddle: false });
+        }
+        (p.huddle_state == "in_a_huddle" && p.huddle_state_expiration_ts > now).then(|| Status { emoji: "headphones".into(), text: "In a huddle".into(), in_huddle: true })
     }
 
     /// A person's name for lists, with " (You)" for yourself.
@@ -834,6 +854,36 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn status_rules() {
+        let set = |emoji: &str, text: &str, expires: Option<i64>, huddle: &str, huddle_until: i64| {
+            let mut u = User { id: "U2".into(), name: "bob".into(), ..Default::default() };
+            (u.profile.status_emoji, u.profile.status_text, u.profile.status_expiration) = (emoji.into(), text.into(), expires);
+            (u.profile.huddle_state, u.profile.huddle_state_expiration_ts) = (huddle.into(), huddle_until);
+            let mut ws = Workspace::default();
+            ws.users.insert("U2".into(), u);
+            ws
+        };
+        let palm = Status { emoji: "palm_tree".into(), text: "Vacationing".into(), in_huddle: false };
+        // (a) a status that never clears.
+        assert_eq!(set(":palm_tree:", "Vacationing", Some(0), "", 0).status_of("U2", 600), Some(palm.clone()));
+        assert_eq!(set("palm_tree", "Vacationing", None, "", 0).status_of("U2", 600), Some(palm.clone()), "colons or not, no expiry");
+        // (b) expired.
+        assert_eq!(set(":palm_tree:", "Vacationing", Some(500), "", 0).status_of("U2", 600), None);
+        // (c) in a huddle, until the huddle state runs out.
+        let w = set("", "", None, "in_a_huddle", 700);
+        assert_eq!(w.status_of("U2", 600), Some(Status { emoji: "headphones".into(), text: "In a huddle".into(), in_huddle: true }));
+        assert_eq!(w.status_of("U2", 800), None);
+        // (d) a custom status wins over the huddle.
+        assert_eq!(set(":palm_tree:", "Vacationing", Some(0), "in_a_huddle", 700).status_of("U2", 600), Some(palm));
+        assert_eq!(Workspace::default().status_of("U9", 600), None, "unknown person");
+        // A changed profile brings the new status.
+        let mut w = set("", "", None, "", 0);
+        let ev = serde_json::json!({"type": "user_profile_changed", "user": {"id": "U2", "name": "bob", "profile": {"status_emoji": ":palm_tree:", "status_text": "Vacationing"}}});
+        crate::tui::live::apply(&mut w, &ev, None);
+        assert_eq!(w.status_of("U2", 600).map(|s| s.emoji), Some("palm_tree".into()));
+    }
 
     #[test]
     fn the_unread_count_is_what_the_sidebar_shows() {

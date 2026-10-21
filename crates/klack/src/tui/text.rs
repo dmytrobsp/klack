@@ -72,6 +72,28 @@ pub fn emoji_cell(ws: &Workspace, name: &str, unicode: Option<&str>) -> String {
     }
 }
 
+/// Person `user`'s status emoji at `now`, as the message pane shows it ([`emoji_cell`]).
+pub fn status_span(ws: &Workspace, user: &str, now: i64) -> Option<String> {
+    ws.status_of(user, now).map(|s| emoji_cell(ws, &s.emoji, None))
+}
+
+/// Person `user`'s status at `now` as plain text: "🌴 Vacationing" (the emoji alone without text).
+pub fn status_line(ws: &Workspace, user: &str, now: i64) -> Option<String> {
+    let s = ws.status_of(user, now)?;
+    let emoji = emoji(ws, &s.emoji, None);
+    Some(if s.text.is_empty() { emoji } else { format!("{emoji} {}", s.text) })
+}
+
+/// A conversation's pane title: a DM's with the person's status ("Name — 🌴 Vacationing").
+pub fn conversation_title(ws: &Workspace, id: &str, now: i64) -> String {
+    let label = ws.channel_label(id);
+    let status = ws.conversations.get(id).filter(|c| c.is_im).and_then(|c| c.user.as_deref()).and_then(|u| status_line(ws, u, now));
+    match status {
+        Some(s) => format!("{label} — {s}"),
+        None => label,
+    }
+}
+
 /// Take the custom emoji placeholders out of `lines` (blanks in their place): where each
 /// picture goes, as (line, column, emoji name).
 pub fn emoji_cells(ws: &Workspace, lines: &mut [Line<'static>]) -> Vec<(usize, u16, String)> {
@@ -363,6 +385,23 @@ mod tests {
 
     fn plain(lines: &[Line]) -> Vec<String> {
         lines.iter().map(|l| l.spans.iter().map(|s| s.content.to_string()).collect::<String>()).collect()
+    }
+
+    #[test]
+    fn a_dm_title_carries_the_status() {
+        let mut ws = Workspace::default();
+        ws.conversations.insert("D1".into(), slack_core::types::Conversation { id: "D1".into(), is_im: true, user: Some("U2".into()), ..Default::default() });
+        ws.conversations.insert("C1".into(), slack_core::types::Conversation { id: "C1".into(), name: "general".into(), is_channel: true, ..Default::default() });
+        let mut bob = slack_core::types::User { id: "U2".into(), name: "bob".into(), ..Default::default() };
+        assert_eq!(conversation_title(&ws, "D1", 600), "U2");
+        ws.users.insert("U2".into(), bob.clone());
+        assert_eq!(conversation_title(&ws, "D1", 600), "bob", "no status: the name alone");
+        (bob.profile.status_emoji, bob.profile.status_text, bob.profile.status_expiration) = (":palm_tree:".into(), "Vacationing".into(), Some(700));
+        ws.users.insert("U2".into(), bob);
+        assert_eq!(conversation_title(&ws, "D1", 600), "bob — 🌴 Vacationing");
+        assert_eq!(conversation_title(&ws, "D1", 800), "bob", "gone once it expires");
+        assert_eq!(conversation_title(&ws, "C1", 600), "general");
+        assert_eq!(status_span(&ws, "U2", 600).as_deref(), Some("🌴"));
     }
 
     #[test]

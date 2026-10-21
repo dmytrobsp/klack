@@ -753,6 +753,8 @@ pub fn build_lines_range(here: &Here, t: &Timeline, from: usize, to: usize, widt
     // What the whole build would carry over: a system message ends a group.
     let mut prev: Option<&Message> = before.filter(|p| !is_system(p));
     let mut last_day: Option<f64> = before.map(|p| p.time());
+    // Statuses are checked against the clock on every build (an expired one is gone).
+    let now = chrono::Utc::now().timestamp();
     for (n, m) in shown.into_iter().enumerate().skip(from).take(to.saturating_sub(from)) {
         let ts = m.time();
         owners.resize(out.len(), None);
@@ -793,10 +795,12 @@ pub fn build_lines_range(here: &Here, t: &Timeline, from: usize, to: usize, widt
                 owners.resize(out.len(), None);
             }
             let color = m.user.as_deref().map(text::user_color).unwrap_or(super::theme::p().dim);
-            let mut header = vec![
-                Span::styled(ws.author(m), Style::default().fg(color).add_modifier(Modifier::BOLD)),
-                Span::styled(format!("  {}", time_label(ws, ts)), Style::default().fg(super::theme::p().dim)),
-            ];
+            let mut header = vec![Span::styled(ws.author(m), Style::default().fg(color).add_modifier(Modifier::BOLD))];
+            // The person's status emoji (a custom one's picture goes over its cells, below).
+            if let Some(status) = m.user.as_deref().and_then(|u| text::status_span(ws, u, now)) {
+                header.push(Span::raw(format!(" {status}")));
+            }
+            header.push(Span::styled(format!("  {}", time_label(ws, ts)), Style::default().fg(super::theme::p().dim)));
             if m.is_ephemeral {
                 header.push(Span::styled("  only visible to you", Style::default().fg(super::theme::p().dim).add_modifier(Modifier::ITALIC)));
             }
@@ -812,7 +816,13 @@ pub fn build_lines_range(here: &Here, t: &Timeline, from: usize, to: usize, widt
                     beside = Some(color);
                 }
             }
-            out.push(Line::from(header));
+            let mut header = [Line::from(header)];
+            for (_, col, name) in text::emoji_cells(ws, &mut header) {
+                if let Some(file) = super::media::emoji_file(ws, &name) {
+                    slots.push(ImageSlot { line: out.len(), col, file, size: super::media::AVATAR_SIZE });
+                }
+            }
+            out.extend(header);
         }
         let base = out.len();
         let (mut body, body_slots) = message_body(here, m, width.saturating_sub(indent), !thread, thumb_size);
@@ -1588,6 +1598,31 @@ mod tests {
         assert!(plain(&off).iter().any(|l| l.starts_with("bob")), "turned off: nothing before the name");
         let (lines, _, none) = build_lines_owned(&ws, &t, 40, false, &|_, _| None, Avatars::Initials);
         assert!(none.is_empty() && plain(&lines).iter().any(|l| l.starts_with("BO bob")), "no graphics: the initials alone");
+    }
+
+    #[test]
+    fn author_line_shows_the_status_emoji() {
+        let mut ws = Workspace::default();
+        let mut bob = slack_core::types::User { id: "U2".into(), name: "bob".into(), ..Default::default() };
+        (bob.profile.status_emoji, bob.profile.status_text) = (":palm_tree:".into(), "Vacationing".into());
+        ws.users.insert("U2".into(), bob.clone());
+        let mut t = Timeline { loaded: true, ..Default::default() };
+        t.upsert(msg("1.0", "U2", "one"));
+        let rows = plain(&build_lines_owned(&ws, &t, 40, false, &|_, _| None, Avatars::Off).0);
+        let header = rows.iter().find(|l| l.starts_with("bob")).unwrap();
+        assert_eq!(header, &format!("bob 🌴  {}", time_label(&ws, 1.0)), "name, the emoji, then the time");
+        // A custom emoji status is a picture over two blank cells, after the initials and the name.
+        ws.custom_emoji.insert("piggy".into(), "https://emoji.slack-edge.com/T1/piggy/b77.png".into());
+        ws.number_emoji();
+        ws.emoji_pictures = true;
+        bob.profile.status_emoji = ":piggy:".into();
+        ws.users.insert("U2".into(), bob);
+        let (lines, _, slots) = build_lines_owned(&ws, &t, 40, false, &|_, _| None, Avatars::Initials);
+        let rows = plain(&lines);
+        let at = rows.iter().position(|l| l.starts_with("BO bob")).unwrap();
+        assert!(rows[at].starts_with("BO bob     "), "{:?}", rows[at]);
+        let pics: Vec<(usize, u16, &str)> = slots.iter().map(|s| (s.line, s.col, s.file.id.as_str())).collect();
+        assert_eq!(pics, [(at, 7, "emoji:piggy:b77.png")]);
     }
 
     #[test]

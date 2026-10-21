@@ -82,6 +82,14 @@ one and the terminal draws pictures, else its initials and number in a colour of
 the shown one marked by an accent bar and the others with unread messages by a thinner, dimmer
 one, and below such a tile `@3` for three unread DMs or mentions there; a click on a tile switches, like Alt+1…9.
 
+**Statuses.** A person's status emoji stands right after their name — in the sidebar's direct messages
+(a long name is shortened to keep it) and on their messages (a custom emoji as its picture where the
+terminal draws pictures) — and a DM's title adds the text ("Name — 🌴 Vacationing"); hovering their DM in
+the sidebar shows it in the status line. Someone in a huddle without a status emoji of their own shows 🎧
+("In a huddle"). An expired status is gone at once, without waiting for Slack. Statuses come with the
+people at start and with profile-change events; Slack does not push every change to klack's connection,
+so one set later may only show after a restart.
+
 ## Signing in
 
 `klack auth login` (and plain `klack` on a profile with no sign-ins yet) guides you, right in the
