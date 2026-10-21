@@ -96,6 +96,7 @@ section h2 { font-family: 'Anton', sans-serif; font-weight: 400; font-size: 44px
 
 /* the rest of the page (LP5) */
 code, kbd { font-family: 'Space Mono', monospace; font-size: .92em; }
+.nowrap { white-space: nowrap; }
 kbd { color: var(--ink); background: var(--cream); padding: 0 5px; box-shadow: 2px 2px 0 #000; margin: 0 1px; }
 p code, li code, h3 code { color: var(--yellow); }
 .lede { color: #e8dcc4; max-width: 640px; }
@@ -119,13 +120,11 @@ p code, li code, h3 code { color: var(--yellow); }
 .ctl { transform: rotate(1.5deg); }
 .ctl pre, .cmd { white-space: pre-wrap; word-break: break-word; }
 .term .ps, .cmd .ps { color: var(--green); }
-.rest h3 { font-family: 'Anton', sans-serif; font-weight: 400; font-size: 32px; text-transform: uppercase; margin: 0 0 18px; }
-.everything { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 16px 14px; }
-.everything li { --paper: var(--scrap); color: var(--ink); padding: 12px 14px 14px; font-size: 12.5px; line-height: 1.4; transform: rotate(var(--r, 0deg)); }
-.everything li:nth-child(4n+2) { --paper: var(--cream); }
-.everything li b { display: block; font-family: 'Rubik Mono One', sans-serif; font-weight: 400; font-size: 13px; text-transform: uppercase; margin-bottom: 4px; }
-.everything li code { color: var(--aubergine); }
-.rest-jab { margin-top: 26px; }
+.feature p.deadpan { font-size: 18px; line-height: 1.45; color: #e8dcc4; max-width: 400px; }
+.cool-kids { display: block; width: fit-content; margin: 12px 0 0 18px; font-size: 22px; transform: rotate(-4deg); }
+/* the features' closer: a strip pasted across the column, poster type */
+.closer { --paper: var(--cream); color: var(--ink); width: fit-content; max-width: 100%; margin: 8px auto 0; padding: 18px 28px 20px;
+  font-family: 'Rubik Mono One', sans-serif; font-size: 25px; line-height: 1.25; text-transform: uppercase; text-align: center; transform: rotate(var(--r, 0deg)); }
 
 #numbers .sheet-slot { margin: 26px 0 10px; }
 /* the defaced spec sheet (LP10): a printed sheet someone took a marker to */
@@ -156,12 +155,10 @@ p code, li code, h3 code { color: var(--yellow); }
 .note .measured { font-size: 12px; color: var(--muted); max-width: 720px; margin: 18px 0 0; }
 .note .measured a { color: var(--yellow); }
 .standin-note { border: 2px dashed #3a2a3b; padding: 40px 20px; text-align: center; color: var(--dim); margin: 0; }
-.freedom { font-size: 20px; color: var(--green); max-width: 640px; margin-top: 16px; }
 
-.ssh-head { display: flex; align-items: center; gap: 18px; }
-.ssh-head h2 { font-size: 40px; flex: 1; }
+.ssh-shout { display: flex; align-items: center; gap: 22px; margin: 0 0 30px 14px; }
+.ssh-shout .scrawl { margin: 0; font-size: 28px; line-height: 1.2; max-width: 460px; }
 .graffiti { width: 150px; height: auto; flex: none; transform: rotate(-6deg); }
-.ssh-aside { color: var(--yellow); font-size: 26px; margin: 4px 0 30px 14px; }
 
 .cmd { font-size: 20px; color: var(--cream); background: #0b0b0d; border-left: 4px solid var(--green); padding: 10px 16px; margin: 8px 0 18px; max-width: 420px; }
 #get .jab { margin-bottom: 26px; }
@@ -182,20 +179,11 @@ p code, li code, h3 code { color: var(--yellow); }
 .capture .grid { position: relative; font-size: calc(100cqw / var(--cols) / 0.6125); line-height: 1; }
 .capture svg.cells { display: block; width: 100%; height: auto; }
 .capture .tile { position: absolute; left: calc(var(--c) / var(--cols) * 100%); top: calc(var(--r) / var(--rows) * 100%); width: calc(var(--w) / var(--cols) * 100%); height: calc(var(--h) / var(--rows) * 100%); object-fit: cover; display: block; }
-/* the shared screen on the huddle capture: Swan Lake, a few seconds a picture, a faint grain and scanlines (6 fps) */
+/* the shared screen on the huddle capture: one Swan Lake still under faint scanlines and grain. Nothing moves. */
 .capture .tv { overflow: hidden; background: #000; --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' seed='7'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23g)'/%3E%3C/svg%3E"); }
-.capture .tv img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0; animation: tv-swan 16s step-end infinite; }
-.capture .tv img:nth-child(2) { animation-delay: -12s; }
-.capture .tv img:nth-child(3) { animation-delay: -8s; }
-.capture .tv img:nth-child(4) { animation-delay: -4s; }
-@keyframes tv-swan { 0% { opacity: 1; } 25%, 100% { opacity: 0; } }
-/* off screen (js/tv.js) the loop waits; the enlarged copy in the zoom always runs */
-.capture .tv.paused img, .capture .tv.paused::after { animation-play-state: paused; }
-dialog.zoom .capture .tv img, dialog.zoom .capture .tv::after { animation-play-state: running; }
+.capture .tv img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 .capture .tv::before { content: ""; position: absolute; inset: 0; z-index: 1; pointer-events: none; background: repeating-linear-gradient(to bottom, rgba(0, 0, 0, .22) 0 1px, transparent 1px 3px); }
-.capture .tv::after { content: ""; position: absolute; inset: -40%; z-index: 2; pointer-events: none; background: var(--grain); background-size: 120px 120px; opacity: .16; mix-blend-mode: overlay; animation: tv-grain 1s steps(1, end) infinite; }
-@keyframes tv-grain { 0% { transform: translate(0, 0); } 16.7% { transform: translate(-9%, 5%); } 33.3% { transform: translate(6%, -7%); } 50% { transform: translate(-4%, -10%); } 66.7% { transform: translate(10%, 3%); } 83.3% { transform: translate(-7%, 9%); } 100% { transform: translate(0, 0); } }
-@media (prefers-reduced-motion: reduce) { .capture .tv img, .capture .tv::after { animation: none; } .capture .tv img:first-child { opacity: 1; } }
+.capture .tv::after { content: ""; position: absolute; inset: 0; z-index: 2; pointer-events: none; background: var(--grain); background-size: 120px 120px; opacity: .16; mix-blend-mode: overlay; }
 
 /* captures zoom (js/zoom.js): a click, a tap, Enter or Space opens one enlarged; Esc or a click closes it.
    While it is open the page behind does not scroll. */
@@ -211,7 +199,11 @@ dialog.zoom .term { cursor: zoom-out; box-shadow: none; }
 #footer { position: relative; margin-top: 40px; padding: 34px 0 60px; border-top: 2px dashed #3a2a3b; display: flex; gap: 28px; align-items: center; font-size: 12.5px; color: var(--muted); }
 #footer p { margin: 0 0 6px; }
 #footer .credit { font-size: 11px; }
-.foot-sticker { flex: none; }
+/* a rubber stamp, a bit worn: the ink skips where the crease noise is light */
+.stamp { flex: none; display: inline-flex; flex-direction: column; align-items: center; gap: 2px; padding: 12px 16px 10px; border: 4px double var(--pink); border-radius: 6px;
+  color: var(--pink); font-family: 'Rubik Mono One', sans-serif; font-size: 13px; line-height: 1.15; text-align: center; transform: rotate(var(--r, -9deg)); opacity: .92;
+  -webkit-mask-image: var(--crease); mask-image: var(--crease); -webkit-mask-size: 180px 60px; mask-size: 180px 60px; mask-mode: luminance; }
+.stamp b { font-weight: 400; font-size: 17px; letter-spacing: 2px; border-top: 2px solid var(--pink); padding-top: 4px; margin-top: 2px; }
 
 @media (max-width: 759px) {
   #top > .dl-area { position: static; left: auto; top: auto; width: auto; transform: none; padding: 16px 0 4px; }
@@ -225,9 +217,11 @@ dialog.zoom .term { cursor: zoom-out; box-shadow: none; }
   .topnav span a { margin: 0 16px 0 0; }
   .feature { grid-template-columns: 1fr; gap: 22px; }
   .feature.flip .words { order: 0; }
-  .ssh-head { flex-direction: column; align-items: flex-start; }
-  .ssh-head h2 { font-size: 32px; }
-  .graffiti { width: 110px; align-self: flex-end; }
+  .ssh-shout { margin-left: 0; gap: 12px; }
+  .ssh-shout .scrawl { font-size: 23px; }
+  .graffiti { width: 96px; }
+  .closer { font-size: 16px; padding: 14px 16px 16px; }
+  .cool-kids { font-size: 18px; margin-left: 4px; }
   #footer { flex-direction: column; align-items: flex-start; }
   .sheet { padding: 20px 16px 18px; }
   .sheet thead tr { display: block; }

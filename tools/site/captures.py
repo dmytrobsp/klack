@@ -5,7 +5,7 @@
 
 RAW_DIR holds <name>.ansi (`kitty @ get-text --extent screen --ansi`). Outside the repo (0600, never printed or
 committed): ~/.config/klack-site/rename.json, the made-up names, and ~/.config/klack-site/fixes.json, single cells
-to overwrite after renaming ({"huddle": {"row,col": "letter"}} — a letter drawn from a real name). See
+to overwrite after renaming ({"huddle": {"row,col": "letter"}} — the tiles' letters drawn from real names). See
 CAPTURES.md for how the raw captures were made.
 """
 import html
@@ -16,9 +16,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from ansi2html import convert, render_svg  # noqa: E402
 
-HUDDLE_LABEL = ("klack's huddle view: the other person's shared screen on the stage (on this page it plays Swan "
-                "Lake, like Soviet television in August 1991) and their camera in a tile, your own tile muted, the "
-                "call bar at the bottom")
+HUDDLE_LABEL = ("klack's huddle view: the other person's shared screen on the stage (on this page it shows Swan "
+                "Lake, like Soviet television in August 1991), their tile and yours with the cameras off, the call "
+                "bar at the bottom")
 
 CAPTURES = {
     "hero": dict(cols=110, rows=32, title="klack", label=(
@@ -28,16 +28,16 @@ CAPTURES = {
         "klack after pressing Space on a message: the which-key panel lists what each next key does")),
     "ssh": dict(cols=80, rows=26, title="ssh box — klack", label=(
         "The same main view of klack in an 80-column terminal, as in an SSH session")),
-    # A's own tile shows the first letter of the real name: the capture is not built without its fix
-    "huddle": dict(cols=110, rows=32, title="klack — huddle", label=HUDDLE_LABEL, pictures=("tv", "tile"),
+    # the tiles show the first letters of the real names: the capture is not built without its fixes
+    "huddle": dict(cols=110, rows=32, title="klack — huddle", label=HUDDLE_LABEL, pictures=("tv",),
                    needs_fixes=True),
     "signin": dict(cols=120, rows=29, title="klack auth login", label=(
         "klack's sign-in guide, the code way: a QR code for the phone, the link, and the ___-___ prompt for "
         "the emailed code, for demo@example.com")),
 }
 
-# the shared screen's loop: Commons pictures (sources and licences in CAPTURES.md and the page's footer)
-SWANS = ["swan-1.webp", "swan-2.webp", "swan-3.webp", "swan-4.webp"]
+# the shared screen: one still, the cygnets (source and licence in CAPTURES.md and the page's footer)
+SWAN = "swan.webp"
 
 
 def _box(p):
@@ -45,11 +45,10 @@ def _box(p):
 
 
 def picture_html(kind, box):
-    """What the page puts over a picture's cells: the camera's test pattern, or the Swan Lake broadcast."""
-    if kind == "tile":
-        return f'<img class="tile" src="captures/tile.webp" alt="" style="{_box(box)}">'
-    imgs = "".join(f'<img src="captures/{n}" alt="">' for n in SWANS)
-    return f'<div class="tile tv" style="{_box(box)}" aria-hidden="true">{imgs}</div>'
+    """What the page puts over a picture's cells: the Swan Lake broadcast on the shared screen."""
+    if kind != "tv":
+        raise ValueError(f"unknown picture kind {kind!r}")
+    return f'<div class="tile tv" style="{_box(box)}" aria-hidden="true"><img src="captures/{SWAN}" alt=""></div>'
 
 
 def fragment(svg, cols, rows, title, label, overlays=""):

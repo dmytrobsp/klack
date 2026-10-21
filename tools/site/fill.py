@@ -122,12 +122,15 @@ def release_from_api(repo, token, urlopen=urllib.request.urlopen):
 WIN = 1.5
 PLACEHOLDER = ('<!-- draft --><p class="standin-note">measuring… no number goes up here until '
                "it's been measured.</p>")
-TIES = {"startup": "a draw. not bad for a couple of weekends.",
+TIES = {"startup": "a draw. not bad for a weekend.",
         "cpu_share": "video costs what it costs. even in a terminal."}
 TIE = "ok, a tie. it's a chat app."
-LOSSES = {"cpu_idle": "this one's theirs. klack fidgets."}
+# cpu_idle's loss points at the row after it (cpu_scroll, a win: test_fill checks the order in numbers.json)
+LOSSES = {"cpu_idle": "yeah, okay. now look at the next one"}
 LOSS = "fine, this one's theirs."
 ZERO = "it's text."
+# the user's own lines: not drafts
+USER_LINES = {TIES["startup"], LOSSES["cpu_idle"]}
 
 
 def _mb(mb):
@@ -175,7 +178,8 @@ def _row(r):
         scrawl = f'<span class="scrawl ratio">{fmt_ratio(o / k)}× {word}{what}</span>'
     else:  # a bespoke scrawl only ever in its own class: TIES for a tie, LOSSES for a loss
         line = {"zero": ZERO, "loss": LOSSES.get(r["id"], LOSS), "tie": TIES.get(r["id"], TIE)}[kind]
-        scrawl = f'<!-- draft --><span class="scrawl">{txt(line)}</span>'
+        draft = "" if line in USER_LINES else "<!-- draft -->"
+        scrawl = f'{draft}<span class="scrawl">{txt(line)}</span>'
         if kind == "loss" and cpu and o > 0:  # a CPU loss leads with how much, honestly
             scrawl = f'<span class="scrawl ratio more">{fmt_ratio(k / o)}× more CPU</span>' + scrawl
     them = f'<span class="crossed">{ov}</span>' if marks else f'<span class="plain">{ov}</span>'
@@ -200,10 +204,10 @@ def render_measured_note(numbers):
     if not numbers.get("rows"):
         return ""
     v = numbers["versions"]
-    return (f'<p class="measured">klack {txt(v["klack"])} against the official app {txt(v["slack"])}, '
+    return (f'<p class="measured">klack {txt(v["klack"])} against Slack\'s desktop app {txt(v["slack"])}, '
             f'measured on Linux on {txt(numbers["measured_on"])}: {txt(numbers["machine"])}. '
             "App against app — the terminal klack runs in isn't counted. "
-            "The official app's RAM figures are a lower bound: one of its helper processes couldn't be read. "
+            "Slack's RAM figures are a lower bound: one of its helper processes couldn't be read. "
             f'<a href="https://github.com/{REPO}/blob/master/tools/site/MEASURING.md">How it was measured</a>.</p>')
 
 

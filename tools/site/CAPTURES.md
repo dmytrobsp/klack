@@ -1,4 +1,4 @@
-# How the page's terminal captures were made (LP7, redrawn in LP7b)
+# How the page's terminal captures were made (LP7, redrawn in LP7b, re-captured in LP12a)
 
 `site/captures/{hero,keys,huddle,ssh,signin}.html` are fragments that `python3 tools/site/fill.py site` puts into
 the page's `hero-capture` and `capture-<name>` regions (a region without its file keeps what it has). They are
@@ -52,52 +52,45 @@ of a listed string (only generic words share one: "channel", "search", "staging"
 
 ## The live captures (hero, keys, ssh, huddle)
 
-klack (debug build) as A in its own kitty window (`--class lp-7b`, remote control on its own socket, floating, on a
-hidden workspace), with a fake HOME: copies of the two session files, sounds off, `[audio] input` and
-`KLACK_AUDIO_INPUT` naming a microphone that does not exist (klack never falls back to another one), huddle volume
-0, `KLACK_AVATARS=0` (initials instead of profile pictures). The window was sized to 110 × 32 cells (80 × 26 for
-the SSH one) and each screen taken with `kitty @ get-text --extent screen --ansi`. The parsed grid was checked
-against kitty's plain `get-text` of the same screen, row by row: equal.
+Re-captured in LP12a so that the person A talks to shows online and has the camera off. klack (debug build) as A
+in its own kitty window (`--class lp-c2`, remote control on its own socket, floating, on a hidden special
+workspace) and, at the same time, B's own klack in a second one (`lp-c2b`), so that B's presence is active and A's
+sidebar draws B's dot green. Each had its own fake HOME: a copy of that account's session file, sounds off,
+`[audio] input` and `KLACK_AUDIO_INPUT` naming a microphone that does not exist (klack never falls back to another
+one), huddle volume 0, `KLACK_AVATARS=0` (initials instead of profile pictures). A's window was sized to 110 × 32
+cells (80 × 26 for the SSH one) and each screen taken with `kitty @ get-text --extent screen --ansi`. The parsed grid
+was checked against kitty's plain `get-text` of the same screen, row by row: equal (the picture's placeholder cells
+aside). B's window was never captured.
 
-- **hero** — the main view on `#deploys`, ↑ twice: the last message but one selected.
+- **hero** — the main view on `#deploys` (reached with Ctrl+K, so `#coffee` stays unread), ↑ three times: the
+  message with the link selected. `#deploys` now ends in two "A huddle started" notes from the earlier huddles.
 - **keys** — then Space: the which-key panel.
-- **ssh** — the same main view at 80 × 26, as in an SSH session (the window title says so; klack itself ran
-  locally).
-- **huddle** — B ran `klack ctl --profile b huddle-media deploys 300 --video-test --share-test` (a synthetic
-  camera and a synthetic screen share, no microphone); A joined with `␣hh` (muted, as always) and opened the
-  huddle view with `␣hv`; afterwards `␣hh` left. No other key was pressed in the huddle. The video tiles are
-  kitty pictures, so the text capture has placeholder cells there: they are blanked; the camera tile gets
-  `site/captures/tile.webp` (one frame of `ffmpeg -f lavfi -i testsrc2=size=640x360`, the kind of test pattern
-  B sent) and the shared screen plays the Swan Lake loop below. A's own tile shows a letter instead of a picture:
-  the made-up name's. `~/.config/klack-site/fixes.json` (0600, next to `rename.json`) puts it into that one cell
-  (`{"huddle": {"row,col": letter}}`); `captures.py` refuses to build the huddle without it, and refuses a fix
-  whose cell is blank (the layout moved), so a re-capture can't ship the real letter by accident.
+- **ssh** — Esc, then the same main view at 80 × 26, as in an SSH session (the window title says so; klack itself
+  ran locally).
+- **huddle** — held in `#coffee`, so `#deploys` gets no third note. B ran
+  `klack ctl --profile b huddle-media coffee 300 --share-test` (a synthetic screen share only: no `--video-test`,
+  so B's camera is off, and no microphone); A joined with `␣hh` (muted, as always) and opened the huddle view with
+  `␣hv`; afterwards `␣hh` left and B's process was stopped by its PID. No other key was pressed in the huddle.
+  The shared screen is a kitty picture, so the text capture has placeholder cells there: they are blanked and the
+  page puts the Swan Lake still over them. Both tiles show a letter instead of a picture: the first letter of the
+  real name. `~/.config/klack-site/fixes.json` (0600, next to `rename.json`) puts the made-up names' letters into
+  those two cells (`{"huddle": {"row,col": letter}}`); it was written by a script that finds the lone letter in
+  each tile (A's is the one labelled "(You)") and prints only the positions. `captures.py` refuses to build the
+  huddle without it, refuses a fix whose cell is blank (the layout moved), and refuses a screen with more or fewer
+  pictures than the share, so a re-capture can't ship a real letter or a camera by accident.
 
 ## The shared screen: Swan Lake
 
 In August 1991 Soviet television showed *Swan Lake* over and over instead of the news; the huddle capture's shared
-screen does the same: four pictures, 4 s each, hard cuts (`step-end`, no fade), faint scanlines and a grain
-that jumps at 6 fps (`.capture .tv` in `site/css/site.css`). Off screen it waits (`site/js/tv.js` pauses it from an
-IntersectionObserver; the enlarged copy in the zoom always runs); with `prefers-reduced-motion` only the first
-picture shows and nothing moves. Each was downloaded once from its Commons file page's "Original file" link into an empty scratch folder,
-its licence read on that page, then scaled with ffmpeg to 640 × 360 webp (portraits pillarboxed on black,
-landscapes cropped to fit) — `site/captures/swan-<n>.webp`, 10–50 KB each:
+screen shows it too: one still of the four little swans under faint scanlines and grain (`.capture .tv` in
+`site/css/site.css`). Nothing moves. It was downloaded once from its Commons file page's "Original file" link into
+an empty scratch folder, its licence read on that page, then cropped to 16 : 9 and scaled with ffmpeg to
+640 × 360 webp — `site/captures/swan.webp`, 13 KB:
 
-1. `swan-1.webp` — [File:The Soviet Union 1970 CPA 3938 stamp (Art. Scenes from Ballet 'Swan Lake' (Pyotr Ilyich Tchaikovsky)).jpg](https://commons.wikimedia.org/wiki/File:The_Soviet_Union_1970_CPA_3938_stamp_%28Art._Scenes_from_Ballet_%27Swan_Lake%27_%28Pyotr_Ilyich_Tchaikovsky%29%29.jpg)
-   — a Soviet postage stamp, public domain (not an object of copyright, art. 1259 of the Civil Code of the
-   Russian Federation, as the page states).
-2. `swan-2.webp` — [File:Swanlakelegnani.jpg](https://commons.wikimedia.org/wiki/File:Swanlakelegnani.jpg) —
-   Pierina Legnani as Odette, St. Petersburg 1895, unknown author; public domain (the page: published outside the
-   US before 1909; public domain in the US).
-3. `swan-3.webp` — [File:SwanLake 1895 set for second act.jpg](https://commons.wikimedia.org/wiki/File:SwanLake_1895_set_for_second_act.jpg)
-   — the 1895 Mariinsky set for the second act by Mikhail Bocharov and Henrich Levogt; public domain (the page: author's life plus 70 years or fewer, published
-   before 1931; Public Domain Mark 1.0).
-4. `swan-4.webp` — [File:Swanlake010.jpg](https://commons.wikimedia.org/wiki/File:Swanlake010.jpg) — "Swan
-   Lake ballet", the cygnets, State Ballet of Georgia, 2007, by Paata Vardanashvili,
-   [CC BY 2.0](https://creativecommons.org/licenses/by/2.0/); cropped to 16 : 9 and scaled. Credited in the
-   page's footer (title, author, links to the file page and the licence, "cropped"), next to the other three
-   (the 1970 stamp, Legnani as Odette, the act II set by Bocharov and Levogt): "public domain, via Wikimedia
-   Commons".
+- [File:Swanlake010.jpg](https://commons.wikimedia.org/wiki/File:Swanlake010.jpg) — "Swan Lake ballet", the
+  cygnets, State Ballet of Georgia, 2007, by Paata Vardanashvili,
+  [CC BY 2.0](https://creativecommons.org/licenses/by/2.0/); cropped and scaled. Credited in the page's footer
+  (title, author, links to the file page and the licence, "cropped").
 
 ## The sign-in screen (signin)
 

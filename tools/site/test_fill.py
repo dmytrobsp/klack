@@ -255,13 +255,13 @@ class SheetTests(unittest.TestCase):
         self.assertNotIn("crossed", r)
         self.assertNotIn("circled", r)
         self.assertNotIn("×", r)
-        self.assertIn("weekends", r)
-        self.assertIn('<!-- draft --><span class="scrawl', r)
+        self.assertIn('<span class="scrawl">a draw. not bad for a weekend.</span>', r)
+        self.assertNotIn("<!-- draft -->", r)  # the user's line, not a draft
         share = self.rows[5]
         self.assertNotIn("crossed", share)
         self.assertNotIn("×", share)
         self.assertIn("<!-- draft -->", share)
-        self.assertNotIn("weekends", share)
+        self.assertNotIn("weekend", share)
 
     def test_default_tie_scrawl(self):
         h = F.render_sheet({**NUMBERS, "rows": [
@@ -275,10 +275,19 @@ class SheetTests(unittest.TestCase):
         self.assertIn("0.45%", r)
         self.assertNotIn("crossed", r)
         self.assertNotIn("circled", r)
-        self.assertIn('<span class="scrawl ratio more">1.4× more CPU</span>', r)  # a CPU loss says how much
-        self.assertIn("theirs", r)
-        self.assertIn("<!-- draft -->", r)
-        self.assertNotIn('<!-- draft --><span class="scrawl ratio', r)  # the figure is never a draft
+        self.assertIn('<span class="scrawl ratio more">1.4× more CPU</span>'
+                      '<span class="scrawl">yeah, okay. now look at the next one</span>', r)  # how much, then the user's line
+        self.assertNotIn("<!-- draft -->", r)  # neither the figure nor the user's line is a draft
+        other = F.render_sheet({**NUMBERS, "rows": [
+            {"id": "other", "label": "x", "unit": "percent", "klack": 0.63, "slack": 0.45}]})
+        self.assertIn('<!-- draft --><span class="scrawl">fine, this one\'s theirs.</span>', other)
+
+    def test_the_next_one_is_a_win(self):
+        # "now look at the next one" points at the row after CPU at rest: it has to be there and be a win
+        real = json.loads((ROOT / "site/data/numbers.json").read_text())["rows"]
+        i = [r["id"] for r in real].index("cpu_idle")
+        self.assertLess(i + 1, len(real))
+        self.assertEqual(F.classify(real[i + 1]), "win")
 
     def test_small_percent_rows_use_two_decimals_on_both_sides(self):
         self.assertEqual(F.fmt_value(0.45, "percent", small=True), "0.45%")
@@ -307,13 +316,13 @@ class SheetTests(unittest.TestCase):
                 {"id": id, "label": "x", "unit": "seconds", "klack": k, "slack": o}]})
         lost_startup = one("startup", 2.0, 1.8)  # the startup joke is for a draw, not a loss
         self.assertIn("fine, this one's theirs.", lost_startup)
-        self.assertNotIn("weekends", lost_startup)
+        self.assertNotIn("weekend", lost_startup)
         tied_idle = one("cpu_idle", 1.0, 1.2)  # the fidget joke is for a loss, not a draw
         self.assertIn("ok, a tie. it's a chat app.", tied_idle)
-        self.assertNotIn("fidgets", tied_idle)
+        self.assertNotIn("next one", tied_idle)
         won_idle = one("cpu_idle", 1.0, 3.0)
         self.assertIn("3.0× faster", won_idle)
-        self.assertNotIn("fidgets", won_idle)
+        self.assertNotIn("next one", won_idle)
 
     def test_cpu_rows_lead_with_the_ratio(self):
         h = F.render_sheet({**NUMBERS, "rows": [
@@ -372,7 +381,7 @@ class SheetTests(unittest.TestCase):
         for s in ("Linux", "measured on Linux", "9.9.9", "1.2.3", "2026-01-02", "Some CPU (8 cores)",
                   "App against app", "the terminal klack runs in isn't counted",
                   "https://github.com/dmytrobsp/klack/blob/master/tools/site/MEASURING.md",
-                  "The official app's RAM figures are a lower bound"):
+                  "against Slack's desktop app 1.2.3", "Slack's RAM figures are a lower bound"):
             self.assertIn(s, n, s)
         self.assertNotRegex(n.lower(), r"workspace|\bteam\b|channel")
 

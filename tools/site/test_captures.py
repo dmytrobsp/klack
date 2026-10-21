@@ -21,26 +21,28 @@ def screen(rows, cols, pics):
 
 
 class Build(unittest.TestCase):
-    def test_huddle_gets_the_broadcast_and_the_camera(self):
+    def test_huddle_gets_the_broadcast_and_no_camera(self):
         old = C.CAPTURES["huddle"]
         C.CAPTURES["huddle"] = dict(old, cols=12, rows=6)
         try:
-            out = C.build("huddle", "D" + screen(6, 12, [(1, 1, 1, 3), (2, 4, 7, 2)])[1:], fixes={(0, 0): "H"})
+            out = C.build("huddle", "D" + screen(6, 12, [(1, 1, 1, 3)])[1:], fixes={(0, 0): "H"})
         finally:
             C.CAPTURES["huddle"] = old
         self.assertTrue(out.startswith('<div class="term capture" style="--cols:12;--rows:6" role="img"'))
         tv = re.search(r'<div class="tile tv" style="--r:1;--c:1;--h:3;--w:3" aria-hidden="true">(.*?)</div>', out)
         self.assertTrue(tv, out)
-        self.assertEqual(re.findall(r'src="captures/([^"]+)"', tv.group(1)), C.SWANS)
-        self.assertIn('<img class="tile" src="captures/tile.webp" alt="" style="--r:4;--c:7;--h:2;--w:3">', out)
+        self.assertEqual(re.findall(r'src="captures/([^"]+)"', tv.group(1)), [C.SWAN])  # one still, no loop
+        self.assertNotIn("tile.webp", out)  # the other person's camera is off
         self.assertNotIn("\U0010EEEE", out)
 
-    def test_a_missing_picture_is_an_error(self):
+    def test_a_missing_or_extra_picture_is_an_error(self):
         old = C.CAPTURES["huddle"]
         C.CAPTURES["huddle"] = dict(old, cols=12, rows=6)
         try:
-            with self.assertRaises(ValueError):
-                C.build("huddle", screen(6, 12, [(1, 1, 1, 3)]), fixes={(0, 0): "H"})
+            with self.assertRaises(ValueError):  # no share
+                C.build("huddle", "D" + screen(6, 12, [])[1:], fixes={(0, 0): "H"})
+            with self.assertRaises(ValueError):  # a camera came back on
+                C.build("huddle", "D" + screen(6, 12, [(1, 1, 1, 3), (2, 4, 7, 2)])[1:], fixes={(0, 0): "H"})
         finally:
             C.CAPTURES["huddle"] = old
 
@@ -48,7 +50,7 @@ class Build(unittest.TestCase):
         old = C.CAPTURES["huddle"]
         C.CAPTURES["huddle"] = dict(old, cols=12, rows=6)
         try:
-            pics = "D" + screen(6, 12, [(1, 1, 1, 3), (2, 4, 7, 2)])[1:]
+            pics = "D" + screen(6, 12, [(1, 1, 1, 3)])[1:]
             for fixes in (None, {}):
                 with self.assertRaises(ValueError):
                     C.build("huddle", pics, fixes=fixes)
@@ -69,11 +71,21 @@ class Build(unittest.TestCase):
         self.assertIn(">H<", out)
         self.assertNotIn(">D<", out)
 
-    def test_the_swans_are_on_the_site_and_small(self):
-        for n in C.SWANS:
-            p = ROOT / "site/captures" / n
-            self.assertTrue(p.is_file(), n)
-            self.assertLessEqual(p.stat().st_size, 60_000, n)
+    def test_one_swan_on_the_site_and_small(self):
+        p = ROOT / "site/captures" / C.SWAN
+        self.assertTrue(p.is_file())
+        self.assertLessEqual(p.stat().st_size, 60_000)
+        pictures = sorted(q.name for q in (ROOT / "site/captures").glob("*.webp"))
+        self.assertEqual(pictures, [C.SWAN])  # the loop's other pictures and the camera's pattern are gone
+
+    def test_the_tv_does_not_move(self):
+        css = (ROOT / "site/css/site.css").read_text()
+        tv = "\n".join(l for l in css.splitlines() if ".tv" in l)
+        self.assertTrue(tv)
+        self.assertNotIn("animation", tv)
+        self.assertNotIn("tv-swan", css)
+        self.assertNotIn("tv.js", (ROOT / "site/index.html").read_text())
+        self.assertFalse((ROOT / "site/js/tv.js").exists())
 
     def test_the_page_credits_the_photo(self):
         page = (ROOT / "site/index.html").read_text()
@@ -81,9 +93,10 @@ class Build(unittest.TestCase):
         self.assertIn("Paata Vardanashvili", foot)
         self.assertIn('href="https://creativecommons.org/licenses/by/2.0/"', foot)
         self.assertIn('href="https://commons.wikimedia.org/wiki/File:Swanlake010.jpg"', foot)
-        self.assertIn("public domain", foot)
-        for s in ("Swan Lake ballet", "Mikhail Bocharov", "Henrich Levogt", "(cropped)"):
+        for s in ("Swan Lake ballet", "(cropped)"):
             self.assertIn(s, foot, s)
+        for s in ("public domain", "Mikhail Bocharov", "Henrich Levogt", "Legnani", "stamp of 1970"):
+            self.assertNotIn(s, foot, s)  # the pictures that were removed are not credited
 
 
 if __name__ == "__main__":

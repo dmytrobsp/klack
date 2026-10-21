@@ -1,4 +1,4 @@
-"""The page's words: approved lines verbatim, jabs only at the official app, honest claims (LP5)."""
+"""The page's words: approved lines verbatim, jabs only at Slack, honest claims (LP5, the user's review LP12a)."""
 import re
 import unittest
 import xml.dom.minidom
@@ -11,28 +11,22 @@ README = (ROOT / "README.md").read_text()
 
 APPROVED = ["SLACK,", "MINUS THE", "BULLSHIT.", "BROWSER.", "YOUR TERMINAL JUST LEARNED TO HUDDLE.",
             "Yes, really.", "NO CHROMIUM WAS HARMED", "Quit with Ctrl+Q. We're not monsters.",
-            "Chat over SSH: yes. Huddle over SSH: only if you shout really loud.",
-            "SSH forwards ports, not vocal cords."]
+            # the user's second review (LP12a)
+            "It uses how much RAM!? In this economy!?",
+            "Three ways in. Pick one.",
+            "We can even lift your session straight out of your browser. Just don't tell the cops.",
+            "You bet it's keyboard-driven!", "Yes, you can use the mouse. But should you?",
+            "Pipe it, cron it, grep it.", "because automation is for cool kids",
+            "All of it in one terminal tab. Not a Chromium in sight.",
+            "It's just text. Of course it works over SSH.",
+            "Huddles over SSH? Only if you shout really loud.",
+            "Slack over SSH? WHO HURT YOU!?",
+            "WORKS ON MY MACHINE™", "CERTIFIED"]
+# the user took these out (LP12a); "Slack Desktop™" and "the Electron thing" are too cheesy
+GONE = ["SSH forwards ports, not vocal cords.", "Chat over SSH: yes.", "You join muted", "Opening your browser",
+        "modal dialog", "wire it into CI", "And the rest", "Measured, not guessed", "sound of my freedom",
+        "Every number on this page was measured on Linux", "Slack Desktop", "the Electron thing", "Grow the beans"]
 BANNED = ["other terminal clients", "other clients", "the others can't"]
-
-# The "everything else" grid: each item and a phrase that says so in README.md.
-GRID = [
-    ("threads", "every thread you are in"),
-    ("reactions", "react · edit · delete"),
-    ("custom emoji", "custom emoji as pictures"),
-    ("pictures in the terminal", "kitty, WezTerm, Ghostty, iTerm2, foot or any sixel terminal"),
-    ("video with sound", "video with\nsound"),
-    ("files", "upload a file"),
-    ("search", "search messages"),
-    ("notifications", "desktop notifications"),
-    ("do not disturb", "pause notifications for 30 minutes"),
-    ("several workspaces", "Alt+1 … Alt+9"),
-    ("themes", "dark, light, terminal and your own themes"),
-    ("links into your Slack", "A plain click opens it in klack"),
-    ("drafts", "Drafts also survive quitting"),
-    ("slash commands", "run by Slack, as its own clients do"),
-    ("your keys", "Rebinding keys"),
-]
 
 VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"}
 BLOCK = {"p", "div", "li", "ul", "ol", "h1", "h2", "h3", "h4", "section", "footer", "aside", "figure",
@@ -137,6 +131,17 @@ class Copy(unittest.TestCase):
         for line in APPROVED:
             self.assertIn(line, self.all, line)
 
+    def test_removed_lines_stay_out(self):
+        for line in GONE:
+            self.assertNotIn(line, self.all, line)
+
+    def test_the_official_app_is_not_a_refrain(self):
+        # once in the sheet's column header (its one clear name) and its phone labels, nowhere in the prose
+        prose = flat(self.root.text(skip_fills=True)).lower()
+        self.assertNotIn("the official app", prose)
+        sheet = (SITE / "index.html").read_text().split("<!-- fill:sheet -->")[1].split("<!-- /fill:sheet -->")[0]
+        self.assertIn('<th scope="col" class="them">the official app</th>', sheet)
+
     def test_no_jabs_at_terminal_clients(self):
         low = self.all.lower()
         for b in BANNED:
@@ -152,11 +157,11 @@ class Copy(unittest.TestCase):
     def test_huddles_never_over_ssh(self):
         ssh = by_id(self.root, "ssh").text(skip_fills=True)  # captures (Task 7) show klack's own UI hints
         found = 0
-        for s in sentences(ssh):
-            if "huddle" in s.lower():
+        for line in (flat(l) for l in ssh.split("\n")):  # one block at a time: the joke's two sentences together
+            if "huddle" in line.lower():
                 found += 1
-                self.assertRegex(s.lower(), r"shout|vocal", s)
-                self.assertNotRegex(s.lower(), r"\bworks?\b|\bsupported\b|\bfine\b", s)
+                self.assertRegex(line.lower(), r"shout", line)
+                self.assertNotRegex(line.lower(), r"\bworks?\b|\bsupported\b|\bfine\b", line)
         self.assertGreater(found, 0)
 
     def test_every_section_has_a_jab(self):
@@ -166,15 +171,16 @@ class Copy(unittest.TestCase):
             for j in jabs:
                 self.assertTrue(flat(j.text()), sid)
 
-    def test_grid_lists_only_readme_features(self):
-        for item, phrase in GRID:
-            self.assertIn(phrase, README, item)
-        grid = next(e for e in by_id(self.root, "features").elements() if "everything" in e.classes)
-        items = []
-        for li in (e for e in grid.elements() if e.tag == "li"):
-            b = next(e for e in li.elements() if e.tag == "b")
-            items.append(flat(b.text()))
-        self.assertEqual(items, [i for i, _ in GRID])
+    def test_no_grid_and_a_closer(self):
+        f = by_id(self.root, "features")
+        self.assertFalse([e for e in f.elements() if "everything" in e.classes or "rest" in e.classes])
+        closer = [e for e in f.elements() if "closer" in e.classes]
+        self.assertEqual(len(closer), 1)
+        self.assertEqual(flat(closer[0].text()), "All of it in one terminal tab. Not a Chromium in sight.")
+        self.assertIn("paper", closer[0].classes)  # a pasted strip with the collage's shadow
+        self.assertIs(closer[0].parent, f)  # the section's last word, not inside a feature
+        last = [e for e in f.children if e.kind == "el"][-1]
+        self.assertIs(last, closer[0])
 
     def test_no_js_keeps_headline_pitch_and_download(self):
         # .text() drops <script>; links are checked outside any script element
@@ -190,23 +196,32 @@ class Copy(unittest.TestCase):
         st = [e for e in f.elements() if "sticker" in e.classes and "Ctrl+Q" in e.text()]
         self.assertEqual(len(st), 1)
         self.assertEqual(flat(st[0].text()), "Quit with Ctrl+Q. We're not monsters.")
-        for k in ("NORMAL", "INSERT", "which-key", "Ctrl+U", "Ctrl+D"):
-            self.assertIn(k, flat(f.text()), k)
+        art = st[0]
+        while art.tag != "article":
+            art = art.parent
+        words = next(e for e in art.elements() if "words" in e.classes)
+        self.assertFalse([e for e in words.elements() if e.tag == "kbd"])  # no documentation-style key list
+        self.assertLess(len(flat(words.text())), 160, "short")
 
     def test_ctl_boasts_with_its_commands(self):
         f = flat(by_id(self.root, "features").text())
         for c in ("klack ctl", "whoami", "channels", "history", "post", "react", "upload", "search", "listen"):
             self.assertIn(c, f, c)
+        cool = [e for e in by_id(self.root, "features").elements() if "cool-kids" in e.classes]
+        self.assertEqual(len(cool), 1)
+        self.assertIn("scrawl", cool[0].classes)
 
     def test_ssh_section(self):
         ssh = by_id(self.root, "ssh")
         h2 = next(e for e in ssh.elements() if e.tag == "h2")
-        self.assertEqual(flat(h2.text()), "Chat over SSH: yes. Huddle over SSH: only if you shout really loud.")
-        smiley = [e for e in h2.parent.elements() if e.tag == "img" and e.attrs.get("src") == "img/sad-smiley.svg"]
-        self.assertEqual(len(smiley), 1)
+        self.assertEqual(flat(h2.text()), "It's just text. Of course it works over SSH.")
+        shout = next(e for e in ssh.elements() if "scrawl" in e.classes and "shout" in e.text())
+        self.assertEqual(flat(shout.text()), "Huddles over SSH? Only if you shout really loud.")  # its own line
+        smiley = [e for e in shout.parent.elements() if e.tag == "img" and e.attrs.get("src") == "img/sad-smiley.svg"]
+        self.assertEqual(len(smiley), 1)  # beside the joke
         self.assertTrue(smiley[0].attrs.get("alt"))
         text = flat(ssh.text(skip_fills=True))
-        for s in ("klack auth login", "threads", "search", "code"):
+        for s in ("klack auth login", "code"):
             self.assertIn(s, text, s)
         svg = (SITE / "img" / "sad-smiley.svg").read_text()
         xml.dom.minidom.parseString(svg)  # well-formed
@@ -214,8 +229,7 @@ class Copy(unittest.TestCase):
 
     def test_numbers_section(self):
         n = flat(by_id(self.root, "numbers").text())
-        self.assertIn("Linux", n)
-        self.assertIn("freedom", n)
+        self.assertIn("measured on Linux", n)
         self.assertNotRegex(n.lower(), r"workspace|\bteam\b")
 
     def test_get_section(self):
@@ -228,8 +242,10 @@ class Copy(unittest.TestCase):
         f = by_id(self.root, "footer")
         t = flat(f.text())
         for s in ("MIT", "Apache-2.0", "not affiliated with Slack Technologies or Salesforce",
-                  "Slack is their trademark", "NO CHROMIUM WAS HARMED"):
+                  "Slack is their trademark", "WORKS ON MY MACHINE™", "CERTIFIED", "slk"):
             self.assertIn(s, t, s)
+        self.assertNotIn("NO CHROMIUM", t)  # the hero has it; the footer has the stamp
+        self.assertTrue([e for e in f.elements() if "stamp" in e.classes])
         self.assertIn("https://github.com/dmytrobsp/klack", [e.attrs.get("href") for e in f.elements()])
 
     def test_drafts_marked_and_state_no_figures(self):
