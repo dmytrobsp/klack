@@ -62,14 +62,14 @@ runtime).
 
 ## The screen
 
-The sidebar on the left (Threads, sections, starred conversations, channels, direct messages — the most
+The sidebar on the left (the Threads, Activity and Huddles rows, sections, starred conversations, channels, direct messages — the most
 recently active first; channels and DMs without a message for 30 days are left out unless starred, unread
 or open, F6 → Appearance; Ctrl+K still finds them and shows them while open; what you have not read is
 bold with a bar in the first column, muted conversations are dimmed and not counted), the
 messages in the middle with a reply pane for threads on the right (in a narrow terminal the thread
 takes the messages' place until you close it), the composer below, and a status
 line at the bottom: on the left a pill saying which mode you are in (NORMAL, INSERT, or the open
-dialog: JUMP, SEARCH, PREFS, …; THREADS or ACTIVITY in those views), then the unread and mention counts, other workspaces, your
+dialog: JUMP, SEARCH, PREFS, …; THREADS, ACTIVITY or HUDDLES in those views), then the unread and mention counts, other workspaces, your
 status, and a dot for your presence as in Slack (green `● active`, dim `○ away`; "connecting…" after it while
 the connection is down, a dim `…` when the line is at its narrowest) — a note or a ringing huddle takes their place; on the right
 the keys of a sequence under way (`␣h`, `^␣h` for Ctrl+Space) and the hints of where you are, ending
@@ -403,7 +403,7 @@ on Windows only from an SSH session, where `gdigrab` cannot capture (no desktop)
 
 | Variable | |
 |---|---|
-| (F6 or `/prefs`) | preferences: availability (status, away, Notifications — on or paused until when; Enter pauses for 30 minutes or resumes, + / - change a pause's length — and the notification schedule: off, every day, weekdays or custom, with the hours you receive notifications in, per day for custom: hours, receive all day or paused all day; kept on Slack), theme, compact list, thumbnails, profile pictures, emoji as names, custom emoji as pictures, 12/24 h clock, date format, time zone, language, desktop notifications and sound, microphone and speaker, volumes, microphone gain, speaking threshold, noise suppression, echo cancellation — saved in `settings.toml` next to `keys.toml` |
+| (F6 or `/prefs`) | preferences: availability (status, away, Notifications — on or paused until when; Enter pauses for 30 minutes or resumes, + / - change a pause's length — and the notification schedule: off, every day, weekdays or custom, with the hours you receive notifications in, per day for custom: hours, receive all day or paused all day; kept on Slack), theme, compact list, thumbnails, profile pictures, emoji as names, custom emoji as pictures, how often people's statuses are looked up again, when feed threads are marked read, 12/24 h clock, date format, time zone, language, desktop notifications and sound, microphone and speaker, volumes, microphone gain, speaking threshold, noise suppression, echo cancellation — saved in `settings.toml` next to `keys.toml` |
 | `KLACK_LOG` | log filter, e.g. `klack=debug` (log file: `~/.cache/klack/<profile>/klack.log`) |
 | `KLACK_DOWNLOAD_DIR` | where `␣s` saves attachments first, over F6 → Messages & media → Save files to (default: your downloads folder) |
 | `KLACK_OPEN_WITH` | the program `␣o` opens links with, given the address (default: the system's opener — `xdg-open`, `open`, Windows' URL handler); only web and mail links are opened |
