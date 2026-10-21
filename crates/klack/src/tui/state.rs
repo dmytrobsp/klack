@@ -149,6 +149,12 @@ pub struct Workspace {
     pub dnd_prefs: serde_json::Map<String, Value>,
     /// Active huddles by channel.
     pub huddles: HashMap<String, Huddle>,
+    /// The live events' huddle changes, numbered: the last one's number (a live list fetched is from when it
+    /// was asked for), and the channel each change was in, by its number (since the oldest list still asked for).
+    pub huddle_seq: u64,
+    pub(super) huddle_touched: HashMap<String, u64>,
+    /// When (`huddle_seq`) the live list taken last was asked for.
+    pub(super) live_taken: u64,
     /// A channel we are not in, shown in the sidebar while it is being looked at.
     pub preview: Option<String>,
     /// The conversation open (or just jumped to): in the sidebar however quiet it is.
@@ -914,16 +920,36 @@ impl Workspace {
         self.huddles.iter().filter(|(c, h)| !h.participants.is_empty() && !self.muted.contains(*c) && self.conversations.get(*c).is_some_and(|c| c.is_member || c.is_dm())).map(|(c, _)| c.as_str())
     }
 
-    /// The huddles happening now as Slack listed them (at start, after a reconnect): they replace those kept, a
-    /// thread known for the same room staying.
-    pub fn set_live_huddles(&mut self, live: Vec<slack_core::types::LiveHuddle>) {
-        let old = std::mem::take(&mut self.huddles);
-        for h in live {
+    /// A live event changed the huddle of `channel` (the live lists asked for before it do not undo that).
+    pub fn touch_huddle(&mut self, channel: &str) {
+        self.huddle_seq += 1;
+        self.huddle_touched.insert(channel.to_string(), self.huddle_seq);
+    }
+
+    /// The huddles happening now as Slack listed them when asked at `since` (a `huddle_seq`): they replace those
+    /// kept, a thread known for the same room staying — but a channel whose huddle a live event changed since
+    /// keeps what the event said (ended stays ended, started stays live), and a list asked for before the one
+    /// taken last is dropped.
+    pub fn set_live_huddles(&mut self, live: Vec<slack_core::types::LiveHuddle>, since: u64) {
+        if since < self.live_taken {
+            return;
+        }
+        self.live_taken = since;
+        let changed: std::collections::HashSet<String> = self.huddle_touched.iter().filter(|(_, n)| **n > since).map(|(c, _)| c.clone()).collect();
+        let mut old = std::mem::take(&mut self.huddles);
+        for h in live.into_iter().filter(|h| !changed.contains(&h.channel)) {
             let known = old.get(&h.channel).filter(|o| o.room == h.call_id);
             let thread = h.thread_ts.or_else(|| known.and_then(|o| o.thread.clone()));
             let start = if h.start > 0 { h.start } else { known.map_or(0, |o| o.start) };
             self.huddles.insert(h.channel, Huddle { room: h.call_id, participants: h.members, thread, start });
         }
+        for c in &changed {
+            if let Some(h) = old.remove(c) {
+                self.huddles.insert(c.clone(), h);
+            }
+        }
+        // (No list asked for before this one is taken any more.)
+        self.huddle_touched.retain(|_, n| *n > since);
     }
 
     /// Typing users (active within 6 s) for a channel.
@@ -970,7 +996,8 @@ mod tests {
         w.huddles.insert("C1".into(), Huddle { room: "R1".into(), participants: vec!["U2".into()], thread: Some("1.000100".into()), start: 0 });
         w.huddles.insert("C2".into(), Huddle { room: "R2".into(), participants: vec!["U2".into()], thread: None, start: 0 });
         let live = |channel: &str, call: &str, start: i64, thread: Option<&str>| slack_core::types::LiveHuddle { channel: channel.into(), call_id: call.into(), members: vec!["U2".into(), "U3".into()], start, thread_ts: thread.map(String::from) };
-        w.set_live_huddles(vec![live("C1", "R1", 100, None), live("C3", "R3", 300, Some("3.000100"))]);
+        let since = w.huddle_seq;
+        w.set_live_huddles(vec![live("C1", "R1", 100, None), live("C3", "R3", 300, Some("3.000100"))], since);
         assert!(!w.huddles.contains_key("C2"), "one that ended meanwhile is gone");
         assert_eq!(w.huddles["C1"], Huddle { room: "R1".into(), participants: vec!["U2".into(), "U3".into()], thread: Some("1.000100".into()), start: 100 }, "the thread known stays");
         assert_eq!((w.huddles["C3"].thread.as_deref(), w.huddles["C3"].start), (Some("3.000100"), 300));

@@ -92,7 +92,8 @@ enum Net {
     /// The activity feed fetched at start, for the sidebar row's unread count.
     ActivityUnread(Result<Value, String>),
     /// The huddles going on now (at start, after a reconnect, when one starts, when the Huddles view opens).
-    LiveHuddles(Result<Vec<slack_core::types::LiveHuddle>, String>),
+    /// `since`: the workspace's `huddle_seq` when it was asked for.
+    LiveHuddles { since: u64, result: Result<Vec<slack_core::types::LiveHuddle>, String> },
     /// A page of the Huddles view's recent huddles (`more`: added to what is listed) for its load `generation`.
     HuddleHistory { generation: u64, more: bool, result: Result<(Vec<slack_core::types::PastHuddle>, Option<String>), String> },
     /// How many replies a recent huddle's thread has (None: its message could not be had).
@@ -1619,10 +1620,10 @@ impl App {
 
     /// Ask Slack for the huddles going on now (they replace those kept).
     fn fetch_live_huddles(&self) {
-        let (client, tx) = (self.client.clone(), self.net.clone());
+        let (client, tx, since) = (self.client.clone(), self.net.clone(), self.ws.huddle_seq);
         tokio::spawn(async move {
             let result = client.huddles_live().await.map_err(|e| e.to_string());
-            let _ = tx.send(Net::LiveHuddles(result));
+            let _ = tx.send(Net::LiveHuddles { since, result });
         });
     }
 
@@ -5362,9 +5363,9 @@ fn handle_rtm(app: &mut App, ev: slack_core::rtm::RtmEvent) {
             if fx.refetch_live_huddles {
                 app.fetch_live_huddles();
             }
-            // (As the official client does: an ended huddle may now be among the recent ones.)
-            if fx.huddle_ended && app.view == View::Huddles {
-                let generation = app.huddles.reload();
+            // (As the official client does: an ended huddle the view shows may now be among the recent ones.)
+            if app.view == View::Huddles && app.huddles.concerns(&fx.huddles_ended) {
+                let generation = app.huddles.refresh();
                 app.fetch_huddle_history(generation, None);
             }
             if let Some((channel, user)) = fx.huddle_started {
@@ -5825,9 +5826,9 @@ fn handle_net(app: &mut App, msg: Net) {
                 app.activity.fail(tab, e);
             }
         },
-        Net::LiveHuddles(result) => match result {
+        Net::LiveHuddles { since, result } => match result {
             Ok(live) => {
-                app.ws.set_live_huddles(live);
+                app.ws.set_live_huddles(live, since);
                 app.sidebar.rebuild(&app.ws);
             }
             // The huddles kept from the live events stay.
@@ -7470,18 +7471,61 @@ mod tests {
         super::handle_rtm(&mut app, slack_core::rtm::RtmEvent::Connected);
         let mut asked = false;
         while let Ok(Some(msg)) = tokio::time::timeout(std::time::Duration::from_secs(10), net.recv()).await {
-            if matches!(msg, Net::LiveHuddles(_)) {
+            if matches!(msg, Net::LiveHuddles { .. }) {
                 asked = true;
                 break;
             }
         }
         assert!(asked, "the live huddles are asked for");
-        super::handle_net(&mut app, Net::LiveHuddles(Ok(vec![])));
+        let since = app.ws.huddle_seq;
+        super::handle_net(&mut app, Net::LiveHuddles { since, result: Ok(vec![]) });
         assert!(app.ws.huddles.is_empty() && app.ws.joinable_live(None).is_empty(), "no stale live huddle survives");
         // A failed fetch keeps what the events said.
         app.ws.huddles.insert("C1".into(), super::super::state::Huddle { room: "R2".into(), participants: vec!["U2".into()], ..Default::default() });
-        super::handle_net(&mut app, Net::LiveHuddles(Err("offline".into())));
+        let since = app.ws.huddle_seq;
+        super::handle_net(&mut app, Net::LiveHuddles { since, result: Err("offline".into()) });
         assert_eq!(app.ws.joinable_live(None), ["C1"]);
+    }
+
+    #[tokio::test]
+    async fn a_live_list_fetched_before_an_end_does_not_bring_it_back() {
+        use super::Net;
+        let (mut app, mut net) = test_app();
+        app.ws.conversations.insert("C1".into(), slack_core::types::Conversation { id: "C1".into(), name: "c".into(), is_channel: true, is_member: true, ..Default::default() });
+        app.ws.huddles.insert("C1".into(), super::super::state::Huddle { room: "R1".into(), participants: vec!["U2".into()], ..Default::default() });
+        // The fetch starts, then R1 ends over RTM, then the fetch's answer (from before the end) comes.
+        app.fetch_live_huddles();
+        let since = loop {
+            match tokio::time::timeout(std::time::Duration::from_secs(10), net.recv()).await {
+                Ok(Some(Net::LiveHuddles { since, .. })) => break since,
+                Ok(Some(_)) => {}
+                other => panic!("no answer: {}", other.is_ok()),
+            }
+        };
+        super::handle_rtm(&mut app, slack_core::rtm::RtmEvent::Event(serde_json::json!({"type":"sh_room_update","user":"U2","room":{"id":"R1","channels":["C1"],"participants":["U2"],"has_ended":true}})));
+        let stale = slack_core::types::LiveHuddle { channel: "C1".into(), call_id: "R1".into(), members: vec!["U2".into()], start: 0, thread_ts: None };
+        super::handle_net(&mut app, Net::LiveHuddles { since, result: Ok(vec![stale]) });
+        assert!(app.ws.joinable_live(None).is_empty(), "R1 is not live again, the badge is 0");
+    }
+
+    #[tokio::test]
+    async fn only_an_end_the_huddles_view_shows_reloads_it() {
+        use super::View;
+        let (mut app, _net) = test_app();
+        app.ws.conversations.insert("C1".into(), slack_core::types::Conversation { id: "C1".into(), name: "c".into(), is_channel: true, is_member: true, ..Default::default() });
+        super::run_global(&mut app, super::Action::Huddles);
+        let generation = app.huddles.generation;
+        let old = slack_core::types::PastHuddle { id: "R0".into(), channel: "C1".into(), ended: true, start: 1, end: 2, ..Default::default() };
+        app.huddles.add_page(generation, false, vec![old], None);
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        assert_eq!(app.view, View::Huddles);
+        // An end in a channel it does not list: nothing to load again.
+        super::handle_rtm(&mut app, slack_core::rtm::RtmEvent::Event(serde_json::json!({"type":"ended_huddle_update","huddle":{"id":"R9","channels":["C9"]}})));
+        assert_eq!(app.huddles.generation, generation);
+        // One in a channel it lists: loaded again, the list staying on screen meanwhile.
+        super::handle_rtm(&mut app, slack_core::rtm::RtmEvent::Event(serde_json::json!({"type":"ended_huddle_update","huddle":{"id":"R1","channels":["C1"]}})));
+        assert!(app.huddles.generation > generation && app.huddles.past.as_ref().is_some_and(|p| p.len() == 1));
     }
 
     #[tokio::test]

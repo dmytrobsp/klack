@@ -63,6 +63,8 @@ pub struct Huddles {
     pub failed: Option<String>,
     /// The load the pages that come belong to: one for an older load is dropped.
     pub generation: u64,
+    /// The first page is being loaded again with the list kept on screen meanwhile.
+    refreshing: bool,
     /// The selected row; none: the first.
     pub selected: Option<Row>,
     /// The recent huddle (its id) selected when the list was loaded afresh: selected again once it is back.
@@ -95,9 +97,29 @@ impl Huddles {
         if let Some(Row::Past(n)) = self.selected {
             self.keep = self.past_at(n).map(|h| h.id.clone());
         }
-        (self.past, self.cursor, self.loading, self.failed, self.at_end) = (None, None, true, None, false);
+        (self.past, self.cursor, self.loading, self.failed, self.at_end, self.refreshing) = (None, None, true, None, false, false);
         self.requested.clear();
         self.generation
+    }
+
+    /// Load the recent huddles again (a huddle it concerns ended) keeping the list, the selection and the reply
+    /// counts on screen until the first page comes; returns the new load's generation.
+    pub fn refresh(&mut self) -> u64 {
+        if self.past.is_none() {
+            return self.reload();
+        }
+        self.generation += 1;
+        if let Some(Row::Past(n)) = self.selected {
+            self.keep = self.past_at(n).map(|h| h.id.clone());
+        }
+        (self.loading, self.refreshing) = (true, true);
+        self.generation
+    }
+
+    /// A huddle that ended in one of `channels` concerns the view: it was live there, or the view lists recent
+    /// huddles of its channel.
+    pub fn concerns(&self, channels: &[String]) -> bool {
+        channels.iter().any(|c| self.order.contains(&Row::Live(c.clone())) || self.past.as_ref().is_some_and(|p| p.iter().any(|h| h.channel == *c)))
     }
 
     /// A page of load `generation` came (`more`: a next page): listed (those listed already left out).
@@ -117,7 +139,7 @@ impl Huddles {
         if let Some(id) = self.keep.take() {
             self.selected = past.iter().position(|h| h.id == id).map(Row::Past).or(self.selected.take());
         }
-        (self.cursor, self.loading, self.failed) = (cursor, false, None);
+        (self.cursor, self.loading, self.failed, self.refreshing) = (cursor, false, None, false);
     }
 
     /// Load `generation` failed: said when nothing is listed; what is listed stays.
@@ -128,7 +150,7 @@ impl Huddles {
         if self.past.is_none() {
             self.failed = Some(error);
         }
-        self.loading = false;
+        (self.loading, self.refreshing) = (false, false);
     }
 
     /// Where the next page starts, when the end of the list was on screen and there is more (once: it is loading then).
@@ -226,10 +248,11 @@ impl Huddles {
                 }
             }
         }
-        let more = usize::from(self.loading && self.past.is_some());
+        let more = usize::from(self.loading && !self.refreshing && self.past.is_some());
         let total = lines.len() + more;
         self.scroll = self.scroll.min(total.saturating_sub(height));
-        let start = self.scroll;
+        // (No room at all leaves `total` one past the lines: start at most at their end.)
+        let start = self.scroll.min(lines.len());
         let end = (start + height).min(lines.len());
         let mut shown: Vec<Line<'static>> = lines.drain(start..end).collect();
         let mut rows: Vec<Option<Row>> = owners[start..end].to_vec();
@@ -451,6 +474,43 @@ mod tests {
         terminal.draw(|f| h.draw(f, f.area(), ws, true, &media, None, NOW)).unwrap();
         let buf = terminal.backend().buffer();
         (0..buf.area.height).map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect::<String>()).collect()
+    }
+
+    #[test]
+    fn a_tiny_area_draws_without_panicking() {
+        let ws = ws();
+        let mut h = Huddles::default();
+        let first = h.reload();
+        h.add_page(first, false, vec![past("R2", "C1", NOW - 3600, 60, &["U2"], &[], None)], Some("next".into()));
+        h.scroll = 99;
+        h.loading = true;
+        for height in [1, 2, 3] {
+            drawn(&mut h, &ws, 40, height);
+        }
+    }
+
+    #[test]
+    fn a_refresh_keeps_the_list_and_the_reply_counts() {
+        let ws = ws();
+        let mut h = Huddles::default();
+        let first = h.reload();
+        let page = vec![past("R2", "C1", NOW - 3600, 60, &["U2"], &[], Some("2.000100")), past("R3", "D1", NOW - 7200, 60, &["U2"], &[], None)];
+        h.add_page(first, false, page.clone(), None);
+        drawn(&mut h, &ws, 60, 12);
+        h.replies.insert(("C1".into(), "2.000100".into()), 4);
+        h.requested.insert(("C1".into(), "2.000100".into()));
+        h.selected = Some(Row::Past(1));
+        // An end concerns the view when it was live there or is in a channel it lists.
+        assert!(h.concerns(&["C1".to_string()]) && h.concerns(&["D1".to_string()]));
+        assert!(!h.concerns(&["C9".to_string()]));
+        let again = h.refresh();
+        let screen = drawn(&mut h, &ws, 60, 12);
+        assert!(screen.iter().any(|l| l.contains("4 replies")) && !screen.iter().any(|l| l.contains("Loading")), "the list stays meanwhile: {screen:#?}");
+        assert!(h.wanted().is_empty(), "the counts known are kept");
+        let mut newer = page.clone();
+        newer.insert(0, past("R4", "C1", NOW - 60, 30, &["U2"], &[], None));
+        h.add_page(again, false, newer, None);
+        assert_eq!((h.past.as_ref().map(Vec::len), h.selected.clone()), (Some(3), Some(Row::Past(2))), "replaced, the selection on the same huddle");
     }
 
     #[test]
