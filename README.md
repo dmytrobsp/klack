@@ -205,7 +205,7 @@ actions, on a conversation the conversation's. Its corner, delay, height and ico
 | Enter (on a message) · `␣t` | open its thread |
 | Enter · `i` (sidebar) | type in the conversation |
 | Esc | leave the composer · close the thread or a dialog |
-| mouse | click to select, wheel to scroll (also the help and the preferences; in lists like Ctrl+K, Ctrl+T, Ctrl+A and search it moves the selection), hover shading, right-click for a context menu (messages, sidebar entries); a thumb on a pane's right border shows where you are when it scrolls |
+| mouse | click to select, wheel to scroll (also the help and the preferences; in lists like Ctrl+K, Ctrl+T, Ctrl+A and search it moves the selection), hover shading (the whole message row, edge to edge), right-click for a context menu (messages, sidebar entries); a thumb on a pane's right border shows where you are when it scrolls |
 
 After `Space` (written `␣`), on a **message**:
 

@@ -343,14 +343,6 @@ impl MessagePane {
             let authors: std::collections::HashMap<&str, &str> = t.messages.iter().filter_map(|m| Some((m.ts.as_str(), m.user.as_deref()?))).collect();
             add_gutter(&mut lines, &owners, &own, &system, &authors);
         }
-        // Shade the message under the pointer, then highlight the selected one.
-        if let Some(h) = &self.hover {
-            for (line, owner) in lines.iter_mut().zip(&owners) {
-                if owner.as_ref() == Some(h) {
-                    *line = std::mem::take(line).patch_style(Style::default().bg(super::theme::p().hover));
-                }
-            }
-        }
         let highlight = Style::default().bg(super::theme::p().selection);
         if focused {
             if let Some(sel) = &self.selected {
@@ -423,16 +415,21 @@ impl MessagePane {
         // The selected message (and the one being edited) is highlighted from edge to edge, like a
         // list selection: its rows are filled first; the text's own backgrounds draw over them.
         let marked = [self.selected.as_ref().filter(|_| focused), self.editing.as_ref()];
+        // The message under the pointer is shaded the same way (the selection wins over it).
+        let shade = Style::default().bg(super::theme::p().hover);
+        let shaded = |owner: &Option<String>| owner.is_some() && (marked.contains(&owner.as_ref()) || owner.as_ref() == self.hover.as_ref());
         for (n, owner) in self.rows.iter().enumerate() {
             if owner.is_some() && marked.contains(&owner.as_ref()) {
                 f.buffer_mut().set_style(Rect { y: inner.y + n as u16, height: 1, ..inner }, highlight);
+            } else if owner.is_some() && owner.as_ref() == self.hover.as_ref() {
+                f.buffer_mut().set_style(Rect { y: inner.y + n as u16, height: 1, ..inner }, shade);
             }
         }
         // A picture keeps the pane's background behind it (seen through its transparent parts).
         for slot in slots.iter().filter(|s| matches!(media.thumbs.get(&s.file.id), Some(Thumb::Ready(_)))) {
             let top = slot.line as isize - start as isize + pad as isize;
             let (from, to) = (top.max(0), (top + slot.size.1 as isize).min(height as isize));
-            if from >= to || !self.rows.get(from as usize).is_some_and(|o| o.is_some() && marked.contains(&o.as_ref())) {
+            if from >= to || !self.rows.get(from as usize).is_some_and(shaded) {
                 continue;
             }
             let x = inner.x + GUTTER + slot.col;
@@ -1189,6 +1186,40 @@ mod tests {
         terminal.draw(|f| pane.draw(f, f.area(), &here, "t", Some(&t), false, &media)).unwrap();
         let buf = terminal.backend().buffer().clone();
         assert!((1..9).all(|y| (1..39).all(|x| buf[(x, y)].bg != p.selection)));
+    }
+
+    #[test]
+    fn the_hover_fills_the_whole_row() {
+        let ws = Workspace::default();
+        let mut t = Timeline { loaded: true, ..Default::default() };
+        t.upsert(msg("1729440000.000100", "U2", "hi"));
+        t.upsert(msg("1729440000.000200", "U3", "there"));
+        let (workspaces, names) = (vec![], vec![]);
+        let authors = crate::tui::applink::Authors::new();
+        let here = Here { ws: &ws, workspaces: &workspaces, names: &names, shown: 0, authors: &authors, message: None };
+        let media = Media::with(ratatui_image::picker::Picker::halfblocks());
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 10)).unwrap();
+        let p = crate::tui::theme::p();
+        let rows_of = |pane: &MessagePane, ts: &str| (0..pane.rows.len()).filter(|&n| pane.rows[n].as_deref() == Some(ts)).map(|n| n as u16 + 1).collect::<Vec<u16>>();
+        let mut pane = MessagePane { hover: Some("1729440000.000100".into()), ..Default::default() };
+        terminal.draw(|f| pane.draw(f, f.area(), &here, "t", Some(&t), true, &media)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let (first, second) = (rows_of(&pane, "1729440000.000100"), rows_of(&pane, "1729440000.000200"));
+        assert!(!first.is_empty() && !second.is_empty());
+        for &y in &first {
+            assert_eq!((buf[(1, y)].bg, buf[(38, y)].bg), (p.hover, p.hover), "row {y}: from the left inner edge to the right one");
+            assert_ne!(buf[(39, y)].bg, p.hover, "row {y}: not the border");
+        }
+        for &y in &second {
+            assert!((0..40).all(|x| buf[(x, y)].bg != p.hover), "row {y}: the other message is not shaded");
+        }
+        // Selected as well: the selection wins on every row.
+        pane.selected = Some("1729440000.000100".into());
+        terminal.draw(|f| pane.draw(f, f.area(), &here, "t", Some(&t), true, &media)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        for &y in &rows_of(&pane, "1729440000.000100") {
+            assert_eq!((buf[(1, y)].bg, buf[(38, y)].bg), (p.selection, p.selection), "row {y}");
+        }
     }
 
     #[test]
