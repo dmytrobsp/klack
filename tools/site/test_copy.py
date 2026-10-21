@@ -1,7 +1,6 @@
 """The page's words: approved lines verbatim, jabs only at Slack, honest claims (LP5, the user's reviews LP12a/b)."""
 import re
 import unittest
-import xml.dom.minidom
 from html.parser import HTMLParser
 from pathlib import Path
 
