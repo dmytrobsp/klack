@@ -114,6 +114,29 @@ p code, li code, h3 code { color: var(--yellow); }
 .rest-jab { margin-top: 26px; }
 
 #numbers .sheet-slot { margin: 26px 0 10px; }
+/* the defaced spec sheet (LP10): a printed sheet someone took a marker to */
+.sheet { --paper: var(--scrap); color: var(--ink); padding: 26px 24px 24px; transform: rotate(-.6deg);
+  /* a tall sheet: the ragged cut is in pixels, so it never eats a row */
+  --edge: polygon(1% 0, 40% 7px, 75% 0, 100% 9px, 99% 50%, 100% calc(100% - 4px), 64% 100%, 28% calc(100% - 9px), 0 100%, 1% 50%); }
+.sheet table { width: 100%; border-collapse: collapse; font-size: 13px; line-height: 1.35; }
+.sheet thead th, .sheet thead td { font-family: 'Anton', sans-serif; font-weight: 400; font-size: 20px; letter-spacing: .6px; text-transform: uppercase; text-align: left; white-space: nowrap; padding: 0 10px 8px; border-bottom: 2px solid var(--ink); }
+.sheet thead th:first-child { font-family: 'Space Mono', monospace; font-size: 11px; letter-spacing: 0; text-transform: none; color: #6a5d55; vertical-align: bottom; padding-left: 0; }
+.sheet thead .them { color: #6a5d55; }
+.sheet thead .us { color: var(--aubergine); }
+.sheet tbody th, .sheet td { padding: 11px 10px; border-bottom: 1px dashed #c9bca4; vertical-align: middle; text-align: left; }
+.sheet tbody th { font-weight: 400; padding-left: 0; width: 31%; }
+.sheet td.them, .sheet td.us { width: 19%; white-space: nowrap; font-weight: 700; font-size: 16px; }
+.sheet td.them { color: #6a5d55; }
+.sheet .crossed { position: relative; display: inline-block; }
+.sheet .crossed::after { content: ''; position: absolute; left: -6px; right: -6px; top: 50%; height: 3px; border-radius: 2px; background: var(--pink); opacity: .85; transform: rotate(var(--x, -5deg)); }
+.sheet .circled { display: inline-block; padding: 3px 11px; margin: -3px -11px; border: 3px solid var(--yellow); border-radius: 55% 45% 52% 48% / 58% 46% 54% 42%; transform: rotate(var(--o, -4deg)); box-shadow: 1px 1px 0 rgba(0,0,0,.35), inset 1px 1px 0 rgba(0,0,0,.2); }
+.sheet tbody tr:nth-child(2n) { --x: 4deg; --o: 3deg; --s: 2deg; }
+.sheet tbody tr:nth-child(3n) { --x: -2deg; --o: -2deg; --s: -5deg; }
+.sheet .remark { padding-right: 0; }
+.sheet .scrawl { color: var(--aubergine); font-size: 17px; line-height: 1.15; transform: rotate(var(--s, -3deg)); }
+.sheet .scrawl.ratio { color: var(--pink); font-size: 24px; white-space: nowrap; }
+.note .measured { font-size: 12px; color: var(--muted); max-width: 720px; margin: 18px 0 0; }
+.note .measured a { color: var(--yellow); }
 .standin-note { border: 2px dashed #3a2a3b; padding: 40px 20px; text-align: center; color: var(--dim); margin: 0; }
 .freedom { font-size: 20px; color: var(--green); max-width: 640px; margin-top: 16px; }
 
@@ -154,6 +177,15 @@ p code, li code, h3 code { color: var(--yellow); }
   .ssh-head h2 { font-size: 32px; }
   .graffiti { width: 110px; align-self: flex-end; }
   #footer { flex-direction: column; align-items: flex-start; }
+  .sheet { padding: 20px 16px 18px; }
+  .sheet thead tr { display: block; }
+  .sheet thead th:not(:first-child), .sheet thead td { display: none; }
+  .sheet thead th:first-child { display: block; border: 0; padding: 0 0 4px; }
+  .sheet tbody tr { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 14px; padding: 12px 0; border-bottom: 1px dashed #c9bca4; }
+  .sheet tbody th, .sheet td { display: block; width: auto; padding: 0; border: 0; }
+  .sheet tbody th, .sheet .remark { grid-column: 1 / -1; }
+  .sheet td.them::before, .sheet td.us::before { content: attr(data-side); display: block; font-family: 'Anton', sans-serif; font-weight: 400; font-size: 12px; letter-spacing: .5px; text-transform: uppercase; margin-bottom: 2px; }
+  .sheet td.us::before { color: var(--aubergine); }
 }
 
 @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }

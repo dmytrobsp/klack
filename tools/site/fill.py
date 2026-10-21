@@ -36,6 +36,7 @@ def fmt_size(n):
 
 
 esc = lambda s: _html.escape(str(s), quote=True)
+txt = lambda s: _html.escape(str(s), quote=False)  # text nodes: apostrophes stay readable
 
 
 def _find(release, platform):
@@ -117,6 +118,79 @@ def release_from_api(repo, token, urlopen=urllib.request.urlopen):
         raise ReleaseFetchError(f"unexpected reply: {e!r}") from e
 
 
+# --- the spec sheet (LP10): the official app's numbers crossed out only where klack wins by WIN or more
+WIN = 1.5
+PLACEHOLDER = ('<!-- draft --><p class="standin-note">measuring… no number goes up here until '
+               "it's been measured.</p>")
+TIES = {"startup": "a draw. not bad for a couple of weekends.",
+        "cpu_share": "video costs what it costs. even in a terminal."}
+TIE = "ok, a tie. it's a chat app."
+LOSSES = {"cpu_idle": "fine, this one's theirs. klack fidgets."}
+LOSS = "fine, this one's theirs."
+ZERO = "it's text."
+
+
+def _mb(mb):
+    return f"{mb / 1e3:.1f} GB" if round(mb, 1) >= 1000 else f"{mb:.1f} MB"
+
+
+def fmt_value(v, unit):
+    if v == 0:
+        return "none"
+    if unit == "bytes":
+        return _mb(v / 1e6)
+    if unit == "kB":
+        return _mb(v / 1e3)
+    if unit == "percent":
+        return f"{v:.1f}%"
+    if unit == "seconds":
+        return f"{v:.2f} s" if v < 10 else f"{v:.1f} s"
+    raise ValueError(f"unknown unit {unit!r}")
+
+
+def fmt_ratio(r):
+    return f"{round(r)}" if round(r, 1) >= 10 else f"{r:.1f}"
+
+
+def _row(r):
+    k, o, unit = r["klack"], r["slack"], r["unit"]
+    kv, ov = txt(fmt_value(k, unit)), txt(fmt_value(o, unit))
+    if k == 0 and o > 0:
+        marks, scrawl = True, f'<!-- draft --><span class="scrawl">{txt(ZERO)}</span>'
+    elif k > 0 and o / k >= WIN:
+        word = "faster" if unit == "seconds" else "less"
+        marks, scrawl = True, f'<span class="scrawl ratio">{fmt_ratio(o / k)}× {word}</span>'
+    elif k > o:
+        marks, scrawl = False, f'<!-- draft --><span class="scrawl">{txt(LOSSES.get(r["id"], LOSS))}</span>'
+    else:
+        marks, scrawl = False, f'<!-- draft --><span class="scrawl">{txt(TIES.get(r["id"], TIE))}</span>'
+    them = f'<span class="crossed">{ov}</span>' if marks else f'<span class="plain">{ov}</span>'
+    us = f'<span class="circled">{kv}</span>' if marks else f'<span class="plain">{kv}</span>'
+    return (f'<tr class="row" data-id="{esc(r["id"])}"><th scope="row">{txt(r["label"])}</th>'
+            f'<td class="them" data-side="the official app">{them}</td>'
+            f'<td class="us" data-side="klack">{us}</td><td class="remark">{scrawl}</td></tr>')
+
+
+def render_sheet(numbers):
+    rows = numbers.get("rows") or []
+    if not rows:
+        return PLACEHOLDER
+    return ('<div class="sheet paper"><table><thead><tr><th scope="col"><!-- draft --><span>lower is better</span></th>'
+            '<th scope="col" class="them">the official app</th><th scope="col" class="us">klack</th>'
+            '<td></td></tr></thead>'
+            f'<tbody>{"".join(_row(r) for r in rows)}</tbody></table></div>')
+
+
+def render_measured_note(numbers):
+    if not numbers.get("rows"):
+        return ""
+    v = numbers["versions"]
+    return (f'<p class="measured">klack {txt(v["klack"])} against the official app {txt(v["slack"])}, '
+            f'measured on Linux on {txt(numbers["measured_on"])}: {txt(numbers["machine"])}. '
+            "App against app — the terminal klack runs in isn't counted. "
+            f'<a href="https://github.com/{REPO}/blob/master/tools/site/MEASURING.md">How it was measured</a>.</p>')
+
+
 # fill region -> site/captures/<name>.html (Task 7); a region whose capture is missing keeps what it has
 CAPTURES = {"hero-capture": "hero", "capture-huddle": "huddle", "capture-signin": "signin",
             "capture-keys": "keys", "capture-ssh": "ssh"}
@@ -142,6 +216,11 @@ def fill_page(site, release=None, numbers=None, needs=None):
     html = fill(html, "download-button", render_download_button(release))
     html = fill(html, "downloads", render_downloads(release, needs))
     html = fill_captures(html, site / "captures")
+    if numbers is None and (site / "data/numbers.json").is_file():
+        numbers = json.loads((site / "data/numbers.json").read_text())
+    if numbers is not None:
+        html = fill(html, "sheet", render_sheet(numbers))
+        html = fill(html, "measured-note", render_measured_note(numbers))
     page.write_text(html)
 
 
