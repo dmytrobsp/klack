@@ -226,15 +226,17 @@ pub struct ReadClock {
 
 impl ReadClock {
     /// The feed's rows `visible` are on screen at `now`: the threads to mark read now (each once) —
-    /// those whose whole block (one taller than the view: its unread rows; unread rows taller than
-    /// the view: their end) has been on screen for `after` (zero: never).
+    /// those whose whole block has been on screen for `after` (zero: never); for a block taller than
+    /// the view, its unread rows (unread rows taller than the view: their end).
     pub fn tick(&mut self, visible: Range<usize>, blocks: &[Block], now: Instant, after: Duration) -> Vec<(String, String)> {
         let mut out = Vec::new();
         let mut on = HashSet::new();
         let within = |r: &Range<usize>| visible.start <= r.start && r.end <= visible.end;
         for b in blocks.iter().filter(|b| !b.unread_rows.is_empty() && !after.is_zero()) {
             let key = (b.channel.clone(), b.thread_ts.clone());
-            let shown = within(&b.rows) || within(&b.unread_rows) || (b.unread_rows.len() > visible.len() && visible.contains(&(b.unread_rows.end - 1)));
+            // A block that fits counts only whole; a taller one by its unread rows (taller still: their end).
+            let taller = b.rows.len() > visible.len();
+            let shown = within(&b.rows) || (taller && (within(&b.unread_rows) || (b.unread_rows.len() > visible.len() && visible.contains(&(b.unread_rows.end - 1)))));
             if self.done.contains(&key) || !shown {
                 continue;
             }
@@ -428,6 +430,20 @@ mod tests {
         // Not shown at all: nothing.
         let mut clock = ReadClock::default();
         assert!(clock.tick(0..0, &blocks, at(0), two).is_empty() && clock.tick(0..0, &blocks, at(5000), two).is_empty());
+    }
+
+    #[test]
+    fn a_block_that_fits_counts_only_when_whole() {
+        let two = Duration::from_secs(2);
+        let t0 = Instant::now();
+        // Its unread rows are on screen, its header and parent are not: it fits, so that is not enough.
+        let blocks = [block(5..15, 10..15)];
+        let mut clock = ReadClock::default();
+        for s in [0, 1, 2, 3, 5, 10] {
+            assert!(clock.tick(10..30, &blocks, t0 + Duration::from_secs(s), two).is_empty(), "at {s} s");
+        }
+        assert_eq!(clock.tick(0..20, &blocks, t0 + Duration::from_secs(11), two), [], "whole from now on");
+        assert_eq!(clock.tick(0..20, &blocks, t0 + Duration::from_secs(13), two).len(), 1);
     }
 
     #[test]

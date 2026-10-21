@@ -232,6 +232,14 @@ impl Client {
         }
     }
 
+    /// A thread's parent and its newest `limit` replies (one `conversations.replies` page: Slack gives
+    /// the newest replies first when there are more).
+    pub async fn latest_replies(&self, channel: &str, thread_ts: &str, limit: usize) -> Result<Vec<Message>> {
+        let params: Params = vec![("channel", channel.into()), ("ts", thread_ts.into()), ("limit", limit.to_string())];
+        let page: HistoryPage = self.call("conversations.replies", &params).await?;
+        Ok(page.messages)
+    }
+
     pub async fn mark(&self, channel: &str, ts: &str) -> Result<()> {
         self.call_raw("conversations.mark", &[("channel", channel.into()), ("ts", ts.into())]).await.map(|_| ())
     }

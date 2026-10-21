@@ -35,7 +35,16 @@ pub struct Entry {
 
 impl Entry {
     fn from_json(v: &Value) -> Option<Entry> {
-        let root: Message = serde_json::from_value(v["root_msg"].clone()).ok()?;
+        let r = &v["root_msg"];
+        // A parent of a shape klack does not know keeps its thread, shown as not available.
+        let root: Message = serde_json::from_value(r.clone()).unwrap_or_else(|e| {
+            tracing::debug!("a thread's parent klack cannot read: {e}");
+            let ts = r["ts"].as_str().or(r["thread_ts"].as_str()).unwrap_or_default().to_string();
+            Message { thread_ts: Some(ts.clone()), ts, reply_count: r["reply_count"].as_u64().unwrap_or(0), latest_reply: r["latest_reply"].as_str().map(String::from), ..Default::default() }
+        });
+        if root.ts.is_empty() {
+            return None;
+        }
         let replies = |k: &str| v[k].as_array().into_iter().flatten().filter_map(|m| serde_json::from_value(m.clone()).ok()).collect::<Vec<Message>>();
         Some(Entry { channel: v["root_msg"]["channel"].as_str()?.to_string(), root, unread: replies("unread_replies"), latest: replies("latest_replies"), read: false })
     }
@@ -108,6 +117,8 @@ pub struct Threads {
     pub visible: Range<usize>,
     /// When the blocks with unread replies have been on screen long enough.
     pub clock: ReadClock,
+    /// Threads whose newest replies were asked for (since the last load or their last new reply).
+    fetched: std::collections::HashSet<(String, String)>,
     /// Where links were drawn at the last draw: as in the message panes.
     links: Vec<(Rect, String, Option<AppLink>, bool)>,
     /// Pictures on screen but not loaded at the last draw.
@@ -237,6 +248,7 @@ impl Threads {
         } else {
             e.latest.push(m.clone());
         }
+        self.fetched.remove(&(channel.to_string(), parent));
         self.dirty = true;
         true
     }
@@ -245,6 +257,35 @@ impl Threads {
     pub fn tick(&mut self, shown: bool, now: Instant, after: Duration) -> Vec<(String, String)> {
         let visible = if shown { self.visible.clone() } else { 0..0 };
         self.clock.tick(visible, &self.feed.blocks, now, after)
+    }
+
+    /// The threads on screen at the last draw that show fewer replies than they have (up to
+    /// [`super::feed::REPLIES_SHOWN`]): to fetch their newest replies, each once (again after a
+    /// load, or once a new reply came).
+    pub fn wanted_replies(&mut self) -> Vec<(String, String)> {
+        let Some(entries) = &self.entries else { return Vec::new() };
+        let mut out = Vec::new();
+        for b in self.feed.blocks.iter().filter(|b| b.rows.start < self.visible.end && self.visible.start < b.rows.end) {
+            let key = (b.channel.clone(), b.thread_ts.clone());
+            let Some(e) = entries.iter().find(|e| e.channel == b.channel && e.root.ts == b.thread_ts) else { continue };
+            let known = e.unread.len() + e.latest.len();
+            if known < super::feed::REPLIES_SHOWN.min(e.root.reply_count as usize) && self.fetched.insert(key.clone()) {
+                out.push(key);
+            }
+        }
+        out
+    }
+
+    /// The newest replies of a thread came (`page`: as `conversations.replies` gives them, with the
+    /// parent): those not known yet go into its block, as read.
+    pub fn merge_replies(&mut self, channel: &str, thread_ts: &str, page: Vec<Message>) {
+        let Some(e) = self.entry_mut(channel, thread_ts) else { return };
+        for m in page.into_iter().filter(|m| m.ts != thread_ts) {
+            if !e.unread.iter().chain(&e.latest).any(|r| r.ts == m.ts) {
+                e.latest.push(m);
+            }
+        }
+        self.dirty = true;
     }
 
     /// The links to messages drawn now whose author is worth asking for.
@@ -486,6 +527,52 @@ mod tests {
             assert!((x0..=x1).all(|x| buf[(x, y)].bg != p.selection), "row {y}: not the selected message");
         }
         assert_ne!(buf[(x1 + 1, parent[0])].bg, p.selection, "not the border");
+    }
+
+    #[test]
+    fn an_unparsable_parent_keeps_its_thread() {
+        let mut v = page();
+        // A parent whose shape klack does not know (a field of another type).
+        v["threads"][1]["root_msg"]["reactions"] = serde_json::json!("not a list");
+        let (entries, _) = parse(&v);
+        assert_eq!(entries.len(), 2, "the thread stays");
+        let e = &entries[1];
+        assert_eq!((e.channel.as_str(), e.root.ts.as_str(), e.root.reply_count, e.latest.len()), ("C1", "1792324476.437109", 7, 2));
+        assert!(e.root.text.is_empty() && e.root.user.is_none(), "nothing of it is shown as if it were its text");
+        let mut t = Threads::default();
+        t.add_page(entries, false);
+        let terminal = drawn(&mut t);
+        let screen: String = { let buf = terminal.backend().buffer(); (0..buf.area.height).flat_map(|y| (0..buf.area.width).map(move |x| (x, y))).map(|(x, y)| buf[(x, y)].symbol().to_string()).collect() };
+        assert!(screen.contains("message not available") && screen.contains("seven"), "said so, its replies shown");
+        // Without even a channel or ts there is nothing to place it by.
+        let none = serde_json::json!({"threads": [{"root_msg": {"text": 5}}]});
+        assert!(parse(&none).0.is_empty());
+    }
+
+    #[test]
+    fn a_block_short_of_replies_asks_for_them_once() {
+        let m = |ts: &str, text: &str| Message { ts: ts.into(), thread_ts: Some("1.000100".into()), user: Some("U2".into()), text: text.into(), ..Default::default() };
+        let mut root = m("1.000100", "the parent");
+        root.reply_count = 5;
+        let full = Entry { channel: "C1".into(), root: Message { reply_count: 1, ..m("2.000100", "another parent") }, latest: vec![m("2.000200", "its only reply")], ..Default::default() };
+        let short = Entry { channel: "C1".into(), root, latest: vec![m("1.000500", "reply 5")], ..Default::default() };
+        let mut t = Threads::default();
+        t.add_page(vec![short, full], false);
+        drawn(&mut t);
+        assert_eq!(t.wanted_replies(), [("C1".to_string(), "1.000100".to_string())], "only the one with fewer than it has");
+        assert!(t.wanted_replies().is_empty(), "once");
+        // The parent and its four newest replies (one known already).
+        let page: Vec<Message> = std::iter::once(m("1.000100", "the parent")).chain((2..=5).map(|n| m(&format!("1.000{n}00"), &format!("reply {n}")))).collect();
+        t.merge_replies("C1", "1.000100", page);
+        let terminal = drawn(&mut t);
+        let screen: String = { let buf = terminal.backend().buffer(); (0..buf.area.height).flat_map(|y| (0..buf.area.width).map(move |x| (x, y))).map(|(x, y)| buf[(x, y)].symbol().to_string()).collect() };
+        assert!(["reply 3", "reply 4", "reply 5", "2 more replies"].iter().all(|w| screen.contains(w)) && !screen.contains("reply 2"), "the last three");
+        assert_eq!(t.entries.as_ref().unwrap()[0].latest.len(), 4, "the known one not twice");
+        assert!(t.wanted_replies().is_empty());
+        // A new reply: it may ask again (here it has enough).
+        t.add_reply("C1", &m("1.000600", "reply 6"), true);
+        drawn(&mut t);
+        assert!(t.wanted_replies().is_empty());
     }
 
     #[test]

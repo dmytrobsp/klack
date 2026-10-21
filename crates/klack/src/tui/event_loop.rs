@@ -97,6 +97,7 @@ enum Net {
     UploadProgress { name: String, sent: u64, total: u64 },
     /// A page of the Threads view (`more`: added to what is listed).
     ThreadView { result: Result<Value, String>, more: bool },
+    FeedReplies { channel: String, ts: String, result: Result<Vec<slack_core::types::Message>, String> },
     /// A message an activity item is about.
     ActivityMessage { channel: String, ts: String, message: Option<slack_core::types::Message> },
     /// A snippet's full text for the snippet view.
@@ -224,6 +225,9 @@ struct App {
     /// The thread (channel, its parent's ts) the composer under the Threads feed replies in, once the Type key chose
     /// it there; its draft is in the composer meanwhile.
     feed_reply: Option<(String, String)>,
+    /// The composer had the focus in the Threads view at the last look (it aims at the selected
+    /// message's thread whenever it gets it).
+    feed_typing: bool,
     /// When the previewed channel was last fetched again.
     preview_polled: Option<std::time::Instant>,
     /// When the people shown were last looked up for their statuses, and whether a lookup is
@@ -404,8 +408,7 @@ impl App {
         // A view keeps its row selected while it is shown: a conversation selected in the
         // sidebar (the keys, a click, a jump) is shown instead.
         if selected.is_some() && self.view != View::Conversation {
-            self.set_feed_reply(None);
-            self.view = View::Conversation;
+            self.set_view(View::Conversation);
         }
         if selected != self.current {
             if self.ws.preview.is_some() && self.ws.preview != selected {
@@ -1023,10 +1026,14 @@ impl App {
             self.status = "open a conversation first".into();
             return;
         }
-        match prefill_box(&self.composer, self.thread_composer.editing.is_some(), command, wrap) {
+        // In the Threads view: the box of the selected message's thread.
+        let thread = self.view == View::Threads && self.aim_feed_composer() == Some(Focus::ThreadComposer);
+        let (target, other) = if thread { (&self.thread_composer, &self.composer) } else { (&self.composer, &self.thread_composer) };
+        match prefill_box(target, other.editing.is_some(), command, wrap) {
             Ok((text, cursor)) => {
-                self.composer.set_with_cursor(&text, cursor);
-                self.focus = Focus::Composer;
+                self.composer_for(thread).set_with_cursor(&text, cursor);
+                self.focus = if thread { Focus::ThreadComposer } else { Focus::Composer };
+                self.feed_typing = self.view == View::Threads && !thread;
             }
             Err(note) => self.status = note.into(),
         }
@@ -1036,8 +1043,12 @@ impl App {
     /// message selected.
     fn leave_composer(&mut self, thread: bool) {
         self.focus = if thread { Focus::Thread } else { Focus::Messages };
-        // Under the Threads feed: back to the feed, its selection as it was.
+        // Under the Threads feed: back to the feed, its selection as it was; with nothing typed, in
+        // no thread any more (the next box goes to the selection then).
         if !thread && self.view == View::Threads {
+            if self.composer.is_empty() && self.composer.attachments.is_empty() {
+                self.set_feed_reply(None);
+            }
             return;
         }
         let timeline = match (&self.thread, thread) {
@@ -1579,13 +1590,10 @@ impl App {
     /// Show view `v` in the main pane (its sidebar row selected, the focus on it) and load it;
     /// already shown, it is loaded again.
     fn open_view(&mut self, v: View) {
-        if v != View::Threads {
-            self.set_feed_reply(None);
-        }
         if let Some(row) = row_of_view(v) {
             self.sidebar.select_view(&row);
         }
-        self.view = v;
+        self.set_view(v);
         self.focus = Focus::Messages;
         match v {
             View::Threads => self.load_threads(false),
@@ -1596,38 +1604,83 @@ impl App {
 
     /// Back from a view to the conversation it was opened over, on its messages.
     fn close_view(&mut self) {
-        self.set_feed_reply(None);
-        self.view = View::Conversation;
+        self.set_view(View::Conversation);
         self.focus = Focus::Messages;
         if let Some(id) = self.current.as_deref() {
             self.sidebar.select_row_of(id);
         }
     }
 
-    /// The composer's draft key: the thread it replies in under the Threads feed, else the conversation.
+    /// The composer's draft key: under the Threads feed the thread it replies in (none chosen: none, it
+    /// is empty there), else the conversation's.
     fn composer_key(&self) -> Option<String> {
-        match &self.feed_reply {
-            Some((c, ts)) => Some(super::state::thread_key(c, ts)),
-            None => self.current.clone(),
+        match (&self.feed_reply, self.view) {
+            (Some((c, ts)), _) => Some(super::state::thread_key(c, ts)),
+            (None, View::Threads) => None,
+            (None, _) => self.current.clone(),
         }
     }
 
-    /// Make the composer reply in `target` under the Threads feed (None: back to the conversation's), keeping the
-    /// draft of the one it leaves and taking up the one it goes to.
-    fn set_feed_reply(&mut self, target: Option<(String, String)>) {
-        let old = self.composer_key();
-        self.feed_reply = target;
+    /// The composer changed hands (from the draft key `old` to the current one): keep the draft it
+    /// had and take up the one it goes to.
+    fn rekey_composer(&mut self, old: Option<String>) {
         let new = self.composer_key();
         if old == new {
             return;
         }
-        if let Some(old) = &old {
-            stash(&mut self.drafts, old, &mut self.composer);
+        match &old {
+            Some(old) => stash(&mut self.drafts, old, &mut self.composer),
+            // (Nothing to keep it under: what is typed stays.)
+            None if !self.composer.is_empty() => return,
+            None => {}
         }
         if let Some(d) = new.and_then(|k| self.drafts.remove(&k)) {
             self.composer.restore(d);
         }
         self.save_drafts();
+    }
+
+    /// Show `v` in the main pane; the composer goes with it (under the Threads feed it replies in a thread).
+    fn set_view(&mut self, v: View) {
+        let old = self.composer_key();
+        if v != View::Threads {
+            self.feed_reply = None;
+        }
+        self.view = v;
+        self.rekey_composer(old);
+    }
+
+    /// Make the composer reply in `target` under the Threads feed (None: in no thread), keeping the
+    /// draft of the one it leaves and taking up the one it goes to.
+    fn set_feed_reply(&mut self, target: Option<(String, String)>) {
+        let old = self.composer_key();
+        self.feed_reply = target;
+        self.rekey_composer(old);
+    }
+
+    /// A box gets the focus in the Threads view: it replies in the selected message's thread — the
+    /// thread pane's own box when that thread is open there (one box per thread draft), else the one
+    /// under the feed. None: no message is selected.
+    fn aim_feed_composer(&mut self) -> Option<Focus> {
+        let thread = self.threads.selected_thread()?;
+        if self.thread.as_ref() == Some(&thread) {
+            self.set_feed_reply(None);
+            return Some(Focus::ThreadComposer);
+        }
+        self.set_feed_reply(Some(thread));
+        Some(Focus::Composer)
+    }
+
+    /// After an event (and before a draw): the composer that just got the focus in the Threads view,
+    /// by whatever way, replies in the selected message's thread.
+    fn sync_feed_composer(&mut self) {
+        let typing = self.view == View::Threads && self.focus == Focus::Composer;
+        if typing && !self.feed_typing {
+            if let Some(focus) = self.aim_feed_composer() {
+                self.focus = focus;
+            }
+        }
+        self.feed_typing = self.view == View::Threads && self.focus == Focus::Composer;
     }
 
     /// Thread `parent` of `channel` in the Threads feed was read there (on screen long enough, or replied to): marked
@@ -1656,6 +1709,20 @@ impl App {
         }
     }
 
+    /// Fetch the newest replies of the threads on screen in the Threads feed that show fewer than they have.
+    fn request_feed_replies(&mut self) {
+        if self.view != View::Threads {
+            return;
+        }
+        for (channel, ts) in self.threads.wanted_replies() {
+            let (client, tx) = (self.client.clone(), self.net.clone());
+            tokio::spawn(async move {
+                let result = client.latest_replies(&channel, &ts, FEED_REPLIES).await.map_err(|e| e.to_string());
+                let _ = tx.send(Net::FeedReplies { channel, ts, result });
+            });
+        }
+    }
+
     /// The keys' context of the view shown in the main pane (none for the conversation).
     fn view_context(&self) -> Option<Context> {
         match self.view {
@@ -1680,9 +1747,9 @@ impl App {
                     Action::Open => self.open_thread_item(),
                     // The composer under the feed, replying in the selected message's thread.
                     Action::Type => {
-                        if let Some(thread) = self.threads.selected_thread() {
-                            self.set_feed_reply(Some(thread));
-                            self.focus = Focus::Composer;
+                        if let Some(focus) = self.aim_feed_composer() {
+                            self.focus = focus;
+                            self.feed_typing = focus == Focus::Composer;
                         }
                     }
                     _ => {}
@@ -3885,6 +3952,7 @@ impl App {
             save: None,
             threads: Default::default(),
             feed_reply: None,
+            feed_typing: false,
             preview_polled: None,
             statuses_polled: (None, false),
             prefs: None,
@@ -3997,6 +4065,7 @@ async fn run_workspace(
             super::media::reattach_pictures(f.buffer_mut());
         })?;
         app.request_thumbs();
+        app.request_feed_replies();
         app.request_authors();
         app.request_activity_messages();
         app.refresh_dnd();
@@ -4158,10 +4227,12 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
             return false;
         }
     }
-    match app.mode() {
+    let keep_going = match app.mode() {
         Mode::Dialog => handle_dialog(app, &ev),
         Mode::Normal | Mode::Insert => handle_main(app, ev),
-    }
+    };
+    app.sync_feed_composer();
+    keep_going
 }
 
 /// Input while a dialog is open: the topmost dialog takes every key and click; nothing under
@@ -5612,6 +5683,11 @@ fn handle_net(app: &mut App, msg: Net) {
                 }
             }
         },
+        Net::FeedReplies { channel, ts, result } => match result {
+            Ok(page) => app.threads.merge_replies(&channel, &ts, page),
+            // The block keeps what it has.
+            Err(e) => tracing::warn!("the newest replies of a thread in the feed: {e}"),
+        },
         Net::ActivityMessage { channel, ts, message } => {
             app.activity.messages.insert((channel, ts), message);
         }
@@ -5666,6 +5742,9 @@ fn handle_net(app: &mut App, msg: Net) {
         }
     }
 }
+
+/// Replies asked for a Threads feed block that shows fewer than it has (one more than it shows).
+const FEED_REPLIES: usize = 4;
 
 /// How long to wait before joining again a huddle that ended before it connected.
 const REJOIN_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
@@ -5726,9 +5805,7 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     }
     // A view gives way to the conversation once its message box gets the focus (a command put
     // into it, …): only the Threads feed has one, once a thread to reply in was chosen there.
-    if app.view != View::Threads && app.feed_reply.is_some() {
-        app.set_feed_reply(None);
-    }
+    app.sync_feed_composer();
     if app.view != View::Conversation && app.focus == Focus::Composer && app.feed_reply.is_none() {
         app.close_view();
         app.focus = Focus::Composer;
@@ -6864,9 +6941,9 @@ mod tests {
         (app, rx)
     }
 
-    /// A Slack on a local port that answers every call `ok` (chat.postMessage with `posted`) and passes on each
-    /// request it was sent (method and form).
-    async fn fake_slack(posted: &'static str) -> (String, tokio::sync::mpsc::UnboundedReceiver<String>) {
+    /// A Slack on a local port that answers every call `ok` (a method in `answers` with its answer) and passes on
+    /// each request it was sent (method and form).
+    async fn fake_slack(answers: &'static [(&'static str, &'static str)]) -> (String, tokio::sync::mpsc::UnboundedReceiver<String>) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}/", listener.local_addr().unwrap());
@@ -6890,7 +6967,7 @@ mod tests {
                     }
                 }
                 let text = String::from_utf8_lossy(&req).to_string();
-                let body = if text.contains("chat.postMessage") { posted } else { r#"{"ok":true}"# };
+                let body = answers.iter().find(|(method, _)| text.contains(&format!("/api/{method} "))).map_or(r#"{"ok":true}"#, |(_, answer)| *answer);
                 let _ = tx.send(text);
                 let reply = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
                 let _ = sock.write_all(reply.as_bytes()).await;
@@ -6904,7 +6981,7 @@ mod tests {
         use super::{run_global, Action, Focus, Net, View};
         use crossterm::event::{KeyCode, KeyModifiers};
         use slack_core::types::Message;
-        let (url, mut asked) = fake_slack(r#"{"ok":true,"channel":"C1","message":{"type":"message","ts":"1729450000.000100","thread_ts":"1729440000.000100","user":"U0","text":"on it"}}"#).await;
+        let (url, mut asked) = fake_slack(&[("chat.postMessage", r#"{"ok":true,"channel":"C1","message":{"type":"message","ts":"1729450000.000100","thread_ts":"1729440000.000100","user":"U0","text":"on it"}}"#)]).await;
         let (mut app, mut net) = test_app_at(&url);
         app.ws.conversations.insert("C1".into(), slack_core::types::Conversation { id: "C1".into(), name: "general".into(), is_channel: true, is_member: true, ..Default::default() });
         app.current = Some("C2".into());
@@ -6957,6 +7034,130 @@ mod tests {
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         assert_eq!((app.view, app.feed_reply.clone()), (View::Conversation, None));
         assert_eq!(app.composer.text(), "a draft for C2");
+    }
+
+    /// An app on the Threads view at `url` with two threads: T1 in #general (parent + a reply), T2 in #random.
+    fn feed_app(url: &str) -> (super::App, tokio::sync::mpsc::UnboundedReceiver<super::Net>) {
+        use slack_core::types::Message;
+        let (mut app, net) = test_app_at(url);
+        for (id, name) in [("C1", "general"), ("C3", "random")] {
+            app.ws.conversations.insert(id.into(), slack_core::types::Conversation { id: id.into(), name: name.into(), is_channel: true, is_member: true, ..Default::default() });
+        }
+        app.current = Some("C2".into());
+        app.sidebar.rebuild(&app.ws);
+        super::run_global(&mut app, super::Action::Threads);
+        let m = |ts: &str, parent: &str, text: &str| Message { ts: ts.into(), thread_ts: Some(parent.into()), user: Some("U1".into()), text: text.into(), ..Default::default() };
+        let t1 = super::super::threads::Entry { channel: "C1".into(), root: Message { reply_count: 1, ..m("1729440000.000100", "1729440000.000100", "the parent") }, latest: vec![m("1729440000.000200", "1729440000.000100", "a reply")], ..Default::default() };
+        let t2 = super::super::threads::Entry { channel: "C3".into(), root: m("1729440500.000100", "1729440500.000100", "another"), ..Default::default() };
+        app.threads.add_page(vec![t1, t2], false);
+        (app, net)
+    }
+
+    fn screen(terminal: &ratatui::Terminal<ratatui::backend::TestBackend>) -> Vec<String> {
+        let buf = terminal.backend().buffer();
+        (0..buf.area.height).map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect::<String>()).collect()
+    }
+
+    /// The next request to the fake Slack for `method`.
+    async fn asked_for(asked: &mut tokio::sync::mpsc::UnboundedReceiver<String>, method: &str) -> String {
+        loop {
+            let req = tokio::time::timeout(std::time::Duration::from_secs(10), asked.recv()).await.expect("a request").unwrap();
+            if req.contains(&format!("/api/{method} ")) {
+                return req;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn i_on_the_thread_open_beside_types_in_its_box() {
+        use super::Focus;
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let (url, _asked) = fake_slack(&[]).await;
+        let (mut app, _net) = feed_app(&url);
+        // T1 is open in the thread pane beside the feed.
+        app.thread = Some(("C1".into(), "1729440000.000100".into()));
+        app.thread_composer.insert_str("half a reply");
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(140, 30)).unwrap();
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        app.focus = Focus::Messages;
+        press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        press(&mut app, KeyCode::Char('i'), KeyModifiers::NONE);
+        assert_eq!((app.focus, app.feed_reply.clone()), (Focus::ThreadComposer, None), "its own box, not a second one on its draft");
+        assert_eq!(app.thread_composer.text(), "half a reply");
+        // Another thread: the box under the feed.
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        app.focus = Focus::Messages;
+        press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        press(&mut app, KeyCode::Char('i'), KeyModifiers::NONE);
+        assert_eq!((app.focus, app.feed_reply.clone()), (Focus::Composer, Some(("C3".to_string(), "1729440500.000100".to_string()))));
+    }
+
+    #[tokio::test]
+    async fn the_reply_target_follows_the_selection() {
+        use super::Focus;
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let (url, mut asked) = fake_slack(&[]).await;
+        let (mut app, _net) = feed_app(&url);
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        // T1, `i`, Esc with nothing typed: no thread chosen any more.
+        press(&mut app, KeyCode::Char('i'), KeyModifiers::NONE);
+        assert_eq!(app.feed_reply, Some(("C1".to_string(), "1729440000.000100".to_string())));
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!((app.focus, app.feed_reply.clone()), (Focus::Messages, None));
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        // T2 selected, then the box gets the focus another way: Type on the sidebar's Threads row.
+        press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        assert_eq!(app.threads.selected_thread(), Some(("C3".to_string(), "1729440500.000100".to_string())));
+        app.focus = Focus::Sidebar;
+        assert!(app.sidebar.on_view().is_some(), "on the Threads row");
+        press(&mut app, KeyCode::Char('i'), KeyModifiers::NONE);
+        assert_eq!((app.focus, app.feed_reply.clone()), (Focus::Composer, Some(("C3".to_string(), "1729440500.000100".to_string()))));
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        assert!(screen(&terminal).iter().any(|l| l.contains("Reply in #random thread")), "{:#?}", screen(&terminal));
+        for c in "ok".chars() {
+            press(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        let post = asked_for(&mut asked, "chat.postMessage").await;
+        assert!(post.contains("channel=C3") && post.contains("thread_ts=1729440500.000100"), "{post}");
+    }
+
+    #[tokio::test]
+    async fn a_block_short_of_replies_fetches_the_newest_once() {
+        use super::Net;
+        let (url, mut asked) = fake_slack(&[("conversations.replies", r#"{"ok":true,"has_more":true,"messages":[{"type":"message","ts":"1729440000.000100","thread_ts":"1729440000.000100","user":"U1","text":"the parent","reply_count":5},{"type":"message","ts":"1729440000.000300","thread_ts":"1729440000.000100","user":"U2","text":"reply three"},{"type":"message","ts":"1729440000.000400","thread_ts":"1729440000.000100","user":"U2","text":"reply four"},{"type":"message","ts":"1729440000.000500","thread_ts":"1729440000.000100","user":"U2","text":"reply five"}]}"#)]).await;
+        let (mut app, mut net) = feed_app(&url);
+        app.threads.entries.as_mut().unwrap()[0].root.reply_count = 5;
+        app.threads.add_page(vec![], false);
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        app.request_feed_replies();
+        app.request_feed_replies();
+        let req = asked_for(&mut asked, "conversations.replies").await;
+        assert!(req.contains("channel=C1") && req.contains("ts=1729440000.000100") && req.contains("limit=4"), "{req}");
+        loop {
+            match tokio::time::timeout(std::time::Duration::from_secs(10), net.recv()).await.expect("the answer").unwrap() {
+                msg @ Net::FeedReplies { .. } => {
+                    super::handle_net(&mut app, msg);
+                    break;
+                }
+                _ => {}
+            }
+        }
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        let shown = screen(&terminal).join("\n");
+        assert!(["reply three", "reply four", "reply five", "2 more replies"].iter().all(|w| shown.contains(w)), "{shown}");
+        assert!(!shown.contains("a reply\n"), "the older one it had is hidden now");
+        // Asked once only.
+        app.request_feed_replies();
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let mut again = 0;
+        while let Ok(req) = asked.try_recv() {
+            again += usize::from(req.contains("/api/conversations.replies "));
+        }
+        assert_eq!(again, 0);
     }
 
     fn press(app: &mut super::App, code: crossterm::event::KeyCode, mods: crossterm::event::KeyModifiers) {
