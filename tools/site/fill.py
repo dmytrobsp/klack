@@ -213,7 +213,7 @@ def render_measured_note(numbers):
 
 # fill region -> site/captures/<name>.html (Task 7); a region whose capture is missing keeps what it has
 CAPTURES = {"hero-capture": "hero", "capture-huddle": "huddle", "capture-signin": "signin",
-            "capture-keys": "keys", "capture-ssh": "ssh"}
+            "capture-keys": "keys"}
 
 
 def fill_captures(html, captures):

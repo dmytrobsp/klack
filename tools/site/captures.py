@@ -26,8 +26,6 @@ CAPTURES = {
         "a code block, reactions, a thread and a link to another channel's message")),
     "keys": dict(cols=110, rows=32, title="klack", label=(
         "klack after pressing Space on a message: the which-key panel lists what each next key does")),
-    "ssh": dict(cols=80, rows=26, title="ssh box — klack", label=(
-        "The same main view of klack in an 80-column terminal, as in an SSH session")),
     # the tiles show the first letters of the real names: the capture is not built without its fixes
     "huddle": dict(cols=110, rows=32, title="klack — huddle", label=HUDDLE_LABEL, pictures=("tv",),
                    needs_fixes=True),

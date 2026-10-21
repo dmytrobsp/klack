@@ -60,12 +60,12 @@ class Build(unittest.TestCase):
             C.CAPTURES["huddle"] = old
 
     def test_fixes_and_renames(self):
-        old = C.CAPTURES["ssh"]
-        C.CAPTURES["ssh"] = dict(old, cols=10, rows=1)
+        old = C.CAPTURES["keys"]
+        C.CAPTURES["keys"] = dict(old, cols=10, rows=1)
         try:
-            out = C.build("ssh", "\x1b[1mReal\x1b[0m D", {"Real": "Fake"}, {(0, 5): "H"})
+            out = C.build("keys", "\x1b[1mReal\x1b[0m D", {"Real": "Fake"}, {(0, 5): "H"})
         finally:
-            C.CAPTURES["ssh"] = old
+            C.CAPTURES["keys"] = old
         self.assertNotIn("Real", out)
         self.assertIn("Fake", out)
         self.assertIn(">H<", out)

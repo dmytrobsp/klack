@@ -153,12 +153,6 @@ p code, li code, h3 code { color: var(--yellow); }
 .note .measured a { color: var(--yellow); }
 .standin-note { border: 2px dashed #3a2a3b; padding: 40px 20px; text-align: center; color: var(--dim); margin: 0; }
 
-/* the SSH section: the words start level with the capture; the shout jab with the sad smiley right beside it */
-#ssh .feature { align-items: start; }
-.ssh-shout { display: flex; align-items: center; gap: 14px; margin-top: 14px; }
-.ssh-shout .jab { margin: 0; flex: 1 1 auto; min-width: 0; }
-.graffiti { width: 100px; height: auto; flex: none; transform: rotate(-6deg); }
-
 .cmd { font-size: 20px; color: var(--cream); background: #0b0b0d; border-left: 4px solid var(--green); padding: 10px 16px; margin: 8px 0 18px; max-width: 420px; }
 .table-wrap { overflow-x: auto; }
 .downloads { width: 100%; border-collapse: collapse; font-size: 12.5px; line-height: 1.45; }
@@ -215,8 +209,6 @@ dialog.zoom .term { cursor: zoom-out; box-shadow: none; }
   .topnav span a { margin: 0 16px 0 0; }
   .feature { grid-template-columns: 1fr; gap: 22px; }
   .feature.flip .words { order: 0; }
-  .ssh-shout { gap: 10px; }
-  .graffiti { width: 68px; }
   .closer { font-size: 16px; padding: 14px 16px 16px; }
   .cool-kids { font-size: 18px; margin-left: 4px; }
   #footer { flex-direction: column; align-items: flex-start; }

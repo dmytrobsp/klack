@@ -1,6 +1,6 @@
 # How the page's terminal captures were made (LP7, redrawn in LP7b, re-captured in LP12a and LP12b)
 
-`site/captures/{hero,keys,huddle,ssh,signin}.html` are fragments that `python3 tools/site/fill.py site` puts into
+`site/captures/{hero,keys,huddle,signin}.html` are fragments that `python3 tools/site/fill.py site` puts into
 the page's `hero-capture` and `capture-<name>` regions (a region without its file keeps what it has). They are
 built by `python3 tools/site/captures.py RAW_DIR site/captures` from raw kitty captures (`<name>.ansi`, never
 committed), `~/.config/klack-site/rename.json` and `~/.config/klack-site/fixes.json` (both outside the repo, 0600,
@@ -53,7 +53,7 @@ the two demo channels. Both files were written by a script straight from `klack 
 tools/site/check_private.py site` checks the result, and each capture was also checked for any 5-character piece
 of a listed string (only generic words share one: "channel", "search", "staging", Slack's own address).
 
-## The live captures (hero, keys, ssh, huddle)
+## The live captures (hero, keys, huddle)
 
 Re-captured in LP12a so that the person A talks to shows online and has the camera off, and again in LP12b
 (windows `lp-c3`, `lp-c3b`) in `#prod-deploys`, so that no Slackbot huddle note shows. klack (debug build) as A
@@ -62,15 +62,13 @@ workspace) and, at the same time, B's own klack in a second one (`lp-c2b`), so t
 sidebar draws B's dot green. Each had its own fake HOME: a copy of that account's session file, sounds off,
 `[audio] input` and `KLACK_AUDIO_INPUT` naming a microphone that does not exist (klack never falls back to another
 one), huddle volume 0, `KLACK_AVATARS=0` (initials instead of profile pictures). A's window was sized to 110 × 32
-cells (80 × 26 for the SSH one) and each screen taken with `kitty @ get-text --extent screen --ansi`. The parsed grid
+cells and each screen taken with `kitty @ get-text --extent screen --ansi`. The parsed grid
 was checked against kitty's plain `get-text` of the same screen, row by row: equal (the picture's placeholder cells
 aside). B's window was never captured.
 
 - **hero** — the main view on `#prod-deploys` (reached with Ctrl+K), the last message, the one with the link,
   selected. The channel starts on screen ("beginning of conversation"), and nothing follows the link message.
 - **keys** — then Space: the which-key panel.
-- **ssh** — Esc, then the same main view at 80 × 26, as in an SSH session (the window title says so; klack itself
-  ran locally).
 - **huddle** — held in `#coffee`, never in the channel the other captures show, so it gets no note. B ran
   `klack ctl --profile b huddle-media coffee 300 --share-test` (a synthetic screen share only: no `--video-test`,
   so B's camera is off, and no microphone); A joined with `␣hh` (muted, as always) and opened the huddle view with

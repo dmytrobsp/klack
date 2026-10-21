@@ -5,9 +5,9 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 SITE = Path(__file__).resolve().parents[2] / "site"
-SECTIONS = ["top", "features", "numbers", "ssh", "get", "footer"]
+SECTIONS = ["top", "features", "numbers", "get", "footer"]
 FILLS = ["hero-capture", "download-button", "downloads", "sheet", "measured-note",
-         "capture-huddle", "capture-signin", "capture-keys", "capture-ssh"]
+         "capture-huddle", "capture-signin", "capture-keys"]
 OWN = "https://github.com/dmytrobsp/klack"
 
 

@@ -17,11 +17,9 @@ APPROVED = ["SLACK,", "MINUS THE", "BULLSHIT.", "BROWSER.", "YOUR TERMINAL JUST 
             "You bet it's keyboard-driven!", "Yes, you can use the mouse. But should you?",
             "Pipe it, cron it, grep it.", "because automation is for cool kids",
             "All of it in one terminal tab. Not a Chromium in sight.",
-            "It's just text. Of course it works over SSH.",
-            "Huddles over SSH? Only if you shout really loud.",
             "WORKS ON MY MACHINE™", "CERTIFIED",
-            # the user's third review (LP12b)
-            "Windows XP ran in 64 MB. Slack needs ten of those to show you a list of channels.",
+            # the user's third review (LP12b), and the fourth (LP12c)
+            "Windows XP ran in 64 MB.",
             "Because a messenger should not require a gaming rig."]
 # the user took these out (LP12a); "Slack Desktop™" and "the Electron thing" are too cheesy
 GONE = ["SSH forwards ports, not vocal cords.", "Chat over SSH: yes.", "You join muted", "Opening your browser",
@@ -29,7 +27,9 @@ GONE = ["SSH forwards ports, not vocal cords.", "Chat over SSH: yes.", "You join
         "Every number on this page was measured on Linux", "Slack Desktop", "the Electron thing", "Grow the beans",
         # and these in the third (LP12b)
         "trench coat", "In this economy", "how much RAM", "WHO HURT YOU", "No installer", "auto-updater",
-        "Slack Helper (Renderer)"]
+        "Slack Helper (Renderer)",
+        # and these in the fourth (LP12c)
+        "Slack needs ten of those", "Of course it works over SSH", "Only if you shout really loud"]
 BANNED = ["other terminal clients", "other clients", "the others can't"]
 
 VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"}
@@ -159,17 +159,14 @@ class Copy(unittest.TestCase):
         self.assertEqual(n_all, n_footer)
 
     def test_huddles_never_over_ssh(self):
-        ssh = by_id(self.root, "ssh").text(skip_fills=True)  # captures (Task 7) show klack's own UI hints
-        found = 0
-        for line in (flat(l) for l in ssh.split("\n")):  # one block at a time: the joke's two sentences together
-            if "huddle" in line.lower():
-                found += 1
-                self.assertRegex(line.lower(), r"shout", line)
-                self.assertNotRegex(line.lower(), r"\bworks?\b|\bsupported\b|\bfine\b", line)
-        self.assertGreater(found, 0)
+        # page-wide: a block that mentions both huddles and SSH must not say it works
+        for line in (flat(l) for l in self.root.text(skip_fills=True).split("\n")):
+            low = line.lower()
+            if "huddle" in low and "ssh" in low:
+                self.assertNotRegex(low, r"\bworks?\b|\bsupported\b|\bfine\b", line)
 
     def test_every_section_has_a_jab(self):
-        for sid in ("features", "numbers", "ssh"):
+        for sid in ("features", "numbers"):
             jabs = [e for e in by_id(self.root, sid).elements() if "jab" in e.classes]
             self.assertTrue(jabs, sid)
             for j in jabs:
@@ -184,7 +181,7 @@ class Copy(unittest.TestCase):
 
     def test_numbers_jab_counts_xp_memory(self):
         j = self.jab("numbers", "Windows XP")
-        self.assertEqual(flat(j.text()), "Windows XP ran in 64 MB. Slack needs ten of those to show you a list of channels.")
+        self.assertEqual(flat(j.text()), "Windows XP ran in 64 MB.")
         self.assertIs(j.parent, by_id(self.root, "numbers"))
 
     def test_huddles_jab_links_the_gaming_rig_to_the_numbers(self):
@@ -238,29 +235,13 @@ class Copy(unittest.TestCase):
         self.assertEqual(len(cool), 1)
         self.assertIn("scrawl", cool[0].classes)
 
-    def test_ssh_section(self):
-        ssh = by_id(self.root, "ssh")
-        h2 = next(e for e in ssh.elements() if e.tag == "h2")
-        self.assertEqual(flat(h2.text()), "It's just text. Of course it works over SSH.")
-        shout = self.jab("ssh", "shout")  # the shout is the section's jab, under the one-line body
-        self.assertEqual(flat(shout.text()), "Huddles over SSH? Only if you shout really loud.")
-        row = shout.parent
-        self.assertIn("ssh-shout", row.classes)
-        self.assertIn("words", row.parent.classes)
-        kids = [e for e in row.children if e.kind == "el"]
-        self.assertEqual(kids[0], shout)  # jab text, then the smiley right beside it
-        smiley = kids[1:]
-        self.assertEqual([e.attrs.get("src") for e in smiley], ["img/sad-smiley.svg"])
-        self.assertTrue(smiley[0].attrs.get("alt"))
-        jabs = [e for e in ssh.elements() if "jab" in e.classes]
-        self.assertEqual(jabs, [shout])
-        self.assertFalse([e for e in ssh.elements() if "scrawl" in e.classes])  # no separate shout block above
-        text = flat(ssh.text(skip_fills=True))
-        for s in ("klack auth login", "code"):
-            self.assertIn(s, text, s)
-        svg = (SITE / "img" / "sad-smiley.svg").read_text()
-        xml.dom.minidom.parseString(svg)  # well-formed
-        self.assertNotRegex(svg, r"(https?:)?//(?!www\.w3\.org/)")
+    def test_no_ssh_section(self):
+        self.assertFalse([e for e in self.root.elements() if e.attrs.get("id") == "ssh"])
+        raw = (SITE / "index.html").read_text()
+        for s in ("ssh-shout", "graffiti", "sad-smiley", "capture-ssh"):
+            self.assertNotIn(s, raw, s)
+        self.assertFalse((SITE / "img" / "sad-smiley.svg").exists())
+        self.assertFalse((SITE / "captures" / "ssh.html").exists())
 
     def test_numbers_section(self):
         n = flat(by_id(self.root, "numbers").text())

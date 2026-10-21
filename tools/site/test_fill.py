@@ -120,7 +120,7 @@ class FillTests(unittest.TestCase):
         (site / "data/release.json").write_text(json.dumps(RELEASE))
         marks = "".join(f"<!-- fill:{m} -->old<!-- /fill:{m} -->" for m in
                         ["download-button", "downloads", "hero-capture", "capture-huddle", "capture-signin",
-                         "capture-keys", "capture-ssh"])
+                         "capture-keys"])
         (site / "index.html").write_text(marks)
         (site / "captures").mkdir()
         for n in names:
@@ -129,11 +129,11 @@ class FillTests(unittest.TestCase):
 
     def test_fill_page_puts_in_every_capture(self):
         with tempfile.TemporaryDirectory() as d:
-            site = self._capture_site(d, ["hero", "huddle", "signin", "keys", "ssh"])
+            site = self._capture_site(d, ["hero", "huddle", "signin", "keys"])
             F.fill_page(site)
             out = (site / "index.html").read_text()
             self.assertIn("<!-- fill:hero-capture --><div>hero capture</div><!-- /fill:hero-capture -->", out)
-            for n in ("huddle", "signin", "keys", "ssh"):
+            for n in ("huddle", "signin", "keys"):
                 self.assertIn(f"<!-- fill:capture-{n} --><div>{n} capture</div><!-- /fill:capture-{n} -->", out)
             F.fill_page(site)
             self.assertEqual((site / "index.html").read_text(), out)
@@ -145,19 +145,19 @@ class FillTests(unittest.TestCase):
             out = (site / "index.html").read_text()
             self.assertIn("<!-- fill:capture-keys --><div>keys capture</div><!-- /fill:capture-keys -->", out)
             self.assertIn("<!-- fill:hero-capture -->old<!-- /fill:hero-capture -->", out)
-            self.assertIn("<!-- fill:capture-ssh -->old<!-- /fill:capture-ssh -->", out)
+            self.assertIn("<!-- fill:capture-signin -->old<!-- /fill:capture-signin -->", out)
 
     def test_a_capture_without_its_region_is_an_error(self):
         with tempfile.TemporaryDirectory() as d:
-            site = self._capture_site(d, ["ssh"])
+            site = self._capture_site(d, ["signin"])
             (site / "index.html").write_text("<!-- fill:download-button --><!-- /fill:download-button -->"
                                              "<!-- fill:downloads --><!-- /fill:downloads -->")
             with self.assertRaises(KeyError) as c:
                 F.fill_page(site)
-            self.assertIn("capture-ssh", str(c.exception))
+            self.assertIn("capture-signin", str(c.exception))
 
-    def test_the_site_has_all_five_captures(self):
-        for n in ("hero", "huddle", "signin", "keys", "ssh"):
+    def test_the_site_has_all_four_captures(self):
+        for n in ("hero", "huddle", "signin", "keys"):
             t = (ROOT / "site/captures" / f"{n}.html").read_text()
             self.assertTrue(t.startswith('<div class="term capture"'), n)
             self.assertIn('<svg class="cells"', t)
