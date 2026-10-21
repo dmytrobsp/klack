@@ -86,6 +86,10 @@ mod tests {
         // Slack also sends null (one person's null must not lose the whole user list).
         let p: super::UserProfile = serde_json::from_value(serde_json::json!({"huddle_state": null, "huddle_state_expiration_ts": null, "display_name": "bob"})).unwrap();
         assert_eq!((p.huddle_state.as_str(), p.huddle_state_expiration_ts, p.display_name.as_str()), ("", 0, "bob"));
+        // Slack's client (and klack) renew it with a fraction of a second: not a lost profile.
+        let p: super::UserProfile = serde_json::from_value(serde_json::json!({"huddle_state": "in_a_huddle", "huddle_state_expiration_ts": 1792616700.75, "display_name": "bob"})).unwrap();
+        assert_eq!((p.huddle_state_expiration_ts, p.display_name.as_str()), (1792616700, "bob"));
+        assert!(serde_json::from_value::<super::UserProfile>(serde_json::json!({"huddle_state_expiration_ts": "soon"})).is_err(), "not a number");
     }
 
     #[test]
@@ -198,9 +202,14 @@ pub struct UserProfile {
     /// `in_a_huddle` while the person is in one (else empty).
     #[serde(default, deserialize_with = "null_as_default")]
     pub huddle_state: String,
-    /// Until when `huddle_state` holds (epoch seconds).
-    #[serde(default, deserialize_with = "null_as_default")]
+    /// Until when `huddle_state` holds (epoch seconds; Slack may keep the fraction a renewal sent).
+    #[serde(default, deserialize_with = "whole_seconds")]
     pub huddle_state_expiration_ts: i64,
+}
+
+/// Epoch seconds sent as a whole or a fractional number (or null: 0), to whole seconds.
+fn whole_seconds<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i64, D::Error> {
+    Ok(Option::<f64>::deserialize(d)?.map_or(0, |s| s.floor() as i64))
 }
 
 /// A field Slack may send as null: its default then.

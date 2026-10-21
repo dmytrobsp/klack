@@ -147,6 +147,9 @@ pub struct Workspace {
     pub dnd: Dnd,
     /// The `dnd_*` prefs seen so far (boot, then one per `pref_change`), for `dnd.schedule`.
     pub dnd_prefs: serde_json::Map<String, Value>,
+    /// Slack's `huddles_set_status` pref: while you are in a huddle, keep your "in a huddle"
+    /// state alive (as Slack's client does). Off until Slack says it is on.
+    pub huddles_set_status: bool,
     /// Active huddles by channel.
     pub huddles: HashMap<String, Huddle>,
     /// The live events' huddle changes, numbered: the last one's number (a live list fetched is from when it
@@ -726,7 +729,7 @@ impl Workspace {
     }
 
     /// Apply user prefs (boot, or a `pref_change`): notification levels, keywords, mutes, VIPs,
-    /// the notification schedule.
+    /// the notification schedule, whether your huddle state is kept alive.
     pub fn apply_prefs(&mut self, prefs: &Value) {
         let all = match &prefs["all_notifications_prefs"] {
             Value::String(s) => serde_json::from_str(s).unwrap_or(Value::Null),
@@ -740,6 +743,11 @@ impl Workspace {
         // Older workspaces keep mutes here.
         if let Some(list) = prefs["muted_channels"].as_str() {
             self.muted.extend(list.split(',').filter(|s| !s.is_empty()).map(String::from));
+        }
+        // A bool at boot; a `pref_change` may carry it as text.
+        let set_status = &prefs["huddles_set_status"];
+        if let Some(on) = set_status.as_bool().or_else(|| set_status.as_str().and_then(|v| v.parse().ok())) {
+            self.huddles_set_status = on;
         }
         if let Some(list) = prefs["vip_users"].as_str() {
             self.vip = list.split(',').filter(|s| !s.is_empty()).map(String::from).collect();

@@ -246,6 +246,8 @@ struct App {
     huddle_after_open: Option<String>,
     /// A huddle that ended before it connected was joined again (once).
     rejoined: bool,
+    /// When your "in a huddle" state is renewed next (None: not in a connected huddle).
+    huddle_beat: Option<std::time::Instant>,
     /// What the open composers held at the last look, since when, and whether that is saved.
     autosave: (Option<super::composer::Draft>, Option<super::composer::Draft>, std::time::Instant, bool),
     /// Open search overlay (Ctrl+F).
@@ -2372,6 +2374,23 @@ impl App {
         }
     }
 
+    /// While you are in a connected huddle, renew your "in a huddle" state when it is due, as
+    /// Slack's client does (with the `huddles_set_status` pref on): only its expiry, 5 minutes on,
+    /// every ~4 minutes. Slack sets the state when you join and clears it when you leave.
+    fn beat_huddle(&mut self, in_call: bool, now: std::time::Instant) {
+        if !super::call::huddle_beat_due(&mut self.huddle_beat, in_call, self.ws.huddles_set_status, now, super::call::beat_jitter()) {
+            return;
+        }
+        let client = self.client.clone();
+        let unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64();
+        tokio::spawn(async move {
+            match client.set_huddle_state(&super::call::huddle_state_fields(unix)).await {
+                Ok(()) => tracing::info!("renewed your huddle state"),
+                Err(e) => tracing::warn!("could not renew your huddle state: {e:#}"),
+            }
+        });
+    }
+
     fn join_huddle(&mut self, channel: String, thread: Option<String>) {
         self.rejoined = false;
         self.join_huddle_after(channel, thread, std::time::Duration::ZERO);
@@ -4112,6 +4131,7 @@ impl App {
             mover: None,
             huddle_after_open: None,
             rejoined: false,
+            huddle_beat: None,
             autosave: (None, None, std::time::Instant::now(), true),
             presence_subscribed: false,
             followed: Default::default(),
@@ -4195,6 +4215,8 @@ async fn run_workspace(
         app.expire_status(std::time::Instant::now());
         app.follow_profiles(std::time::Instant::now());
         app.ring_tick();
+        let in_call = app.call.as_ref().is_some_and(|c| c.connected && !c.leaving);
+        app.beat_huddle(in_call, std::time::Instant::now());
         app.sync_which_key(std::time::Instant::now());
         app.sync_recording(std::time::Instant::now());
         // Alone in the huddle for a while: a quiet melody loops until someone joins.
@@ -7591,5 +7613,40 @@ mod tests {
         assert!(app.seen.contains_key("k1"), "the item is seen");
         terminal.draw(|f| super::draw(f, &mut app)).unwrap();
         assert_ne!(app.composer_area, Rect::default(), "the conversation and its message box are back");
+    }
+
+    #[tokio::test]
+    async fn in_a_huddle_your_state_is_renewed_as_slacks_client_does() {
+        let (url, mut asked) = fake_slack(&[]).await;
+        let (mut app, _net) = test_app_at(&url);
+        let t0 = std::time::Instant::now();
+        let at = |s: u64| t0 + std::time::Duration::from_secs(s);
+        let next = |asked: &mut tokio::sync::mpsc::UnboundedReceiver<String>| asked.try_recv().ok();
+        let wait = || tokio::time::sleep(std::time::Duration::from_millis(300));
+        // The pref (from boot or a `pref_change`) is off until Slack says it is on.
+        app.beat_huddle(true, at(0));
+        wait().await;
+        assert_eq!(next(&mut asked), None, "pref unknown: nothing");
+        app.huddle_beat = None;
+        app.ws.apply_prefs(&serde_json::json!({"huddles_set_status": true}));
+        app.beat_huddle(true, at(0));
+        let req = tokio::time::timeout(std::time::Duration::from_secs(10), asked.recv()).await.expect("a request").unwrap();
+        assert!(req.contains("/api/users.profile.set "), "{req}");
+        let body = &req[req.find("\r\n\r\n").unwrap()..];
+        assert!(body.contains("profile=%7B%22huddle_state_expiration_ts%22%3A") && body.matches("%22%3A").count() == 1, "only the expiry: {body}");
+        assert!(body.contains("_x_reason=increment-huddle-state-expiration-ts") && !body.contains("status"), "{body}");
+        assert!(app.huddle_beat.is_some());
+        // Not again before 216 s (240 s − 10 %); the call ended: nothing more, ever.
+        app.beat_huddle(true, at(200));
+        app.beat_huddle(false, at(300));
+        app.beat_huddle(false, at(900));
+        wait().await;
+        assert_eq!(next(&mut asked), None);
+        assert_eq!(app.huddle_beat, None);
+        // Turned off in Slack: no beat in the next call.
+        app.ws.apply_prefs(&serde_json::json!({"huddles_set_status": false}));
+        app.beat_huddle(true, at(1000));
+        wait().await;
+        assert_eq!(next(&mut asked), None, "pref off");
     }
 }

@@ -74,6 +74,16 @@ fn activity_params(types: &str, limit: u32, cursor: Option<&str>) -> Params<'sta
     params
 }
 
+/// The form of a huddle-state renewal: `profile` with only `huddle_state*` fields (at least
+/// one), and the reason Slack's client gives.
+fn huddle_state_params(fields: &Value) -> Result<Params<'static>> {
+    let map = fields.as_object().filter(|m| !m.is_empty()).ok_or_else(|| anyhow!("users.profile.set: no huddle state fields"))?;
+    if let Some(other) = map.keys().find(|k| !k.starts_with("huddle_state")) {
+        return Err(anyhow!("users.profile.set: {other} is not a huddle state field"));
+    }
+    Ok(vec![("profile", fields.to_string()), ("_x_reason", "increment-huddle-state-expiration-ts".into())])
+}
+
 /// `huddles.history`'s arguments: a page of `limit` (1–30, the most Slack's client asks for) from `cursor` on.
 fn history_params(cursor: Option<&str>, limit: u32) -> Params<'static> {
     let mut params: Params = vec![("limit", limit.clamp(1, 30).to_string())];
@@ -424,6 +434,13 @@ impl Client {
         self.call_raw("users.profile.set", &[("profile", profile)]).await.map(|_| ())
     }
 
+    /// Renew your "in a huddle" state, as Slack's client does while you are in a huddle
+    /// (`users.profile.set` with only `huddle_state*` fields; anything else is refused, so the
+    /// status is never touched). See docs/protocol/huddles.md.
+    pub async fn set_huddle_state(&self, fields: &Value) -> Result<()> {
+        self.call_raw("users.profile.set", &huddle_state_params(fields)?).await.map(|_| ())
+    }
+
     /// Pause notifications for `minutes`, or resume them (None).
     pub async fn snooze(&self, minutes: Option<u64>) -> Result<()> {
         match minutes {
@@ -763,6 +780,17 @@ mod tests {
         assert_eq!(params, vec![("mode", "chrono_reads_and_unreads".to_string()), ("types", "dm,mpdm,bot_dm_bundle".to_string()), ("limit", "50".to_string())]);
         let next = super::activity_params("thread_v2", 50, Some("abc"));
         assert_eq!((next[1].1.as_str(), next.last()), ("thread_v2", Some(&("cursor", "abc".to_string()))), "the next page");
+    }
+
+    #[test]
+    fn the_huddle_state_write_carries_only_huddle_fields() {
+        let fields = serde_json::json!({"huddle_state_expiration_ts": 1792616700.25});
+        let params = super::huddle_state_params(&fields).unwrap();
+        assert_eq!(params, vec![("profile", r#"{"huddle_state_expiration_ts":1792616700.25}"#.to_string()), ("_x_reason", "increment-huddle-state-expiration-ts".to_string())], "as Slack's client sends it");
+        // Never the status (or anything else of the profile).
+        for other in [serde_json::json!({"status_emoji": ":x:"}), serde_json::json!({"huddle_state_expiration_ts": 1, "status_text": ""}), serde_json::json!({}), serde_json::json!(5)] {
+            assert!(super::huddle_state_params(&other).is_err(), "{other}");
+        }
     }
 
     #[test]

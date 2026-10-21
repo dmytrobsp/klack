@@ -334,7 +334,10 @@ beats the default.
 
 `␣hh` joins (or starts) the huddle of the conversation you are in, and `␣hT` on a message starts (or
 joins) a huddle in that message's thread; you join **muted**, and the
-microphone is only opened while you are unmuted (`␣hm`). The call bar at the bottom shows that you are
+microphone is only opened while you are unmuted (`␣hm`). While you are in a huddle, others see you
+"In a huddle" (🎧 when you have no status emoji) as with Slack's own app: Slack sets it when you join and
+clears it when you leave, and klack renews it every ~4 minutes, as Slack's app does — only when your Slack
+preference for it (`huddles_set_status`) is on, and never touching your status. The call bar at the bottom shows that you are
 still in the huddle — where, how many are there, your microphone (🎙 live with your level, or 🔇
 muted), your camera and a screen share — and the picture and name of whoever is talking, or talked
 last, instead of everyone; with its keys underneath, and it takes more rows rather than cutting

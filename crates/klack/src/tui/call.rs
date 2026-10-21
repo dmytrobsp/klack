@@ -578,6 +578,41 @@ fn loudest_other(levels: &std::collections::HashMap<String, f32>, roster: &[Part
 /// After connecting, roster changes this soon are the people already there arriving.
 const ROSTER_SETTLE: std::time::Duration = std::time::Duration::from_secs(3);
 
+/// How often Slack's client renews your "in a huddle" state while you are in a huddle (±10 %),
+/// and how long each renewal holds it (docs/protocol/huddles.md, "Your own huddle state").
+pub const HUDDLE_BEAT: std::time::Duration = std::time::Duration::from_secs(240);
+const HUDDLE_STATE_HOLD_SECS: f64 = 300.0;
+
+/// Whether to renew your huddle state now; `next` is when the next beat is due (None: not in
+/// a connected huddle). The first comes as the call connects, then every [`HUDDLE_BEAT`]
+/// stretched by `jitter` (−0.1…0.1). With the pref (`huddles_set_status`) off a due beat is
+/// skipped but the timer runs on, so turning it on takes effect at the next one, as in Slack's
+/// client. Out of a call: nothing (Slack clears the state itself when you leave).
+pub fn huddle_beat_due(next: &mut Option<std::time::Instant>, in_call: bool, pref_on: bool, now: std::time::Instant, jitter: f64) -> bool {
+    if !in_call {
+        *next = None;
+        return false;
+    }
+    if next.is_some_and(|t| now < t) {
+        return false;
+    }
+    *next = Some(now + HUDDLE_BEAT.mul_f64(1.0 + jitter.clamp(-0.1, 0.1)));
+    pref_on
+}
+
+/// A random stretch of the beat, −0.1…0.1 (Slack's client varies its timer by ±10 %).
+pub fn beat_jitter() -> f64 {
+    use std::hash::BuildHasher;
+    let r = std::collections::hash_map::RandomState::new().hash_one(std::time::SystemTime::now());
+    (r % 20_001) as f64 / 100_000.0 - 0.1
+}
+
+/// The profile fields of a renewal at `now` (unix seconds): only the expiry, 5 minutes on —
+/// never the status, never the state itself (Slack sets that when you join).
+pub fn huddle_state_fields(now: f64) -> serde_json::Value {
+    serde_json::json!({ "huddle_state_expiration_ts": now + HUDDLE_STATE_HOLD_SECS })
+}
+
 /// Whether we have been alone (since `since`) for at least `wait`.
 fn alone_long_enough(since: Option<std::time::Instant>, now: std::time::Instant, wait: std::time::Duration) -> bool {
     since.is_some_and(|s| now.duration_since(s) >= wait)
@@ -593,6 +628,47 @@ fn roster_changes(old: &[Participant], new: &[Participant], me: &str) -> (usize,
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn heartbeat_timing() {
+        use super::huddle_beat_due as due;
+        let t0 = std::time::Instant::now();
+        let at = |s: u64| t0 + std::time::Duration::from_secs(s);
+        // Connected, pref on: a beat as the call connects, the next after 240 s, not before.
+        let mut next = None;
+        assert!(due(&mut next, true, true, at(0), 0.0), "at join");
+        assert!(!due(&mut next, true, true, at(1), 0.0));
+        assert!(!due(&mut next, true, true, at(239), 0.0), "not before 240 s");
+        assert!(due(&mut next, true, true, at(240), 0.0), "after 240 s");
+        assert!(!due(&mut next, true, true, at(300), 0.0));
+        assert!(due(&mut next, true, true, at(480), 0.0));
+        // ±10 %: the wait is stretched by the jitter it is given.
+        let mut next = None;
+        assert!(due(&mut next, true, true, at(0), 0.1));
+        assert!(!due(&mut next, true, true, at(263), 0.0));
+        assert!(due(&mut next, true, true, at(264), 0.0));
+        let mut next = None;
+        assert!(due(&mut next, true, true, at(0), -0.1));
+        assert!(due(&mut next, true, true, at(216), 0.0));
+        // Pref off: never, though the timer runs; turned on, the next due beat goes.
+        let mut next = None;
+        assert!((0..=600).all(|s| !due(&mut next, true, false, at(s), 0.0)), "pref off: never");
+        assert!(due(&mut next, true, true, at(720), 0.0), "pref on again: at the next beat");
+        // Ended (or not connected yet): nothing, now or later; the next call starts over.
+        let mut next = None;
+        assert!(due(&mut next, true, true, at(0), 0.0));
+        assert!(!due(&mut next, false, true, at(10), 0.0), "ended: nothing to send (Slack clears the state itself)");
+        assert_eq!(next, None);
+        assert!((10..=1000).all(|s| !due(&mut next, false, true, at(s), 0.0)), "then nothing");
+        assert!(due(&mut next, true, true, at(1001), 0.0), "a new call: a beat at its join");
+        // The jitter Slack's client uses: within ±10 %.
+        assert!((0..200).map(|_| super::beat_jitter()).all(|j| (-0.1..=0.1).contains(&j)));
+    }
+
+    #[test]
+    fn the_heartbeat_holds_the_state_for_5_minutes() {
+        assert_eq!(super::huddle_state_fields(1792616400.5), serde_json::json!({"huddle_state_expiration_ts": 1792616700.5}));
+    }
+
     #[test]
     fn alone_reminders() {
         let t0 = std::time::Instant::now();

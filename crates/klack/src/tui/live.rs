@@ -511,6 +511,14 @@ mod tests {
         w.vip.insert("U2".into());
         apply(&mut w, &json!({"event_ts":"1792335553.041700","name":"vip_users","type":"pref_change","value":""}), None);
         assert!(w.vip.is_empty());
+        // Whether your huddle state is kept alive: off until Slack says so, then as it says.
+        assert!(!w.huddles_set_status);
+        apply(&mut w, &json!({"name":"huddles_set_status","type":"pref_change","value":true}), None);
+        assert!(w.huddles_set_status);
+        apply(&mut w, &json!({"name":"huddles_set_status","type":"pref_change","value":"false"}), None);
+        assert!(!w.huddles_set_status);
+        apply(&mut w, &json!({"name":"huddles_set_status","type":"pref_change","value":"maybe"}), None);
+        assert!(!w.huddles_set_status, "kept");
     }
 
     #[test]

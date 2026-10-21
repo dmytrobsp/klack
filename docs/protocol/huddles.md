@@ -163,3 +163,31 @@ Research: `slack-rea/notes/huddles-list.md` §1–2. Verified live on the test w
   room, `date_start` (int s, set) among them. A DM huddle B started and A never answered (B alone) did not show in A's
   `huddles.history`, not even with `missed_huddles_only=true`, though older missed DM huddles are there — the same
   rule as above. `ended_huddle_update` / `huddle_start` did not arrive at A for those solo huddles (A was in neither).
+
+## Your own huddle state ("In a huddle"), 2026-10-21 (VW8)
+
+Research: `slack-rea/notes/huddles-list.md` §4, re-read in the web client bundles served on 2026-10-21
+(`client-boot.*`: the huddle orchestrator and the older `HuddleStateManager`); live shapes on the test workspace.
+
+- OBSERVED (code): once the huddle is connected (`STARTED`) the client starts a timer that calls, right away and
+  then every 240 s ±10 % (random each time), `users.profile.set` with `profile = JSON {"huddle_state_expiration_ts":
+  <now in unix seconds, with a fraction> + 300}` and reason `increment-huddle-state-expiration-ts` (the client's
+  `reason` is the `_x_reason` argument elsewhere; INFERRED here). Nothing else of the profile: never
+  `huddle_state`, never the status. Each tick checks the user pref **`huddles_set_status`** (the older manager
+  checks it once when the call starts); off → no write. Errors are logged and the timer goes on.
+- OBSERVED (code): leaving (`ENDING`, or an error) only cancels the timer: no profile write on leave. (The leave
+  itself also sends `rooms.leave … reason=user_initiated`, not part of this.)
+- OBSERVED (live): `huddles_set_status` is a boolean in `client.userBoot` `prefs` and in `users.prefs.get` `prefs`.
+- OBSERVED (live, `users.info` of B read by A every 30 s, shapes only): B joined a channel huddle with
+  `ctl huddle-media` (no renewal). Within seconds `huddle_state` = `in_a_huddle`, `huddle_state_expiration_ts` about
+  22 minutes ahead (fixed, counting down), `huddle_state_call_id` a string, `huddle_state_channel_id` null (a
+  channel huddle). Within ~40 s of B leaving: `default_unset`, expiration 0, no call id. So the **server sets the
+  state on join and clears it on leave**; the client's renewal only moves the expiry (to 5 minutes ahead), and
+  without it someone in a long huddle drops out of "In a huddle" after about 22 minutes.
+- OBSERVED (live, klack's renewal): `users.profile.set` with that form answers ok; while the server's own expiry is
+  later than now+300 the expiry read back stays the server's (unchanged). Not seen: what a renewal does once the
+  server's expiry comes within 5 minutes (the test huddles on the test workspace ended after ~10 minutes, before
+  that point). Slack's client sends it regardless, and so does klack.
+- klack: the same renewal while a call is connected and not leaving, with the pref from boot / `pref_change`
+  (off until Slack says on); `Client::set_huddle_state` refuses any field but `huddle_state*`. A fractional
+  `huddle_state_expiration_ts` (what a renewal sends) is read as whole seconds, so it cannot break a profile.
