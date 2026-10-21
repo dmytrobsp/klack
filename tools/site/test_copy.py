@@ -19,7 +19,7 @@ APPROVED = ["SLACK,", "MINUS THE", "BULLSHIT.", "BROWSER.", "YOUR TERMINAL JUST 
             "WORKS ON MY MACHINE™", "CERTIFIED",
             # the user's third review (LP12b), and the fourth (LP12c)
             "Windows XP ran in 64 MB.",
-            "Because a messenger should not require a gaming rig."]
+            "A messenger should not require a gaming rig."]
 # the user took these out (LP12a); "Slack Desktop™" and "the Electron thing" are too cheesy
 GONE = ["SSH forwards ports, not vocal cords.", "Chat over SSH: yes.", "You join muted", "Opening your browser",
         "modal dialog", "wire it into CI", "And the rest", "Measured, not guessed", "sound of my freedom",
@@ -185,7 +185,7 @@ class Copy(unittest.TestCase):
 
     def test_huddles_jab_links_the_gaming_rig_to_the_numbers(self):
         j = self.jab("features", "gaming rig")
-        self.assertEqual(flat(j.text()), "Because a messenger should not require a gaming rig.")
+        self.assertEqual(flat(j.text()), "A messenger should not require a gaming rig.")
         links = [e for e in j.elements() if e.tag == "a"]
         self.assertEqual([(flat(a.text()), a.attrs.get("href")) for a in links], [("gaming rig", "#numbers")])
 
