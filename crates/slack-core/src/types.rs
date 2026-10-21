@@ -109,6 +109,70 @@ mod tests {
         assert_eq!(super::channel_name("Café"), "café");
         assert_eq!(super::channel_name("x".repeat(100).as_str()).len(), 80);
     }
+
+    /// A live huddle object as Flannel's `huddles/list` and `huddles/info` both send it (shape seen 2026-10-21).
+    fn live_object(channel: &str, call: &str, active: &[&str], dropped: &[&str]) -> serde_json::Value {
+        serde_json::json!({"active_members": active, "background_id": "B0000000001", "call_id": call, "channel_id": channel,
+            "created_by": "U0000000001", "dropped_members": dropped, "expiration": 1_800_000_000, "is_private": false, "is_scheduled": false,
+            "knocks": {}, "last_invite_status_by_user": {}, "locale": "en-US", "name": "", "pending_invitees": {},
+            "recording": {"can_record_summary": "available", "is_paused": false, "recording_user": "", "summary": false, "transcript": false},
+            "start_date": 1_700_000_000, "thread_root_ts": "1700000000.000100", "updated": 1_700_000_010})
+    }
+
+    #[test]
+    fn parses_huddles_info() {
+        use super::LiveHuddle;
+        let v = serde_json::json!({"ok": true, "huddles": [
+            live_object("C0000000001", "R0000000001", &["U0000000001", "U0000000002", "U0000000003"], &["U0000000002"]),
+            live_object("D0000000001", "R0000000002", &["U0000000004"], &[])]});
+        assert_eq!(LiveHuddle::from_info(&v), vec![
+            LiveHuddle { channel: "C0000000001".into(), call_id: "R0000000001".into(), members: vec!["U0000000001".into(), "U0000000003".into()] },
+            LiveHuddle { channel: "D0000000001".into(), call_id: "R0000000002".into(), members: vec!["U0000000004".into()] },
+        ], "members are the active ones less the dropped ones");
+        // `huddles/list` sends the same objects; the channels are asked again with `huddles/info`, once each.
+        let list = serde_json::json!({"ok": true, "huddles": [live_object("C0000000001", "R0000000001", &[], &[]), live_object("C0000000001", "R0000000001", &[], &[]), live_object("D0000000001", "R0000000002", &[], &[])]});
+        assert_eq!(LiveHuddle::listed_channels(&list), ["C0000000001", "D0000000001"]);
+        // An object without a channel or a room says nothing usable.
+        let odd = serde_json::json!({"ok": true, "huddles": [{"channel_id": "C0000000001"}, {"call_id": "R0000000001", "active_members": ["U0000000001"]}]});
+        assert!(LiveHuddle::from_info(&odd).is_empty());
+    }
+
+    #[test]
+    fn parses_huddles_history() {
+        use super::PastHuddle;
+        let item = |id: &str, ended: bool| serde_json::json!({"access_type_by_user": {"U0000000001": 1}, "attached_file_ids": [], "background_id": "B0000000001",
+            "channel_type": "public", "channels": ["C0000000001"], "created_by": "U0000000001", "date_end": 1_700_000_600, "date_start": 1_700_000_000,
+            "external_unique_id": "00000000-0000-0000-0000-000000000000", "has_ended": ended, "huddle_link": "https://example.slack.com/huddle/T0/C0", "id": id,
+            "last_invite_status_by_user": {}, "name": "", "participant_history": ["U0000000001", "U0000000002"], "participants": [], "pending_invitees": {},
+            "prototypes": {"is_prewarmed": false, "is_scheduled": false}, "recording": {"can_record_summary": "available"}, "thread_root_ts": "1700000000.000100"});
+        let mut missed = item("R0000000002", true);
+        missed["channel_type"] = "dm".into();
+        missed["channels"] = serde_json::json!(["D0000000001"]);
+        missed["participant_history"] = serde_json::json!(["U0000000002"]);
+        missed["missed_participants"] = serde_json::json!({"U0000000003": "M0000000001", "U0000000001": "M0000000002"});
+        missed["thread_root_ts"] = "".into();
+        let v = serde_json::json!({"ok": true, "huddles": [item("R0000000001", false), missed], "response_metadata": {"next_cursor": "bmV4dA=="}});
+        let (huddles, next) = PastHuddle::from_history(&v);
+        assert_eq!(next.as_deref(), Some("bmV4dA=="));
+        assert_eq!(huddles, vec![
+            PastHuddle { id: "R0000000001".into(), channel: "C0000000001".into(), channel_type: "public".into(), start: 1_700_000_000, end: 1_700_000_600, ended: false,
+                thread_ts: Some("1700000000.000100".into()), people: vec!["U0000000001".into(), "U0000000002".into()], missed: vec![] },
+            PastHuddle { id: "R0000000002".into(), channel: "D0000000001".into(), channel_type: "dm".into(), start: 1_700_000_000, end: 1_700_000_600, ended: true,
+                thread_ts: None, people: vec!["U0000000002".into()], missed: vec!["U0000000001".into(), "U0000000003".into()] },
+        ], "missed: the keys of missed_participants, sorted");
+    }
+
+    #[test]
+    fn empty_lists() {
+        use super::{LiveHuddle, PastHuddle};
+        let none = serde_json::json!({"ok": true, "huddles": []});
+        assert!(LiveHuddle::listed_channels(&none).is_empty() && LiveHuddle::from_info(&none).is_empty());
+        assert_eq!(PastHuddle::from_history(&none), (vec![], None));
+        // The last page's cursor is empty.
+        let last = serde_json::json!({"ok": true, "huddles": [], "response_metadata": {"next_cursor": ""}});
+        assert_eq!(PastHuddle::from_history(&last), (vec![], None));
+        assert!(LiveHuddle::from_info(&serde_json::json!({"ok": true})).is_empty(), "no huddles key");
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -313,4 +377,92 @@ pub struct AuthTest {
     pub user: String,
     pub team_id: String,
     pub user_id: String,
+}
+
+/// A huddle happening now (Flannel `huddles/info`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LiveHuddle {
+    pub channel: String,
+    /// The room (`R…`).
+    pub call_id: String,
+    /// Who is in it now: the active members less the dropped ones, as Slack's client counts them.
+    pub members: Vec<String>,
+}
+
+impl LiveHuddle {
+    /// The channels with a huddle in a `huddles/list` answer.
+    pub fn listed_channels(v: &Value) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for h in v["huddles"].as_array().into_iter().flatten() {
+            if let Some(c) = h["channel_id"].as_str().or(h.as_str()).filter(|c| !c.is_empty() && !out.iter().any(|o| o == c)) {
+                out.push(c.to_string());
+            }
+        }
+        out
+    }
+
+    /// The huddles in a `huddles/info` answer; a channel without one has no object there.
+    pub fn from_info(v: &Value) -> Vec<LiveHuddle> {
+        let ids = |h: &Value, k: &str| -> Vec<String> { h[k].as_array().into_iter().flatten().filter_map(Value::as_str).map(String::from).collect() };
+        v["huddles"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|h| {
+                let text = |k: &str| h[k].as_str().filter(|s| !s.is_empty()).map(String::from);
+                let dropped = ids(h, "dropped_members");
+                let members = ids(h, "active_members").into_iter().filter(|m| !dropped.contains(m)).collect();
+                Some(LiveHuddle { channel: text("channel_id")?, call_id: text("call_id")?, members })
+            })
+            .collect()
+    }
+}
+
+/// A huddle from `huddles.history`: one this account was in or missed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PastHuddle {
+    /// The room (`R…`).
+    pub id: String,
+    pub channel: String,
+    /// `public`, `dm`, `mpim`, … as Slack names it.
+    pub channel_type: String,
+    /// Unix seconds.
+    pub start: i64,
+    pub end: i64,
+    pub ended: bool,
+    /// The "A huddle started" message (the huddle's thread).
+    pub thread_ts: Option<String>,
+    /// Everyone who was in it.
+    pub people: Vec<String>,
+    /// Who was asked or rang and did not come.
+    pub missed: Vec<String>,
+}
+
+impl PastHuddle {
+    /// The huddles of a `huddles.history` page and the next page's cursor.
+    pub fn from_history(v: &Value) -> (Vec<PastHuddle>, Option<String>) {
+        let text = |v: &Value| v.as_str().unwrap_or_default().to_string();
+        let huddles = v["huddles"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|h| {
+                let mut missed: Vec<String> = h["missed_participants"].as_object().map(|m| m.keys().cloned().collect()).unwrap_or_default();
+                missed.sort();
+                PastHuddle {
+                    id: text(&h["id"]),
+                    channel: text(&h["channels"][0]),
+                    channel_type: text(&h["channel_type"]),
+                    start: h["date_start"].as_i64().unwrap_or_default(),
+                    end: h["date_end"].as_i64().unwrap_or_default(),
+                    ended: h["has_ended"].as_bool().unwrap_or_default(),
+                    thread_ts: h["thread_root_ts"].as_str().filter(|t| !t.is_empty()).map(String::from),
+                    people: h["participant_history"].as_array().into_iter().flatten().filter_map(Value::as_str).map(String::from).collect(),
+                    missed,
+                }
+            })
+            .collect();
+        let next = v["response_metadata"]["next_cursor"].as_str().filter(|c| !c.is_empty()).map(String::from);
+        (huddles, next)
+    }
 }

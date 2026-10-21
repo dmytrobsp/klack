@@ -74,12 +74,48 @@ fn activity_params(types: &str, limit: u32, cursor: Option<&str>) -> Params<'sta
     params
 }
 
+/// `huddles.history`'s arguments: a page of `limit` (1–30, the most Slack's client asks for) from `cursor` on.
+fn history_params(cursor: Option<&str>, limit: u32) -> Params<'static> {
+    let mut params: Params = vec![("limit", limit.clamp(1, 30).to_string())];
+    if let Some(cursor) = cursor.filter(|c| !c.is_empty()) {
+        params.push(("cursor", cursor.into()));
+    }
+    params
+}
+
+/// The Flannel (edge API) address Slack gave and until when it holds, shared by a client's clones.
+#[derive(Clone, Default)]
+struct FlannelUrl(Arc<std::sync::Mutex<Option<(String, std::time::Instant)>>>);
+
+impl FlannelUrl {
+    fn fresh(&self) -> Option<String> {
+        let kept = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        kept.as_ref().filter(|(_, until)| std::time::Instant::now() < *until).map(|(url, _)| url.clone())
+    }
+
+    fn keep(&self, url: String, ttl_seconds: u64) {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = Some((url, std::time::Instant::now() + Duration::from_secs(ttl_seconds)));
+    }
+}
+
+/// The Flannel address and how many seconds it holds, from `api.getFlannelHttpUrl`'s answer. The session goes
+/// to it, so it must be one of Slack's own https hosts.
+fn flannel_answer(v: &Value) -> Result<(String, u64)> {
+    let url = v["url"].as_str().ok_or_else(|| anyhow!("api.getFlannelHttpUrl: no url"))?.trim_end_matches('/');
+    let host = url.strip_prefix("https://").and_then(|r| r.split(['/', '?', '#']).next()).unwrap_or_default();
+    if !["slack.com", "slack-gov.com"].iter().any(|d| host.ends_with(&format!(".{d}"))) {
+        return Err(anyhow!("api.getFlannelHttpUrl: not a Slack address"));
+    }
+    Ok((url.to_string(), v["ttl_seconds"].as_u64().unwrap_or(0)))
+}
+
 #[derive(Clone)]
 pub struct Client {
     http: reqwest::Client,
     pub session: WorkspaceSession,
     /// Set once Slack answered that the session has ended; shared by every clone.
     signed_out: SignedOutFlag,
+    flannel: FlannelUrl,
 }
 
 pub type Params<'a> = Vec<(&'a str, String)>;
@@ -100,7 +136,7 @@ pub fn http_client(builder: impl Fn() -> reqwest::ClientBuilder) -> Result<reqwe
 impl Client {
     pub fn new(session: WorkspaceSession) -> Result<Self> {
         let http = http_client(|| reqwest::Client::builder().user_agent(USER_AGENT).connect_timeout(Duration::from_secs(15)).timeout(Duration::from_secs(120)))?;
-        Ok(Client { http, session, signed_out: SignedOutFlag::default() })
+        Ok(Client { http, session, signed_out: SignedOutFlag::default(), flannel: FlannelUrl::default() })
     }
 
     /// Whether Slack has answered one of this client's calls (or a clone's) saying the session
@@ -130,15 +166,14 @@ impl Client {
         let url = format!("{}{}", self.session.api_base(), method);
         let mut form: Vec<(&str, &str)> = params.iter().map(|(k, v)| (*k, v.as_str())).collect();
         form.push(("token", self.session.token.as_str()));
+        self.answer(method, || self.http.post(&url).header(reqwest::header::COOKIE, self.session.cookie_header()).form(&form)).await
+    }
+
+    /// Send the request `request` builds — again after `Retry-After` when Slack answers HTTP 429 — and return
+    /// Slack's answer after the `ok` check.
+    async fn answer(&self, method: &str, request: impl Fn() -> reqwest::RequestBuilder) -> Result<Value> {
         for attempt in 0..5 {
-            let resp = self
-                .http
-                .post(&url)
-                .header(reqwest::header::COOKIE, self.session.cookie_header())
-                .form(&form)
-                .send()
-                .await
-                .with_context(|| format!("{method}: request failed"))?;
+            let resp = request().send().await.with_context(|| format!("{method}: request failed"))?;
             if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
                 let wait = resp
                     .headers()
@@ -616,6 +651,56 @@ impl Client {
         Ok(())
     }
 
+    // ---- huddles (see docs/protocol/huddles.md) ---------------------------------------------
+
+    /// The Flannel (edge API) address of this workspace (`api.getFlannelHttpUrl`), kept for as long as Slack says.
+    pub async fn flannel_url(&self) -> Result<String> {
+        if let Some(url) = self.flannel.fresh() {
+            return Ok(url);
+        }
+        let (url, ttl) = flannel_answer(&self.call_raw("api.getFlannelHttpUrl", &[("include_external_workspaces", "true".into())]).await?)?;
+        self.flannel.keep(url.clone(), ttl);
+        Ok(url)
+    }
+
+    /// Call Flannel's `method` (`huddles/list`, …) with the JSON object `body` (the token is added to it, never to
+    /// the address); Slack's answer after the `ok` check, retried on HTTP 429 like [`Client::call_raw`].
+    pub async fn flannel(&self, method: &str, body: Value) -> Result<Value> {
+        self.ask_flannel(method, body).await.map_err(|e| self.signed_out.note(e))
+    }
+
+    async fn ask_flannel(&self, method: &str, body: Value) -> Result<Value> {
+        #[cfg(debug_assertions)]
+        if let Some(e) = std::env::var("KLACK_FAIL").ok().and_then(|v| injected(&v, method)) {
+            return Err(e);
+        }
+        let mut body = match body {
+            Value::Object(map) => map,
+            Value::Null => serde_json::Map::new(),
+            _ => return Err(anyhow!("{method}: the body must be a JSON object")),
+        };
+        body.insert("token".into(), self.session.token.clone().into());
+        let url = format!("{}/{method}", self.flannel_url().await?);
+        self.answer(method, || self.http.post(&url).header(reqwest::header::COOKIE, self.session.cookie_header()).json(&body)).await
+    }
+
+    /// The huddles happening now that this account can see (Flannel `huddles/list`, then `huddles/info` for their
+    /// channels, 100 at a time), with who is in each.
+    pub async fn huddles_live(&self) -> Result<Vec<LiveHuddle>> {
+        let channels = LiveHuddle::listed_channels(&self.flannel("huddles/list", serde_json::json!({})).await?);
+        let mut out = Vec::new();
+        for chunk in channels.chunks(100) {
+            out.extend(LiveHuddle::from_info(&self.flannel("huddles/info", serde_json::json!({"channel_ids": chunk})).await?));
+        }
+        Ok(out)
+    }
+
+    /// One page (newest first, at most 30) of the huddles this account was in or missed (`huddles.history`), from
+    /// `cursor` on; the second value is the next page's cursor, if there is one.
+    pub async fn huddles_history(&self, cursor: Option<&str>, limit: u32) -> Result<(Vec<PastHuddle>, Option<String>)> {
+        Ok(PastHuddle::from_history(&self.call_raw("huddles.history", &history_params(cursor, limit)).await?))
+    }
+
     // ---- real time ------------------------------------------------------------------------
 
     /// `rtm.connect` → websocket URL for live events.
@@ -669,6 +754,37 @@ mod tests {
         assert_eq!(params, vec![("mode", "chrono_reads_and_unreads".to_string()), ("types", "dm,mpdm,bot_dm_bundle".to_string()), ("limit", "50".to_string())]);
         let next = super::activity_params("thread_v2", 50, Some("abc"));
         assert_eq!((next[1].1.as_str(), next.last()), ("thread_v2", Some(&("cursor", "abc".to_string()))), "the next page");
+    }
+
+    #[test]
+    fn huddle_history_pages_are_at_most_30() {
+        assert_eq!(super::history_params(None, 30), vec![("limit", "30".to_string())]);
+        assert_eq!(super::history_params(Some("abc"), 100), vec![("limit", "30".to_string()), ("cursor", "abc".to_string())], "Slack's client never asks for more");
+        assert_eq!(super::history_params(Some(""), 0), vec![("limit", "1".to_string())], "an empty cursor is the first page");
+    }
+
+    #[test]
+    fn the_flannel_address_is_slacks_own() {
+        let answer = |url: &str| super::flannel_answer(&serde_json::json!({"ok": true, "url": url, "ttl_seconds": 600}));
+        assert_eq!(answer("https://edgeapi.slack.com/cache/E0000000001/").unwrap(), ("https://edgeapi.slack.com/cache/E0000000001".to_string(), 600));
+        assert!(answer("https://edgeapi.slack-gov.com/cache/T0").is_ok());
+        // The session cookie and token go there: nowhere else.
+        for url in ["http://edgeapi.slack.com/cache/T0", "https://slack.com.example.org/cache", "https://example.org/x.slack.com", "https://evilslack.com/cache", ""] {
+            assert!(answer(url).is_err(), "{url}");
+        }
+        assert!(super::flannel_answer(&serde_json::json!({"ok": true})).is_err(), "no url");
+        assert_eq!(super::flannel_answer(&serde_json::json!({"url": "https://edgeapi.slack.com/cache/T0"})).unwrap().1, 0, "no ttl: not kept");
+    }
+
+    #[test]
+    fn the_flannel_address_is_kept_for_its_ttl() {
+        let kept = super::FlannelUrl::default();
+        let clone = kept.clone();
+        assert_eq!(kept.fresh(), None);
+        kept.keep("https://edgeapi.slack.com/cache/T0".into(), 600);
+        assert_eq!(clone.fresh().as_deref(), Some("https://edgeapi.slack.com/cache/T0"), "shared by clones");
+        kept.keep("https://edgeapi.slack.com/cache/T0".into(), 0);
+        assert_eq!(kept.fresh(), None, "expired");
     }
 
     #[test]

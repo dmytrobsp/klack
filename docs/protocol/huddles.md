@@ -129,3 +129,32 @@ max_bitrate_kbps 1000}`; the sender's own INDEX leaves itself out. INDEX can arr
 - Decline (web client `respondToHuddleInvite`): `rooms.inviteResponse response=decline channel_id=D…
   room_id=R…` → `{"ok":true}`, then `huddle_invite_cancel`. Other responses: `joining_soon`; accepting is
   just `rooms.join`.
+
+## Huddle lists: live and recent (2026-10-21, VW6)
+
+Research: `slack-rea/notes/huddles-list.md` §1–2. Verified live on the test workspace with klack's
+`ctl huddles --shape` (prints keys, types and lengths only), while B was alone in a channel huddle
+(`ctl huddle-media`, synthetic media).
+
+- **Flannel** (the edge API): `api.getFlannelHttpUrl include_external_workspaces=true` → `{ok, url, ttl_seconds}`,
+  `url` = `https://edgeapi.slack.com/cache/<team or org>`. Calls are **POST** `<url>/<method>` with a JSON body
+  `{token, …args}` and the `d` cookie (GET answers 405); answers carry `ok`. klack keeps the url for `ttl_seconds`
+  and sends the session only to a `https://*.slack.com` / `*.slack-gov.com` url.
+- OBSERVED: `huddles/list {}` → `{ok, huddles: [object]}`, and `huddles/info {channel_ids: [≤100]}` →
+  `{ok, huddles: [object]}` with the **same object** (A, who was not in the huddle, saw it):
+  `active_members` [user ids], `dropped_members` [], `call_id` (R…, 11), `channel_id` (11), `created_by`,
+  `background_id`, `expiration` (int), `start_date` (int s), `updated` (int), `is_private`, `is_scheduled` (bool),
+  `knocks` {}, `last_invite_status_by_user` {}, `pending_invitees` {}, `locale` (5), `name` (empty),
+  `thread_root_ts`, `recording {can_record_summary, is_paused, recording_user, summary, transcript}`.
+  No `room_id` (the research note's guess). With no huddle running both answer `{ok, huddles: []}`.
+  klack: `members` = `active_members` − `dropped_members` (as the web client counts them).
+- OBSERVED: `huddles.history` items as in the research note (`id, channels [1], channel_type, created_by,
+  date_start, date_end, has_ended, name, thread_root_ts, huddle_link, participant_history, participants,
+  access_type_by_user, last_invite_status_by_user, pending_invitees, attached_file_ids, background_id,
+  external_unique_id, prototypes, recording`; `missed_participants` only when someone missed it), and
+  `response_metadata.next_cursor` (80 chars while more pages follow).
+- OBSERVED: the huddle B was alone in (125 s) was **not** in B's `huddles.history` while it ran nor ~1.5 min after it
+  ended, though `huddles.get` had it (`has_ended` true, one person in `participant_history`). INFERRED: huddles
+  nobody else joined are left out of the history.
+- Unknown: whether a running huddle with two or more people is in `huddles.history` (with `has_ended` false) — klack
+  keeps `ended` so a list can leave such items out.

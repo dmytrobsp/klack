@@ -114,6 +114,15 @@ pub enum Ctl {
     /// Call any Web API method with key=value arguments; prints the response with
     /// secrets redacted (for research).
     Api { method: String, args: Vec<String> },
+    /// List the huddles happening now (with --recent, the latest ones you were in or missed). Ids are shown as
+    /// C1, U1, R1… so nothing identifying is printed; with --shape, only the shape of Slack's answers (keys,
+    /// types, lengths), for research.
+    Huddles {
+        #[arg(long)]
+        recent: bool,
+        #[arg(long)]
+        shape: bool,
+    },
     /// Download a slack.com URL with the session (for research) into a file.
     Get { url: String, out: std::path::PathBuf },
     /// Search messages and print the matches as raw JSON fields.
@@ -492,6 +501,44 @@ pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
             let v = client.call_raw(&method, &params).await?;
             println!("{}", serde_json::to_string_pretty(&redact(v))?);
         }
+        Ctl::Huddles { recent, shape: true } => {
+            if recent {
+                let v = client.call_raw("huddles.history", &[("limit", "5".into())]).await?;
+                println!("huddles.history: {}", serde_json::to_string_pretty(&shape_of(&v))?);
+            } else {
+                let list = client.flannel("huddles/list", serde_json::json!({})).await?;
+                println!("huddles/list: {}", serde_json::to_string_pretty(&shape_of(&list))?);
+                let channels = slack_core::types::LiveHuddle::listed_channels(&list);
+                if !channels.is_empty() {
+                    let info = client.flannel("huddles/info", serde_json::json!({"channel_ids": &channels[..channels.len().min(100)]})).await?;
+                    println!("huddles/info: {}", serde_json::to_string_pretty(&shape_of(&info))?);
+                }
+            }
+        }
+        Ctl::Huddles { recent: true, shape: false } => {
+            let (huddles, next) = client.huddles_history(None, 30).await?;
+            let mut ids = Masker::default();
+            for h in &huddles {
+                let mut line = format!("{} {} {:<7} {} {}", ids.mask(&h.id), ids.mask(&h.channel), h.channel_type, h.start, if h.ended { format!("{} s", h.end - h.start) } else { "not ended".into() });
+                line += &format!(" people {}", ids.masks(&h.people));
+                if !h.missed.is_empty() {
+                    line += &format!(" missed {}", ids.masks(&h.missed));
+                }
+                if h.thread_ts.is_some() {
+                    line += " (thread)";
+                }
+                println!("{line}");
+            }
+            println!("{} huddles{}", huddles.len(), if next.is_some() { ", more after these" } else { "" });
+        }
+        Ctl::Huddles { recent: false, shape: false } => {
+            let live = client.huddles_live().await?;
+            let mut ids = Masker::default();
+            for h in &live {
+                println!("{} {} in it: {}", ids.mask(&h.channel), ids.mask(&h.call_id), ids.masks(&h.members));
+            }
+            println!("{} huddles now", live.len());
+        }
         Ctl::Get { url, out } => {
             // The session (cookie + token) is only ever sent to Slack's own hosts.
             let host = url.strip_prefix("https://").and_then(|r| r.split('/').next()).unwrap_or_default();
@@ -579,6 +626,61 @@ fn redact(v: serde_json::Value) -> serde_json::Value {
     }
 }
 
+/// Slack ids written as their kind's letter and a number in order of appearance (`C1`, `U1`, `U2`, `R1`), so a
+/// listing shows which are the same without printing any.
+#[derive(Default)]
+struct Masker(std::collections::HashMap<String, String>, std::collections::HashMap<char, usize>);
+
+impl Masker {
+    fn mask(&mut self, id: &str) -> String {
+        let Some(kind) = id.chars().next() else { return "-".into() };
+        if let Some(m) = self.0.get(id) {
+            return m.clone();
+        }
+        let n = self.1.entry(kind.to_ascii_uppercase()).or_default();
+        *n += 1;
+        let m = format!("{}{n}", kind.to_ascii_uppercase());
+        self.0.insert(id.to_string(), m.clone());
+        m
+    }
+
+    fn masks(&mut self, ids: &[String]) -> String {
+        if ids.is_empty() { "-".into() } else { ids.iter().map(|id| self.mask(id)).collect::<Vec<_>>().join(",") }
+    }
+}
+
+/// Whether an object key is a Slack id (`U0…`, `C0…`): such keys (a user → something map) are values, not names.
+fn id_like(key: &str) -> bool {
+    key.len() >= 9 && key.starts_with(|c: char| c.is_ascii_uppercase()) && key.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+}
+
+/// The shape of a JSON answer with no values in it: each value becomes its type (`str(11)` with its length, `int`,
+/// `bool`, …), an array its length and its first item's shape, and keys that are ids one `<N ids>` key.
+fn shape_of(v: &serde_json::Value) -> serde_json::Value {
+    use serde_json::{Value, json};
+    match v {
+        Value::Null => json!("null"),
+        Value::Bool(_) => json!("bool"),
+        Value::Number(n) => json!(if n.is_f64() { "float" } else { "int" }),
+        Value::String(s) => json!(format!("str({})", s.chars().count())),
+        Value::Array(a) => match a.first() {
+            None => json!("[] (empty)"),
+            Some(first) => json!([format!("{} items like", a.len()), shape_of(first)]),
+        },
+        Value::Object(map) => {
+            let mut out = serde_json::Map::new();
+            let ids: Vec<&Value> = map.iter().filter(|(k, _)| id_like(k)).map(|(_, v)| v).collect();
+            for (k, v) in map.iter().filter(|(k, _)| !id_like(k)) {
+                out.insert(k.clone(), shape_of(v));
+            }
+            if let Some(first) = ids.first() {
+                out.insert(format!("<{} ids>", ids.len()), shape_of(first));
+            }
+            Value::Object(out)
+        }
+    }
+}
+
 /// One-line summary of a signaling frame, without credentials.
 fn describe_frame(f: &huddle::proto::SdkSignalFrame) -> String {
     use huddle::proto::sdk_signal_frame::Type;
@@ -647,4 +749,27 @@ fn start_camera(camera: &huddle::camera::CameraInfo, video: huddle::session::Vid
             Err(e) => eprintln!("{e}"),
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn shapes_carry_no_values() {
+        let v = serde_json::json!({"ok": true, "huddles": [{"channel_id": "C0123456789", "active_members": ["U0123456789", "U0987654321"], "date": 1.5,
+            "missed_participants": {"U0123456789": "abcdefghijk", "U0987654321": "abcdefghijk"}, "notes": null}], "empty": []});
+        let shape = super::shape_of(&v).to_string();
+        for value in ["C0123456789", "U0123456789", "U0987654321", "abcdefghijk"] {
+            assert!(!shape.contains(value), "{value} in {shape}");
+        }
+        assert_eq!(super::shape_of(&v), serde_json::json!({"ok": "bool", "empty": "[] (empty)", "huddles": ["1 items like", {"channel_id": "str(11)",
+            "active_members": ["2 items like", "str(11)"], "date": "float", "missed_participants": {"<2 ids>": "str(11)"}, "notes": "null"}]}));
+    }
+
+    #[test]
+    fn masked_ids_keep_sameness() {
+        let mut m = super::Masker::default();
+        assert_eq!((m.mask("C0123456789"), m.mask("U0123456789"), m.mask("U0987654321"), m.mask("C0123456789")), ("C1".into(), "U1".into(), "U2".into(), "C1".into()));
+        assert_eq!(m.masks(&["U0987654321".into(), "R0123456789".into()]), "U2,R1");
+        assert_eq!((m.mask(""), m.masks(&[])), ("-".into(), "-".into()));
+    }
 }

@@ -430,7 +430,8 @@ preferences, overlay titles and the status-bar hints go through translation so f
 
 `klack ctl …` exposes the API for automation and tests: `whoami`, `channels`,
 `history`, `replies`, `post`, `react`, `pin`, `upload`, `search`, `listen`, `audio-devices`,
-`huddle-media` and a few research probes (`api`, `get`, `huddle-*`) that redact secrets.
+`huddle-media`, `huddles` (the huddles happening now, `--recent` the latest ones, with ids shown as `C1`, `U1`, …)
+and a few research probes (`api`, `get`, `huddle-*`, `huddles --shape`) that redact secrets.
 
 ## Layout
 
