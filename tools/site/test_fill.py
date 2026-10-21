@@ -197,7 +197,7 @@ NUMBERS = {
 
 
 def rows_of(h):
-    return h.split('<tr class="row"')[1:]
+    return h.split('<tr class="row')[1:]
 
 
 class SheetTests(unittest.TestCase):
@@ -275,9 +275,10 @@ class SheetTests(unittest.TestCase):
         self.assertIn("0.45%", r)
         self.assertNotIn("crossed", r)
         self.assertNotIn("circled", r)
-        self.assertNotIn("×", r)
+        self.assertIn('<span class="scrawl ratio more">1.4× more CPU</span>', r)  # a CPU loss says how much
         self.assertIn("theirs", r)
         self.assertIn("<!-- draft -->", r)
+        self.assertNotIn('<!-- draft --><span class="scrawl ratio', r)  # the figure is never a draft
 
     def test_small_percent_rows_use_two_decimals_on_both_sides(self):
         self.assertEqual(F.fmt_value(0.45, "percent", small=True), "0.45%")
@@ -313,6 +314,32 @@ class SheetTests(unittest.TestCase):
         won_idle = one("cpu_idle", 1.0, 3.0)
         self.assertIn("3.0× faster", won_idle)
         self.assertNotIn("fidgets", won_idle)
+
+    def test_cpu_rows_lead_with_the_ratio(self):
+        h = F.render_sheet({**NUMBERS, "rows": [
+            {"id": "cpu_scroll", "label": "x", "unit": "percent", "klack": 1.92, "slack": 15.83}]})
+        self.assertIn('<span class="scrawl ratio">8.2× less CPU</span>', h)
+        self.assertIn('<td class="them evidence" data-side="the official app"><span class="crossed">15.8%</span>', h)
+        self.assertIn('<td class="us evidence" data-side="klack"><span class="circled">1.9%</span>', h)
+        share = self.rows[5]  # a CPU draw: small cells, its own scrawl, no ratio
+        self.assertIn('class="them evidence"', share)
+        self.assertIn('class="us evidence"', share)
+        self.assertNotIn("×", share)
+        self.assertIn("video costs what it costs", share)
+        far = F.render_sheet({**NUMBERS, "rows": [
+            {"id": "other", "label": "x", "unit": "percent", "klack": 5.0, "slack": 0}]})
+        self.assertNotIn("×", far)  # a loss against zero states no ratio
+        self.assertIn("theirs", far)
+
+    def test_other_rows_unchanged_by_the_cpu_rule(self):
+        for i in (0, 1, 2, 3, 6, 7):
+            self.assertNotIn("evidence", self.rows[i])
+            self.assertNotIn("CPU<", self.rows[i])
+            self.assertNotIn("more", self.rows[i])
+        self.assertIn('<span class="scrawl ratio">7.5× less</span>', self.rows[0])
+        lost = F.render_sheet({**NUMBERS, "rows": [
+            {"id": "other", "label": "x", "unit": "kB", "klack": 9000, "slack": 1000}]})
+        self.assertNotIn("×", lost)
 
     def test_loss_even_when_far_behind(self):
         h = F.render_sheet({**NUMBERS, "rows": [

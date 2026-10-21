@@ -125,7 +125,7 @@ PLACEHOLDER = ('<!-- draft --><p class="standin-note">measuring… no number goe
 TIES = {"startup": "a draw. not bad for a couple of weekends.",
         "cpu_share": "video costs what it costs. even in a terminal."}
 TIE = "ok, a tie. it's a chat app."
-LOSSES = {"cpu_idle": "fine, this one's theirs. klack fidgets."}
+LOSSES = {"cpu_idle": "this one's theirs. klack fidgets."}
 LOSS = "fine, this one's theirs."
 ZERO = "it's text."
 
@@ -164,21 +164,26 @@ def classify(r):
 
 def _row(r):
     k, o, unit = r["klack"], r["slack"], r["unit"]
-    small = unit == "percent" and min(k, o) < 1  # both cells of the row share one precision
+    cpu = unit == "percent"  # CPU share depends on the machine; the ratio between the apps carries over
+    small = cpu and min(k, o) < 1  # both cells of the row share one precision
     kv, ov = txt(fmt_value(k, unit, small)), txt(fmt_value(o, unit, small))
     kind = classify(r)
     marks = kind in ("zero", "win")
+    what = " CPU" if cpu else ""
     if kind == "win":
         word = "faster" if unit == "seconds" else "less"
-        scrawl = f'<span class="scrawl ratio">{fmt_ratio(o / k)}× {word}</span>'
+        scrawl = f'<span class="scrawl ratio">{fmt_ratio(o / k)}× {word}{what}</span>'
     else:  # a bespoke scrawl only ever in its own class: TIES for a tie, LOSSES for a loss
         line = {"zero": ZERO, "loss": LOSSES.get(r["id"], LOSS), "tie": TIES.get(r["id"], TIE)}[kind]
         scrawl = f'<!-- draft --><span class="scrawl">{txt(line)}</span>'
+        if kind == "loss" and cpu and o > 0:  # a CPU loss leads with how much, honestly
+            scrawl = f'<span class="scrawl ratio more">{fmt_ratio(k / o)}× more CPU</span>' + scrawl
     them = f'<span class="crossed">{ov}</span>' if marks else f'<span class="plain">{ov}</span>'
     us = f'<span class="circled">{kv}</span>' if marks else f'<span class="plain">{kv}</span>'
+    ev = " evidence" if cpu else ""  # the raw percentages sit small beside the ratio
     return (f'<tr class="row" data-id="{esc(r["id"])}"><th scope="row">{txt(r["label"])}</th>'
-            f'<td class="them" data-side="the official app">{them}</td>'
-            f'<td class="us" data-side="klack">{us}</td><td class="remark">{scrawl}</td></tr>')
+            f'<td class="them{ev}" data-side="the official app">{them}</td>'
+            f'<td class="us{ev}" data-side="klack">{us}</td><td class="remark">{scrawl}</td></tr>')
 
 
 def render_sheet(numbers):
