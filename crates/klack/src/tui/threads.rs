@@ -81,6 +81,14 @@ pub fn parse(v: &Value) -> (Vec<Entry>, bool) {
 /// pictures that arrived meanwhile show then).
 const REBUILD: Duration = Duration::from_secs(1);
 
+const LOADING: &str = "Loading…";
+const LOADING_MORE: &str = "Loading more…";
+const EMPTY: &str = "No threads yet: the threads you start, reply in or follow show up here.";
+const FAILED: &str = "The threads could not be loaded";
+
+/// The view's words, for `ctl locale-template`.
+pub const WORDS: &[&str] = &[LOADING, LOADING_MORE, EMPTY, FAILED];
+
 #[derive(Default)]
 pub struct Threads {
     pub entries: Option<Vec<Entry>>,
@@ -325,9 +333,9 @@ impl Threads {
         f.render_widget(block, area);
         self.list = inner;
         let note = match &self.entries {
-            None if self.failed.is_some() => Some(Line::styled(format!("{}: {}", super::i18n::tr("The threads could not be loaded"), self.failed.as_deref().unwrap_or_default()), Style::default().fg(p.danger))),
-            None => Some(Line::styled("Loading…", Style::default().fg(p.dim))),
-            Some(entries) if entries.is_empty() => Some(Line::styled("No threads yet: the threads you start, reply in or follow show up here.", Style::default().fg(p.dim))),
+            None if self.failed.is_some() => Some(Line::styled(format!("{}: {}", super::i18n::tr(FAILED), self.failed.as_deref().unwrap_or_default()), Style::default().fg(p.danger))),
+            None => Some(Line::styled(super::i18n::tr(LOADING).into_owned(), Style::default().fg(p.dim))),
+            Some(entries) if entries.is_empty() => Some(Line::styled(super::i18n::tr(EMPTY).into_owned(), Style::default().fg(p.dim))),
             Some(_) => None,
         };
         if let Some(note) = note {
@@ -370,12 +378,13 @@ impl Threads {
             }
         }
         self.scroll = self.scroll.min(total.saturating_sub(height));
-        let start = self.scroll;
+        // (No room at all leaves `total` one past the lines: start at most at their end.)
+        let start = self.scroll.min(feed.lines.len());
         let end = (start + height).min(feed.lines.len());
         let mut lines: Vec<Line<'static>> = feed.lines[start..end].to_vec();
         let mut rows: Vec<Option<(String, String)>> = feed.owners[start..end].to_vec();
         if self.loading && lines.len() < height {
-            lines.push(Line::styled("Loading more…", Style::default().fg(p.dim)));
+            lines.push(Line::styled(super::i18n::tr(LOADING_MORE).into_owned(), Style::default().fg(p.dim)));
             rows.push(None);
         }
         let selected = self.selected.as_ref().filter(|_| focused);
@@ -484,6 +493,19 @@ mod tests {
         assert!(t.at_end(), "the whole feed is on screen");
         t.move_by(9);
         assert_eq!(t.target().unwrap().1, "1792325495.184089", "the last message");
+    }
+
+    #[test]
+    fn a_tiny_area_draws_without_panicking() {
+        let ws = Workspace::default();
+        let media = Media::with(ratatui_image::picker::Picker::halfblocks());
+        let mut t = Threads::default();
+        t.add_page(parse(&page()).0, true);
+        t.loading = true;
+        for height in 0..=3 {
+            t.scroll = 99;
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, height)).unwrap().draw(|f| t.draw(f, f.area(), &Here::alone(&ws), true, &media)).unwrap();
+        }
     }
 
     #[test]

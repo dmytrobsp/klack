@@ -710,15 +710,10 @@ impl Client {
         self.answer(method, || self.http.post(url.clone()).header(reqwest::header::COOKIE, self.session.cookie_header()).json(&body)).await
     }
 
-    /// The huddles happening now that this account can see (Flannel `huddles/list`, then `huddles/info` for their
-    /// channels, 100 at a time), with who is in each.
+    /// The huddles happening now that this account can see, with who is in each (Flannel `huddles/list`, whose
+    /// objects are whole: no `huddles/info` needed).
     pub async fn huddles_live(&self) -> Result<Vec<LiveHuddle>> {
-        let channels = LiveHuddle::listed_channels(&self.flannel("huddles/list", serde_json::json!({})).await?);
-        let mut out = Vec::new();
-        for chunk in channels.chunks(100) {
-            out.extend(LiveHuddle::from_info(&self.flannel("huddles/info", serde_json::json!({"channel_ids": chunk})).await?));
-        }
-        Ok(out)
+        Ok(LiveHuddle::parse(&self.flannel("huddles/list", serde_json::json!({})).await?))
     }
 
     /// One page (newest first, at most 30) of the huddles this account was in or missed (`huddles.history`), from

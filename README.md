@@ -82,16 +82,18 @@ one and the terminal draws pictures, else its initials and number in a colour of
 the shown one marked by an accent bar and the others with unread messages by a thinner, dimmer
 one, and below such a tile `@3` for three unread DMs or mentions there; a click on a tile switches, like Alt+1…9.
 
-**Statuses.** A person's status emoji stands right after their name — in the sidebar's direct messages
-(a long name is shortened to keep it), after each person's name in a group DM while there is room (the
-last ones' go first), and on their messages (a custom emoji as its picture where the terminal draws
-pictures) — and a DM's title adds the text ("Name — 🌴 Vacationing"); hovering their DM in the sidebar
-shows it in the status line. Someone in a huddle without a status emoji of their own shows 🎧 ("In a
-huddle"). An expired status is gone at once, without waiting for Slack. klack asks Slack for the profile
-changes of the people it shows, as Slack's own client does, but Slack does not send them to klack's
-connection, so the people shown (the sidebar's DMs and group DMs, the authors in the open conversation and
-thread, up to 50) are looked up again every minute: F6 → Messages & media → Refresh people's statuses
-(`[messages] status_refresh_secs`, 0 = off).
+**Statuses.** A person's status emoji stands right after their name — in the sidebar's direct messages (a
+long name is shortened to keep it), after each person's name in a group DM while there is room (the last
+ones' go first; in the sidebar a custom emoji, or any with emoji shown as names, is a dim ◆), and on their
+messages (a custom emoji as its picture where the terminal draws pictures) — and a DM's title adds the
+text ("Name — 🌴 Vacationing"); hovering their DM in the sidebar shows it in the status line. Someone in a
+huddle without a status emoji of their own shows 🎧 ("In a huddle"; not on a sidebar row that shows the
+huddle already). An expired status is gone at once, without waiting for Slack. klack asks Slack for the
+profile changes of the people it shows, as Slack's own client does, but Slack does not send them to
+klack's connection, so the people shown are looked up again every minute, up to 50 at a time: first the
+authors in the open conversation and thread, then the people of the DMs and group DMs on screen in the
+sidebar, then the sidebar's other DMs and group DMs in turn, so that everyone's comes round: F6 → Messages
+& media → Refresh people's statuses (`[messages] status_refresh_secs`, 0 = off).
 
 ## Signing in
 

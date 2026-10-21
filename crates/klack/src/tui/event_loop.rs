@@ -240,6 +240,8 @@ struct App {
     /// When the people shown were last looked up for their statuses, and whether a lookup is
     /// under way.
     statuses_polled: (Option<std::time::Instant>, bool),
+    /// Where the next status refresh goes on among the sidebar's DMs and group DMs off screen.
+    status_turn: usize,
     /// Open "move to section" picker.
     mover: Option<super::sections::MovePicker>,
     /// Join the huddle of the DM with this person once it is open.
@@ -509,8 +511,9 @@ impl App {
     }
 
     /// Slack does not push people's status changes to klack's connection: look the people shown
-    /// (the sidebar's DMs and group DMs, the authors of the open conversation and thread) up
-    /// again every `status_refresh_secs` — the first time a full interval after start.
+    /// up again every `status_refresh_secs` — the first time a full interval after start; at most
+    /// [`STATUS_REFRESH_MAX`]: the authors of the open conversation and thread, the sidebar's DMs
+    /// and group DMs on screen, then its others in turn (see [`Workspace::people_shown`]).
     fn refresh_statuses(&mut self) {
         let secs = self.ws.settings.messages.status_refresh_secs;
         if secs == 0 || !self.connected || self.ws.users.is_empty() || self.statuses_polled.1 {
@@ -524,13 +527,16 @@ impl App {
             }
             Some(_) => self.statuses_polled.0 = Some(std::time::Instant::now()),
         }
-        let conversations: Vec<&str> = self.sidebar.items.iter().filter_map(|i| match i {
-            super::sidebar::Item::Conversation(id) => Some(id.as_str()),
-            _ => None,
-        }).collect();
+        let rows = self.sidebar.on_screen();
+        let (mut on_screen, mut others): (Vec<&str>, Vec<&str>) = (Vec::new(), Vec::new());
+        for (n, item) in self.sidebar.items.iter().enumerate() {
+            if let super::sidebar::Item::Conversation(id) = item {
+                if rows.contains(&n) { on_screen.push(id) } else { others.push(id) }
+            }
+        }
         let thread = self.thread.as_ref().map(|(c, ts)| super::state::thread_key(c, ts));
         let timelines: Vec<&str> = self.current.as_deref().into_iter().chain(thread.as_deref()).collect();
-        let people: Vec<String> = self.ws.people_shown(&conversations, &timelines).into_iter().take(STATUS_REFRESH_MAX).collect();
+        let people = self.ws.people_shown(&timelines, &on_screen, &others, &mut self.status_turn, STATUS_REFRESH_MAX);
         if people.is_empty() {
             return;
         }
@@ -1709,14 +1715,12 @@ impl App {
         if old == new {
             return;
         }
-        match &old {
-            Some(old) => stash(&mut self.drafts, old, &mut self.composer),
-            // (Nothing to keep it under: what is typed stays.)
-            None if !self.composer.is_empty() => return,
-            None => {}
+        if let Some(old) = &old {
+            stash(&mut self.drafts, old, &mut self.composer);
         }
+        // (With nothing to keep it under, what is typed stays, the draft taken up below it.)
         if let Some(d) = new.and_then(|k| self.drafts.remove(&k)) {
-            self.composer.restore(d);
+            self.composer.merge(d);
         }
         self.save_drafts();
     }
@@ -2324,7 +2328,7 @@ impl App {
                     self.jump_to(&channel);
                     self.join_huddle(channel, None);
                 }
-                _ => self.status = "choose a live huddle to join".into(),
+                _ => self.status = super::i18n::tr(CHOOSE_LIVE).into_owned(),
             }
             return;
         }
@@ -3828,6 +3832,12 @@ const SEEK_STOPPED: &str = "stopped looking for the message";
 /// The note when a file link's file is not one klack shows.
 const FILE_NOT_SHOWN: &str = "klack can't show that file here";
 
+const CHOOSE_LIVE: &str = "choose a live huddle to join";
+const RECENT_FAILED: &str = "recent huddles failed";
+
+/// The Huddles view's status notes, for `ctl locale-template`.
+pub const HUDDLE_NOTES: &[&str] = &[CHOOSE_LIVE, RECENT_FAILED];
+
 /// The status notes of links into klack, for `ctl locale-template`.
 pub const LINK_NOTES: &[&str] = &[LINK_GONE, HISTORY_GONE, CONVERSATION_GONE, SEEKING, SEEK_STOPPED, FILE_NOT_SHOWN, super::applink::OPENS_IN_KLACK];
 
@@ -4120,6 +4130,7 @@ impl App {
             feed_typing: false,
             preview_polled: None,
             statuses_polled: (None, false),
+            status_turn: 0,
             prefs: None,
             huddle_view: None,
             parked_huddle: None,
@@ -5859,7 +5870,7 @@ fn handle_net(app: &mut App, msg: Net) {
         Net::HuddleHistory { generation, more, result } => match result {
             Ok((page, cursor)) => app.huddles.add_page(generation, more, page, cursor),
             Err(e) => {
-                app.status = format!("recent huddles failed: {e}");
+                app.status = format!("{}: {e}", super::i18n::tr(RECENT_FAILED));
                 app.huddles.fail(generation, e);
             }
         },
@@ -7269,6 +7280,28 @@ mod tests {
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         assert_eq!((app.view, app.feed_reply.clone()), (View::Conversation, None));
         assert_eq!(app.composer.text(), "a draft for C2");
+    }
+
+    #[tokio::test]
+    async fn a_box_filled_with_nothing_selected_in_the_threads_view_keeps_the_conversations_draft() {
+        use super::{run_global, Action, View, Wrap};
+        let (mut app, _net) = test_app();
+        app.current = Some("C2".into());
+        app.composer.insert_str("a draft for C2");
+        run_global(&mut app, Action::Threads);
+        assert!(app.composer.is_empty() && app.threads.selected_thread().is_none(), "the draft kept away; the feed not loaded: nothing selected");
+        // A command put in the box under the feed (it replies nowhere yet), then the view closes.
+        app.prefill("/status ", Wrap::No);
+        assert_eq!(app.composer.text(), "/status ");
+        app.set_view(View::Conversation);
+        assert_eq!(app.composer.text(), "/status \na draft for C2", "both: what was typed, the conversation's draft below");
+        assert_eq!(app.composer.cursor(), 8, "the cursor where it was");
+        // And it is kept under the conversation from now on.
+        app.set_view(View::Threads);
+        app.set_view(View::Conversation);
+        assert_eq!(app.composer.text(), "/status \na draft for C2");
+        app.composer.clear();
+        app.set_view(View::Threads);
     }
 
     /// An app on the Threads view at `url` with two threads: T1 in #general (parent + a reply), T2 in #random.

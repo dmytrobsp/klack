@@ -488,10 +488,44 @@ impl Workspace {
         ids.into_iter().filter(|id| self.is_person(id)).collect()
     }
 
-    /// The people shown: those of `conversations` (DMs, group DMs) and the authors of the
-    /// `timelines` (timeline or thread keys) — not you, bots or Slackbot; sorted.
-    pub fn people_shown(&self, conversations: &[&str], timelines: &[&str]) -> Vec<String> {
-        let mut ids: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    /// The people to look up again for their statuses, at most `max`, the ones shown first: the
+    /// authors of the `timelines` (timeline or thread keys: the open conversation and thread; newest
+    /// first), then the people of the DMs and group DMs `on_screen`, then those of the `others` in
+    /// turn — from `*turn` on, which moves past the ones taken, so that run after run reaches
+    /// everyone. Not you, bots or Slackbot; each once.
+    pub fn people_shown(&self, timelines: &[&str], on_screen: &[&str], others: &[&str], turn: &mut usize, max: usize) -> Vec<String> {
+        let mut seen = std::collections::HashSet::new();
+        let mut keep = |ids: &mut Vec<String>, id: &str| {
+            if self.is_person(id) && seen.insert(id.to_string()) {
+                ids.push(id.to_string());
+            }
+        };
+        let mut shown = Vec::new();
+        for t in timelines.iter().filter_map(|k| self.timelines.get(*k).or_else(|| self.threads.get(*k))) {
+            for id in t.messages.iter().rev().filter_map(|m| m.user.as_deref()) {
+                keep(&mut shown, id);
+            }
+        }
+        for id in self.people_of(on_screen) {
+            keep(&mut shown, &id);
+        }
+        let mut rest = Vec::new();
+        for id in self.people_of(others) {
+            keep(&mut rest, &id);
+        }
+        shown.truncate(max);
+        let room = (max - shown.len()).min(rest.len());
+        if room > 0 {
+            let from = *turn % rest.len();
+            shown.extend(rest.iter().cycle().skip(from).take(room).cloned());
+            *turn = (from + room) % rest.len();
+        }
+        shown
+    }
+
+    /// The people of the DMs and group DMs among `conversations`, in their order.
+    fn people_of(&self, conversations: &[&str]) -> Vec<String> {
+        let mut ids = Vec::new();
         for c in conversations.iter().filter_map(|id| self.conversations.get(*id)) {
             if c.is_im {
                 ids.extend(c.user.clone());
@@ -499,10 +533,7 @@ impl Workspace {
                 ids.extend(self.mpim_people(c).into_iter().filter_map(|(_, id)| id));
             }
         }
-        for t in timelines.iter().filter_map(|k| self.timelines.get(*k).or_else(|| self.threads.get(*k))) {
-            ids.extend(t.messages.iter().filter_map(|m| m.user.clone()));
-        }
-        ids.into_iter().filter(|id| self.is_person(id)).collect()
+        ids
     }
 
     /// Someone else whose profile can change: not you, a bot, Slackbot or a deleted account.
@@ -1074,10 +1105,51 @@ mod tests {
         }
         ws.timelines.insert("C1".into(), t);
         assert_eq!(ws.people_to_follow(), ["U2", "U3", "U4", "U5"], "DM people, group DM people, message authors; not you, bots or Slackbot");
-        // Shown: the people of the listed conversations and the authors of the open timelines.
+        // Shown: the authors of the open timelines, then the people of the listed conversations.
         ws.timelines.insert("C2".into(), Timeline::default());
-        assert_eq!(ws.people_shown(&["G1", "D2"], &["C2"]), ["U3", "U4"]);
-        assert_eq!(ws.people_shown(&["D1"], &["C1", "C9"]), ["U2", "U5"]);
+        let mut turn = 0;
+        assert_eq!(ws.people_shown(&["C2"], &["G1", "D2"], &[], &mut turn, 50), ["U3", "U4"]);
+        assert_eq!(ws.people_shown(&["C1", "C9"], &["D1"], &[], &mut turn, 50), ["U5", "U2"]);
+    }
+
+    #[test]
+    fn statuses_are_refreshed_the_shown_first_then_everyone_in_turn() {
+        let mut ws = Workspace { self_id: "UME".into(), ..Default::default() };
+        // Thirty DMs (with U00..U29), an open conversation and an open thread.
+        let dms: Vec<String> = (0..30).map(|n| format!("D{n:02}")).collect();
+        for (n, d) in dms.iter().enumerate() {
+            let user = format!("U{n:02}");
+            ws.users.insert(user.clone(), User { id: user.clone(), name: user.clone(), ..Default::default() });
+            ws.conversations.insert(d.clone(), Conversation { id: d.clone(), is_im: true, user: Some(user), ..Default::default() });
+        }
+        let mut open = Timeline::default();
+        for (ts, user) in [("1.0", "UZ1"), ("2.0", "UZ2"), ("3.0", "UME"), ("4.0", "UZ3")] {
+            open.upsert(Message { ts: ts.into(), user: Some(user.into()), ..Default::default() });
+        }
+        ws.timelines.insert("C1".into(), open);
+        let mut thread = Timeline::default();
+        thread.upsert(Message { ts: "5.0".into(), user: Some("UZ4".into()), ..Default::default() });
+        thread.upsert(Message { ts: "6.0".into(), user: Some("UZ2".into()), ..Default::default() });
+        ws.threads.insert("C1/5.0".into(), thread);
+        let refs = |r: std::ops::Range<usize>| dms[r].iter().map(String::as_str).collect::<Vec<_>>();
+        let (on_screen, others) = (refs(20..23), [refs(0..20), refs(23..30)].concat());
+        let mut turn = 0;
+        // At most 10 a run: the open conversation's authors (newest first), the thread's, the rows on screen, then the rest.
+        let run = ws.people_shown(&["C1", "C1/5.0"], &on_screen, &others, &mut turn, 10);
+        assert_eq!(run, ["UZ3", "UZ2", "UZ1", "UZ4", "U20", "U21", "U22", "U00", "U01", "U02"]);
+        // The next runs go on through the rest where the last left off, round to its start.
+        let mut reached: std::collections::BTreeSet<String> = run.into_iter().collect();
+        for _ in 0..9 {
+            let run = ws.people_shown(&["C1", "C1/5.0"], &on_screen, &others, &mut turn, 10);
+            assert_eq!(run.len(), 10);
+            assert_eq!(&run[..7], ["UZ3", "UZ2", "UZ1", "UZ4", "U20", "U21", "U22"], "the shown ones each time");
+            reached.extend(run);
+        }
+        assert_eq!(reached.len(), 34, "everyone, over the runs");
+        let run = ws.people_shown(&["C1", "C1/5.0"], &on_screen, &others, &mut turn, 10);
+        assert_eq!(&run[7..], ["U03", "U04", "U05"], "ten runs of three: round once (27 others) and on");
+        // The shown ones alone more than a run takes: the first of them.
+        assert_eq!(ws.people_shown(&["C1"], &on_screen, &others, &mut turn, 2), ["UZ3", "UZ2"]);
     }
 
     #[test]

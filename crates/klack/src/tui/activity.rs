@@ -485,7 +485,8 @@ impl Activity {
         let more = usize::from(self.loading);
         let total = built.lines.len() + more;
         self.scroll = self.scroll.min(total.saturating_sub(height));
-        let start = self.scroll;
+        // (No room at all leaves `total` one past the lines: start at most at their end.)
+        let start = self.scroll.min(built.lines.len());
         let end = (start + height).min(built.lines.len());
         let mut lines: Vec<Line<'static>> = built.lines[start..end].to_vec();
         let mut rows: Vec<Option<usize>> = owners[start..end].to_vec();
@@ -494,7 +495,7 @@ impl Activity {
             rows.push(None);
         }
         // (The last item's rows, or the selection on the last item: time for the next page.)
-        self.at_end = end == built.lines.len() || shown.last() == Some(&self.selected);
+        self.at_end = (height > 0 && end == built.lines.len()) || shown.last() == Some(&self.selected);
         let selected = Some(&self.selected).filter(|_| focused);
         if let Some(sel) = selected {
             let highlight = Style::default().bg(p.selection);
@@ -1015,6 +1016,24 @@ mod tests {
         a.add_page(Tab::All, vec![it("11")], None);
         a.set_tab(Tab::All);
         assert_eq!(a.items.as_ref().unwrap().len(), 11);
+    }
+
+    #[test]
+    fn a_tiny_area_draws_without_panicking() {
+        let ws = ws();
+        let media = super::super::media::Media::with(ratatui_image::picker::Picker::halfblocks());
+        let it = |key: &str| item(key, Kind::Mention("at_user".into()), "C1", key, None, false, noon(0));
+        let mut a = Activity::default();
+        a.set_items(Tab::All, (1..=3).map(|n| it(&n.to_string())).collect(), Some("next".into()));
+        a.loading = true;
+        for height in 0..=4 {
+            a.scroll = 99;
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, height)).unwrap().draw(|f| a.draw(f, f.area(), &Here::alone(&ws), true, &media)).unwrap();
+        }
+        // With no room the end is not on screen: no page is asked for.
+        a.loading = false;
+        ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 3)).unwrap().draw(|f| a.draw(f, f.area(), &Here::alone(&ws), true, &media)).unwrap();
+        assert_eq!(a.next_page(), None);
     }
 
     #[test]

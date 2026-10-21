@@ -261,7 +261,7 @@ impl Huddles {
             rows.push(None);
         }
         let last_past = self.order.iter().rev().find(|r| matches!(r, Row::Past(_)));
-        self.at_end = end == owners.len() || (last_past.is_some() && self.selected.as_ref() == last_past);
+        self.at_end = (height > 0 && end == owners.len()) || (last_past.is_some() && self.selected.as_ref() == last_past);
         let selected = self.selected.as_ref().filter(|_| focused);
         if let Some(sel) = selected {
             let highlight = Style::default().bg(p.selection);
@@ -481,12 +481,16 @@ mod tests {
         let ws = ws();
         let mut h = Huddles::default();
         let first = h.reload();
-        h.add_page(first, false, vec![past("R2", "C1", NOW - 3600, 60, &["U2"], &[], None)], Some("next".into()));
+        h.add_page(first, false, vec![past("R2", "C1", NOW - 3600, 60, &["U2"], &[], None), past("R3", "C1", NOW - 7200, 60, &["U2"], &[], None)], Some("next".into()));
         h.scroll = 99;
         h.loading = true;
-        for height in [1, 2, 3] {
+        for height in 0..=3 {
             drawn(&mut h, &ws, 40, height);
         }
+        // With no room the end is not on screen: no page is asked for.
+        h.loading = false;
+        drawn(&mut h, &ws, 40, 2);
+        assert_eq!(h.next_page(), None);
     }
 
     #[test]

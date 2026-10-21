@@ -201,6 +201,22 @@ impl Composer {
         (self.cursor, self.mentions, self.editing, self.attachments) = (d.cursor.min(self.chars.len()), d.mentions, d.editing, d.attachments);
     }
 
+    /// Take up draft `d` keeping what is typed: the draft goes on the lines below it (the cursor
+    /// stays where it is), with its mentions, attachments and edit — neither is lost.
+    pub fn merge(&mut self, d: Draft) {
+        if self.is_empty() && self.editing.is_none() && self.attachments.is_empty() {
+            return self.restore(d);
+        }
+        if !d.text.is_empty() {
+            self.chars.push('\n');
+            self.chars.extend(d.text.chars());
+        }
+        self.mentions.extend(d.mentions);
+        self.attachments.extend(d.attachments);
+        self.editing = self.editing.take().or(d.editing);
+        self.history_pos = None;
+    }
+
     pub fn clear(&mut self) {
         self.chars.clear();
         self.cursor = 0;

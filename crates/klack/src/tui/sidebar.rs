@@ -287,6 +287,12 @@ impl Sidebar {
         matches!(self.items.get(n), Some(Item::Conversation(_) | Item::Threads | Item::Activity | Item::Huddles)).then_some(n)
     }
 
+    /// The items drawn last time (none before the first draw).
+    pub fn on_screen(&self) -> std::ops::Range<usize> {
+        let height = self.area.height.saturating_sub(2) as usize;
+        self.offset.min(self.items.len())..(self.offset + height).min(self.items.len())
+    }
+
     /// The conversation item drawn at a terminal position.
     pub fn item_at(&self, column: u16, row: u16) -> Option<usize> {
         let inner = self.area.inner(ratatui::layout::Margin { horizontal: 1, vertical: 1 });
@@ -473,17 +479,23 @@ fn conversation_line(ws: &Workspace, id: &str, selected: bool, draft: bool, widt
     };
     let label = ws.conversation_label(c);
     let draft = if draft { " ✎" } else { "" };
-    // A person's status emoji right after their name (re-checked against the clock every draw).
+    // A person's status emoji right after their name (re-checked against the clock every draw);
+    // "in a huddle" not where the row shows the huddle already.
     let now = chrono::Utc::now().timestamp();
-    let status_of = |u: &str| ws.status_of(u, now).map(|s| format!(" {}", super::text::emoji(ws, &s.emoji, None)));
-    let status = c.user.as_deref().filter(|_| c.is_im).and_then(status_of).unwrap_or_default();
-    let status_w = unicode_width::UnicodeWidthStr::width(status.as_str());
+    let status_of = |u: &str| ws.status_of(u, now).filter(|s| !(s.in_huddle && !huddle.is_empty())).map(|s| status_glyph(ws, &s.emoji));
+    let status = c.user.as_deref().filter(|_| c.is_im).and_then(status_of);
+    let status_w = status.as_ref().map_or(0, |s| 1 + s.width());
     let room = width.saturating_sub(3 + badge.chars().count() + huddle.chars().count() + preview.chars().count() + draft.chars().count() + status_w + 1);
-    let label = if c.is_mpim { group_label(&ws.mpim_people(c), &status_of, room).unwrap_or(label) } else { label };
-    let label: String = if label.chars().count() > room { label.chars().take(room.saturating_sub(1)).chain(['…']).collect() } else { label };
-    let mut spans = vec![unread_mark(fresh), sigil, Span::styled(label, name_style)];
-    if !status.is_empty() {
-        spans.push(Span::raw(status));
+    let mut spans = vec![unread_mark(fresh), sigil];
+    match c.is_mpim.then(|| group_label(&ws.mpim_people(c), &status_of, room, name_style)).flatten() {
+        Some(group) => spans.extend(group),
+        None => {
+            let label: String = if label.chars().count() > room { label.chars().take(room.saturating_sub(1)).chain(['…']).collect() } else { label };
+            spans.push(Span::styled(label, name_style));
+        }
+    }
+    if let Some(status) = status {
+        spans.extend([Span::raw(" "), status]);
     }
     if !draft.is_empty() {
         spans.push(Span::styled(draft, Style::default().fg(super::theme::p().dim)));
@@ -504,12 +516,34 @@ fn conversation_line(ws: &Workspace, id: &str, selected: bool, draft: bool, widt
     line
 }
 
-/// A group DM's label with each person's status emoji after their name, as many as fit in
-/// `room` (dropped from the last person on); None when none has one or none fits.
-fn group_label(people: &[(String, Option<String>)], status_of: &dyn Fn(&str) -> Option<String>, room: usize) -> Option<String> {
-    let emoji: Vec<String> = people.iter().map(|(_, id)| id.as_deref().and_then(status_of).unwrap_or_default()).collect();
-    let with = emoji.iter().rposition(|e| !e.is_empty())?;
-    (0..=with).rev().map(|upto| people.iter().zip(&emoji).enumerate().map(|(n, ((name, _), e))| if n <= upto { format!("{name}{e}") } else { name.clone() }).collect::<Vec<_>>().join(", ")).find(|l| unicode_width::UnicodeWidthStr::width(l.as_str()) <= room)
+/// A status emoji as the sidebar shows it: its glyph when it has one of at most two cells, else
+/// (a custom emoji's picture, emoji shown as names, a wider sequence) a dim ◆ — the hover note
+/// over the row says which.
+fn status_glyph(ws: &Workspace, name: &str) -> Span<'static> {
+    match super::text::glyph(&ws.custom_emoji, name).filter(|g| !ws.settings.messages.emoji_as_names && unicode_width::UnicodeWidthStr::width(g.as_str()) <= 2) {
+        Some(g) => Span::raw(g),
+        None => Span::styled("◆", Style::default().fg(super::theme::p().dim)),
+    }
+}
+
+/// A group DM's label (in `style`) with each person's status emoji after their name, as many as
+/// fit in `room` (dropped from the last person on); None when none has one or none fits.
+fn group_label(people: &[(String, Option<String>)], status_of: &dyn Fn(&str) -> Option<Span<'static>>, room: usize, style: Style) -> Option<Vec<Span<'static>>> {
+    let emoji: Vec<Option<Span<'static>>> = people.iter().map(|(_, id)| id.as_deref().and_then(status_of)).collect();
+    let with = emoji.iter().rposition(Option::is_some)?;
+    (0..=with)
+        .rev()
+        .map(|upto| {
+            let mut spans = Vec::new();
+            for (n, ((name, _), e)) in people.iter().zip(&emoji).enumerate() {
+                spans.push(Span::styled(if n == 0 { name.clone() } else { format!(", {name}") }, style));
+                if let Some(e) = e.as_ref().filter(|_| n <= upto) {
+                    spans.extend([Span::styled(" ", style), e.clone()]);
+                }
+            }
+            spans
+        })
+        .find(|spans| spans.iter().map(Span::width).sum::<usize>() <= room)
 }
 
 #[cfg(test)]
@@ -666,6 +700,47 @@ mod tests {
     }
 
     #[test]
+    fn a_status_takes_at_most_two_cells() {
+        let mut w = ws();
+        w.self_id = "UME".into();
+        w.custom_emoji.insert("partyparrot".into(), "https://emoji.example/partyparrot.gif".into());
+        w.conversations.insert("G1".into(), Conversation { id: "G1".into(), name: "mpdm-me--cy--dee-1".into(), is_mpim: true, is_member: true, ..Default::default() });
+        let person = |id: &str, name: &str, emoji: &str| {
+            let mut u = slack_core::types::User { id: id.into(), name: name.into(), ..Default::default() };
+            u.profile.status_emoji = emoji.into();
+            u
+        };
+        for u in [person("UME", "me", ""), person("U1", "bob", ":partyparrot:"), person("U3", "cy", ":partyparrot:"), person("U4", "dee", ":house:")] {
+            w.users.insert(u.id.clone(), u);
+        }
+        let text = |l: &Line| l.spans.iter().map(|s| s.content.to_string()).collect::<String>();
+        let dim = |l: &Line| l.spans.iter().find(|s| s.content == "◆").map(|s| s.style.fg);
+        // A custom emoji (a picture, no glyph): a dim ◆ in its place, not its name.
+        let dm = conversation_line(&w, "D1", false, false, 30);
+        assert_eq!((text(&dm).as_str(), dim(&dm)), (" ○ bob ◆", Some(Some(crate::tui::theme::p().dim))));
+        let group = conversation_line(&w, "G1", false, false, 30);
+        assert_eq!((text(&group).as_str(), dim(&group)), (" ◎ cy ◆, dee 🏠", Some(Some(crate::tui::theme::p().dim))));
+        // Emoji as names: the ◆ for every one (a name would eat the row).
+        w.settings.messages.emoji_as_names = true;
+        assert_eq!(text(&conversation_line(&w, "G1", false, false, 30)), " ◎ cy ◆, dee ◆");
+        w.settings.messages.emoji_as_names = false;
+        // In a huddle: 🎧 — but not twice when the row shows the huddle there.
+        let mut bob = person("U1", "bob", "");
+        (bob.profile.huddle_state, bob.profile.huddle_state_expiration_ts) = ("in_a_huddle".into(), i64::MAX);
+        w.users.insert("U1".into(), bob);
+        let mut cy = person("U3", "cy", "");
+        (cy.profile.huddle_state, cy.profile.huddle_state_expiration_ts) = ("in_a_huddle".into(), i64::MAX);
+        w.users.insert("U3".into(), cy);
+        assert_eq!(text(&conversation_line(&w, "D1", false, false, 30)), " ○ bob 🎧");
+        assert_eq!(text(&conversation_line(&w, "G1", false, false, 30)), " ◎ cy 🎧, dee 🏠");
+        let huddle = |people: &[&str]| crate::tui::state::Huddle { room: "R1".into(), participants: people.iter().map(|p| p.to_string()).collect(), ..Default::default() };
+        w.huddles.insert("D1".into(), huddle(&["U1"]));
+        w.huddles.insert("G1".into(), huddle(&["U3"]));
+        assert_eq!(text(&conversation_line(&w, "D1", false, false, 30)), " ○ bob 🎧1");
+        assert_eq!(text(&conversation_line(&w, "G1", false, false, 30)), " ◎ cy, dee 🏠 🎧1", "their own emoji stays");
+    }
+
+    #[test]
     fn navigation_skips_headers() {
         let mut s = Sidebar::default();
         s.rebuild(&ws());
@@ -710,6 +785,8 @@ mod tests {
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal.draw(|f| s.draw(f, f.area(), &ws(), false)).unwrap();
         assert_eq!(s.offset, 7);
+        assert_eq!(s.on_screen(), 7..10, "the rows drawn (three, to the end)");
+        assert_eq!(Sidebar::default().on_screen(), 0..0, "none before the first draw");
     }
 
     #[test]

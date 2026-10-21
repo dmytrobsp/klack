@@ -1998,7 +1998,7 @@ mod tests {
         for key in ["f2", "f3", "f4", "f5", "f7", "f8", "f9", "f10", "shift+f3", "shift+f10", "menu"] {
             for c in Context::ALL {
                 let mode = match c {
-                    Global | Sidebar | Messages | Huddle | Activity | Threads => Mode::Normal,
+                    Global | Sidebar | Messages | Huddle | Activity | Threads | Huddles => Mode::Normal,
                     Composer | Completion => Mode::Insert,
                     _ => Mode::Dialog,
                 };

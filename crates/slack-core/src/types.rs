@@ -129,20 +129,22 @@ mod tests {
         let v = serde_json::json!({"ok": true, "huddles": [
             live_object("C0000000001", "R0000000001", &["U0000000001", "U0000000002", "U0000000003"], &["U0000000002"]),
             live_object("D0000000001", "R0000000002", &["U0000000004"], &[])]});
-        assert_eq!(LiveHuddle::from_info(&v), vec![
+        assert_eq!(LiveHuddle::parse(&v), vec![
             LiveHuddle { channel: "C0000000001".into(), call_id: "R0000000001".into(), members: vec!["U0000000001".into(), "U0000000003".into()], start: 1_700_000_000, thread_ts: Some("1700000000.000100".into()) },
             LiveHuddle { channel: "D0000000001".into(), call_id: "R0000000002".into(), members: vec!["U0000000004".into()], start: 1_700_000_000, thread_ts: Some("1700000000.000100".into()) },
         ], "members are the active ones less the dropped ones; when it started, its thread");
         // Slack writes zeros for a thread not posted yet.
         let mut early = live_object("C0000000001", "R0000000001", &["U0000000001"], &[]);
         early["thread_root_ts"] = "0000000000.000000".into();
-        assert_eq!(LiveHuddle::from_info(&serde_json::json!({"huddles": [early]}))[0].thread_ts, None);
-        // `huddles/list` sends the same objects; the channels are asked again with `huddles/info`, once each.
-        let list = serde_json::json!({"ok": true, "huddles": [live_object("C0000000001", "R0000000001", &[], &[]), live_object("C0000000001", "R0000000001", &[], &[]), live_object("D0000000001", "R0000000002", &[], &[])]});
-        assert_eq!(LiveHuddle::listed_channels(&list), ["C0000000001", "D0000000001"]);
+        assert_eq!(LiveHuddle::parse(&serde_json::json!({"huddles": [early]}))[0].thread_ts, None);
+        // `huddles/list` sends the same objects: read as they are, each channel once (no `huddles/info` for them).
+        let list = serde_json::json!({"ok": true, "huddles": [live_object("C0000000001", "R0000000001", &["U0000000001"], &[]), live_object("C0000000001", "R0000000001", &["U0000000001"], &[]), live_object("D0000000001", "R0000000002", &["U0000000004"], &[])]});
+        let live = LiveHuddle::parse(&list);
+        assert_eq!(live.iter().map(|h| (h.channel.as_str(), h.members.len())).collect::<Vec<_>>(), [("C0000000001", 1), ("D0000000001", 1)]);
+        assert_eq!(LiveHuddle::listed_channels(&list), ["C0000000001", "D0000000001"], "(for `klack ctl huddles --shape`)");
         // An object without a channel or a room says nothing usable.
         let odd = serde_json::json!({"ok": true, "huddles": [{"channel_id": "C0000000001"}, {"call_id": "R0000000001", "active_members": ["U0000000001"]}]});
-        assert!(LiveHuddle::from_info(&odd).is_empty());
+        assert!(LiveHuddle::parse(&odd).is_empty());
     }
 
     #[test]
@@ -174,12 +176,12 @@ mod tests {
     fn empty_lists() {
         use super::{LiveHuddle, PastHuddle};
         let none = serde_json::json!({"ok": true, "huddles": []});
-        assert!(LiveHuddle::listed_channels(&none).is_empty() && LiveHuddle::from_info(&none).is_empty());
+        assert!(LiveHuddle::listed_channels(&none).is_empty() && LiveHuddle::parse(&none).is_empty());
         assert_eq!(PastHuddle::from_history(&none), (vec![], None));
         // The last page's cursor is empty.
         let last = serde_json::json!({"ok": true, "huddles": [], "response_metadata": {"next_cursor": ""}});
         assert_eq!(PastHuddle::from_history(&last), (vec![], None));
-        assert!(LiveHuddle::from_info(&serde_json::json!({"ok": true})).is_empty(), "no huddles key");
+        assert!(LiveHuddle::parse(&serde_json::json!({"ok": true})).is_empty(), "no huddles key");
     }
 }
 
@@ -392,7 +394,7 @@ pub struct AuthTest {
     pub user_id: String,
 }
 
-/// A huddle happening now (Flannel `huddles/info`).
+/// A huddle happening now (Flannel `huddles/list`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LiveHuddle {
     pub channel: String,
@@ -407,7 +409,8 @@ pub struct LiveHuddle {
 }
 
 impl LiveHuddle {
-    /// The channels with a huddle in a `huddles/list` answer.
+    /// The channels with a huddle in a `huddles/list` answer (for `klack ctl huddles --shape`, which shows
+    /// `huddles/info`'s answer for them too).
     pub fn listed_channels(v: &Value) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
         for h in v["huddles"].as_array().into_iter().flatten() {
@@ -418,9 +421,11 @@ impl LiveHuddle {
         out
     }
 
-    /// The huddles in a `huddles/info` answer; a channel without one has no object there.
-    pub fn from_info(v: &Value) -> Vec<LiveHuddle> {
+    /// The huddles in a `huddles/list` or `huddles/info` answer (the same objects), each channel once; a channel
+    /// without one has no object there.
+    pub fn parse(v: &Value) -> Vec<LiveHuddle> {
         let ids = |h: &Value, k: &str| -> Vec<String> { h[k].as_array().into_iter().flatten().filter_map(Value::as_str).map(String::from).collect() };
+        let mut seen = std::collections::HashSet::new();
         v["huddles"]
             .as_array()
             .into_iter()
@@ -433,6 +438,7 @@ impl LiveHuddle {
                 let thread_ts = text("thread_root_ts").filter(|t| t.trim_start_matches(['0', '.']).len() > 0);
                 Some(LiveHuddle { channel: text("channel_id")?, call_id: text("call_id")?, members, start: h["start_date"].as_i64().unwrap_or_default(), thread_ts })
             })
+            .filter(|h| seen.insert(h.channel.clone()))
             .collect()
     }
 }

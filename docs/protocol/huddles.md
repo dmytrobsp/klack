@@ -147,7 +147,8 @@ Research: `slack-rea/notes/huddles-list.md` §1–2. Verified live on the test w
   `knocks` {}, `last_invite_status_by_user` {}, `pending_invitees` {}, `locale` (5), `name` (empty),
   `thread_root_ts`, `recording {can_record_summary, is_paused, recording_user, summary, transcript}`.
   No `room_id` (the research note's guess). With no huddle running both answer `{ok, huddles: []}`.
-  klack: `members` = `active_members` − `dropped_members` (as the web client counts them).
+  klack: `members` = `active_members` − `dropped_members` (as the web client counts them); it reads the
+  `huddles/list` objects as they are, without asking `huddles/info` again (VW-final).
 - OBSERVED: `huddles.history` items as in the research note (`id, channels [1], channel_type, created_by,
   date_start, date_end, has_ended, name, thread_root_ts, huddle_link, participant_history, participants,
   access_type_by_user, last_invite_status_by_user, pending_invitees, attached_file_ids, background_id,
