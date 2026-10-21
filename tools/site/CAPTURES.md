@@ -40,7 +40,7 @@ Everything shown is made up. The conversation was posted for the page in the tes
 accounts (A = `--profile default`, B = `--profile b`): channels made for it, `#deploys` and `#coffee`, a short exchange
 with a code block, two reactions, a three-reply thread and a link from `#deploys` to a `#coffee` message. `#deploys` now
 ends in two Slackbot "A huddle started" notes from earlier test huddles, which can't be deleted, so in LP12b the same
-conversation (same messages, authors, reactions, thread and link) was posted again in a new channel, `#prod-deploys`,
+conversation (same messages, authors, reactions, thread and link) was posted again in a fresh channel, `#prod-deploys`,
 that has never had a huddle; the captures show it under its own name (no rename).
 
 What klack draws from the workspace itself — people, the workspace, its other channels — is replaced at conversion
