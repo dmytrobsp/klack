@@ -1,5 +1,6 @@
-//! Real-time events over the RTM websocket (`rtm.connect`). Reconnects with backoff, and stops
-//! for good once the session has ended.
+//! Real-time events over a websocket: Slack's own gateway, as the web client opens it, else
+//! `rtm.connect`'s ([`Client::socket_url`]). Reconnects with backoff, and stops for good once the
+//! session has ended.
 
 use std::time::Duration;
 
@@ -8,12 +9,13 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::{Message as WsMessage, client::IntoClientRequest, http::HeaderValue};
 
-use crate::api::Client;
+use crate::api::{Client, Socket};
 use crate::session::USER_AGENT;
 
 #[derive(Debug, Clone)]
 pub enum RtmEvent {
-    Connected,
+    /// Connected (Slack said hello), on this kind of websocket.
+    Connected(Socket),
     Disconnected(String),
     /// The session has ended (Slack said so): the loop has stopped and does not reconnect.
     SignedOut,
@@ -116,13 +118,18 @@ pub fn spawn(client: Client) -> Rtm {
 }
 
 async fn run_once(client: &Client, ev_tx: &mpsc::UnboundedSender<RtmEvent>, cmd_rx: &mut mpsc::UnboundedReceiver<RtmCommand>) -> anyhow::Result<()> {
-    let url = client.rtm_url().await?;
-    let mut req = url.into_client_request()?;
-    let headers = req.headers_mut();
-    headers.insert("Cookie", HeaderValue::from_str(&client.session.cookie_header())?);
-    headers.insert("User-Agent", HeaderValue::from_static(USER_AGENT));
-    headers.insert("Origin", HeaderValue::from_static("https://app.slack.com"));
-    let (ws, _) = tokio_tungstenite::connect_async(req).await?;
+    let (url, socket) = client.socket_url().await?;
+    // The gateway's address carries the token: errors naming it lose it.
+    let connect = async {
+        let mut req = url.as_str().into_client_request()?;
+        let headers = req.headers_mut();
+        headers.insert("Cookie", HeaderValue::from_str(&client.session.cookie_header())?);
+        headers.insert("User-Agent", HeaderValue::from_static(USER_AGENT));
+        headers.insert("Origin", HeaderValue::from_static("https://app.slack.com"));
+        anyhow::Ok(tokio_tungstenite::connect_async(req).await?)
+    };
+    let (ws, _) = connect.await.map_err(|e| anyhow::anyhow!("websocket: {}", crate::api::scrub(&e, &url, &client.session.token)))?;
+    drop(url);
     let (mut sink, mut stream) = ws.split();
     let mut next_id = 1u64;
     let mut ping = tokio::time::interval(Duration::from_secs(20));
@@ -140,7 +147,7 @@ async fn run_once(client: &Client, ev_tx: &mpsc::UnboundedSender<RtmEvent>, cmd_
                     WsMessage::Text(text) => {
                         let Ok(v) = serde_json::from_str::<Value>(&text) else { continue };
                         match v["type"].as_str() {
-                            Some("hello") => { let _ = ev_tx.send(RtmEvent::Connected); }
+                            Some("hello") => { let _ = ev_tx.send(RtmEvent::Connected(socket)); }
                             Some("pong") => {}
                             Some("goodbye") => anyhow::bail!("server said goodbye"),
                             _ => {

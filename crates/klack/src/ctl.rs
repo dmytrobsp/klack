@@ -162,6 +162,12 @@ pub enum Ctl {
     Listen {
         #[arg(default_value_t = 30)]
         seconds: u64,
+        /// Only each event's type (and subtype), no payload.
+        #[arg(long)]
+        types: bool,
+        /// Ask for the profile changes (`user_change`) of these people, as klack does for the people it shows.
+        #[arg(long, value_delimiter = ',')]
+        follow: Vec<String>,
     },
 }
 
@@ -463,7 +469,7 @@ pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
             let mut rtm = slack_core::rtm::spawn(client.clone());
             // Wait for the socket before typing.
             while let Some(ev) = rtm.events.recv().await {
-                if matches!(ev, slack_core::rtm::RtmEvent::Connected) {
+                if matches!(ev, slack_core::rtm::RtmEvent::Connected(_)) {
                     break;
                 }
             }
@@ -579,13 +585,20 @@ pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
             let file_id = client.upload(&id, &name, bytes, comment.as_deref(), thread.as_deref(), snippet.as_deref()).await?;
             println!("{file_id}");
         }
-        Ctl::Listen { seconds } => {
+        Ctl::Listen { seconds, types, follow } => {
             let mut rtm = slack_core::rtm::spawn(client.clone());
             let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(seconds);
             loop {
                 tokio::select! {
                     ev = rtm.events.recv() => match ev {
+                        Some(slack_core::rtm::RtmEvent::Event(v)) if types => println!("{}", event_kind(&v)),
                         Some(slack_core::rtm::RtmEvent::Event(v)) => println!("{}", serde_json::to_string(&v)?),
+                        Some(slack_core::rtm::RtmEvent::Connected(socket)) => {
+                            println!("# connected ({socket:?})");
+                            if !follow.is_empty() {
+                                let _ = rtm.commands.send(slack_core::rtm::RtmCommand::UserChangeSub { users: follow.clone() });
+                            }
+                        }
                         Some(other) => println!("# {other:?}"),
                         None => bail!("rtm ended"),
                     },
@@ -595,6 +608,16 @@ pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// An event's type and subtype (`message/bot_message`), or a reply's outcome (`reply ok`) — nothing of its payload.
+fn event_kind(v: &serde_json::Value) -> String {
+    match (v["type"].as_str(), v["subtype"].as_str()) {
+        (Some(t), Some(sub)) => format!("{t}/{sub}"),
+        (Some(t), None) => t.to_string(),
+        (None, _) if v.get("reply_to").is_some() => format!("reply ok={}", v["ok"]),
+        (None, _) => "(no type)".into(),
+    }
 }
 
 /// ` [:name: by U1,U2]…` for a printed message.

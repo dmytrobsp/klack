@@ -107,7 +107,7 @@ pub const ALONE_VOLUME: u32 = 40;
 const RING_TIMEOUTS: &[u32] = &[15, 30, 45, 60, 90, 120];
 /// Seconds between fetches of a previewed channel (0: off).
 const PREVIEW_REFRESH: &[u32] = &[0, 5, 10, 15, 30, 60, 120];
-const STATUS_REFRESH: &[u32] = &[0, 15, 30, 60, 120, 300];
+const STATUS_REFRESH: &[u32] = &[0, 60, 300, 600, 1800, 3600];
 /// Seconds a thread's block is on screen in the Threads feed before it is marked read (0: only when opened).
 const THREAD_READ: &[u32] = &[0, 1, 2, 3, 5, 10];
 /// Days without a message before a conversation leaves the sidebar (0: never).
@@ -1269,20 +1269,20 @@ mod tests {
     #[test]
     fn status_refresh_steps() {
         let mut s = Settings::default();
-        assert_eq!(s.messages.status_refresh_secs, 60, "a minute by default");
+        assert_eq!(s.messages.status_refresh_secs, 600, "ten minutes by default: Slack pushes the changes");
         let ws = |s: &Settings| {
             let mut ws = Workspace::default();
             ws.settings = s.clone();
             Field::StatusRefresh.value(&ws, None, &Default::default())
         };
-        assert_eq!(ws(&s), "every 60 s");
+        assert_eq!(ws(&s), "every 600 s");
         let steps: Vec<u32> = (0..5)
             .map(|_| {
                 Field::StatusRefresh.change(&mut s, &Default::default());
                 s.messages.status_refresh_secs
             })
             .collect();
-        assert_eq!(steps, [120, 300, 0, 15, 30], "on up, then round to off");
+        assert_eq!(steps, [1800, 3600, 0, 60, 300], "on up, then round to off");
         s.messages.status_refresh_secs = 0;
         assert_eq!(ws(&s), "off");
         assert!(CATEGORIES.iter().any(|c| c.0 == "Messages & media" && c.1.contains(&Field::StatusRefresh)));

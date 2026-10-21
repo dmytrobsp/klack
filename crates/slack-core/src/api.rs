@@ -112,11 +112,72 @@ impl FlannelUrl {
 /// is safe to send the session to: https on Slack's own hosts (`slack.com`, `slack-gov.com` and their
 /// subdomains), the default port, no user name or password.
 pub fn slack_https_url(url: &str) -> Option<reqwest::Url> {
+    slack_url(url, "https")
+}
+
+/// Like [`slack_https_url`], for a websocket address (`wss`): the gateway's, which carries the token.
+pub fn slack_wss_url(url: &str) -> Option<reqwest::Url> {
+    slack_url(url, "wss")
+}
+
+fn slack_url(url: &str, scheme: &str) -> Option<reqwest::Url> {
     let parsed = reqwest::Url::parse(url).ok()?;
     let host = parsed.host_str()?;
     let slack = ["slack.com", "slack-gov.com"].iter().any(|d| host == *d || host.ends_with(&format!(".{d}")));
-    let plain = parsed.scheme() == "https" && parsed.port().is_none() && parsed.username().is_empty() && parsed.password().is_none();
+    let plain = parsed.scheme() == scheme && parsed.port().is_none() && parsed.username().is_empty() && parsed.password().is_none();
     (slack && plain).then_some(parsed)
+}
+
+/// The address of Slack's own websocket gateway as the web client opens it: `base` (`client.getWebSocketURL`'s
+/// `primary_websocket_url`) with the token and the web client's parameters (`flannel=3`, the connection only — no
+/// boot data). None unless `base` is one of Slack's own `wss` hosts ([`slack_wss_url`]): the token goes there.
+fn gateway_url(base: &str, token: &str, routing_context: Option<&str>) -> Option<String> {
+    let mut url = slack_wss_url(base)?;
+    let start_args: String = url::form_urlencoded::Serializer::new(String::new())
+        .extend_pairs([
+            ("agent", "client"),
+            ("org_wide_aware", "true"),
+            ("eac_cache_ts", "true"),
+            ("cache_ts", "0"),
+            ("name_tagging", "true"),
+            ("only_self_subteams", "true"),
+            ("connect_only", "true"),
+            ("ms_latest", "true"),
+        ])
+        .finish();
+    {
+        let mut q = url.query_pairs_mut();
+        q.append_pair("token", token)
+            .append_pair("sync_desync", "1")
+            .append_pair("slack_client", "desktop")
+            .append_pair("start_args", &start_args)
+            .append_pair("no_query_on_subscribe", "1")
+            .append_pair("flannel", "3")
+            .append_pair("lazy_channels", "1");
+        if let Some(context) = routing_context.filter(|c| !c.is_empty()) {
+            q.append_pair("gateway_server", context);
+        }
+        q.append_pair("batch_presence_aware", "1");
+    }
+    Some(url.into())
+}
+
+/// `e`'s text with the websocket address `url` and the `token` taken out: neither goes into logs or errors.
+pub(crate) fn scrub(e: &anyhow::Error, url: &str, token: &str) -> String {
+    let mut text = format!("{e:#}").replace(url, "<gateway>");
+    if !token.is_empty() {
+        text = text.replace(token, "<token>");
+    }
+    text
+}
+
+/// Which websocket klack is on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Socket {
+    /// Slack's own gateway, as the web client's: profile changes of the people asked for are pushed.
+    Gateway,
+    /// `rtm.connect`'s (a legacy connection): no profile changes of other people arrive there.
+    Rtm,
 }
 
 /// The Flannel address and how many seconds it holds, from `api.getFlannelHttpUrl`'s answer. The session goes
@@ -728,6 +789,24 @@ impl Client {
     pub async fn rtm_url(&self) -> Result<String> {
         self.call_field("rtm.connect", "url", &[("batch_presence_aware", "1".into()), ("presence_sub", "true".into())]).await
     }
+
+    /// The websocket to open: Slack's own gateway (`client.getWebSocketURL`), as the web client does, else —
+    /// Slack not giving one of its own addresses — `rtm.connect`'s. The gateway address carries the token: never
+    /// log or show it.
+    pub async fn socket_url(&self) -> Result<(String, Socket)> {
+        match self.call_raw("client.getWebSocketURL", &[]).await {
+            Ok(v) => {
+                let base = v["primary_websocket_url"].as_str().unwrap_or_default();
+                if let Some(url) = gateway_url(base, &self.session.token, v["routing_context"].as_str()) {
+                    return Ok((url, Socket::Gateway));
+                }
+                tracing::warn!("client.getWebSocketURL: no Slack wss address; using rtm.connect");
+            }
+            Err(e) if is_signed_out(&e) => return Err(e),
+            Err(e) => tracing::info!("client.getWebSocketURL: {e:#}; using rtm.connect"),
+        }
+        Ok((self.rtm_url().await?, Socket::Rtm))
+    }
 }
 
 /// A file for `Client::upload_files`.
@@ -827,6 +906,54 @@ mod tests {
         for url in ["https://evil.example\\.slack.com/x", "https://a.slack.com@evil.example/", "http://a.slack.com/", "https://u@a.slack.com/", "not a url"] {
             assert!(super::slack_https_url(url).is_none(), "{url}");
         }
+    }
+
+    #[test]
+    fn the_gateway_is_slacks_own_wss_host() {
+        assert!(super::slack_wss_url("wss://wss-primary.slack.com/").is_some());
+        assert!(super::slack_wss_url("wss://wss-primary.slack-gov.com/").is_some());
+        // The token goes there in the address: nowhere else.
+        for url in [
+            "https://wss-primary.slack.com/",
+            "ws://wss-primary.slack.com/",
+            "wss://slack.com.example.org/",
+            "wss://evilslack.com/",
+            "wss://evil.example\\.slack.com/",
+            "wss://wss-primary.slack.com@evil.example/",
+            "wss://u:p@wss-primary.slack.com/",
+            "wss://wss-primary.slack.com:8443/",
+            "",
+        ] {
+            assert!(super::slack_wss_url(url).is_none(), "{url}");
+        }
+    }
+
+    #[test]
+    fn the_gateway_address_is_the_web_clients() {
+        let url = super::gateway_url("wss://wss-primary.slack.com", "xoxc-1", Some("ctx 1")).unwrap();
+        let parsed = reqwest::Url::parse(&url).unwrap();
+        assert_eq!((parsed.scheme(), parsed.host_str(), parsed.path()), ("wss", Some("wss-primary.slack.com"), "/"));
+        let q: std::collections::HashMap<String, String> = parsed.query_pairs().into_owned().collect();
+        for (k, v) in [("token", "xoxc-1"), ("sync_desync", "1"), ("slack_client", "desktop"), ("no_query_on_subscribe", "1"), ("flannel", "3"), ("lazy_channels", "1"), ("gateway_server", "ctx 1"), ("batch_presence_aware", "1")] {
+            assert_eq!(q.get(k).map(String::as_str), Some(v), "{k}");
+        }
+        // The boot data is not wanted: the connection only.
+        let start: std::collections::HashMap<String, String> = url::form_urlencoded::parse(q["start_args"].as_bytes()).into_owned().collect();
+        assert_eq!(start.get("connect_only").map(String::as_str), Some("true"));
+        assert_eq!(start.get("org_wide_aware").map(String::as_str), Some("true"));
+        assert!(!super::gateway_url("wss://wss-primary.slack.com/", "t", None).unwrap().contains("gateway_server"), "no routing context: none sent");
+        for base in ["https://wss-primary.slack.com/", "wss://evil.example/", "wss://wss-primary.slack.com@evil.example/"] {
+            assert!(super::gateway_url(base, "xoxc-1", None).is_none(), "{base}");
+        }
+    }
+
+    #[test]
+    fn a_gateway_error_does_not_name_its_address() {
+        let url = super::gateway_url("wss://wss-primary.slack.com/", "xoxc-SECRET", Some("ctx")).unwrap();
+        let e = anyhow::anyhow!("could not connect to {url}: refused (token xoxc-SECRET)");
+        let text = super::scrub(&e, &url, "xoxc-SECRET");
+        assert!(!text.contains("SECRET") && !text.contains("wss-primary"), "{text}");
+        assert!(text.contains("refused"), "{text}");
     }
 
     #[tokio::test]

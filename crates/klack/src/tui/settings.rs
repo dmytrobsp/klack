@@ -127,9 +127,9 @@ pub struct Messages {
     /// A previewed channel (one you are not in gets no live events) is fetched again this
     /// often, in seconds; 0 turns it off.
     pub preview_refresh_secs: u32,
-    /// Slack does not send klack's connection people's status changes: the people shown (the
-    /// sidebar's DMs and group DMs, the authors in the open conversation and thread) are looked
-    /// up again this often, in seconds; 0 turns it off.
+    /// Slack pushes people's status changes; as a safety net under that (and on the `rtm.connect`
+    /// fallback, which gets none) the people shown (the sidebar's DMs and group DMs, the authors in
+    /// the open conversation and thread) are looked up again this often, in seconds; 0 turns it off.
     pub status_refresh_secs: u32,
     /// Show emoji as `:name:` instead of the character.
     pub emoji_as_names: bool,
@@ -146,7 +146,7 @@ pub struct Messages {
 
 impl Default for Messages {
     fn default() -> Self {
-        Messages { inline_images: true, avatars: true, large_avatars: false, preview_refresh_secs: 15, status_refresh_secs: 60, emoji_as_names: false, custom_emoji_pictures: true, save_dir: String::new(), graphics: "auto".into() }
+        Messages { inline_images: true, avatars: true, large_avatars: false, preview_refresh_secs: 15, status_refresh_secs: 600, emoji_as_names: false, custom_emoji_pictures: true, save_dir: String::new(), graphics: "auto".into() }
     }
 }
 

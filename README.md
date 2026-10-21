@@ -87,12 +87,15 @@ long name is shortened to keep it; group DMs show none, neither on their rows no
 custom emoji, or any with emoji shown as names, is a dim ◆), and on their messages (a custom emoji as its picture where the terminal draws pictures) — and a DM's title adds the
 text ("Name — 🌴 Vacationing"); hovering their DM in the sidebar shows it in the status line. Someone in a
 huddle without a status emoji of their own shows 🎧 ("In a huddle"; not on a sidebar row that shows the
-huddle already). An expired status is gone at once, without waiting for Slack. klack asks Slack for the
-profile changes of the people it shows, as Slack's own client does, but Slack does not send them to
-klack's connection, so the people shown are looked up again every minute, up to 50 at a time: first the
-authors in the open conversation and thread, then the people of the DMs and group DMs on screen in the
-sidebar, then the sidebar's other DMs and group DMs in turn, so that everyone's comes round: F6 → Messages
-& media → Refresh people's statuses (`[messages] status_refresh_secs`, 0 = off).
+huddle already). An expired status is gone at once, without waiting for Slack. klack connects to Slack's
+own websocket gateway, as Slack's web client does, and asks it for the profile changes of the people it
+shows: when someone's status or huddle state changes, Slack says so within a second or two and klack looks
+that one person up. As a safety net — and on the older `rtm.connect` connection klack falls back to when
+Slack offers no gateway, which gets no such pushes — the people shown are also looked up again every ten
+minutes and once after the connection was lost, up to 50 at a time: first the authors in the open
+conversation and thread, then the people of the DMs and group DMs on screen in the sidebar, then the
+sidebar's other DMs and group DMs in turn, so that everyone's comes round: F6 → Messages & media → Refresh
+people's statuses (`[messages] status_refresh_secs`, default 600, 0 = off).
 
 ## Signing in
 

@@ -21,6 +21,9 @@ pub struct Effects {
     pub huddles_ended: Vec<String>,
     /// A huddle started: ask Slack for the live ones again.
     pub refetch_live_huddles: bool,
+    /// This person's profile (status, huddle state) changed: Slack's gateway says only that
+    /// (`user_invalidated`); they are to be looked up again. Not you: yours comes as `user_change`.
+    pub invalidated: Option<String>,
 }
 
 fn parse_message(v: &Value, channel: &str) -> Option<Message> {
@@ -350,6 +353,9 @@ pub fn apply(ws: &mut Workspace, ev: &Value, current: Option<&str>) -> Effects {
                 }
             }
         }
+        "user_invalidated" => {
+            fx.invalidated = ev["user"]["id"].as_str().filter(|id| *id != ws.self_id && ws.users.contains_key(*id)).map(str::to_string);
+        }
         "user_change" | "team_join" | "user_profile_changed" => {
             if let Ok(u) = serde_json::from_value::<User>(ev["user"].clone()) {
                 // Your own zone is the schedule's.
@@ -437,6 +443,20 @@ mod tests {
         ws.conversations.insert("C1".into(), Conversation { id: "C1".into(), name: "general".into(), is_member: true, ..Default::default() });
         ws.timelines.insert("C1".into(), Timeline { loaded: true, ..Default::default() });
         ws
+    }
+
+    #[test]
+    fn an_invalidated_person_is_to_be_looked_up_again() {
+        let mut w = ws();
+        w.users.insert("U2".into(), User { id: "U2".into(), ..Default::default() });
+        // The gateway's push when someone's profile (status, huddle state) changed: their id only.
+        let ev = |id: &str| json!({"type": "user_invalidated", "event_ts": "1.5", "user": {"id": id}});
+        assert_eq!(apply(&mut w, &ev("U2"), None).invalidated.as_deref(), Some("U2"));
+        assert!(w.users.contains_key("U2"), "kept until looked up");
+        // Yourself: your own changes come as user_change. Someone klack never had: nothing to refresh.
+        assert_eq!(apply(&mut w, &ev("UME"), None).invalidated, None);
+        assert_eq!(apply(&mut w, &ev("U9"), None).invalidated, None);
+        assert_eq!(apply(&mut w, &json!({"type": "user_invalidated"}), None).invalidated, None);
     }
 
     #[test]

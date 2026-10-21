@@ -45,7 +45,7 @@ Sessions are stored at `~/.config/klack/<profile>/session.json` (0600). Tokens a
 ## Data flow
 
 - **Boot:** `client.userBoot` provides channels, IMs and prefs. `users.list` and `conversations.info` fill in the rest.
-- **Live updates:** `rtm.connect` opens a websocket that delivers messages, reactions, typing, read markers and presence. Pings every 30 s; reconnects with backoff.
+- **Live updates:** a websocket that delivers messages, reactions, typing, read markers, presence and profile changes: Slack's own gateway as the web client opens it (`client.getWebSocketURL` + `flannel=3`, the token in the address, which is checked to be Slack's own `wss` host and never logged), else `rtm.connect`'s (a legacy connection: no profile changes of other people). Pings every 20 s; reconnects with backoff.
 - **History:** `conversations.history` / `conversations.replies`, paged on demand.
 - **Sending:** `chat.postMessage` takes the composer's mrkdwn as `text` (Slack renders it), plus `thread_ts` for replies. Edits and deletes use `chat.update` / `chat.delete`; reactions use `reactions.add/remove`.
 - **Files:** uploads use `files.getUploadURLExternal`, then a PUT, then `files.completeUploadExternal`. Downloads fetch `url_private` with the session cookie and token.

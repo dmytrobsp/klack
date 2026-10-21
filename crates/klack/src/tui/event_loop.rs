@@ -237,9 +237,12 @@ struct App {
     feed_typing: bool,
     /// When the previewed channel was last fetched again.
     preview_polled: Option<std::time::Instant>,
-    /// When the people shown were last looked up for their statuses, and whether a lookup is
-    /// under way.
-    statuses_polled: (Option<std::time::Instant>, bool),
+    /// When the people shown were last looked up for their statuses (the slow safety net).
+    statuses_polled: Option<std::time::Instant>,
+    /// People to look up again (`users.info`) for their statuses.
+    lookups: Lookups,
+    /// The kind of the current (or last) websocket; None before the first connection.
+    socket: Option<slack_core::api::Socket>,
     /// Where the next status refresh goes on among the sidebar's DMs and group DMs off screen.
     status_turn: usize,
     /// Open "move to section" picker.
@@ -510,23 +513,28 @@ impl App {
         });
     }
 
-    /// Slack does not push people's status changes to klack's connection: look the people shown
-    /// up again every `status_refresh_secs` — the first time a full interval after start; at most
-    /// [`STATUS_REFRESH_MAX`]: the authors of the open conversation and thread, the sidebar's DMs
-    /// and group DMs on screen, then its others in turn (see [`Workspace::people_shown`]).
+    /// The slow safety net under the pushed changes: every `status_refresh_secs` (ten minutes by default) — the
+    /// first time a full interval after start — the people shown are looked up again, at most
+    /// [`STATUS_REFRESH_MAX`]: the authors of the open conversation and thread, the sidebar's DMs and group DMs on
+    /// screen, then its others in turn (see [`Workspace::people_shown`]).
     fn refresh_statuses(&mut self) {
         let secs = self.ws.settings.messages.status_refresh_secs;
-        if secs == 0 || !self.connected || self.ws.users.is_empty() || self.statuses_polled.1 {
+        if secs == 0 || !self.connected || self.ws.users.is_empty() || self.lookups.busy {
             return;
         }
-        match self.statuses_polled.0 {
+        match self.statuses_polled {
             Some(at) if at.elapsed() < Duration::from_secs(secs as u64) => return,
             None => {
-                self.statuses_polled.0 = Some(std::time::Instant::now());
+                self.statuses_polled = Some(std::time::Instant::now());
                 return;
             }
-            Some(_) => self.statuses_polled.0 = Some(std::time::Instant::now()),
+            Some(_) => self.statuses_polled = Some(std::time::Instant::now()),
         }
+        self.queue_people_shown();
+    }
+
+    /// Put the people shown (at most [`STATUS_REFRESH_MAX`]) up for looking up again.
+    fn queue_people_shown(&mut self) {
         let rows = self.sidebar.on_screen();
         let (mut on_screen, mut others): (Vec<&str>, Vec<&str>) = (Vec::new(), Vec::new());
         for (n, item) in self.sidebar.items.iter().enumerate() {
@@ -537,10 +545,33 @@ impl App {
         let thread = self.thread.as_ref().map(|(c, ts)| super::state::thread_key(c, ts));
         let timelines: Vec<&str> = self.current.as_deref().into_iter().chain(thread.as_deref()).collect();
         let people = self.ws.people_shown(&timelines, &on_screen, &others, &mut self.status_turn, STATUS_REFRESH_MAX);
-        if people.is_empty() {
+        for id in people {
+            self.lookups.stale.remove(&id);
+            self.lookups.due.insert(id);
+        }
+    }
+
+    /// Slack's gateway pushed that `id`'s profile (status, huddle state) changed: look them up again if they are
+    /// shown, else once they are.
+    fn profile_invalidated(&mut self, id: String) {
+        if self.followed.0.contains(&id) {
+            self.lookups.due.insert(id);
+        } else {
+            self.lookups.stale.insert(id);
+        }
+    }
+
+    /// Look the people due up (`users.info`, one after another, at most [`STATUS_REFRESH_MAX`] a run), one run
+    /// at a time.
+    fn look_up_people(&mut self) {
+        if self.lookups.busy || self.lookups.due.is_empty() || !self.connected {
             return;
         }
-        self.statuses_polled.1 = true;
+        let people: Vec<String> = self.lookups.due.iter().take(STATUS_REFRESH_MAX).cloned().collect();
+        for id in &people {
+            self.lookups.due.remove(id);
+        }
+        self.lookups.busy = true;
         let (client, tx) = (self.client.clone(), self.net.clone());
         tokio::spawn(async move {
             // One after another: a gentle pace for Slack.
@@ -2107,6 +2138,10 @@ impl App {
                 self.open_hit_from(hit, from_link);
             }
             Target::Person { user } => {
+                // A change pushed while they were not shown.
+                if self.lookups.stale.remove(&user) {
+                    self.lookups.due.insert(user.clone());
+                }
                 if !self.ws.users.contains_key(&user) {
                     let (client, tx, id) = (self.client.clone(), self.net.clone(), user.clone());
                     tokio::spawn(async move {
@@ -2245,16 +2280,21 @@ impl App {
     }
 
     /// Ask Slack for the profile changes (statuses, huddle state) of the people shown — DMs, group
-    /// DMs, message authors — as the web client does (it gets `user_change` only for people it
-    /// asked for). Slack acknowledges it on klack's connection but no event was seen there yet,
-    /// hence also [`Self::refresh_statuses`]. New people are added every couple of seconds, in
-    /// batches of Slack's limit.
+    /// DMs, message authors — as the web client does. On Slack's gateway they come as
+    /// `user_invalidated` ([`Self::profile_invalidated`]); on the `rtm.connect` fallback not at all, hence
+    /// also [`Self::refresh_statuses`]. New people are added every couple of seconds, in batches of
+    /// Slack's limit; one whose change came while not shown is looked up now.
     fn follow_profiles(&mut self, now: std::time::Instant) {
         if !self.connected || self.ws.users.is_empty() || self.followed.1.is_some_and(|t| now.duration_since(t) < FOLLOW_EVERY) {
             return;
         }
         self.followed.1 = Some(now);
         let new: Vec<String> = self.ws.people_to_follow().into_iter().filter(|id| !self.followed.0.contains(id)).collect();
+        for id in &new {
+            if self.lookups.stale.remove(id) {
+                self.lookups.due.insert(id.clone());
+            }
+        }
         for chunk in new.chunks(slack_core::rtm::USER_CHANGE_SUB_MAX) {
             if self.rtm_commands.send(slack_core::rtm::RtmCommand::UserChangeSub { users: chunk.to_vec() }).is_err() {
                 return;
@@ -3721,6 +3761,17 @@ struct Ring {
 
 /// How often the ring sound repeats.
 const RING_EVERY: Duration = Duration::from_millis(2500);
+/// People to look up again for their statuses.
+#[derive(Default)]
+struct Lookups {
+    /// To look up now.
+    due: std::collections::BTreeSet<String>,
+    /// Their profile changed (Slack pushed it) while not shown: looked up once shown.
+    stale: std::collections::HashSet<String>,
+    /// A run is under way.
+    busy: bool,
+}
+
 /// The most people one status refresh looks up.
 const STATUS_REFRESH_MAX: usize = 50;
 /// How often the people shown are checked for ones whose profile changes are not asked for yet.
@@ -4138,7 +4189,9 @@ impl App {
             feed_reply: None,
             feed_typing: false,
             preview_polled: None,
-            statuses_polled: (None, false),
+            statuses_polled: None,
+            lookups: Lookups::default(),
+            socket: None,
             status_turn: 0,
             prefs: None,
             huddle_view: None,
@@ -4346,6 +4399,7 @@ async fn run_workspace(
         app.feed_tick(std::time::Instant::now());
         app.refresh_preview();
         app.refresh_statuses();
+        app.look_up_people();
     }
     // Quitting in a huddle: tell Slack we left (best effort, not holding the quit for long).
     if let Some(call) = app.call.as_mut().filter(|c| !c.leaving) {
@@ -5382,7 +5436,12 @@ fn scroll_page(focus: Focus, thread_open: bool, messages: &mut MessagePane, thre
 fn handle_rtm(app: &mut App, ev: slack_core::rtm::RtmEvent) {
     use slack_core::rtm::RtmEvent;
     match ev {
-        RtmEvent::Connected => {
+        RtmEvent::Connected(socket) => {
+            tracing::info!("rtm connected ({socket:?})");
+            // Profile changes pushed while the connection was away are lost: the people shown are looked up.
+            if app.socket.replace(socket).is_some() {
+                app.queue_people_shown();
+            }
             app.connected = true;
             app.presence_subscribed = false;
             app.subscribe_presence();
@@ -5410,6 +5469,9 @@ fn handle_rtm(app: &mut App, ev: slack_core::rtm::RtmEvent) {
             }
             if fx.refetch_live_huddles {
                 app.fetch_live_huddles();
+            }
+            if let Some(id) = fx.invalidated {
+                app.profile_invalidated(id);
             }
             // (As the official client does: an ended huddle the view shows may now be among the recent ones.)
             if app.view == View::Huddles && app.huddles.concerns(&fx.huddles_ended) {
@@ -5543,7 +5605,7 @@ fn handle_net(app: &mut App, msg: Net) {
             app.sidebar.rebuild(&app.ws);
         }
         Net::Profiles(users) => {
-            app.statuses_polled.1 = false;
+            app.lookups.busy = false;
             for u in users {
                 app.ws.users.insert(u.id.clone(), u);
             }
@@ -7558,6 +7620,83 @@ mod tests {
         assert_eq!(joined.as_deref(), Some("C2"));
     }
 
+    /// `app` with person `id` (no status) in a DM `D<id>` the sidebar shows.
+    fn with_dm(app: &mut super::App, id: &str) {
+        app.ws.settings.appearance.hide_inactive_days = 0;
+        app.ws.users.insert(id.into(), slack_core::types::User { id: id.into(), name: id.to_lowercase(), ..Default::default() });
+        let dm = format!("D{id}");
+        app.ws.conversations.insert(dm.clone(), slack_core::types::Conversation { id: dm, is_im: true, is_member: true, user: Some(id.into()), ..Default::default() });
+        app.sidebar.rebuild(&app.ws);
+    }
+
+    #[tokio::test]
+    async fn a_pushed_profile_change_looks_that_person_up_once() {
+        use super::Net;
+        use slack_core::rtm::RtmEvent;
+        let (url, mut asked) = fake_slack(&[("users.info", r#"{"ok":true,"user":{"id":"U2","name":"u2","profile":{"status_emoji":":palm_tree:","status_text":"away"}}}"#)]).await;
+        let (mut app, mut net) = test_app_at(&url);
+        // The subscription frames go somewhere.
+        let (rtm, _frames) = tokio::sync::mpsc::unbounded_channel();
+        app.rtm_commands = rtm;
+        with_dm(&mut app, "U2");
+        app.ws.users.insert("U3".into(), slack_core::types::User { id: "U3".into(), ..Default::default() });
+        super::handle_rtm(&mut app, RtmEvent::Connected(slack_core::api::Socket::Gateway));
+        assert!(app.followed.0.contains("U2") && app.lookups.due.is_empty(), "followed; nothing looked up at the start");
+        // The gateway pushes Slack's own client gets: someone's profile changed, their id only.
+        let invalidated = |id: &str| RtmEvent::Event(serde_json::json!({"type": "user_invalidated", "event_ts": "1.5", "user": {"id": id}}));
+        super::handle_rtm(&mut app, invalidated("U2"));
+        super::handle_rtm(&mut app, invalidated("U2"));
+        // Someone not shown: looked up only once shown.
+        super::handle_rtm(&mut app, invalidated("U3"));
+        assert_eq!(app.lookups.due.iter().collect::<Vec<_>>(), ["U2"], "once");
+        assert!(app.lookups.stale.contains("U3"));
+        app.look_up_people();
+        assert!(app.lookups.busy && app.lookups.due.is_empty());
+        let profiles = loop {
+            match tokio::time::timeout(std::time::Duration::from_secs(10), net.recv()).await {
+                Ok(Some(Net::Profiles(users))) => break users,
+                Ok(Some(_)) => {}
+                other => panic!("no lookup: {}", other.is_ok()),
+            }
+        };
+        let mut looked_up = Vec::new();
+        while let Ok(req) = asked.try_recv() {
+            if req.contains("/api/users.info ") {
+                looked_up.push(req.split("user=").nth(1).map(|v| v.chars().take(2).collect::<String>()).unwrap_or_default());
+            }
+        }
+        assert_eq!(looked_up, ["U2"], "one users.info, for the person who changed");
+        super::handle_net(&mut app, Net::Profiles(profiles));
+        assert!(!app.lookups.busy);
+        assert_eq!(app.ws.users["U2"].profile.status_emoji, ":palm_tree:");
+        // U3 shows up (a DM): now looked up.
+        with_dm(&mut app, "U3");
+        app.follow_profiles(std::time::Instant::now() + std::time::Duration::from_secs(5));
+        assert!(app.lookups.due.contains("U3") && app.lookups.stale.is_empty());
+    }
+
+    #[tokio::test]
+    async fn statuses_are_looked_up_again_after_a_reconnect_and_rarely_otherwise() {
+        use slack_core::rtm::RtmEvent;
+        let (mut app, _net) = test_app();
+        with_dm(&mut app, "U2");
+        assert_eq!(app.ws.settings.messages.status_refresh_secs, 600, "a slow safety net: every ten minutes");
+        super::handle_rtm(&mut app, RtmEvent::Connected(slack_core::api::Socket::Gateway));
+        app.refresh_statuses();
+        assert!(app.lookups.due.is_empty(), "not at the start");
+        app.statuses_polled = Some(std::time::Instant::now() - std::time::Duration::from_secs(599));
+        app.refresh_statuses();
+        assert!(app.lookups.due.is_empty(), "not before ten minutes");
+        // Pushes missed while the connection was away: the people shown, once.
+        super::handle_rtm(&mut app, RtmEvent::Disconnected("gone".into()));
+        super::handle_rtm(&mut app, RtmEvent::Connected(slack_core::api::Socket::Gateway));
+        assert_eq!(app.lookups.due.iter().collect::<Vec<_>>(), ["U2"]);
+        app.lookups.due.clear();
+        app.statuses_polled = Some(std::time::Instant::now() - std::time::Duration::from_secs(601));
+        app.refresh_statuses();
+        assert_eq!(app.lookups.due.iter().collect::<Vec<_>>(), ["U2"], "every ten minutes");
+    }
+
     #[tokio::test]
     async fn a_reconnect_asks_for_the_live_huddles_again() {
         use super::Net;
@@ -7565,7 +7704,7 @@ mod tests {
         app.ws.conversations.insert("C1".into(), slack_core::types::Conversation { id: "C1".into(), name: "c".into(), is_channel: true, is_member: true, ..Default::default() });
         // One kept from the live events that ended while the connection was away.
         app.ws.huddles.insert("C1".into(), super::super::state::Huddle { room: "R1".into(), participants: vec!["U2".into()], ..Default::default() });
-        super::handle_rtm(&mut app, slack_core::rtm::RtmEvent::Connected);
+        super::handle_rtm(&mut app, slack_core::rtm::RtmEvent::Connected(slack_core::api::Socket::Gateway));
         let mut asked = false;
         while let Ok(Some(msg)) = tokio::time::timeout(std::time::Duration::from_secs(10), net.recv()).await {
             if matches!(msg, Net::LiveHuddles { .. }) {
