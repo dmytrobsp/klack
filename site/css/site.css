@@ -59,9 +59,14 @@ section h2 { font-family: 'Anton', sans-serif; font-weight: 400; font-size: 44px
 /* the first screen: one fixed 836 × 690 px stage, scaled as one picture to the column's width (never up),
    so nothing inside the collage reflows on a phone. --k = column width / 836 px, a plain number:
    tan(atan2(a, b)) = a / b for lengths. Without support the stage stays 836 px, clipped. */
-#top { padding: 0; container-type: inline-size; }
-.stage-fit { --k: min(1, tan(atan2(100cqw, 836px))); height: calc(690px * var(--k)); overflow: hidden; }
-.stage { position: relative; overflow: hidden; width: 836px; height: 690px; background: var(--bg); transform: scale(var(--k)); transform-origin: 0 0; }
+#top { padding: 0; position: relative; container-type: inline-size; }
+.stage-fit { overflow: hidden; }
+.stage { position: relative; overflow: hidden; width: 836px; height: 690px; background: var(--bg); transform-origin: 0 0; }
+@supports (width: calc(1px * tan(atan2(1cqw, 1px)))) {
+  .stage-fit, #top > .dl-area { --k: min(1, tan(atan2(100cqw, 836px))); }
+  .stage-fit { height: calc(690px * var(--k)); }
+  .stage { transform: scale(var(--k)); }
+}
 .stage .grain { position: absolute; inset: 0; opacity: .10; background-image: radial-gradient(#fff .7px, transparent .9px); background-size: 3px 3px; }
 .stage .wallglow { position: absolute; left: 120px; top: 150px; width: 620px; height: 200px; background: radial-gradient(closest-side, rgba(224,30,90,.22), transparent); }
 .headline { position: absolute; left: 0; top: 0; width: 836px; height: 380px; margin: 0; font-size: inherit; font-weight: 400; line-height: normal; }
@@ -74,8 +79,13 @@ section h2 { font-family: 'Anton', sans-serif; font-weight: 400; font-size: 44px
 .stage .sub { position: absolute; left: 34px; top: 452px; width: 400px; color: #e8dcc4; }
 .pitch { margin: 0; font-family: 'Anton', sans-serif; font-size: 44px; line-height: 1.02; letter-spacing: .5px; color: var(--cream); text-transform: uppercase; }
 .really { margin-top: 8px; }
-/* two buttons on macOS: the meta line takes what's left of 640 px and wraps inside it, clear of the sticker */
-.stage .dl-area { position: absolute; left: 34px; top: 604px; width: 640px; display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; }
+/* the call to action: outside the stage in the markup, laid over it at its design place (34, 604) and scaled with it
+   from 760 px up; on phones a normal block below it, full size (see the max-width: 759px rule).
+   Two buttons on macOS: the meta line takes what's left of 640 px and wraps inside it, clear of the sticker. */
+#top > .dl-area { position: absolute; left: 34px; top: 604px; width: 640px; display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; transform-origin: 0 0; }
+@supports (width: calc(1px * tan(atan2(1cqw, 1px)))) {
+  #top > .dl-area { left: calc(34px * var(--k)); top: calc(604px * var(--k)); transform: scale(var(--k)); }
+}
 .dl { font-family: 'Anton', sans-serif; font-size: 22px; letter-spacing: 1px; background: var(--yellow); color: var(--ink); padding: 9px 20px; box-shadow: 4px 4px 0 var(--pink); text-decoration: none; white-space: nowrap; }
 .dl-meta { flex: 1 1 220px; min-width: 0; font-size: 12px; color: var(--muted); line-height: 1.5; }
 .dl-meta a { color: inherit; }
@@ -170,7 +180,9 @@ p code, li code, h3 code { color: var(--yellow); }
 .capture pre i { display: inline-block; width: calc(var(--n, 1) * 1ch); height: calc(var(--lh) * 1em); vertical-align: top; overflow: hidden; font-style: normal; white-space: pre; }
 .capture .tile { position: absolute; left: calc(var(--c) * 1ch); top: calc(var(--r) * var(--lh) * 1em); width: calc(var(--w) * 1ch); height: calc(var(--h) * var(--lh) * 1em); object-fit: cover; display: block; }
 
-/* captures zoom (js/zoom.js): a click, a tap, Enter or Space opens one enlarged; Esc or a click closes it */
+/* captures zoom (js/zoom.js): a click, a tap, Enter or Space opens one enlarged; Esc or a click closes it.
+   While it is open the page behind does not scroll. */
+body:has(dialog.zoom[open]) { overflow: hidden; }
 .term.capture[role=button] { cursor: zoom-in; }
 .term.capture[role=button]:focus-visible { outline: 3px solid var(--yellow); outline-offset: 4px; }
 .zoom-hint { float: right; font-family: 'Permanent Marker', cursive; font-size: 11px; line-height: 1.3; color: var(--yellow); }
@@ -182,6 +194,13 @@ dialog.zoom .term { cursor: zoom-out; box-shadow: none; }
 #footer { position: relative; margin-top: 40px; padding: 34px 0 60px; border-top: 2px dashed #3a2a3b; display: flex; gap: 28px; align-items: center; font-size: 12.5px; color: var(--muted); }
 #footer p { margin: 0 0 6px; }
 .foot-sticker { flex: none; }
+
+@media (max-width: 759px) {
+  #top > .dl-area { position: static; left: auto; top: auto; width: auto; transform: none; padding: 16px 0 4px; }
+  .dl-area .dl { padding: 10px 22px; }
+  .dl-area .dl-meta { flex-basis: 100%; font-size: 14px; }
+  .dl-area .dl-meta a { display: inline-block; padding: 6px 0; }
+}
 
 @media (max-width: 700px) {
   .topnav { flex-direction: column; align-items: flex-start; gap: 2px; }

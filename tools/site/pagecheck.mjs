@@ -5,16 +5,19 @@
 //        [--shots DIR] [--full] [--hero-at SECONDS] [--user-agent UA] [--attach PORT] [--scratch DIR] [--port N]
 //
 // Per width (360, 390, 768, 1280): scrollWidth <= innerWidth (no sideways scroll), the first screen's
-// stage scale, console errors, requests to other hosts (there must be none), the transfer size.
+// stage scale, the first screen's download button (rendered ≥ 40 px tall everywhere; below 760 px out of the
+// scaled stage, its meta line ≥ 14 px), console errors, requests to other hosts (there must be none), the transfer size.
 // Once, at 1280: the headline loop moves (or, under reduced motion, hangs still), it pauses while the
-// headline is off screen, and a capture opens enlarged and readable, and closes with Esc.
+// headline is off screen, and a capture opens enlarged and readable (at 390 too), the page behind doesn't scroll,
+// and it closes with Esc.
 // --shots saves a screenshot per width (the viewport; --full: the whole page). --hero-at freezes the
 // loop's clock at that stage time first (for looking at one frame); --user-agent poses as another system
 // (the download button picks by it). Without --attach it launches its own
-// Chrome (flatpak com.google.Chrome, or $CHROME) with a fresh profile, closes it and deletes the profile.
+// Chrome (flatpak com.google.Chrome, or $CHROME) with a fresh profile and always — error or not — closes it
+// (Browser.close, else its process group and any process on that profile) and deletes the profile.
 // Exit code 0 only when every check passes.
 import { spawn } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, realpathSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, realpathSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -41,21 +44,14 @@ if (!opt.url) { console.error('usage: node tools/site/pagecheck.mjs URL [--reduc
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 // ---- the browser ----
-let child = null, profile = null, port = opt.attach;
-if (!port) {
-  const base = realpathSync(opt.scratch || tmpdir());
-  profile = mkdtempSync(join(base, 'pagecheck-'));
-  port = opt.port;
-  const flags = ['--headless=new', `--remote-debugging-port=${port}`, `--user-data-dir=${profile}/prof`, '--no-first-run',
-    '--no-default-browser-check', '--hide-scrollbars', '--mute-audio', '--disable-extensions', 'about:blank'];
-  child = process.env.CHROME
-    ? spawn(process.env.CHROME, flags, { stdio: 'ignore' })
-    : spawn('flatpak', ['run', `--filesystem=${profile}`, 'com.google.Chrome', ...flags], { stdio: 'ignore' });
-}
-async function json(path) { return (await fetch(`http://127.0.0.1:${port}${path}`)).json(); }
-let version = null;
-for (let i = 0; i < 100 && !version; i++) { try { version = await json('/json/version'); } catch { await sleep(200); } }
-if (!version) { await cleanup(); console.error('no browser on port ' + port); process.exit(2); }
+let child = null, profile = null, port = opt.attach, browser = null, page = null, targetId = null, send = null;
+let log = null;   // what one load collects
+const origin = new URL(opt.url).host;
+const out = { url: opt.url, reducedMotion: opt.reduced, widths: [], consoleErrors: [], foreignRequests: [], transferBytes: {} };
+
+async function json(path) { return (await fetch(`http://127.0.0.1:${port}${path}`, { signal: AbortSignal.timeout(2000) })).json(); }
+async function alive() { try { await json('/json/version'); return true; } catch { return false; } }
+const within = (p, ms) => Promise.race([p, sleep(ms)]);
 
 function connect(wsUrl) {
   const ws = new WebSocket(wsUrl);
@@ -67,41 +63,11 @@ function connect(wsUrl) {
       msg.error ? fail(new Error(msg.error.message)) : ok(msg.result);
     } else if (msg.method) for (const h of handlers) h(msg.method, msg.params);
   };
-  const send = (method, params = {}) => new Promise((ok, fail) => {
+  const call = (method, params = {}) => new Promise((ok, fail) => {
     const n = ++id; pending.set(n, { ok, fail }); ws.send(JSON.stringify({ id: n, method, params }));
   });
-  return { ws, send, on: h => handlers.push(h), open: new Promise((ok, fail) => { ws.onopen = ok; ws.onerror = fail; }) };
+  return { ws, send: call, on: h => handlers.push(h), open: new Promise((ok, fail) => { ws.onopen = ok; ws.onerror = fail; }) };
 }
-
-const browser = connect(version.webSocketDebuggerUrl);
-await browser.open;
-const { targetId } = await browser.send('Target.createTarget', { url: 'about:blank' });
-const targets = await json('/json');
-const page = connect(targets.find(t => t.id === targetId).webSocketDebuggerUrl);
-await page.open;
-const { send } = page;
-
-const origin = new URL(opt.url).host;
-let log = null;   // what one load collects
-page.on((method, p) => {
-  if (!log) return;
-  if (method === 'Network.requestWillBeSent') {
-    const u = p.request.url;
-    if (/^https?:/.test(u) && new URL(u).host !== origin) log.foreign.push(u);
-  } else if (method === 'Network.loadingFinished') log.bytes += p.encodedDataLength;
-  else if (method === 'Network.loadingFailed' && !p.canceled) log.errors.push('load failed: ' + p.errorText);
-  else if (method === 'Runtime.consoleAPICalled' && (p.type === 'error' || p.type === 'assert'))
-    log.errors.push('console: ' + p.args.map(a => a.value ?? a.description ?? '').join(' '));
-  else if (method === 'Runtime.exceptionThrown')
-    log.errors.push('exception: ' + (p.exceptionDetails.exception?.description || p.exceptionDetails.text));
-  else if (method === 'Log.entryAdded' && p.entry.level === 'error') log.errors.push('log: ' + p.entry.text + (p.entry.url ? ' ' + p.entry.url : ''));
-  else if (method === 'Page.loadEventFired') log.loaded = true;
-});
-await send('Page.enable'); await send('Runtime.enable'); await send('Log.enable'); await send('Network.enable');
-await send('Network.setCacheDisabled', { cacheDisabled: true });
-if (opt.reduced) await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
-if (opt.ua) await send('Emulation.setUserAgentOverride', { userAgent: opt.ua, platform: /Mac/.test(opt.ua) ? 'MacIntel' : '' });
-if (opt.heroAt !== null) await send('Page.addScriptToEvaluateOnNewDocument', { source: 'window.__clock = 0; performance.now = () => window.__clock;' });
 
 const evaluate = async expr => {
   const r = await send('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true });
@@ -124,15 +90,22 @@ async function load(width) {
   await sleep(600);   // the download button's release.json, layout settling
   const m = await evaluate(`(() => {
     const st = document.querySelector('.stage'), r = st ? st.getBoundingClientRect() : null;
+    const dl = document.querySelector('.dl-area .dl'), b = dl ? dl.getBoundingClientRect() : null;
+    const meta = document.querySelector('.dl-area .dl-meta');
+    const scaleOf = e => e.getBoundingClientRect().width / (e.offsetWidth || 1);   // rendered / layout size
     return { innerWidth, scrollWidth: document.documentElement.scrollWidth,
       stageScale: r ? Math.round(r.width / st.offsetWidth * 1000) / 1000 : null,
-      stageBox: r ? [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)] : null };
+      stageBox: r ? [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)] : null,
+      button: b ? { label: dl.textContent, box: [Math.round(b.left), Math.round(b.top), Math.round(b.width), Math.round(b.height)],
+        inStage: !!dl.closest('.stage') } : null,
+      metaPx: meta ? Math.round(parseFloat(getComputedStyle(meta).fontSize) * scaleOf(meta) * 10) / 10 : null };
   })()`);
   // on a phone the layout viewport widens to whatever overflows, so compare with the device width too
   return { width, ...m, fits: m.scrollWidth <= m.innerWidth && m.innerWidth === width };
 }
 
-// the zoom: Enter on the first feature capture opens it readable (scrolling sideways on a phone); Esc closes it
+// the zoom: Enter on the first feature capture opens it readable (scrolling sideways on a phone), the page behind
+// doesn't scroll under the wheel; Esc closes it
 async function zoomCheck(width) {
   const key = (key, code, vk, text) => Promise.all(['keyDown', 'keyUp'].map(type => send('Input.dispatchKeyEvent',
     { type, key, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk, ...(type === 'keyDown' && text ? { text } : {}) })));
@@ -151,6 +124,12 @@ async function zoomCheck(width) {
     return { opens: true, zoomFontPx: Math.round(parseFloat(getComputedStyle(g).fontSize) * 10) / 10,
       scrollsSideways: d.scrollWidth > d.clientWidth, pageFits: document.documentElement.scrollWidth <= innerWidth };
   })()`));
+  if (z.opens) {
+    const y0 = await evaluate('scrollY');
+    await send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: 4, y: HEIGHT[width] - 4, deltaX: 0, deltaY: 600 });
+    await sleep(400);
+    z.pageScrollLocked = (await evaluate('scrollY')) === y0;
+  }
   if (opt.shots && z.opens) await shot(join(opt.shots, `zoom${width}.png`));
   await key('Escape', 'Escape', 27); await sleep(300);
   Object.assign(z, await evaluate(`({ closesOnEsc: !document.querySelector('dialog.zoom[open]'), focusBack: document.activeElement === document.querySelector('#features .capture') })`));
@@ -159,65 +138,133 @@ async function zoomCheck(width) {
 
 const clothD = () => evaluate(`document.getElementById('hero-cloth')?.getAttribute('d') || ''`);
 
-const out = { url: opt.url, reducedMotion: opt.reduced, widths: [], consoleErrors: [], foreignRequests: [], transferBytes: {} };
-try {
+async function run() {
+  if (!port) {
+    port = opt.port;
+    if (await alive()) throw new Error(`port ${port} is already taken by another browser`);
+    const base = realpathSync(opt.scratch || tmpdir());
+    profile = mkdtempSync(join(base, 'pagecheck-'));
+    const flags = ['--headless=new', `--remote-debugging-port=${port}`, `--user-data-dir=${profile}/prof`, '--no-first-run',
+      '--no-default-browser-check', '--hide-scrollbars', '--mute-audio', '--disable-extensions', 'about:blank'];
+    // its own process group, so a stuck browser can be stopped as a whole
+    child = process.env.CHROME
+      ? spawn(process.env.CHROME, flags, { stdio: 'ignore', detached: true })
+      : spawn('flatpak', ['run', `--filesystem=${profile}`, 'com.google.Chrome', ...flags], { stdio: 'ignore', detached: true });
+  }
+  let version = null;
+  for (let i = 0; i < 100 && !version; i++) { try { version = await json('/json/version'); } catch { await sleep(200); } }
+  if (!version) throw new Error('no browser on port ' + port);
+  browser = connect(version.webSocketDebuggerUrl);
+  await browser.open;
+  ({ targetId } = await browser.send('Target.createTarget', { url: 'about:blank' }));
+  const targets = await json('/json');
+  page = connect(targets.find(t => t.id === targetId).webSocketDebuggerUrl);
+  await page.open;
+  send = page.send;
+  page.on((method, p) => {
+    if (!log) return;
+    if (method === 'Network.requestWillBeSent') {
+      const u = p.request.url;
+      if (/^https?:/.test(u) && new URL(u).host !== origin) log.foreign.push(u);
+    } else if (method === 'Network.loadingFinished') log.bytes += p.encodedDataLength;
+    else if (method === 'Network.loadingFailed' && !p.canceled) log.errors.push('load failed: ' + p.errorText);
+    else if (method === 'Runtime.consoleAPICalled' && (p.type === 'error' || p.type === 'assert'))
+      log.errors.push('console: ' + p.args.map(a => a.value ?? a.description ?? '').join(' '));
+    else if (method === 'Runtime.exceptionThrown')
+      log.errors.push('exception: ' + (p.exceptionDetails.exception?.description || p.exceptionDetails.text));
+    else if (method === 'Log.entryAdded' && p.entry.level === 'error') log.errors.push('log: ' + p.entry.text + (p.entry.url ? ' ' + p.entry.url : ''));
+    else if (method === 'Page.loadEventFired') log.loaded = true;
+  });
+  await send('Page.enable'); await send('Runtime.enable'); await send('Log.enable'); await send('Network.enable');
+  await send('Network.setCacheDisabled', { cacheDisabled: true });
+  if (opt.reduced) await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
+  if (opt.ua) await send('Emulation.setUserAgentOverride', { userAgent: opt.ua, platform: /Mac/.test(opt.ua) ? 'MacIntel' : '' });
+  if (opt.heroAt !== null) await send('Page.addScriptToEvaluateOnNewDocument', { source: 'window.__clock = 0; performance.now = () => window.__clock;' });
+
   for (const w of WIDTHS) {
     const r = await load(w);
     if (opt.heroAt !== null) { await evaluate(`window.__clock = ${opt.heroAt * 1000}`); await sleep(400); }
     if (opt.shots) { mkdirSync(opt.shots, { recursive: true }); await shot(join(opt.shots, `w${w}.png`)); }
-    out.widths.push({ width: r.width, innerWidth: r.innerWidth, scrollWidth: r.scrollWidth, fits: r.fits, stageScale: r.stageScale, stageBox: r.stageBox, errors: log.errors.length });
+    out.widths.push({ width: r.width, innerWidth: r.innerWidth, scrollWidth: r.scrollWidth, fits: r.fits, stageScale: r.stageScale,
+      stageBox: r.stageBox, button: r.button, buttonOk: !!r.button && r.button.box[3] >= 40, metaPx: r.metaPx, errors: log.errors.length });
     out.transferBytes[w] = log.bytes;
     out.consoleErrors.push(...log.errors.map(e => `${w}: ${e}`));
     out.foreignRequests.push(...log.foreign);
   }
-  // the behaviour checks, at the last width (1280), on a fresh load
-  if (opt.heroAt === null) {
-    await load(1280);
-    const a = await clothD(); await sleep(opt.reduced ? 2500 : 2200); const b = await clothD();
-    const hand = await evaluate(`document.getElementById('hero-hand').style.opacity`);
-    out.hero = opt.reduced ? { moves: a !== b, handOpacity: hand, hangs: a === b && a !== '' }
-      : { moves: a !== b };
-    if (!opt.reduced) {
-      await evaluate(`document.getElementById('numbers').scrollIntoView({ behavior: 'instant' }); true`); await sleep(500);
-      const c = await clothD(); await sleep(1500); const d = await clothD();
-      out.hero.pausedOffScreen = c === d;
-      await evaluate(`scrollTo({ top: 0, behavior: 'instant' }); true`); await sleep(600);
-      const e = await clothD(); await sleep(1200); const f = await clothD();
-      out.hero.resumesOnScreen = e !== f;
-    }
-    out.zoom = { 1280: await zoomCheck(1280) };
-    out.consoleErrors.push(...log.errors.map(e => `checks: ${e}`));
-    out.foreignRequests.push(...log.foreign);
-    await load(390);
-    out.zoom[390] = await zoomCheck(390);
-    out.consoleErrors.push(...log.errors.map(e => `checks: ${e}`));
-    out.foreignRequests.push(...log.foreign);
+  // the behaviour checks, at 1280 (and the zoom again at 390), on fresh loads
+  if (opt.heroAt !== null) return;
+  await load(1280);
+  const a = await clothD(); await sleep(opt.reduced ? 2500 : 2200); const b = await clothD();
+  const hand = await evaluate(`document.getElementById('hero-hand').style.opacity`);
+  out.hero = opt.reduced ? { moves: a !== b, handOpacity: hand, hangs: a === b && a !== '' } : { moves: a !== b };
+  if (!opt.reduced) {
+    await evaluate(`document.getElementById('numbers').scrollIntoView({ behavior: 'instant' }); true`); await sleep(500);
+    const c = await clothD(); await sleep(1500); const d = await clothD();
+    out.hero.pausedOffScreen = c === d;
+    await evaluate(`scrollTo({ top: 0, behavior: 'instant' }); true`); await sleep(600);
+    const e = await clothD(); await sleep(1200); const f = await clothD();
+    out.hero.resumesOnScreen = e !== f;
   }
+  out.zoom = { 1280: await zoomCheck(1280) };
+  out.consoleErrors.push(...log.errors.map(e => `checks: ${e}`));
+  out.foreignRequests.push(...log.foreign);
+  await load(390);
+  out.zoom[390] = await zoomCheck(390);
+  out.consoleErrors.push(...log.errors.map(e => `checks: ${e}`));
+  out.foreignRequests.push(...log.foreign);
+}
+
+// Close what we opened: our tab; and a browser we launched — Browser.close over CDP first, then (if it is still
+// there) its process group, then any process still running with our own fresh profile dir; then delete the profile.
+let shut = null;
+function shutdown() { return (shut ??= (async () => {
+  log = null;
+  if (page) { if (targetId && browser) await within(browser.send('Target.closeTarget', { targetId }).catch(() => {}), 2000); page.ws.close(); }
+  if (child) {
+    if (browser) await within(browser.send('Browser.close').catch(() => {}), 3000);
+    const gone = async ms => { for (let t = 0; t < ms; t += 200) { if (!(await alive()) && !ours().length) return true; await sleep(200); } return false; };
+    if (!(await gone(6000))) {
+      for (const sig of ['SIGTERM', 'SIGKILL']) {
+        try { process.kill(-child.pid, sig); } catch {}
+        for (const pid of ours()) { try { process.kill(pid, sig); } catch {} }
+        if (await gone(3000)) break;
+      }
+    }
+    out.browserStopped = !(await alive()) && !ours().length;
+  }
+  if (browser) browser.ws.close();
+  if (profile) rmSync(profile, { recursive: true, force: true });
+})()); }
+// the processes whose command line names our profile dir (unique per run: only ever ones this run started)
+function ours() {
+  if (!profile) return [];
+  const mark = `--user-data-dir=${profile}/prof`, pids = [];
+  for (const d of readdirSync('/proc')) {
+    if (!/^\d+$/.test(d) || Number(d) === process.pid) continue;
+    try { if (readFileSync(`/proc/${d}/cmdline`, 'utf8').split('\0').includes(mark)) pids.push(Number(d)); } catch {}
+  }
+  return pids;
+}
+process.on('SIGINT', () => shutdown().then(() => process.exit(130)));
+process.on('SIGTERM', () => shutdown().then(() => process.exit(143)));
+
+try {
+  await run();
 } catch (e) {
   out.fatal = String(e && e.message || e);
 } finally {
-  log = null;
+  await shutdown();
 }
 out.foreignRequests = [...new Set(out.foreignRequests)];
-out.transferMB = Math.round(Math.max(...Object.values(out.transferBytes)) / 1e5) / 10;
+const sizes = Object.values(out.transferBytes);
+out.transferMB = sizes.length ? Math.round(Math.max(...sizes) / 1e5) / 10 : null;
 const heroOk = !out.hero || (opt.reduced ? out.hero.hangs && out.hero.handOpacity === '0'
   : out.hero.moves && out.hero.pausedOffScreen && out.hero.resumesOnScreen);
-const zoomOk = !out.zoom || Object.values(out.zoom).every(z => z && z.focusable && z.hint && z.opens && z.zoomFontPx >= 11 && z.pageFits && z.closesOnEsc && z.focusBack);
-out.ok = !out.fatal && out.widths.length === WIDTHS.length && out.widths.every(w => w.fits) && !out.consoleErrors.length && !out.foreignRequests.length && heroOk && zoomOk;
+const zoomOk = !out.zoom || Object.values(out.zoom).every(z => z && z.focusable && z.hint && z.opens && z.zoomFontPx >= 11
+  && z.pageFits && z.pageScrollLocked && z.closesOnEsc && z.focusBack);
+// the first screen's download button: a real button everywhere; off the scaled stage on phones, its links readable
+const buttonOk = out.widths.every(w => w.buttonOk && (w.width >= 760 || (!w.button.inStage && w.metaPx >= 14)));
+out.ok = !out.fatal && out.widths.length === WIDTHS.length && out.widths.every(w => w.fits) && !out.consoleErrors.length
+  && !out.foreignRequests.length && heroOk && zoomOk && buttonOk && out.browserStopped !== false;
 console.log(JSON.stringify(out, null, 1));
-
-await send('Target.closeTarget', { targetId }).catch(() => {});
-page.ws.close();
-if (child) { await browser.send('Browser.close').catch(() => {}); }
-browser.ws.close();
-await cleanup();
 process.exit(out.ok ? 0 : 1);
-
-async function cleanup() {
-  if (child) {
-    for (let i = 0; i < 50 && child.exitCode === null && child.signalCode === null; i++) await sleep(100);
-    if (child.exitCode === null && child.signalCode === null) child.kill();
-    await sleep(300);
-  }
-  if (profile) rmSync(profile, { recursive: true, force: true });
-}
