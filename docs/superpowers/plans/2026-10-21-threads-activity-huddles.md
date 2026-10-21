@@ -58,7 +58,7 @@ inline `serde_json::json!` reply shapes.
 
 ---
 
-### Task VW1: The hover shade covers the whole message row
+### Task 1 (VW1): The hover shade covers the whole message row
 
 **Files:**
 - Modify: `crates/klack/src/tui/messages.rs` (hover painting ~:346-353; the AA2 edge-to-edge fill ~:423-441)
@@ -78,7 +78,7 @@ inline `serde_json::json!` reply shapes.
   (`kitty @ get-text --ansi`: the hover background reaches the right inner edge), also in the thread pane.
 - [ ] **Step 5: Commit** "klack: the hover shade covers the whole message row (VW1)" + PROGRESS row.
 
-### Task VW2: People's status emoji next to their names
+### Task 2 (VW2): People's status emoji next to their names
 
 **Files:**
 - Modify: `crates/slack-core/src/types.rs` (`UserProfile` :105), `crates/klack/src/tui/state.rs` (new fn near
@@ -119,7 +119,7 @@ inline `serde_json::json!` reply shapes.
   sidebar and on B's messages, it disappears after expiry; B clears it afterwards.
 - [ ] **Step 5: Commit** "klack: people's status emoji next to their names (VW2)" + README (Statuses) + PROGRESS row.
 
-### Task VW3: Views in the main pane; Activity row in the sidebar
+### Task 3 (VW3): Views in the main pane; Activity row in the sidebar
 
 **Files:**
 - Modify: `crates/klack/src/tui/event_loop.rs` (`App` :132-294, `draw` :5407/5472-5512, `overlay()` ~:2630, `mode_of`
@@ -163,7 +163,7 @@ inline `serde_json::json!` reply shapes.
 - [ ] **Step 5: Commit** "klack: Threads and Activity are views in the main pane; an Activity row (VW3)" + README +
   PROGRESS row.
 
-### Task VW4: The Threads feed
+### Task 4 (VW4): The Threads feed
 
 **Files:**
 - Create: `crates/klack/src/tui/feed.rs` (block layout + read tracking, pure, testable)
@@ -206,7 +206,7 @@ inline `serde_json::json!` reply shapes.
   reply from the feed lands in the thread.
 - [ ] **Step 5: Commit** "klack: the Threads view is a feed with the messages in full (VW4)" + README + PROGRESS row.
 
-### Task VW5: The Activity view
+### Task 5 (VW5): The Activity view
 
 **Files:**
 - Modify: `activity.rs` (tabs, parse `dm` items, layout), `crates/slack-core/src/api.rs` (`activity_feed` :310 takes
@@ -240,7 +240,7 @@ inline `serde_json::json!` reply shapes.
 - [ ] **Step 5: Commit** "klack: the Activity view — tabs, the messages themselves, date headers (VW5)" + README +
   PROGRESS row.
 
-### Task VW6: Huddle lists in slack-core (Flannel + huddles.history), verified on a real test huddle
+### Task 6 (VW6): Huddle lists in slack-core (Flannel + huddles.history), verified on a real test huddle
 
 **Files:**
 - Modify: `crates/slack-core/src/api.rs` (new fns), `crates/slack-core/src/types.rs` (new types), `docs/protocol/huddles.md`
@@ -269,7 +269,7 @@ inline `serde_json::json!` reply shapes.
 - [ ] **Step 4: Commit** "slack-core: live and recent huddles (Flannel huddles/list+info, huddles.history) (VW6)" +
   PROGRESS row.
 
-### Task VW7: The Huddles view and the sidebar Huddles row with its badge
+### Task 7 (VW7): The Huddles view and the sidebar Huddles row with its badge
 
 **Files:**
 - Create: `crates/klack/src/tui/huddles.rs` (the view: `Huddles` state, layout, row hit-testing)
@@ -305,7 +305,7 @@ inline `serde_json::json!` reply shapes.
 - [ ] **Step 5: Commit** "klack: the Huddles view and a Huddles row with live huddles counted (VW7)" + README +
   PROGRESS row.
 
-### Task VW8: Keep your own "in a huddle" state alive
+### Task 8 (VW8): Keep your own "in a huddle" state alive
 
 **Files:**
 - Modify: `crates/klack/src/tui/call.rs` or EL (heartbeat next to `alone_tick`/`ring_tick`, EL ~3716-3737),
@@ -328,7 +328,7 @@ inline `serde_json::json!` reply shapes.
 - [ ] **Step 5: Commit** "klack: your 'in a huddle' state stays alive while you are in a huddle (VW8)" + README + PROGRESS
   row.
 
-### Task VW9: Docs and the old popups' leftovers
+### Task 9 (VW9): Docs and the old popups' leftovers
 
 **Files:** README.md (views, keys, statuses, Huddles, settings), PROGRESS.md (NEXT UP, Tests line), keymap which-key
 texts, F6 help, i18n `locales/*.toml` template (new strings via the existing template command `klack ctl
