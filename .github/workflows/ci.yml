@@ -16,8 +16,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: No old name
-        # Everything tracked except the site (site, tools/site), which is renamed later.
-        run: sh tools/check-name.sh .cargo .github .gitignore Cargo.lock Cargo.toml CONTRIBUTING.md DESIGN.md LICENSE-APACHE LICENSE-MIT PROGRESS.md README.md crates docs rustfmt.toml vendor tools/README.md tools/apiargs.py tools/cdp.mjs tools/check-name.sh tools/container-build.sh tools/jsgrep.py tools/launch.sh tools/move-to-ttyak.sh tools/shot.sh tools/streamrec.py tools/test_check_name.py tools/test_move_to_ttyak.py tools/tonecheck.py
+        # Every tracked file except the site (site, tools/site), which is renamed later.
+        run: sh tools/check-name.sh --except site --except tools/site
       - name: Tool tests
         run: python3 -m unittest tools/test_check_name.py tools/test_move_to_ttyak.py
       - name: Packages

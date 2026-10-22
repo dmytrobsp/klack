@@ -7,7 +7,7 @@ A Slack client for the terminal, written in Rust (ratatui + crossterm). Messagin
 threads, reactions, autocomplete and formatting; inline images, an image viewer and video with
 sound; desktop notifications; search; and **huddles with audio**.
 
-ttyak was called klack until 0.9 (and slacktui before that); on first start it moves the old names' folders to its own. <!-- old-name-ok -->
+ttyak was called klack until 0.9 (and slacktui before that); folders of the old names are not read. <!-- old-name-ok -->
 
 It talks to Slack the way the web client does: a browser session (`xoxc-…` token plus the `d`
 cookie). It is not an official Slack app.
@@ -174,7 +174,7 @@ only, nothing secret). One profile may hold two accounts of the same workspace.
   sidebar layout stay. Refused while a ttyak runs on that profile.
 - `ttyak purge` — deletes everything ttyak wrote, as if it was never launched: `~/.config/ttyak/`
   (every profile's sign-ins, `settings.toml`, `keys.toml`, `locales/`, `themes/`), `~/.cache/ttyak/` (logs,
-  caches, `login-browser/`), `~/.local/share/ttyak/` (drafts, sidebar layout), old `slacktui` folders and
+  caches, `login-browser/`), `~/.local/share/ttyak/` (drafts, sidebar layout) and
   ttyak's own `ttyak-cookies-*` / `ttyak-<pid>-*` files in the temporary folder (yours only). Lists them first and asks
   y/N (or `--yes`); refused while a ttyak runs. A folder that is a symbolic link loses only the link (what it
   points to stays, and ttyak says so). Files you saved from messages stay; Slack is not signed out.

@@ -79,6 +79,32 @@ class CheckName(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("src/old-name-ok.rs:1:", out)
 
+    def test_except_checks_every_other_tracked_file(self):
+        self.write("site/a.html", "%s\n" % OLD)
+        self.write("tools/site/b.py", "%s\n" % OLD)
+        self.write("src/a.rs", "ttyak\n")
+        self.assertEqual(self.run_guard("--except", "site", "--except", "tools/site"), (0, ""))
+        self.write("newdir/c.rs", "%s\n" % OLD)
+        code, out = self.run_guard("--except", "site", "--except", "tools/site")
+        self.assertEqual(code, 1)
+        self.assertIn("newdir/c.rs:1:", out)
+        self.assertNotIn("site/", out)
+
+    def test_except_with_paths_limits_the_check(self):
+        self.write("src/a.rs", "%s\n" % OLD)
+        self.write("src/skip/b.rs", "%s\n" % OLD)
+        self.write("other/c.rs", "%s\n" % OLD)
+        code, out = self.run_guard("src", "--except", "src/skip")
+        self.assertEqual(code, 1)
+        self.assertIn("src/a.rs:1:", out)
+        self.assertNotIn("skip", out)
+        self.assertNotIn("other", out)
+
+    def test_except_of_an_untracked_path_or_without_a_path_is_an_error(self):
+        self.write("src/a.rs", "ttyak\n")
+        self.assertEqual(self.run_guard("--except", "nope")[0], 2)
+        self.assertEqual(self.run_guard("--except")[0], 2)
+
     def test_untracked_files_are_ignored(self):
         self.write("src/a.rs", "ttyak\n")
         self.write("src/new.rs", "%s\n" % OLD, track=False)
