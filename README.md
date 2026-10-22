@@ -208,7 +208,7 @@ actions, on a conversation the conversation's. Its corner, delay, height and ico
 
 | Key | |
 |---|---|
-| ↑ ↓ / `k` `j`, Home End / `g` `G`, PgUp PgDn, Ctrl+U / Ctrl+D | move, first / last, a page, half a page |
+| ↑ ↓ / `k` `j`, Home End / `g` `G`, PgUp PgDn, Ctrl+U / Ctrl+D | move, first / last, a page, half a page — in the conversation, the sidebar, the Threads, Activity and Huddles views, and the Keys page (a snippet: lines, start / end, a page, half a page) |
 | Tab / Shift+Tab | move between sidebar, messages, composer, thread, reply box |
 | Alt+↑ / Alt+↓ | previous / next conversation |
 | Alt+Shift+↑ / Alt+Shift+↓ | previous / next unread conversation (muted ones are skipped) |

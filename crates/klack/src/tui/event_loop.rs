@@ -1975,6 +1975,11 @@ impl App {
                     Action::Down => t.move_by(1),
                     Action::PageUp => t.move_by(-t.page()),
                     Action::PageDown => t.move_by(t.page()),
+                    Action::Top => t.move_by(isize::MIN / 2),
+                    Action::Bottom => t.move_by(isize::MAX / 2),
+                    // Half of what is on screen, as in the messages.
+                    Action::HalfPageUp => t.move_by(-(t.page() / 2).max(1)),
+                    Action::HalfPageDown => t.move_by((t.page() / 2).max(1)),
                     Action::Refresh => self.open_view(View::Threads),
                     Action::Open => self.open_thread_item(),
                     // The composer under the feed, replying in the selected message's thread.
@@ -1995,6 +2000,11 @@ impl App {
                     Action::Down => a.move_by(1),
                     Action::PageUp => a.move_by(-a.page()),
                     Action::PageDown => a.move_by(a.page()),
+                    Action::Top => a.move_by(isize::MIN / 2),
+                    Action::Bottom => a.move_by(isize::MAX / 2),
+                    // Half of what is on screen, as in the messages.
+                    Action::HalfPageUp => a.move_by(-(a.page() / 2).max(1)),
+                    Action::HalfPageDown => a.move_by((a.page() / 2).max(1)),
                     Action::Refresh => self.open_view(View::Activity),
                     Action::Open => self.open_activity_item(),
                     Action::NextTab => {
@@ -2021,6 +2031,11 @@ impl App {
                     Action::Down => h.move_by(1),
                     Action::PageUp => h.move_by(-h.page()),
                     Action::PageDown => h.move_by(h.page()),
+                    Action::Top => h.move_by(isize::MIN / 2),
+                    Action::Bottom => h.move_by(isize::MAX / 2),
+                    // Half of what is on screen, as in the messages.
+                    Action::HalfPageUp => h.move_by(-(h.page() / 2).max(1)),
+                    Action::HalfPageDown => h.move_by((h.page() / 2).max(1)),
                     Action::Refresh => self.open_view(View::Huddles),
                     Action::Open => self.open_huddle_item(),
                     _ => {}
@@ -4788,6 +4803,10 @@ fn handle_dialog(app: &mut App, ev: &Event) -> bool {
                 Some(Action::Down) => h.scroll_by(1),
                 Some(Action::PageUp) => h.scroll_by(-h.page()),
                 Some(Action::PageDown) => h.scroll_by(h.page()),
+                Some(Action::Top) => h.scroll_by(isize::MIN / 2),
+                Some(Action::Bottom) => h.scroll_by(isize::MAX / 2),
+                Some(Action::HalfPageUp) => h.scroll_by(-(h.page() / 2).max(1)),
+                Some(Action::HalfPageDown) => h.scroll_by((h.page() / 2).max(1)),
                 Some(Action::Close) => app.help = None,
                 _ => {}
             }
@@ -5032,6 +5051,8 @@ fn handle_dialog(app: &mut App, ev: &Event) -> bool {
                 Some(Action::Down) => v.scroll_by(1),
                 Some(Action::PageUp) => v.scroll_by(-v.page()),
                 Some(Action::PageDown) => v.scroll_by(v.page()),
+                Some(Action::HalfPageUp) => v.scroll_by(-(v.page() / 2).max(1)),
+                Some(Action::HalfPageDown) => v.scroll_by((v.page() / 2).max(1)),
                 Some(Action::Top) => v.scroll_by(isize::MIN / 2),
                 Some(Action::Bottom) => v.scroll_by(isize::MAX / 2),
                 Some(Action::Copy) => {
@@ -8519,6 +8540,98 @@ mod tests {
         let stale = slack_core::types::LiveHuddle { channel: "C1".into(), call_id: "R1".into(), members: vec!["U2".into()], start: 0, thread_ts: None };
         super::handle_net(&mut app, Net::LiveHuddles { since, result: Ok(vec![stale]) });
         assert!(app.ws.joinable_live(None).is_empty(), "R1 is not live again, the badge is 0");
+    }
+
+    /// g / G / Ctrl+D / Ctrl+U in a view: `at` reads the selection as an index into its items, `shown` how many are on screen.
+    fn top_bottom_and_half_pages(app: &mut super::App, count: usize, at: impl Fn(&super::App) -> usize, shown: impl Fn(&super::App) -> usize) {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|f| super::draw(f, app)).unwrap();
+        let mut key = |app: &mut super::App, code: KeyCode, mods: KeyModifiers| {
+            terminal.draw(|f| super::draw(f, app)).unwrap();
+            press(app, code, mods);
+            terminal.draw(|f| super::draw(f, app)).unwrap();
+        };
+        let half = shown(app) / 2;
+        assert!(half >= 1 && half * 4 < count, "the test needs a list longer than a page ({half} of {count})");
+        key(app, KeyCode::Char('G'), KeyModifiers::SHIFT);
+        assert_eq!(at(app), count - 1, "G: the last");
+        key(app, KeyCode::Char('g'), KeyModifiers::NONE);
+        assert_eq!(at(app), 0, "g: the first");
+        // Half of what is on screen then (the rows on screen differ with the scroll).
+        let half = shown(app) / 2;
+        key(app, KeyCode::Char('d'), KeyModifiers::CONTROL);
+        assert_eq!(at(app), half, "Ctrl+D: half a page down");
+        let (here, half) = (at(app), shown(app) / 2);
+        key(app, KeyCode::Char('d'), KeyModifiers::CONTROL);
+        assert_eq!(at(app), here + half, "Ctrl+D again");
+        let (here, half) = (at(app), shown(app) / 2);
+        key(app, KeyCode::Char('u'), KeyModifiers::CONTROL);
+        assert_eq!(at(app), here - half, "Ctrl+U: half a page up");
+        for _ in 0..count {
+            key(app, KeyCode::Char('u'), KeyModifiers::CONTROL);
+        }
+        assert_eq!(at(app), 0, "Ctrl+U stops at the first");
+    }
+
+    #[tokio::test]
+    async fn g_g_and_half_pages_move_the_selection_in_threads() {
+        use super::{Action, View};
+        let (mut app, _net) = test_app();
+        super::run_global(&mut app, Action::Threads);
+        assert_eq!(app.view, View::Threads);
+        let entries: Vec<_> = (0..30).map(|n| super::super::threads::Entry { channel: "C1".into(), root: slack_core::types::Message { ts: format!("{}.0", 100 + n), text: "a".into(), ..Default::default() }, ..Default::default() }).collect();
+        app.threads.add_page(entries, false);
+        let index = |app: &super::App| app.threads.selected.as_ref().map_or(0, |(_, ts)| ts[..3].parse::<usize>().unwrap() - 100);
+        top_bottom_and_half_pages(&mut app, 30, index, |app| app.threads.page() as usize);
+    }
+
+    #[tokio::test]
+    async fn g_g_and_half_pages_move_the_selection_in_activity() {
+        use super::{Action, View};
+        let (mut app, _net) = test_app();
+        super::run_global(&mut app, Action::Activity);
+        assert_eq!(app.view, View::Activity);
+        let items: Vec<_> = (0..40)
+            .map(|n| super::super::activity::Item { key: format!("k{n}"), ty: "at_user".into(), kind: super::super::activity::Kind::Mention("at_user".into()), channel: "C1".into(), ts: format!("{}.0", 1000 - n), author: None, unread: false, when: (1000 - n) as f64, ..Default::default() })
+            .collect();
+        app.activity.set_items(super::super::activity::Tab::All, items, None);
+        top_bottom_and_half_pages(&mut app, 40, |app| app.activity.selected, |app| app.activity.page() as usize);
+    }
+
+    #[tokio::test]
+    async fn g_g_and_half_pages_move_the_selection_in_huddles() {
+        use super::{Action, View};
+        let (mut app, _net) = test_app();
+        super::run_global(&mut app, Action::Huddles);
+        assert_eq!(app.view, View::Huddles);
+        let generation = app.huddles.generation;
+        let past: Vec<_> = (0..40).map(|n| slack_core::types::PastHuddle { id: format!("R{n}"), channel: "C1".into(), ended: true, start: 1000 - n, end: 1001 - n, ..Default::default() }).collect();
+        app.huddles.add_page(generation, false, past, None);
+        let index = |app: &super::App| match app.huddles.selected {
+            Some(super::super::huddles::Row::Past(n)) => n,
+            _ => 0,
+        };
+        top_bottom_and_half_pages(&mut app, 40, index, |app| app.huddles.page() as usize);
+    }
+
+    #[tokio::test]
+    async fn g_g_and_half_pages_scroll_the_keys_page() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let (mut app, _net) = test_app();
+        app.help = Some(super::super::help::Help::default());
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        let half = app.help.as_ref().unwrap().page() / 2;
+        let at = |app: &super::App| app.help.as_ref().unwrap().scroll;
+        press(&mut app, KeyCode::Char('d'), KeyModifiers::CONTROL);
+        assert_eq!(at(&app) as isize, half, "Ctrl+D: half a page");
+        press(&mut app, KeyCode::Char('u'), KeyModifiers::CONTROL);
+        assert_eq!(at(&app), 0, "Ctrl+U");
+        press(&mut app, KeyCode::Char('G'), KeyModifiers::SHIFT);
+        assert!(at(&app) as isize > half, "G: the end");
+        press(&mut app, KeyCode::Char('g'), KeyModifiers::NONE);
+        assert_eq!(at(&app), 0, "g: the start");
     }
 
     #[tokio::test]
