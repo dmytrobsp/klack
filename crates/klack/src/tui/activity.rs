@@ -332,6 +332,9 @@ pub struct Activity {
     /// Where the next page of the list starts (none: it is all there), and whether it is being loaded.
     pub cursor: Option<String>,
     pub loading: bool,
+    /// Why the next page could not be loaded (said at the list's end): not asked for again until you move in the list,
+    /// filter it, show another tab or open the view again.
+    page_error: Option<String>,
     /// The end of the list was on screen at the last draw.
     at_end: bool,
     /// The other tabs' lists, kept while the view is open.
@@ -402,6 +405,7 @@ impl Activity {
 
     /// Move the selection by `delta` shown items.
     pub fn move_by(&mut self, delta: isize) {
+        self.page_error = None;
         let shown = self.visible();
         if shown.is_empty() {
             return;
@@ -420,6 +424,7 @@ impl Activity {
     pub fn toggle_unread(&mut self) {
         self.dirty = true;
         self.unread_only = !self.unread_only;
+        self.page_error = None;
         self.keep_selection_shown();
     }
 
@@ -441,7 +446,7 @@ impl Activity {
         self.kept.insert(self.tab, here);
         let there = self.kept.remove(&tab).unwrap_or_default();
         (self.tab, self.items, self.selected, self.scroll, self.cursor, self.loading) = (tab, there.items, there.selected, there.scroll, there.cursor, there.loading);
-        (self.failed, self.hover, self.at_end) = (None, None, false);
+        (self.failed, self.page_error, self.hover, self.at_end) = (None, None, None, false);
         self.keep_selection_shown();
     }
 
@@ -456,7 +461,7 @@ impl Activity {
         }
         let key = self.selected_item().map(|it| it.key.clone());
         self.selected = key.and_then(|k| items.iter().position(|it| it.key == k)).unwrap_or(0);
-        (self.items, self.failed, self.cursor, self.loading) = (Some(items), None, cursor, false);
+        (self.items, self.failed, self.page_error, self.cursor, self.loading) = (Some(items), None, None, cursor, false);
         self.keep_selection_shown();
     }
 
@@ -530,15 +535,18 @@ impl Activity {
 
     /// Where the next page starts, when the end of the list was on screen and there is more (once: it is loading then).
     pub fn next_page(&mut self) -> Option<String> {
-        let cursor = self.cursor.clone().filter(|_| self.at_end && !self.loading && self.items.is_some())?;
+        let cursor = self.cursor.clone().filter(|_| self.at_end && !self.loading && self.page_error.is_none() && self.items.is_some())?;
         self.loading = true;
         Some(cursor)
     }
 
-    /// Tab `tab`'s list could not be loaded: said there when it has none to show.
-    pub fn fail(&mut self, tab: Tab, error: String) {
+    /// Tab `tab`'s list (`more`: its next page) could not be loaded: said there, in place of the list when it has none
+    /// to show; a page's failure at the list's end, and it is not asked for again by itself.
+    pub fn fail(&mut self, tab: Tab, more: bool, error: String) {
         if tab == self.tab && self.items.is_none() {
             self.failed = Some(error);
+        } else if tab == self.tab && more {
+            self.page_error = Some(error);
         }
         self.page_failed(tab);
     }
@@ -657,6 +665,7 @@ impl Activity {
         let note = match &self.items {
             None if self.failed.is_some() => Some(Line::styled(format!("{}: {}", tr(FAILED), self.failed.as_deref().unwrap_or_default()), Style::default().fg(p.danger))),
             None => Some(Line::styled(tr(LOADING).into_owned(), Style::default().fg(p.dim))),
+            Some(_) if none_shown && self.page_error.is_some() => Some(Line::styled(format!("{}: {}", tr(FAILED), self.page_error.as_deref().unwrap_or_default()), Style::default().fg(p.danger))),
             Some(_) if self.at_end => Some(Line::styled(tr(LOADING_MORE).into_owned(), Style::default().fg(p.dim))),
             Some(items) if none_shown => Some(Line::styled(tr(if items.is_empty() { EMPTY } else { NONE_UNREAD }).into_owned(), Style::default().fg(p.dim))),
             Some(_) => None,
@@ -676,9 +685,13 @@ impl Activity {
                 self.scroll = super::threads::bring_into_view(self.scroll, height, first, last);
             }
         }
-        let more = usize::from(self.loading);
+        let more = usize::from(self.loading || self.page_error.is_some());
         let total = built.lines.len() + more;
         self.scroll = self.scroll.min(total.saturating_sub(height));
+        // (The last item on screen: the line under the list too — loading, or why the next page failed.)
+        if more > 0 && owners.iter().rposition(Option::is_some).is_some_and(|last| last < self.scroll + height) {
+            self.scroll = total.saturating_sub(height);
+        }
         // (No room at all leaves `total` one past the lines: start at most at their end.)
         let start = self.scroll.min(built.lines.len());
         let end = (start + height).min(built.lines.len());
@@ -686,6 +699,9 @@ impl Activity {
         let mut rows: Vec<Option<usize>> = owners[start..end].to_vec();
         if self.loading && lines.len() < height {
             lines.push(Line::styled(tr(LOADING_MORE).into_owned(), Style::default().fg(p.dim)));
+            rows.push(None);
+        } else if let Some(e) = self.page_error.as_deref().filter(|_| lines.len() < height) {
+            lines.push(Line::styled(format!("{}: {e}", tr(FAILED)), Style::default().fg(p.danger)));
             rows.push(None);
         }
         // (The last item's rows, or the selection on the last item: time for the next page.)
@@ -1628,6 +1644,54 @@ mod tests {
         a.dirty = true;
         assert!(draw(&mut a).contains(NONE_UNREAD));
         assert_eq!(a.next_page(), None);
+    }
+
+    #[test]
+    fn a_page_that_failed_is_said_and_asked_for_again_only_when_you_act() {
+        let ws = ws();
+        let media = super::super::media::Media::with(ratatui_image::picker::Picker::halfblocks());
+        let it = |key: &str, unread: bool| item(key, Kind::Mention("at_user".into()), "C1", key, Some("U2"), unread, noon(0));
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 20)).unwrap();
+        let mut draw = |a: &mut Activity| {
+            terminal.draw(|f| a.draw(f, f.area(), &Here::alone(&ws), true, &media)).unwrap();
+            let buf = terminal.backend().buffer();
+            (0..buf.area.height).map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect::<String>()).collect::<Vec<_>>().join("\n")
+        };
+        let mut a = Activity::default();
+        a.toggle_unread();
+        a.set_items(Tab::All, (1..=50).map(|n| it(&n.to_string(), false)).collect(), Some("next".into()));
+        draw(&mut a);
+        assert!(a.next_page().is_some());
+        a.fail(Tab::All, true, "ratelimited".into());
+        // Said in place of "Loading more…", and not asked for again by itself.
+        for _ in 0..3 {
+            let screen = draw(&mut a);
+            assert!(screen.contains(FAILED) && screen.contains("ratelimited") && !screen.contains(LOADING_MORE), "{screen}");
+            assert_eq!(a.next_page(), None, "not asked for again by itself");
+        }
+        // You act (a key, the wheel): asked for again.
+        a.move_by(1);
+        draw(&mut a);
+        assert_eq!(a.next_page().as_deref(), Some("next"));
+        // Under a list shown: said at its end, and the filter toggled asks again.
+        a.toggle_unread();
+        a.move_by(60);
+        a.fail(Tab::All, true, "ratelimited".into());
+        let screen = draw(&mut a);
+        assert!(screen.contains(FAILED) && !screen.contains(LOADING_MORE), "{screen}");
+        assert_eq!(a.next_page(), None);
+        a.toggle_unread();
+        draw(&mut a);
+        assert!(a.next_page().is_some(), "the filter toggled: asked for again");
+        // Another tab shown and back: asked for again (the first page loads afresh too).
+        a.fail(Tab::All, true, "ratelimited".into());
+        a.set_tab(Tab::Dms);
+        a.set_tab(Tab::All);
+        draw(&mut a);
+        assert!(a.next_page().is_some());
+        // The first page failing again with a list shown is not a page's failure.
+        a.fail(Tab::All, false, "gone".into());
+        assert!(!draw(&mut a).contains("gone"));
     }
 
     #[test]

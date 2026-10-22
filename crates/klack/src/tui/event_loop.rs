@@ -6048,7 +6048,7 @@ fn handle_net(app: &mut App, msg: Net) {
             }
             Err(e) => {
                 app.status = format!("activity failed: {e}");
-                app.activity.fail(tab, e);
+                app.activity.fail(tab, more, e);
             }
         },
         Net::LiveHuddles { since, result } => match result {
@@ -8115,6 +8115,24 @@ mod tests {
         run_global(&mut app, Action::Threads);
         run_global(&mut app, Action::Activity);
         assert!(!app.activity.unread_only);
+        // Filtered, the next page fails: said in the view, and not asked for again until you act.
+        while tokio::time::timeout(std::time::Duration::from_millis(300), asked.recv()).await.is_ok_and(|r| r.is_some()) {}
+        press(&mut app, KeyCode::Char('u'), KeyModifiers::NONE);
+        super::handle_net(&mut app, Net::ActivityFeed { tab: Tab::All, more: false, result: Ok(first(false)) });
+        screen(&mut app);
+        app.request_activity_page();
+        assert!(next_call(&mut asked, "activity.feed").await.is_some_and(|r| r.contains("cursor=p2")));
+        super::handle_net(&mut app, Net::ActivityFeed { tab: Tab::All, more: true, result: Err("ratelimited".into()) });
+        for _ in 0..3 {
+            let shown = screen(&mut app);
+            assert!(shown.contains("could not be loaded: ratelimited") && !shown.contains("Loading more"), "{shown}");
+            app.request_activity_page();
+        }
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(300), next_call(&mut asked, "activity.feed")).await.is_err(), "not asked for again by itself");
+        press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        screen(&mut app);
+        next_page(&mut app, &mut asked, &next).await;
+        assert_eq!(app.activity.visible().len(), 1, "asked for again after a key: the thread");
     }
 
     #[tokio::test]
