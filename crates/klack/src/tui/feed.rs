@@ -36,8 +36,19 @@ pub const REPLY_IN: &str = "Reply in {where} thread";
 /// The composer's placeholder under the feed (`{key}`: the Type key).
 pub const PRESS_TO_REPLY: &str = "Press {key} to reply";
 
+/// An edit from a view (Threads, Activity) is open and something else would take its box.
+pub const EDIT_FIRST: &str = "finish or cancel the edit first (Enter saves, Esc cancels)";
+/// Its message is no longer where the box can save it.
+pub const EDIT_NOT_HERE: &str = "the message is not here any more: the edit stays (Esc cancels it)";
+/// The view was left with an edit open: kept as the draft of the message's thread (or conversation).
+pub const EDIT_KEPT: &str = "the unsaved edit is kept as a draft where the message is";
+/// ... where a draft was kept already.
+pub const EDIT_DROPPED: &str = "the unsaved edit was dropped: a draft is already kept where the message is";
+/// A key that opens a message's thread, in a view whose own key does that.
+pub const OPENS_HERE: &str = "{key} opens it here";
+
 /// The feed's words, for the locale template.
-pub const WORDS: &[&str] = &[MISSING, CUT, MORE_ONE, MORE, OTHERS, NEW, UP_TO_DATE, REPLY_IN, PRESS_TO_REPLY];
+pub const WORDS: &[&str] = &[MISSING, CUT, MORE_ONE, MORE, OTHERS, NEW, UP_TO_DATE, REPLY_IN, PRESS_TO_REPLY, EDIT_FIRST, EDIT_NOT_HERE, EDIT_KEPT, EDIT_DROPPED, OPENS_HERE];
 
 /// A thread's place in the feed: `rows` are its lines (header to its last reply, not the blank rows and
 /// rule after it), `unread_rows` those of its unread replies with the "new" rule (empty: none).

@@ -1117,7 +1117,7 @@ impl App {
     fn leave_composer(&mut self, thread: bool) {
         // An edit from a view: dropped.
         if !thread && self.view_edit.is_some() {
-            self.end_view_edit();
+            self.end_view_edit(false);
             return;
         }
         self.focus = if thread { Focus::Thread } else { Focus::Messages };
@@ -1455,7 +1455,12 @@ impl App {
         }
         let text = m.text.clone();
         if matches!(t.shown, Shown::Feed | Shown::Activity) {
-            self.end_view_edit();
+            // One edit at a time: the open one is never replaced.
+            if self.view_edit.is_some() {
+                self.status = super::i18n::tr(super::feed::EDIT_FIRST).into_owned();
+                self.focus = Focus::Composer;
+                return;
+            }
             let kept = self.composer.take_draft();
             self.view_edit = Some(ViewEdit { target: t.clone(), kept });
         }
@@ -1483,8 +1488,22 @@ impl App {
         self.status.clear();
     }
 
-    /// An edit from a view is over (saved, dropped, or the view left): the box gets back what it held.
-    fn end_view_edit(&mut self) {
+    /// An edit from a view is over (saved or cancelled; `left`: its view or its box's thread was left, so the edit is
+    /// kept as the draft of where its message is, when that has none): the box gets back what it held.
+    fn end_view_edit(&mut self, left: bool) {
+        if self.view_edit.is_none() {
+            return;
+        }
+        if left {
+            let note = match self.view_edit_home() {
+                Some((key, d)) => {
+                    self.drafts.insert(key, d);
+                    super::feed::EDIT_KEPT
+                }
+                None => super::feed::EDIT_DROPPED,
+            };
+            self.status = super::i18n::tr(note).into_owned();
+        }
         let Some(e) = self.view_edit.take() else { return };
         self.composer.clear();
         if let Some(d) = e.kept {
@@ -1493,15 +1512,37 @@ impl App {
         if self.focus == Focus::Composer {
             self.focus = Focus::Messages;
         }
+        // (The drafts file kept the open edit meanwhile.)
+        self.save_drafts();
     }
 
     /// After an event: an edit from a view whose box no longer edits it (cleared), or whose view is gone, is over.
     fn sync_view_edit(&mut self) {
         let Some(e) = &self.view_edit else { return };
         let view = if e.target.shown == Shown::Feed { View::Threads } else { View::Activity };
-        if self.composer.editing.as_deref() != Some(e.target.ts.as_str()) || self.view != view {
-            self.end_view_edit();
+        if self.view != view {
+            self.end_view_edit(true);
+        } else if self.composer.editing.as_deref() != Some(e.target.ts.as_str()) {
+            self.end_view_edit(false);
         }
+    }
+
+    /// Where an open edit from a view would be kept as a draft — its message's thread (a top-level Activity message:
+    /// its conversation) — with that draft; None when that place has a draft already, or is a box's own.
+    fn view_edit_home(&self) -> Option<(String, super::composer::Draft)> {
+        let e = self.view_edit.as_ref()?;
+        let (channel, ts) = (&e.target.channel, &e.target.ts);
+        let draft = self.composer.draft().filter(|_| self.composer.editing.as_deref() == Some(ts.as_str()))?;
+        let key = match e.target.shown {
+            Shown::Feed => self.threads.thread_of(channel, ts).map(|(c, t)| super::state::thread_key(&c, &t))?,
+            _ => match self.find_message(channel, ts).filter(|m| m.is_reply()).and_then(|m| m.thread_ts.clone()) {
+                Some(parent) => super::state::thread_key(channel, &parent),
+                None => channel.clone(),
+            },
+        };
+        let open_thread = self.thread.as_ref().map(|(c, t)| super::state::thread_key(c, t));
+        let taken = self.drafts.contains_key(&key) || self.composer_key().as_ref() == Some(&key) || open_thread.as_ref() == Some(&key);
+        (!taken).then_some((key, draft))
     }
 
     /// Our newest message in the current conversation (top level) or the open thread.
@@ -1529,10 +1570,12 @@ impl App {
             return;
         }
         // (An edit from a view carries its own conversation; the thread pane's box edits in its thread's.)
+        // (An edit kept as a thread's draft and taken up under the Threads feed: that thread's.)
+        let feed = self.feed_reply.as_ref().filter(|_| self.view == View::Threads).map(|(c, _)| c.clone());
         let channel = match (&self.view_edit, thread) {
             (_, true) => self.thread.as_ref().map(|(c, _)| c.clone()),
             (Some(e), false) => Some(e.target.channel.clone()),
-            (None, false) => self.current.clone(),
+            (None, false) => feed.or_else(|| self.current.clone()),
         };
         let Some(channel) = channel else { return };
         let c = self.composer_for(thread);
@@ -1542,8 +1585,12 @@ impl App {
             return;
         }
         let text = c.to_mrkdwn();
-        c.clear();
-        let Some(original) = self.find_message(&channel, &ts).cloned() else { return };
+        // (Not found — gone from the view, or not loaded here —: the edit stays in the box.)
+        let Some(original) = self.find_message(&channel, &ts).cloned() else {
+            self.status = super::i18n::tr(super::feed::EDIT_NOT_HERE).into_owned();
+            return;
+        };
+        self.composer_for(thread).clear();
         let me = self.ws.self_id.clone();
         let now = format!("{:.6}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64());
         for msg in self.copies_mut(&channel, &ts) {
@@ -1552,7 +1599,7 @@ impl App {
             msg.edited = Some(slack_core::types::Edited { user: me.clone(), ts: now.clone() });
         }
         if !thread {
-            self.end_view_edit();
+            self.end_view_edit(false);
         }
         let (client, tx) = (self.client.clone(), self.net.clone());
         tokio::spawn(async move {
@@ -1714,7 +1761,9 @@ impl App {
             return;
         }
         let feed = self.feed_reply.as_ref().filter(|_| self.view == View::Threads).map(|(c, _)| c.clone());
-        let conversation = if thread { self.thread.as_ref().map(|(c, _)| c.clone()) } else { feed.or_else(|| self.current.clone()) };
+        // (An edit from a view: its message's conversation.)
+        let edited = self.view_edit.as_ref().map(|e| e.target.channel.clone());
+        let conversation = if thread { self.thread.as_ref().map(|(c, _)| c.clone()) } else { edited.or(feed).or_else(|| self.current.clone()) };
         // A folder is read once per path typed, not at every event (pointer moves included).
         let items = match (&trigger, &self.path_suggestions) {
             (super::composer::Trigger::Path { .. }, Some((seen, items))) if *seen == trigger => items.clone(),
@@ -1985,7 +2034,7 @@ impl App {
             return;
         }
         // (What the box held before an edit from a view is what goes under the old key.)
-        self.end_view_edit();
+        self.end_view_edit(true);
         if let Some(old) = &old {
             stash(&mut self.drafts, old, &mut self.composer);
         }
@@ -1999,7 +2048,7 @@ impl App {
     /// Show `v` in the main pane; the composer goes with it (under the Threads feed it replies in a thread).
     fn set_view(&mut self, v: View) {
         if v != self.view {
-            self.end_view_edit();
+            self.end_view_edit(true);
         }
         let old = self.composer_key();
         if v != View::Threads {
@@ -2021,6 +2070,14 @@ impl App {
     /// thread pane's own box when that thread is open there (one box per thread draft), else the one
     /// under the feed. None: no message is selected.
     fn aim_feed_composer(&mut self) -> Option<Focus> {
+        // An edit from the view is open: back to its box as it is (on another thread, said so).
+        if let Some(e) = &self.view_edit {
+            let selected = self.threads.selected_thread();
+            if selected.is_some() && selected != self.threads.thread_of(&e.target.channel, &e.target.ts) {
+                self.status = super::i18n::tr(super::feed::EDIT_FIRST).into_owned();
+            }
+            return Some(Focus::Composer);
+        }
         let thread = self.threads.selected_thread()?;
         if self.thread.as_ref() == Some(&thread) {
             self.set_feed_reply(None);
@@ -4319,6 +4376,10 @@ impl App {
             Some(e) => e.kept.clone(),
             None => self.composer.draft(),
         };
+        // (And the open edit itself, where it would be kept on leaving the view.)
+        if let Some((key, d)) = self.view_edit_home() {
+            drafts.insert(key, d);
+        }
         if let Some((c, d)) = self.composer_key().zip(draft) {
             drafts.insert(c, d);
         }
@@ -5365,6 +5426,12 @@ fn handle_main(app: &mut App, ev: Event) -> bool {
                 // The main pane shows a view: its keys, and the messages' on its messages.
                 Focus::Messages if app.view != View::Conversation => match resolved {
                     Resolved::Action(Context::Messages, a) if is_message_action(a) => app.view_message_action(a),
+                    // Back to an edit from the view (in Threads its own `i` does that).
+                    Resolved::Action(Context::Messages, Action::Type) if app.view_edit.is_some() => app.focus = Focus::Composer,
+                    Resolved::Action(Context::Messages, Action::OpenThread) => {
+                        let key = app.view_context().and_then(|c| app.keys.first_key(c, Action::Open)).unwrap_or_default();
+                        app.status = super::i18n::tr(super::feed::OPENS_HERE).replace("{key}", &key);
+                    }
                     Resolved::Action(Context::Messages, _) => {}
                     _ => {
                         if let Some(action) = action {
@@ -6174,7 +6241,19 @@ fn handle_net(app: &mut App, msg: Net) {
         Net::SendFailed { thread, key, draft, error } => {
             app.status = error;
             let here = if thread { app.thread.as_ref().map(|(c, ts)| super::state::thread_key(c, ts)) } else { app.composer_key() };
-            if here.as_deref() == Some(key.as_str()) {
+            if let Some(e) = app.view_edit.as_mut().filter(|_| !thread && here.as_deref() == Some(key.as_str())) {
+                // The box holds an edit from a view: the draft goes with what it held before, given back after.
+                let mut held = Composer::default();
+                if let Some(k) = e.kept.take() {
+                    held.restore(k);
+                }
+                if held.draft().is_none() {
+                    held.restore(*draft);
+                } else {
+                    held.attachments.extend(draft.attachments());
+                }
+                e.kept = held.take_draft();
+            } else if here.as_deref() == Some(key.as_str()) {
                 let composer = app.composer_for(thread);
                 if composer.draft().is_none() {
                     composer.restore(*draft);
@@ -8123,6 +8202,194 @@ mod tests {
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         let post = asked_for(&mut asked, "chat.postMessage").await;
         assert!(post.contains("channel=C1") && post.contains("thread_ts=1729440000.000100") && post.contains("text=half+a+reply"), "{post}");
+    }
+
+    /// [`feed_app`] with the reply in T1 yours (U0), drawn at 140×30, on that reply.
+    fn own_reply_feed(url: &str) -> (super::App, tokio::sync::mpsc::UnboundedReceiver<super::Net>, ratatui::Terminal<ratatui::backend::TestBackend>) {
+        let (mut app, net) = feed_app(url);
+        app.ws.self_id = "U0".into();
+        app.threads.entries.as_mut().unwrap()[0].latest[0].user = Some("U0".into());
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(140, 30)).unwrap();
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        press(&mut app, crossterm::event::KeyCode::Down, crossterm::event::KeyModifiers::NONE);
+        (app, net, terminal)
+    }
+
+    #[tokio::test]
+    async fn an_edit_from_the_feed_stays_open_when_the_focus_comes_back() {
+        use super::Focus;
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let (url, mut asked) = fake_slack(&[]).await;
+        let (mut app, _net, mut terminal) = own_reply_feed(&url);
+        leader(&mut app, "e");
+        press(&mut app, KeyCode::End, KeyModifiers::NONE);
+        for c in " FIXED".chars() {
+            press(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        // A click on the same reply, then `i`: back in the edit, not a reply.
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        let (x, y) = spot_of(&terminal, "a reply");
+        click(&mut app, x, y);
+        assert_eq!(app.focus, Focus::Messages);
+        press(&mut app, KeyCode::Char('i'), KeyModifiers::NONE);
+        assert_eq!((app.focus, app.composer.editing.as_deref(), app.composer.text(), app.feed_reply.clone()), (Focus::Composer, Some("1729440000.000200"), "a reply FIXED".to_string(), None));
+        // Tab away, another thread selected, `i`: the edit stays, and the status line says why.
+        press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        app.focus = Focus::Messages;
+        press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        assert_eq!(app.threads.selected_thread(), Some(("C3".to_string(), "1729440500.000100".to_string())));
+        press(&mut app, KeyCode::Char('i'), KeyModifiers::NONE);
+        assert_eq!((app.focus, app.composer.text(), app.feed_reply.clone()), (Focus::Composer, "a reply FIXED".to_string(), None));
+        assert_eq!(app.status, "finish or cancel the edit first (Enter saves, Esc cancels)");
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        let req = asked_for(&mut asked, "chat.update").await;
+        assert!(req.contains("channel=C1") && req.contains("ts=1729440000.000200") && req.contains("text=a+reply+FIXED"), "{req}");
+    }
+
+    #[tokio::test]
+    async fn an_edit_in_activity_can_be_gone_back_to() {
+        use super::Focus;
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let (url, _asked) = fake_slack(&[]).await;
+        let (mut app, _net) = activity_app(&url);
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(140, 30)).unwrap();
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        leader(&mut app, "e");
+        press(&mut app, KeyCode::End, KeyModifiers::NONE);
+        for c in " X".chars() {
+            press(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.focus, Focus::Messages);
+        press(&mut app, KeyCode::Char('i'), KeyModifiers::NONE);
+        assert_eq!((app.focus, app.composer.text(), app.composer.editing.as_deref()), (Focus::Composer, "my message X".to_string(), Some("1729440000.000300")));
+    }
+
+    #[tokio::test]
+    async fn a_kept_edit_in_the_feeds_box_is_saved_in_its_own_conversation() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let (url, mut asked) = fake_slack(&[]).await;
+        let (mut app, _net, _terminal) = own_reply_feed(&url);
+        // An edit of the reply begun in the thread pane in C1 and kept as T1's draft; C2 is current.
+        let mut c = super::Composer::default();
+        c.load_for_edit("1729440000.000200", "a reply FIXED", |u| u.to_string(), |c| c.to_string());
+        app.drafts.insert("C1/1729440000.000100".into(), c.take_draft().unwrap());
+        press(&mut app, KeyCode::Char('i'), KeyModifiers::NONE);
+        assert_eq!((app.composer.editing.as_deref(), app.composer.text()), (Some("1729440000.000200"), "a reply FIXED".to_string()));
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        let req = asked_for(&mut asked, "chat.update").await;
+        assert!(req.contains("channel=C1") && req.contains("ts=1729440000.000200") && req.contains("text=a+reply+FIXED"), "{req}");
+    }
+
+    #[tokio::test]
+    async fn an_edit_whose_message_is_gone_from_the_view_is_kept() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let (url, _asked) = fake_slack(&[]).await;
+        let (mut app, _net, _terminal) = own_reply_feed(&url);
+        leader(&mut app, "e");
+        // The feed is loaded again meanwhile, without it.
+        app.threads.entries = Some(Vec::new());
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!((app.composer.editing.as_deref(), app.composer.text()), (Some("1729440000.000200"), "a reply".to_string()), "the edit stays");
+        assert_eq!(app.status, "the message is not here any more: the edit stays (Esc cancels it)");
+    }
+
+    #[tokio::test]
+    async fn a_failed_upload_during_an_edit_from_a_view_keeps_its_files() {
+        use super::super::composer::{Attachment, AttachmentData};
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let (url, _asked) = fake_slack(&[]).await;
+        let (mut app, _net) = activity_app(&url);
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(140, 30)).unwrap();
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        leader(&mut app, "e");
+        // C2's upload, sent before, fails now.
+        let mut c = super::Composer::default();
+        c.insert_str("the caption");
+        c.attachments.push(Attachment { name: "a.txt".into(), size: 1, data: AttachmentData::File("/nonexistent/a.txt".into()) });
+        super::handle_net(&mut app, super::Net::SendFailed { thread: false, key: "C2".into(), draft: Box::new(c.take_draft().unwrap()), error: "sending a.txt failed".into() });
+        assert!(app.composer.attachments.is_empty() && app.composer.text() == "my message", "not into the edit");
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!((app.composer.text(), app.composer.attachments.len()), ("the caption".to_string(), 1), "back in C2's box");
+    }
+
+    #[tokio::test]
+    async fn leaving_the_view_keeps_the_edit_as_its_threads_draft_when_that_is_free() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let (url, _asked) = fake_slack(&[]).await;
+        let (mut app, _net, _terminal) = own_reply_feed(&url);
+        leader(&mut app, "e");
+        press(&mut app, KeyCode::End, KeyModifiers::NONE);
+        for c in " FIXED".chars() {
+            press(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        // To Activity, by its key (from the box: Ctrl+A is line start there, so through the view).
+        app.focus = super::Focus::Messages;
+        super::run_global(&mut app, super::Action::Activity);
+        let key = "C1/1729440000.000100";
+        let mut c = super::Composer::default();
+        c.restore(app.drafts.get(key).cloned().expect("kept"));
+        assert_eq!((c.text(), c.editing.as_deref()), ("a reply FIXED".to_string(), Some("1729440000.000200")));
+        assert_eq!(app.status, "the unsaved edit is kept as a draft where the message is");
+        // Its thread's box has a reply draft: that one stays, and the edit is said to be dropped.
+        let (url, _asked) = fake_slack(&[]).await;
+        let (mut app, _net, _terminal) = own_reply_feed(&url);
+        press(&mut app, KeyCode::Char('i'), KeyModifiers::NONE);
+        for c in "half".chars() {
+            press(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        leader(&mut app, "e");
+        app.focus = super::Focus::Messages;
+        super::run_global(&mut app, super::Action::Activity);
+        let mut c = super::Composer::default();
+        c.restore(app.drafts.get(key).cloned().expect("the reply draft"));
+        assert_eq!((c.text(), c.editing.clone()), ("half".to_string(), None));
+        assert_eq!(app.status, "the unsaved edit was dropped: a draft is already kept where the message is");
+    }
+
+    #[tokio::test]
+    async fn open_thread_in_a_view_says_enter_does_it() {
+        let (url, _asked) = fake_slack(&[]).await;
+        let (mut app, _net, _terminal) = own_reply_feed(&url);
+        leader(&mut app, "t");
+        assert_eq!((app.status.as_str(), app.view), ("Enter opens it here", super::View::Threads));
+    }
+
+    /// The next `Net::Restore` (a change Slack refused).
+    async fn next_restore(net: &mut tokio::sync::mpsc::UnboundedReceiver<super::Net>) -> super::Net {
+        loop {
+            match tokio::time::timeout(std::time::Duration::from_secs(10), net.recv()).await.expect("Slack's answer").unwrap() {
+                msg @ super::Net::Restore { .. } => return msg,
+                _ => {}
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failed_edit_or_delete_in_the_feed_is_put_back() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let (url, _asked) = fake_slack(&[("chat.update", r#"{"ok":false,"error":"cant_update_message"}"#), ("chat.delete", r#"{"ok":false,"error":"cant_delete_message"}"#)]).await;
+        let (mut app, mut net, _terminal) = own_reply_feed(&url);
+        leader(&mut app, "e");
+        press(&mut app, KeyCode::End, KeyModifiers::NONE);
+        press(&mut app, KeyCode::Char('!'), KeyModifiers::NONE);
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.threads.find("C1", "1729440000.000200").unwrap().text, "a reply!", "at once");
+        let msg = next_restore(&mut net).await;
+        super::handle_net(&mut app, msg);
+        assert_eq!(app.threads.find("C1", "1729440000.000200").unwrap().text, "a reply", "put back");
+        leader(&mut app, "d");
+        press(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
+        assert!(app.threads.find("C1", "1729440000.000200").is_none());
+        let msg = next_restore(&mut net).await;
+        super::handle_net(&mut app, msg);
+        let e = &app.threads.entries.as_ref().unwrap()[0];
+        assert!(e.latest.iter().any(|r| r.ts == "1729440000.000200") && e.root.reply_count == 1, "back in its block");
     }
 
     #[tokio::test]

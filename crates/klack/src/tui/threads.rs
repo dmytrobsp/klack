@@ -214,7 +214,12 @@ impl Threads {
     /// The thread (channel, its parent's ts) of the selected message.
     pub fn selected_thread(&self) -> Option<(String, String)> {
         let (channel, ts) = self.selected.as_ref().or(self.order.first())?;
-        let e = self.entries.as_ref()?.iter().find(|e| e.channel == *channel && (e.root.ts == *ts || e.unread.iter().chain(&e.latest).any(|r| r.ts == *ts)))?;
+        self.thread_of(channel, ts)
+    }
+
+    /// The thread (channel, its parent's ts) message `ts` of `channel` is in, in the feed.
+    pub fn thread_of(&self, channel: &str, ts: &str) -> Option<(String, String)> {
+        let e = self.entries.as_ref()?.iter().find(|e| e.channel == channel && (e.root.ts == ts || e.unread.iter().chain(&e.latest).any(|r| r.ts == ts)))?;
         Some((e.channel.clone(), e.root.ts.clone()))
     }
 
