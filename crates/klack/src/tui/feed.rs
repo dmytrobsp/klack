@@ -44,11 +44,13 @@ pub const EDIT_NOT_HERE: &str = "the message is not here any more: the edit stay
 pub const EDIT_KEPT: &str = "the unsaved edit is kept as a draft where the message is";
 /// ... where a draft was kept already.
 pub const EDIT_DROPPED: &str = "the unsaved edit was dropped: a draft is already kept where the message is";
+/// Quitting with an edit open that can't be kept as a draft (`{key}`: the quit key).
+pub const EDIT_QUIT: &str = "an unsaved edit is open and can't be kept as a draft: {key} again quits without it";
 /// A key that opens a message's thread, in a view whose own key does that.
 pub const OPENS_HERE: &str = "{key} opens it here";
 
 /// The feed's words, for the locale template.
-pub const WORDS: &[&str] = &[MISSING, CUT, MORE_ONE, MORE, OTHERS, NEW, UP_TO_DATE, REPLY_IN, PRESS_TO_REPLY, EDIT_FIRST, EDIT_NOT_HERE, EDIT_KEPT, EDIT_DROPPED, OPENS_HERE];
+pub const WORDS: &[&str] = &[MISSING, CUT, MORE_ONE, MORE, OTHERS, NEW, UP_TO_DATE, REPLY_IN, PRESS_TO_REPLY, EDIT_FIRST, EDIT_NOT_HERE, EDIT_KEPT, EDIT_DROPPED, EDIT_QUIT, OPENS_HERE];
 
 /// A thread's place in the feed: `rows` are its lines (header to its last reply, not the blank rows and
 /// rule after it), `unread_rows` those of its unread replies with the "new" rule (empty: none).

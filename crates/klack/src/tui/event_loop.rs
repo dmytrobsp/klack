@@ -135,6 +135,14 @@ enum Confirm {
     DeleteSection { id: String, name: String },
 }
 
+/// Where an open edit from a view goes when its view is left (or klack quits): the box it is in (the place's own
+/// box, empty before), the open thread's box (empty), or the drafts under that place's key.
+enum EditHome {
+    Box,
+    Thread,
+    Stored(String),
+}
+
 /// An edit from a view: the message, and what the box held before (given back when the edit is saved or dropped).
 struct ViewEdit {
     target: MessageTarget,
@@ -254,6 +262,10 @@ struct App {
     feed_typing: bool,
     /// A message being edited from the Threads or Activity view, in the box under it (see [`ViewEdit`]).
     view_edit: Option<ViewEdit>,
+    /// What leaving a view did with its open edit, said once the event is over (so nothing after it hides it).
+    edit_note: Option<&'static str>,
+    /// Quitting was asked for with an edit open that can't be kept: the next quit goes ahead.
+    edit_quit_warned: bool,
     /// When the previewed channel was last fetched again.
     preview_polled: Option<std::time::Instant>,
     /// When the people shown were last looked up for their statuses (the slow safety net).
@@ -1494,20 +1506,28 @@ impl App {
         if self.view_edit.is_none() {
             return;
         }
+        let home = if left { self.view_edit_home() } else { None };
         if left {
-            let note = match self.view_edit_home() {
-                Some((key, d)) => {
-                    self.drafts.insert(key, d);
-                    super::feed::EDIT_KEPT
-                }
-                None => super::feed::EDIT_DROPPED,
-            };
-            self.status = super::i18n::tr(note).into_owned();
+            self.edit_note = Some(if home.is_some() { super::feed::EDIT_KEPT } else { super::feed::EDIT_DROPPED });
         }
+        self.edit_quit_warned = false;
         let Some(e) = self.view_edit.take() else { return };
-        self.composer.clear();
-        if let Some(d) = e.kept {
-            self.composer.restore(d);
+        match home {
+            // (Its own place's box, empty before: the edit stays in it.)
+            Some((EditHome::Box, _)) => {}
+            home => {
+                self.composer.clear();
+                if let Some(d) = e.kept {
+                    self.composer.restore(d);
+                }
+                match home {
+                    Some((EditHome::Thread, d)) => self.thread_composer.restore(d),
+                    Some((EditHome::Stored(key), d)) => {
+                        self.drafts.insert(key, d);
+                    }
+                    _ => {}
+                }
+            }
         }
         if self.focus == Focus::Composer {
             self.focus = Focus::Messages;
@@ -1528,8 +1548,9 @@ impl App {
     }
 
     /// Where an open edit from a view would be kept as a draft — its message's thread (a top-level Activity message:
-    /// its conversation) — with that draft; None when that place has a draft already, or is a box's own.
-    fn view_edit_home(&self) -> Option<(String, super::composer::Draft)> {
+    /// its conversation): that place's box when it is on screen and was empty, else its stored draft — with that
+    /// draft; None when that place has a draft already.
+    fn view_edit_home(&self) -> Option<(EditHome, super::composer::Draft)> {
         let e = self.view_edit.as_ref()?;
         let (channel, ts) = (&e.target.channel, &e.target.ts);
         let draft = self.composer.draft().filter(|_| self.composer.editing.as_deref() == Some(ts.as_str()))?;
@@ -1540,9 +1561,24 @@ impl App {
                 None => channel.clone(),
             },
         };
+        if self.drafts.contains_key(&key) {
+            return None;
+        }
         let open_thread = self.thread.as_ref().map(|(c, t)| super::state::thread_key(c, t));
-        let taken = self.drafts.contains_key(&key) || self.composer_key().as_ref() == Some(&key) || open_thread.as_ref() == Some(&key);
-        (!taken).then_some((key, draft))
+        if self.composer_key().as_ref() == Some(&key) {
+            return e.kept.is_none().then_some((EditHome::Box, draft));
+        }
+        if open_thread.as_ref() == Some(&key) {
+            return self.thread_composer.draft().is_none().then_some((EditHome::Thread, draft));
+        }
+        Some((EditHome::Stored(key), draft))
+    }
+
+    /// Say what leaving a view did with its open edit (after the event, so nothing it did hides the note).
+    fn show_edit_note(&mut self) {
+        if let Some(note) = self.edit_note.take() {
+            self.status = super::i18n::tr(note).into_owned();
+        }
     }
 
     /// Our newest message in the current conversation (top level) or the open thread.
@@ -2061,6 +2097,10 @@ impl App {
     /// Make the composer reply in `target` under the Threads feed (None: in no thread), keeping the
     /// draft of the one it leaves and taking up the one it goes to.
     fn set_feed_reply(&mut self, target: Option<(String, String)>) {
+        // (An open edit from the view is kept for the box it is leaving.)
+        if target != self.feed_reply {
+            self.end_view_edit(true);
+        }
         let old = self.composer_key();
         self.feed_reply = target;
         self.rekey_composer(old);
@@ -3684,6 +3724,11 @@ impl App {
 
     /// Leave this workspace for workspace `index` of the profile.
     fn switch_workspace(&mut self, index: usize) {
+        // (An open edit from a view goes with the drafts, unless it can't be kept.)
+        if self.view_edit.is_some() && self.view_edit_home().is_none() {
+            self.status = super::i18n::tr(super::feed::EDIT_FIRST).into_owned();
+            return;
+        }
         let signed_out = self.signed_out.lock().unwrap_or_else(|e| e.into_inner()).clone();
         match switch_check(index, self.workspace, &self.workspaces, self.call.is_some(), &signed_out) {
             Ok(i) => self.switch_to = Some(i),
@@ -4370,15 +4415,30 @@ impl App {
 
     /// Save the drafts, with what is in the open composers, for the next run.
     fn save_drafts(&self) {
+        super::drafts::save(&self.client.session.team_id, &self.client.session.user_id, &self.drafts_to_save());
+    }
+
+    /// The drafts as they are saved: those kept, and what the boxes hold now.
+    fn drafts_to_save(&self) -> super::drafts::Drafts {
         let mut drafts = self.drafts.clone();
-        // (During an edit from a view, what its box held before.)
-        let draft = match &self.view_edit {
-            Some(e) => e.kept.clone(),
-            None => self.composer.draft(),
+        // (During an edit from a view, what its box held before — or the edit, when that box is its home — and the
+        // edit where it would be kept on leaving the view.)
+        let home = self.view_edit_home();
+        let draft = match (&self.view_edit, &home) {
+            (Some(_), Some((EditHome::Box, d))) => Some(d.clone()),
+            (Some(e), _) => e.kept.clone(),
+            (None, _) => self.composer.draft(),
         };
-        // (And the open edit itself, where it would be kept on leaving the view.)
-        if let Some((key, d)) = self.view_edit_home() {
-            drafts.insert(key, d);
+        match home {
+            Some((EditHome::Stored(key), d)) => {
+                drafts.insert(key, d);
+            }
+            Some((EditHome::Thread, d)) => {
+                if let Some((c, t)) = &self.thread {
+                    drafts.insert(super::state::thread_key(c, t), d);
+                }
+            }
+            _ => {}
         }
         if let Some((c, d)) = self.composer_key().zip(draft) {
             drafts.insert(c, d);
@@ -4386,7 +4446,7 @@ impl App {
         if let Some(((c, t), d)) = self.thread.as_ref().zip(self.thread_composer.draft()) {
             drafts.insert(super::state::thread_key(c, t), d);
         }
-        super::drafts::save(&self.client.session.team_id, &self.client.session.user_id, &drafts);
+        drafts
     }
 }
 
@@ -4585,6 +4645,8 @@ impl App {
             feed_reply: None,
             feed_typing: false,
             view_edit: None,
+            edit_note: None,
+            edit_quit_warned: false,
             preview_polled: None,
             statuses_polled: None,
             lookups: Lookups::default(),
@@ -4793,6 +4855,8 @@ async fn run_workspace(
             app.mark_signed_out();
         }
         app.sync_current();
+        // (After the sidebar's selection is followed: what leaving a view did with its edit is said last.)
+        app.show_edit_note();
         app.track_place(went);
         app.autosave_drafts();
         // Not while a view hides it: what comes meanwhile stays unread.
@@ -4902,6 +4966,13 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
     }
     if let Event::Key(k) = &ev {
         if k.kind != KeyEventKind::Release && !app.capturing_key() && app.resolve(k) == Resolved::Action(Context::Global, Action::Quit) {
+            // An open edit from a view that can't be kept as a draft: said once; quitting again goes ahead.
+            if app.view_edit.is_some() && app.view_edit_home().is_none() && !app.edit_quit_warned {
+                app.edit_quit_warned = true;
+                let key = app.keys.first_key(Context::Global, Action::Quit).unwrap_or_default();
+                app.status = super::i18n::tr(super::feed::EDIT_QUIT).replace("{key}", &key);
+                return true;
+            }
             return false;
         }
     }
@@ -4912,6 +4983,7 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
     app.sync_view_edit();
     app.sync_feed_composer();
     app.give_way_to_composer();
+    app.show_edit_note();
     keep_going
 }
 
@@ -8317,6 +8389,131 @@ mod tests {
         assert_eq!((app.composer.text(), app.composer.attachments.len()), ("the caption".to_string(), 1), "back in C2's box");
     }
 
+    /// [`activity_app`] opened over C1 (the history: C1, then the view), editing your message there (T2) with " TYPED"
+    /// added, the focus back on the list.
+    fn editing_in_activity_over_c1(url: &str) -> (super::App, tokio::sync::mpsc::UnboundedReceiver<super::Net>) {
+        use super::super::history::Place;
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let (mut app, net) = activity_app(url);
+        app.current = Some("C1".into());
+        app.loading = false;
+        app.history.arrive(Some(Place::Conversation { channel: "C1".into(), thread: None, member: true }), super::Went::Yes);
+        app.history.arrive(Some(Place::Activity(super::super::activity::Tab::All)), super::Went::Yes);
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(140, 30)).unwrap();
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        leader(&mut app, "e");
+        press(&mut app, KeyCode::End, KeyModifiers::NONE);
+        for c in " TYPED".chars() {
+            press(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        app.focus = super::Focus::Messages;
+        (app, net)
+    }
+
+    #[tokio::test]
+    async fn leaving_a_view_over_the_messages_conversation_keeps_the_edit_in_its_box() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let (url, mut asked) = fake_slack(&[]).await;
+        let (mut app, _net) = editing_in_activity_over_c1(&url);
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(app.view, super::View::Conversation);
+        assert_eq!((app.composer.editing.as_deref(), app.composer.text()), (Some("1729440000.000300"), "my message TYPED".to_string()), "in the conversation's box, still an edit");
+        assert_eq!(app.status, "the unsaved edit is kept as a draft where the message is");
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(140, 30)).unwrap();
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        assert!(screen(&terminal).iter().any(|l| l.contains("Editing message")));
+        // It saves there.
+        press(&mut app, KeyCode::Char('i'), KeyModifiers::NONE);
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        let req = asked_for(&mut asked, "chat.update").await;
+        assert!(req.contains("channel=C1") && req.contains("text=my+message+TYPED"), "{req}");
+    }
+
+    #[tokio::test]
+    async fn the_kept_edit_note_stays_whichever_way_the_view_is_left() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let note = "the unsaved edit is kept as a draft where the message is";
+        let (url, _asked) = fake_slack(&[]).await;
+        // Back in the history (Ctrl+O), another view's key (Ctrl+T), `q`.
+        for (code, mods) in [(KeyCode::Char('o'), KeyModifiers::CONTROL), (KeyCode::Char('t'), KeyModifiers::CONTROL), (KeyCode::Char('q'), KeyModifiers::NONE)] {
+            let (mut app, _net) = editing_in_activity_over_c1(&url);
+            press(&mut app, code, mods);
+            assert_ne!(app.view, super::View::Activity, "{code:?}");
+            assert_eq!(app.status, note, "{code:?}");
+        }
+        // A click on another conversation in the sidebar.
+        let (mut app, _net) = editing_in_activity_over_c1(&url);
+        app.ws.conversations.insert("C3".into(), slack_core::types::Conversation { id: "C3".into(), name: "random".into(), is_channel: true, is_member: true, ..Default::default() });
+        app.ws.shown = Some("C3".into());
+        app.sidebar.rebuild(&app.ws);
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(140, 30)).unwrap();
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        let (x, y) = spot_of(&terminal, "# random");
+        click(&mut app, x, y);
+        // (As the main loop does after each event.)
+        app.sync_current();
+        app.show_edit_note();
+        assert_eq!((app.view, app.status.as_str()), (super::View::Conversation, note), "the sidebar");
+        // Ctrl+K to #general.
+        let (mut app, _net) = editing_in_activity_over_c1(&url);
+        press(&mut app, KeyCode::Char('k'), KeyModifiers::CONTROL);
+        for c in "general".chars() {
+            press(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        app.sync_current();
+        app.show_edit_note();
+        assert_eq!((app.view, app.status.as_str()), (super::View::Conversation, note), "Ctrl+K");
+    }
+
+    #[tokio::test]
+    async fn an_edit_whose_thread_is_open_beside_goes_into_that_box_on_leaving() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let (url, _asked) = fake_slack(&[]).await;
+        let (mut app, _net) = activity_app(&url);
+        // Your message is a reply in a thread of C1, open in the thread pane (C1 current), its box empty.
+        app.current = Some("C1".into());
+        let parent = "1729439999.000100".to_string();
+        app.activity.messages.get_mut(&("C1".to_string(), "1729440000.000300".to_string())).unwrap().as_mut().unwrap().thread_ts = Some(parent.clone());
+        app.thread = Some(("C1".into(), parent));
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(140, 30)).unwrap();
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        app.focus = super::Focus::Messages;
+        press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        leader(&mut app, "e");
+        app.focus = super::Focus::Messages;
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(app.view, super::View::Conversation);
+        assert_eq!((app.thread_composer.editing.as_deref(), app.thread_composer.text()), (Some("1729440000.000300"), "my message".to_string()));
+        assert_eq!(app.status, "the unsaved edit is kept as a draft where the message is");
+    }
+
+    #[tokio::test]
+    async fn quitting_with_an_edit_keeps_it_or_asks_first() {
+        use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+        let quit = |app: &mut super::App| super::handle_event(app, Event::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL)));
+        let (url, _asked) = fake_slack(&[]).await;
+        // Its home is the box on screen: kept there in what is saved.
+        let (mut app, _net) = editing_in_activity_over_c1(&url);
+        let mut c = super::Composer::default();
+        c.restore(app.drafts_to_save().get("C1").cloned().expect("the edit"));
+        assert_eq!((c.text(), c.editing.as_deref()), ("my message TYPED".to_string(), Some("1729440000.000300")));
+        assert!(!quit(&mut app), "quits");
+        // A draft already there: the first Ctrl+Q says so and stays, the second quits.
+        let (mut app, _net) = activity_app(&url);
+        app.composer.insert_str("a draft for C2");
+        app.current = Some("C2".into());
+        app.drafts.insert("C1".into(), { let mut d = super::Composer::default(); d.insert_str("C1's own draft"); d.take_draft().unwrap() });
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(140, 30)).unwrap();
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        leader(&mut app, "e");
+        assert!(quit(&mut app), "stays");
+        assert_eq!(app.status, "an unsaved edit is open and can't be kept as a draft: Ctrl+Q again quits without it");
+        assert!(!quit(&mut app), "quits the second time");
+    }
+
     #[tokio::test]
     async fn leaving_the_view_keeps_the_edit_as_its_threads_draft_when_that_is_free() {
         use crossterm::event::{KeyCode, KeyModifiers};
@@ -8329,7 +8526,7 @@ mod tests {
         }
         // To Activity, by its key (from the box: Ctrl+A is line start there, so through the view).
         app.focus = super::Focus::Messages;
-        super::run_global(&mut app, super::Action::Activity);
+        press(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
         let key = "C1/1729440000.000100";
         let mut c = super::Composer::default();
         c.restore(app.drafts.get(key).cloned().expect("kept"));
@@ -8345,7 +8542,7 @@ mod tests {
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         leader(&mut app, "e");
         app.focus = super::Focus::Messages;
-        super::run_global(&mut app, super::Action::Activity);
+        press(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
         let mut c = super::Composer::default();
         c.restore(app.drafts.get(key).cloned().expect("the reply draft"));
         assert_eq!((c.text(), c.editing.clone()), ("half".to_string(), None));
