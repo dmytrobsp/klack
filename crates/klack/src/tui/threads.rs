@@ -263,6 +263,51 @@ impl Threads {
         true
     }
 
+    /// A live edit, deletion or reaction (an RTM event) on a parent or a reply in the feed: applied in
+    /// place, the threads keep their order. True when the feed has the message.
+    pub fn apply_live(&mut self, ev: &Value) -> bool {
+        let Some(entries) = self.entries.as_mut() else { return false };
+        let (channel, ts) = match ev["type"].as_str() {
+            Some("message") if ev["subtype"] == "message_changed" => (&ev["channel"], &ev["message"]["ts"]),
+            Some("message") if ev["subtype"] == "message_deleted" => (&ev["channel"], &ev["deleted_ts"]),
+            Some("reaction_added" | "reaction_removed") => (&ev["item"]["channel"], &ev["item"]["ts"]),
+            _ => return false,
+        };
+        let (Some(channel), Some(ts)) = (channel.as_str(), ts.as_str()) else { return false };
+        let Some(e) = entries.iter_mut().find(|e| e.channel == channel && (e.root.ts == ts || e.unread.iter().chain(&e.latest).any(|r| r.ts == ts))) else { return false };
+        if ev["subtype"] == "message_deleted" {
+            if e.root.ts == ts {
+                // Its thread stays: its parent says it is not available.
+                let root = std::mem::take(&mut e.root);
+                e.root = Message { ts: root.ts, thread_ts: root.thread_ts, reply_count: root.reply_count, reply_users: root.reply_users, latest_reply: root.latest_reply, ..Default::default() };
+            } else {
+                e.unread.retain(|r| r.ts != ts);
+                e.latest.retain(|r| r.ts != ts);
+                e.root.reply_count = e.root.reply_count.saturating_sub(1);
+            }
+            // The selection goes to the message above it.
+            let key = (channel.to_string(), ts.to_string());
+            if self.selected.as_ref() == Some(&key) {
+                self.selected = self.order.iter().position(|o| *o == key).and_then(|n| n.checked_sub(1)).map(|n| self.order[n].clone());
+            }
+            if self.hover.as_ref() == Some(&key) {
+                self.hover = None;
+            }
+        } else {
+            for m in std::iter::once(&mut e.root).chain(&mut e.unread).chain(&mut e.latest).filter(|m| m.ts == ts) {
+                if ev["type"] == "message" {
+                    if let Some(new) = super::live::edited(ev, Some(m)) {
+                        *m = new;
+                    }
+                } else {
+                    super::live::apply_reaction(m, ev["reaction"].as_str().unwrap_or_default(), ev["user"].as_str().unwrap_or_default(), ev["type"] == "reaction_added");
+                }
+            }
+        }
+        self.dirty = true;
+        true
+    }
+
     /// The threads whose blocks have been on screen long enough (`after`) at `now`: to mark read (each once).
     pub fn tick(&mut self, shown: bool, now: Instant, after: Duration) -> Vec<(String, String)> {
         let visible = if shown { self.visible.clone() } else { 0..0 };
@@ -600,6 +645,50 @@ mod tests {
         t.selected = Some(("C1".into(), "1.000200".into()));
         t.move_by(1);
         assert_eq!(t.selected, Some(("C1".into(), "2.000100".into())));
+    }
+
+    #[test]
+    fn edits_deletions_and_reactions_apply_in_place() {
+        let mut t = Threads::default();
+        t.add_page(three(), false);
+        let text = |t: &mut Threads| {
+            let terminal = drawn(t);
+            let buf = terminal.backend().buffer().clone();
+            (0..buf.area.height).map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect::<String>()).collect::<Vec<_>>().join("\n")
+        };
+        let order = |t: &Threads| t.entries.as_ref().unwrap().iter().map(|e| e.root.ts.clone()).collect::<Vec<_>>();
+        text(&mut t);
+        let builds = t.builds;
+        // A reaction on a parent, then an edit of it that leaves its reactions out: both shown, the reaction kept.
+        assert!(t.apply_live(&serde_json::json!({"type": "reaction_added", "user": "U2", "reaction": "eyes", "item": {"type": "message", "channel": "C1", "ts": "2.000100"}})));
+        let edit = serde_json::json!({"type": "message", "subtype": "message_changed", "channel": "C1", "message": {"type": "message", "user": "U1", "text": "parent 2, edited", "ts": "2.000100", "thread_ts": "2.000100", "edited": {"user": "U1", "ts": "9.0"}}});
+        assert!(t.apply_live(&edit));
+        let shown = text(&mut t);
+        assert!(shown.contains("parent 2, edited (edited)") && shown.contains("👀"), "{shown}");
+        assert_eq!(t.builds, builds + 1, "built again once, at the draw");
+        assert_eq!(t.entries.as_ref().unwrap()[1].root.reply_count, 1, "the thread's fields kept");
+        // Removed again.
+        assert!(t.apply_live(&serde_json::json!({"type": "reaction_removed", "user": "U2", "reaction": "eyes", "item": {"type": "message", "channel": "C1", "ts": "2.000100"}})));
+        assert!(!text(&mut t).contains("👀"));
+        // The unread reply deleted while selected: gone, the thread no longer counts it; the selection goes to the message above it.
+        t.selected = Some(("C1".into(), "1.000200".into()));
+        assert!(t.apply_live(&serde_json::json!({"type": "message", "subtype": "message_deleted", "channel": "C1", "deleted_ts": "1.000200"})));
+        let shown = text(&mut t);
+        assert!(!shown.contains("reply 1") && !shown.contains(" 1 new ") && !shown.contains("1 more reply"), "{shown}");
+        assert_eq!(t.entries.as_ref().unwrap()[0].root.reply_count, 0);
+        assert_eq!(t.selected, Some(("C1".into(), "1.000100".into())));
+        // A parent deleted: its thread stays, saying so.
+        assert!(t.apply_live(&serde_json::json!({"type": "message", "subtype": "message_deleted", "channel": "C1", "deleted_ts": "3.000100"})));
+        let shown = text(&mut t);
+        assert!(shown.contains("message not available") && shown.contains("reply 3") && !shown.contains("parent 3"), "{shown}");
+        assert_eq!(order(&t), ["1.000100", "2.000100", "3.000100"], "nothing moved");
+        // Not in the feed (another channel, another message): nothing to build again.
+        let builds = t.builds;
+        assert!(!t.apply_live(&serde_json::json!({"type": "reaction_added", "user": "U2", "reaction": "eyes", "item": {"type": "message", "channel": "C9", "ts": "2.000100"}})));
+        assert!(!t.apply_live(&serde_json::json!({"type": "message", "subtype": "message_deleted", "channel": "C1", "deleted_ts": "7.0"})));
+        assert!(!t.apply_live(&serde_json::json!({"type": "message", "subtype": "message_changed", "channel": "C1", "message": {"type": "message", "text": "x", "ts": "7.0"}})));
+        text(&mut t);
+        assert_eq!(t.builds, builds);
     }
 
     #[test]

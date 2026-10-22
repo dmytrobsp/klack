@@ -62,22 +62,8 @@ pub fn apply(ws: &mut Workspace, ev: &Value, current: Option<&str>) -> Effects {
     match ev["type"].as_str().unwrap_or("") {
         "message" => match ev["subtype"].as_str() {
             Some("message_changed") => {
-                if let Some(mut m) = parse_message(&ev["message"], &channel) {
-                    // Keep what the event leaves out rather than wiping it.
-                    if let Some(old) = ws.find_message(&channel, &m.ts) {
-                        let missing = |key: &str| ev["message"].get(key).is_none();
-                        if missing("reactions") {
-                            m.reactions = old.reactions.clone();
-                        }
-                        if missing("reply_count") {
-                            m.reply_count = old.reply_count;
-                            m.reply_users = old.reply_users.clone();
-                            m.latest_reply = old.latest_reply.clone();
-                        }
-                        if missing("files") {
-                            m.files = old.files.clone();
-                        }
-                    }
+                let old = ev["message"]["ts"].as_str().and_then(|ts| ws.find_message(&channel, ts));
+                if let Some(m) = edited(ev, old) {
                     update_everywhere(ws, &channel, m);
                 }
             }
@@ -432,6 +418,27 @@ pub fn add_message(ws: &mut Workspace, channel: &str, m: &Message) {
     }
 }
 
+/// The message a `message_changed` event says is there now; what the event leaves out (reactions, the
+/// thread's fields, files) is kept from `old` rather than wiped.
+pub fn edited(ev: &Value, old: Option<&Message>) -> Option<Message> {
+    let mut m = parse_message(&ev["message"], ev["channel"].as_str().unwrap_or_default())?;
+    if let Some(old) = old {
+        let missing = |key: &str| ev["message"].get(key).is_none();
+        if missing("reactions") {
+            m.reactions = old.reactions.clone();
+        }
+        if missing("reply_count") {
+            m.reply_count = old.reply_count;
+            m.reply_users = old.reply_users.clone();
+            m.latest_reply = old.latest_reply.clone();
+        }
+        if missing("files") {
+            m.files = old.files.clone();
+        }
+    }
+    Some(m)
+}
+
 fn update_everywhere(ws: &mut Workspace, channel: &str, m: Message) {
     if let Some(t) = ws.timelines.get_mut(channel) {
         if t.index_of(&m.ts).is_some() {
@@ -446,7 +453,8 @@ fn update_everywhere(ws: &mut Workspace, channel: &str, m: Message) {
     }
 }
 
-fn apply_reaction(m: &mut Message, name: &str, user: &str, added: bool) {
+/// `user` added (or took back) reaction `name` on `m`.
+pub fn apply_reaction(m: &mut Message, name: &str, user: &str, added: bool) {
     match m.reactions.iter_mut().position(|r| r.name == name) {
         Some(i) => {
             let r = &mut m.reactions[i];

@@ -5553,6 +5553,8 @@ fn handle_rtm(app: &mut App, ev: slack_core::rtm::RtmEvent) {
         }
         RtmEvent::Event(v) => {
             let fx = super::live::apply(&mut app.ws, &v, app.current.as_deref());
+            // An edit, a deletion or a reaction in a thread of the Threads feed: in its block.
+            app.threads.apply_live(&v);
             if v["type"] == "pref_change" {
                 // (The pref's name only, never its value.)
                 tracing::debug!(name = v["name"].as_str().unwrap_or_default(), "pref_change applied");
@@ -7629,6 +7631,29 @@ mod tests {
                 return req;
             }
         }
+    }
+
+    #[tokio::test]
+    async fn edits_deletions_and_reactions_show_in_the_feed_live() {
+        use slack_core::rtm::RtmEvent;
+        let (url, _asked) = fake_slack(&[]).await;
+        let (mut app, _net) = feed_app(&url);
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        let mut shown = |app: &mut super::App| {
+            terminal.draw(|f| super::draw(f, app)).unwrap();
+            screen(&terminal).join("\n")
+        };
+        assert!(shown(&mut app).contains("a reply"));
+        // Someone reacts to the reply in T1 and edits it (the edit leaves the reactions out).
+        super::handle_rtm(&mut app, RtmEvent::Event(serde_json::json!({"type": "reaction_added", "user": "U2", "reaction": "eyes", "item": {"type": "message", "channel": "C1", "ts": "1729440000.000200"}})));
+        super::handle_rtm(&mut app, RtmEvent::Event(serde_json::json!({"type": "message", "subtype": "message_changed", "channel": "C1", "message": {"type": "message", "user": "U1", "text": "a reply, better", "ts": "1729440000.000200", "thread_ts": "1729440000.000100", "edited": {"user": "U1", "ts": "1729440100.000000"}}})));
+        let now = shown(&mut app);
+        assert!(now.contains("a reply, better (edited)") && now.contains("👀"), "{now}");
+        // T2's parent is deleted: its block says so, in its place.
+        super::handle_rtm(&mut app, RtmEvent::Event(serde_json::json!({"type": "message", "subtype": "message_deleted", "channel": "C3", "deleted_ts": "1729440500.000100", "previous_message": {"ts": "1729440500.000100"}})));
+        let now = shown(&mut app);
+        assert!(now.contains("message not available") && !now.contains("another"), "{now}");
+        assert!(now.find("#general").unwrap() < now.find("#random").unwrap(), "the order kept");
     }
 
     #[tokio::test]
