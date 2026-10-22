@@ -146,6 +146,7 @@ pub fn p() -> Palette {
 pub fn set(name: &str) -> Result<(), String> {
     let palette = palette(name)?;
     *CURRENT.write().unwrap_or_else(|e| e.into_inner()) = palette;
+    super::messages::looks_changed();
     Ok(())
 }
 

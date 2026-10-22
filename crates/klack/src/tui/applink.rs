@@ -171,11 +171,18 @@ pub struct Authors {
     in_flight: usize,
     /// Nothing is asked before this (a request failed).
     paused_until: Option<std::time::Instant>,
+    /// How many answers came (a link's label may have changed with each).
+    answered: u64,
 }
 
 impl Authors {
     pub fn new() -> Authors {
         Authors::default()
+    }
+
+    /// How many answers came so far.
+    pub fn answered(&self) -> u64 {
+        self.answered
     }
 
     pub fn get(&self, channel: &str, ts: &str) -> Option<&str> {
@@ -232,6 +239,7 @@ impl Authors {
     /// Slack's answer for a link (None: no such message, or no name for it).
     pub fn finish(&mut self, channel: &str, ts: &str, name: Option<String>) {
         self.in_flight = self.in_flight.saturating_sub(1);
+        self.answered += 1;
         let state = name.filter(|n| !n.is_empty()).map_or(Author::Missing, Author::Known);
         self.by_channel.entry(channel.to_string()).or_default().insert(ts.to_string(), state);
     }
@@ -257,6 +265,7 @@ impl Authors {
 
     #[cfg(test)]
     pub fn insert(&mut self, channel: &str, ts: &str, name: &str) {
+        self.answered += 1;
         self.by_channel.entry(channel.into()).or_default().insert(ts.into(), Author::Known(name.into()));
     }
 }

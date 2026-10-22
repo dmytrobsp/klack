@@ -467,6 +467,18 @@ impl Workspace {
         (p.huddle_state == "in_a_huddle" && p.huddle_state_expiration_ts > now).then(|| Status { emoji: "headphones".into(), text: super::i18n::tr(IN_A_HUDDLE).into_owned(), in_huddle: true })
     }
 
+    /// The first time after `now` that the status of one of `people` changes by itself: their own runs out, or
+    /// their huddle state does.
+    pub fn next_status_change<'a>(&self, people: impl IntoIterator<Item = &'a str>, now: i64) -> Option<i64> {
+        let ends = |u: &User| {
+            let p = &u.profile;
+            let own = p.status_expiration.filter(|t| *t > now && !p.status_emoji.trim_matches(':').is_empty());
+            let huddle = Some(p.huddle_state_expiration_ts).filter(|t| *t > now && p.huddle_state == "in_a_huddle");
+            own.into_iter().chain(huddle)
+        };
+        people.into_iter().filter_map(|id| self.users.get(id)).flat_map(ends).min()
+    }
+
     /// A person's name for lists, with " (You)" for yourself.
     pub fn person_label(&self, id: &str) -> String {
         let name = self.user_name(id);
@@ -833,6 +845,8 @@ impl Workspace {
 
     /// Number custom emoji not numbered yet (after the list changed).
     pub fn number_emoji(&mut self) {
+        // (Called whenever the custom emoji change: what shows them is built again.)
+        self.look += 1;
         for name in self.custom_emoji.keys() {
             if !self.emoji_index.contains_key(name) {
                 self.emoji_index.insert(name.clone(), self.emoji_ids.len() as u32);
@@ -1172,6 +1186,25 @@ mod tests {
         let ev = serde_json::json!({"type": "user_profile_changed", "user": {"id": "U2", "name": "bob", "profile": {"status_emoji": ":palm_tree:", "status_text": "Vacationing"}}});
         crate::tui::live::apply(&mut w, &ev, None);
         assert_eq!(w.status_of("U2", 600).map(|s| s.emoji), Some("palm_tree".into()));
+    }
+
+    #[test]
+    fn the_next_status_change_of_the_people_shown() {
+        let mut ws = Workspace::default();
+        let person = |id: &str, emoji: &str, expires: Option<i64>, huddle_until: i64| {
+            let mut u = User { id: id.into(), ..Default::default() };
+            (u.profile.status_emoji, u.profile.status_expiration) = (emoji.into(), expires);
+            if huddle_until > 0 {
+                (u.profile.huddle_state, u.profile.huddle_state_expiration_ts) = ("in_a_huddle".into(), huddle_until);
+            }
+            u
+        };
+        for u in [person("U1", ":palm_tree:", Some(900), 0), person("U2", "", None, 700), person("U3", ":x:", Some(500), 0), person("U4", ":x:", Some(0), 0), person("U5", "", Some(650), 0)] {
+            ws.users.insert(u.id.clone(), u);
+        }
+        assert_eq!(ws.next_status_change(["U1", "U2", "U3", "U4", "U5", "U9"], 600), Some(700), "the huddle state first; one expired, one that never does, no emoji, unknown: none");
+        assert_eq!(ws.next_status_change(["U1"], 600), Some(900));
+        assert_eq!(ws.next_status_change(["U3", "U4"], 600), None);
     }
 
     #[test]

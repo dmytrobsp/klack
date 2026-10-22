@@ -47,6 +47,87 @@ pub enum Avatars {
     Pictures,
 }
 
+/// Counts the changes to what built lines show that live outside the workspace: the theme, the time zone, the open
+/// key's name (see [`Look`]). (Tests: each test's thread its own, so tests running alongside do not rebuild its lines.)
+#[cfg(not(test))]
+static LOOK_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+#[cfg(test)]
+thread_local! {
+    static LOOK_EPOCH: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// The theme, the time zone or the open key changed: lines built before are built again.
+pub fn looks_changed() {
+    #[cfg(not(test))]
+    LOOK_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    #[cfg(test)]
+    LOOK_EPOCH.with(|n| n.set(n.get() + 1));
+}
+
+fn look_epoch() -> u64 {
+    #[cfg(not(test))]
+    return LOOK_EPOCH.load(std::sync::atomic::Ordering::Relaxed);
+    #[cfg(test)]
+    LOOK_EPOCH.with(|n| n.get())
+}
+
+/// What message lines built for a view (the Activity view, the Threads feed) show besides the messages themselves:
+/// the width; people, custom emoji and conversations (`Workspace::look`, how many are known); the settings; the
+/// theme, the time zone and the open key ([`looks_changed`]); pictures or initials; the day; who wrote linked
+/// messages and the profile's workspaces; and when the first status shown runs out. Lines built for one are built
+/// again once it no longer [`holds`](Look::holds).
+#[derive(Debug, Clone)]
+pub struct Look {
+    key: LookKey,
+    settings: super::settings::Settings,
+    /// The first time a status shown changes by itself (it expires, a huddle state runs out).
+    until: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct LookKey {
+    width: u16,
+    epoch: u64,
+    people: (u64, usize, usize, usize),
+    emoji_pictures: bool,
+    avatars: Avatars,
+    today: chrono::NaiveDate,
+    links: (usize, usize, usize, u64),
+}
+
+impl LookKey {
+    fn of(here: &Here, width: u16, avatars: Avatars) -> LookKey {
+        let ws = here.ws;
+        LookKey {
+            width,
+            epoch: look_epoch(),
+            people: (ws.look, ws.users.len(), ws.custom_emoji.len(), ws.conversations.len()),
+            emoji_pictures: ws.emoji_pictures,
+            avatars,
+            today: super::clock::now().date_naive(),
+            links: (here.workspaces.len(), here.names.len(), here.shown, here.authors.answered()),
+        }
+    }
+}
+
+impl Look {
+    /// The look of lines built now `width` wide, showing the statuses of `people`.
+    pub fn new<'a>(here: &Here, width: u16, avatars: Avatars, people: impl IntoIterator<Item = &'a str>) -> Look {
+        let until = here.ws.next_status_change(people, chrono::Utc::now().timestamp());
+        Look { key: LookKey::of(here, width, avatars), settings: here.ws.settings.clone(), until }
+    }
+
+    /// Whether lines built with this look still look so now, `width` wide.
+    pub fn holds(&self, here: &Here, width: u16, avatars: Avatars) -> bool {
+        self.key == LookKey::of(here, width, avatars) && self.settings == here.ws.settings && self.until.is_none_or(|t| chrono::Utc::now().timestamp() < t)
+    }
+
+    /// The width it was built for.
+    pub fn width(&self) -> u16 {
+        self.key.width
+    }
+}
+
 /// "Lena Park" → "LP", "deploybot" → "DE": two cells wide (one wide character alone).
 pub fn initials(name: &str) -> String {
     use unicode_width::UnicodeWidthChar;
@@ -525,6 +606,7 @@ static OPEN_KEY: std::sync::RwLock<String> = std::sync::RwLock::new(String::new(
 /// The key that opens a message's things, for "+N more lines · ␣o to view".
 pub fn set_open_key(key: String) {
     *OPEN_KEY.write().unwrap_or_else(|e| e.into_inner()) = key;
+    looks_changed();
 }
 
 /// A snippet's first lines in a code box (clipped, not wrapped), then how many are left.

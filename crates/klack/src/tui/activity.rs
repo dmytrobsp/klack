@@ -304,6 +304,24 @@ pub struct Activity {
     links: Vec<(Rect, String, Option<AppLink>, bool)>,
     /// Pictures on screen but not loaded at the last draw.
     pub pictures: Vec<(File, (u16, u16))>,
+    /// How many times the list was built (laid out) to be drawn.
+    pub builds: u64,
+    /// The list changed since it was last built.
+    dirty: bool,
+    /// The list as last built.
+    cache: Option<Cache>,
+}
+
+/// The list as last built for drawing, and what from: the tab, the filter, how many items and messages (each change
+/// to them also marks it `dirty`) and how it looks; the items shown (indices into `items`), the lines, the item each
+/// line belongs to, and where its links are.
+struct Cache {
+    of: (Tab, bool, usize, usize),
+    look: messages::Look,
+    visible: Vec<usize>,
+    built: Built,
+    owners: Vec<Option<usize>>,
+    links: Vec<messages::LinkSpot>,
 }
 
 impl Activity {
@@ -311,6 +329,20 @@ impl Activity {
     pub fn visible(&self) -> Vec<usize> {
         let Some(items) = &self.items else { return Vec::new() };
         (0..items.len()).filter(|&n| !self.unread_only || items[n].unread).collect()
+    }
+
+    /// The message of an item came (None: it is gone).
+    pub fn add_message(&mut self, key: (String, String), message: Option<Message>) {
+        self.messages.insert(key, message);
+        self.dirty = true;
+    }
+
+    /// Mark the items opened in this run read (see [`apply_seen`]).
+    pub fn apply_seen(&mut self, seen: &super::threads::Seen) {
+        if let Some(items) = self.items.as_mut() {
+            apply_seen(items, seen);
+            self.dirty = true;
+        }
     }
 
     /// Move the selection by `delta` shown items.
@@ -331,6 +363,7 @@ impl Activity {
 
     /// Show only the unread items, or all again; the selection stays on a shown item (the next one, else the one before).
     pub fn toggle_unread(&mut self) {
+        self.dirty = true;
         self.unread_only = !self.unread_only;
         self.keep_selection_shown();
     }
@@ -348,6 +381,7 @@ impl Activity {
         if tab == self.tab {
             return;
         }
+        self.dirty = true;
         let here = Kept { items: self.items.take(), selected: self.selected, scroll: self.scroll, cursor: self.cursor.take(), loading: self.loading };
         self.kept.insert(self.tab, here);
         let there = self.kept.remove(&tab).unwrap_or_default();
@@ -359,6 +393,7 @@ impl Activity {
     /// Tab `tab`'s first page came (`cursor`: where the next one starts): shown if it is the tab shown (the selected
     /// item stays selected), else kept for it.
     pub fn set_items(&mut self, tab: Tab, items: Vec<Item>, cursor: Option<String>) {
+        self.dirty = true;
         if tab != self.tab {
             let kept = self.kept.entry(tab).or_default();
             (kept.items, kept.cursor, kept.loading) = (Some(items), cursor, false);
@@ -373,6 +408,7 @@ impl Activity {
     /// The next page of tab `tab` came: its items not listed yet go at the end (none asked for — the list was loaded
     /// afresh meanwhile —: left out).
     pub fn add_page(&mut self, tab: Tab, page: Vec<Item>, cursor: Option<String>) {
+        self.dirty = true;
         let (items, at, loading) = if tab == self.tab {
             (&mut self.items, &mut self.cursor, &mut self.loading)
         } else {
@@ -394,6 +430,7 @@ impl Activity {
     /// An item Slack pushed (new, or changed: read, a newer reply): into each loaded list it belongs to, in its place
     /// by time (newest first); the selected item stays selected.
     pub fn upsert(&mut self, it: Item) {
+        self.dirty = true;
         let key = self.selected_item().map(|i| i.key.clone());
         let lists = std::iter::once((self.tab, &mut self.items)).chain(self.kept.iter_mut().map(|(t, k)| (*t, &mut k.items)));
         for (_, items) in lists.filter(|(tab, _)| tab.lists(&it.ty)) {
@@ -407,6 +444,7 @@ impl Activity {
 
     /// The item `key` is gone (Slack deleted it): out of every list.
     pub fn remove_key(&mut self, key: &str) {
+        self.dirty = true;
         let selected = self.selected_item().map(|i| i.key.clone()).filter(|k| k != key);
         for items in std::iter::once(&mut self.items).chain(self.kept.values_mut().map(|k| &mut k.items)).flatten() {
             items.retain(|o| o.key != key);
@@ -485,7 +523,8 @@ impl Activity {
     pub fn wanted(&self) -> Vec<(String, String)> {
         let Some(items) = &self.items else { return vec![] };
         let shown = self.visible();
-        let positions: Vec<usize> = self.shown.iter().chain(std::iter::once(&self.selected)).filter_map(|n| shown.iter().position(|s| s == n)).collect();
+        // (`shown` is in order: found by halving.)
+        let positions: Vec<usize> = self.shown.iter().chain(std::iter::once(&self.selected)).filter_map(|n| shown.binary_search(n).ok()).collect();
         let (low, high) = (positions.iter().min().copied().unwrap_or(0), positions.iter().max().copied().unwrap_or(0));
         let mut out: Vec<(String, String)> = Vec::new();
         for &n in &shown[low.saturating_sub(5)..(high + 15).min(shown.len())] {
@@ -538,18 +577,6 @@ impl Activity {
         let [bar, list] = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(inner);
         self.draw_tabs(f, bar);
         self.list = list;
-        let shown = self.visible();
-        let note = match &self.items {
-            None if self.failed.is_some() => Some(Line::styled(format!("{}: {}", tr(FAILED), self.failed.as_deref().unwrap_or_default()), Style::default().fg(p.danger))),
-            None => Some(Line::styled(tr(LOADING).into_owned(), Style::default().fg(p.dim))),
-            Some(items) if shown.is_empty() => Some(Line::styled(tr(if items.is_empty() { EMPTY } else { NONE_UNREAD }).into_owned(), Style::default().fg(p.dim))),
-            Some(_) => None,
-        };
-        if let Some(note) = note {
-            f.render_widget(Paragraph::new(note).wrap(ratatui::widgets::Wrap { trim: true }), list);
-            return;
-        }
-        let items: Vec<Item> = self.items.as_deref().unwrap_or_default().iter().enumerate().filter(|(n, _)| shown.contains(n)).map(|(_, it)| it.clone()).collect();
         let avatars = if !ws.settings.messages.avatars {
             Avatars::Off
         } else if media.avatars {
@@ -557,8 +584,23 @@ impl Activity {
         } else {
             Avatars::Initials
         };
-        let built = build(here, &items, &self.messages, list.width, super::clock::now().date_naive(), avatars);
-        let owners: Vec<Option<usize>> = built.owners.iter().map(|o| o.map(|n| shown[n])).collect();
+        if self.items.is_some() {
+            self.refresh(here, list.width, avatars);
+        }
+        let none_shown = self.cache.as_ref().is_none_or(|c| c.visible.is_empty());
+        let note = match &self.items {
+            None if self.failed.is_some() => Some(Line::styled(format!("{}: {}", tr(FAILED), self.failed.as_deref().unwrap_or_default()), Style::default().fg(p.danger))),
+            None => Some(Line::styled(tr(LOADING).into_owned(), Style::default().fg(p.dim))),
+            Some(items) if none_shown => Some(Line::styled(tr(if items.is_empty() { EMPTY } else { NONE_UNREAD }).into_owned(), Style::default().fg(p.dim))),
+            Some(_) => None,
+        };
+        let Some(cache) = self.cache.take().filter(|_| note.is_none()) else {
+            if let Some(note) = note {
+                f.render_widget(Paragraph::new(note).wrap(ratatui::widgets::Wrap { trim: true }), list);
+            }
+            return;
+        };
+        let (built, owners, shown) = (&cache.built, &cache.owners, &cache.visible);
         let height = list.height as usize;
         // Bring a selection moved by the keys into view (with its date header, when it is the first of its day).
         if std::mem::take(&mut self.follow) {
@@ -593,7 +635,7 @@ impl Activity {
         let slots: Vec<ImageSlot> = built.slots.iter().filter(|s| s.line + s.size.1 as usize > start && s.line < end).cloned().collect();
         messages::fill_rows(f, list, &rows, &[selected], self.hover.as_ref(), &slots, start, 0, media);
         f.render_widget(Paragraph::new(lines), list);
-        for spot in messages::link_spots(here, &built.messages, &built.lines, &built.message_rows).iter().filter(|s| (start..end).contains(&s.line)) {
+        for spot in cache.links.iter().filter(|s| (start..end).contains(&s.line)) {
             let (x, y) = (list.x + spot.col, list.y + (spot.line - start) as u16);
             let width = spot.width.min(list.right().saturating_sub(x));
             messages::hyperlink(f.buffer_mut(), x, y, width, &spot.url);
@@ -601,12 +643,35 @@ impl Activity {
         }
         super::scroll::indicator_beside(f, area, list, start, end - start, total, border);
         self.pictures = messages::draw_pictures(f, list, slots, start, 0, media);
-        for n in rows.iter().flatten() {
-            if !self.shown.contains(n) {
-                self.shown.push(*n);
-            }
-        }
+        let mut on_screen = HashSet::new();
+        self.shown = rows.iter().flatten().copied().filter(|n| on_screen.insert(*n)).collect();
         self.rows = rows;
+        self.cache = Some(cache);
+    }
+
+    /// Build the list again for drawing `width` wide if anything in it changed since it was last built: its items or
+    /// their messages, the tab or the filter, or what it looks like ([`messages::Look`]: people, the settings, …).
+    fn refresh(&mut self, here: &Here, width: u16, avatars: Avatars) {
+        let of = (self.tab, self.unread_only, self.items.as_ref().map_or(0, Vec::len), self.messages.len());
+        if !self.dirty && self.cache.as_ref().is_some_and(|c| c.of == of && c.look.holds(here, width, avatars)) {
+            return;
+        }
+        let visible = self.visible();
+        let all = self.items.as_deref().unwrap_or_default();
+        let items: Vec<&Item> = visible.iter().map(|&n| &all[n]).collect();
+        let built = build(here, &items, &self.messages, width, super::clock::now().date_naive(), avatars);
+        let owners = built.owners.iter().map(|o| o.map(|n| visible[n])).collect();
+        let links = messages::link_spots(here, &built.messages, &built.lines, &built.message_rows);
+        // Whose statuses it shows: who reacted, the authors.
+        let reacted = items.iter().filter_map(|it| match &it.kind {
+            Kind::Reaction { user, .. } => Some(user.as_str()),
+            _ => None,
+        });
+        let authors = items.iter().flat_map(|it| [it.author.as_deref(), self.messages.get(&it.message_key()).and_then(Option::as_ref).and_then(|m| m.user.as_deref())]).flatten();
+        let look = messages::Look::new(here, width, avatars, reacted.chain(authors));
+        self.cache = Some(Cache { of, look, visible, built, owners, links });
+        self.dirty = false;
+        self.builds += 1;
     }
 
     /// The tab bar: each tab's name (the one shown lit), then whether only the unread items are shown; cut when narrow.
@@ -648,12 +713,12 @@ pub struct Built {
 /// headers and the blank rows between items). [`build`] with pictures is what the view draws.
 #[cfg(test)]
 pub fn layout(ws: &Workspace, items: &[Item], messages: &HashMap<(String, String), Option<Message>>, width: u16, today: NaiveDate) -> (Vec<Line<'static>>, Vec<Option<usize>>) {
-    let built = build(&Here::alone(ws), items, messages, width, today, Avatars::Off);
+    let built = build(&Here::alone(ws), &items.iter().collect::<Vec<_>>(), messages, width, today, Avatars::Off);
     (built.lines, built.owners)
 }
 
 /// [`layout`] with the avatars, the custom emoji pictures and the links (`today`: the day "Today" is).
-pub fn build(here: &Here, items: &[Item], messages: &HashMap<(String, String), Option<Message>>, width: u16, today: NaiveDate, avatars: Avatars) -> Built {
+pub fn build(here: &Here, items: &[&Item], messages: &HashMap<(String, String), Option<Message>>, width: u16, today: NaiveDate, avatars: Avatars) -> Built {
     let mut out = Built::default();
     let dim = Style::default().fg(super::theme::p().dim);
     // As wide as a conversation's text in a pane this wide (the gutter goes before it).
@@ -1233,6 +1298,58 @@ mod tests {
         narrow.draw(|f| a.draw(f, f.area(), &Here::alone(&ws), true, &media)).unwrap();
         let buf = narrow.backend().buffer();
         assert!((0..20).map(|x| buf[(x, 1)].symbol()).collect::<String>().contains("All"));
+    }
+
+    #[test]
+    fn the_list_is_built_again_only_when_something_in_it_changes() {
+        let mut ws = ws();
+        let media = super::super::media::Media::with(ratatui_image::picker::Picker::halfblocks());
+        let it = |key: &str, unread: bool| item(key, Kind::Mention("at_user".into()), "C1", key, Some("U2"), unread, noon(0) + key.parse::<f64>().unwrap());
+        let mut a = Activity::default();
+        a.set_items(Tab::All, vec![it("2.0", true), it("1.0", false)], None);
+        let draw = |a: &mut Activity, ws: &Workspace, width: u16| {
+            let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, 30)).unwrap();
+            terminal.draw(|f| a.draw(f, f.area(), &Here::alone(ws), true, &media)).unwrap();
+            let buf = terminal.backend().buffer().clone();
+            (0..buf.area.height).map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect::<String>()).collect::<Vec<_>>().join("\n")
+        };
+        draw(&mut a, &ws, 80);
+        assert_eq!(a.builds, 1);
+        // Frames with nothing new in the list — the pointer or the selection moving, the clock — are not built again.
+        a.hover_at(5, 4);
+        draw(&mut a, &ws, 80);
+        a.move_by(1);
+        draw(&mut a, &ws, 80);
+        let screen = draw(&mut a, &ws, 80);
+        assert_eq!(a.builds, 1, "{screen}");
+        assert!(screen.contains("Loading…"));
+        // A message, an item, the filter, a person, the settings, the width, the tab: built again, once each.
+        a.add_message(("C1".into(), "2.0".into()), Some(Message { ts: "2.0".into(), user: Some("U2".into()), text: "the message itself".into(), ..Default::default() }));
+        assert!(draw(&mut a, &ws, 80).contains("the message itself"));
+        a.upsert(it("3.0", true));
+        assert!(draw(&mut a, &ws, 80).contains("Mention in #c"));
+        a.toggle_unread();
+        draw(&mut a, &ws, 80);
+        assert_eq!(a.builds, 4);
+        crate::tui::live::apply(&mut ws, &serde_json::json!({"type": "user_profile_changed", "user": {"id": "U2", "profile": {"display_name": "annie"}}}), None);
+        assert!(draw(&mut a, &ws, 80).contains("annie"), "a new name shows");
+        ws.settings.messages.avatars = !ws.settings.messages.avatars;
+        draw(&mut a, &ws, 80);
+        draw(&mut a, &ws, 100);
+        a.remove_key("3.0");
+        draw(&mut a, &ws, 100);
+        assert_eq!(a.builds, 8);
+        a.set_tab(Tab::Dms);
+        draw(&mut a, &ws, 100);
+        a.set_tab(Tab::All);
+        draw(&mut a, &ws, 100);
+        draw(&mut a, &ws, 100);
+        assert_eq!(a.builds, 9, "its list again (none for the tab not loaded)");
+        let mut seen = super::super::threads::Seen::new();
+        seen.insert("2.0".into(), noon(0) + 10.0);
+        a.apply_seen(&seen);
+        draw(&mut a, &ws, 100);
+        assert_eq!(a.builds, 10, "an item read");
     }
 
     #[test]

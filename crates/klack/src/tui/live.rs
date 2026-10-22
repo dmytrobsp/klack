@@ -367,6 +367,7 @@ pub fn apply(ws: &mut Workspace, ev: &Value, current: Option<&str>) -> Effects {
             if let (Some(c), Some(name)) = (ws.conversations.get_mut(id), ev["channel"]["name"].as_str()) {
                 c.name = name.to_string();
                 fx.rebuild_sidebar = true;
+                ws.look += 1;
             }
         }
         // Only the profile (maybe only its changed fields): merged into the person's, the rest kept.

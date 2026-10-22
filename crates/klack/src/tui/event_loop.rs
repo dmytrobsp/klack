@@ -1639,11 +1639,9 @@ impl App {
             if it.unread {
                 self.ws.activity_item_read(&it.ty);
             }
-            if let Some(items) = self.activity.items.as_mut() {
-                super::activity::apply_seen(items, &self.seen);
-                if self.ws.activity_counts.is_none() {
-                    self.ws.activity_unread = super::activity::unread_count(items);
-                }
+            self.activity.apply_seen(&self.seen);
+            if let Some(items) = self.activity.items.as_ref().filter(|_| self.ws.activity_counts.is_none()) {
+                self.ws.activity_unread = super::activity::unread_count(items);
             }
         }
         let Some((channel, ts, thread_ts)) = self.activity.target() else { return };
@@ -6075,7 +6073,7 @@ fn handle_net(app: &mut App, msg: Net) {
             Err(e) => tracing::warn!("the newest replies of a thread in the feed: {e}"),
         },
         Net::ActivityMessage { channel, ts, message } => {
-            app.activity.messages.insert((channel, ts), message);
+            app.activity.add_message((channel, ts), message);
         }
         Net::SnippetText { id, result } => {
             if let Some(v) = app.snippet.as_mut().filter(|v| v.file.id == id) {

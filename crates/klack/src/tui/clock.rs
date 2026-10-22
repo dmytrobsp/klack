@@ -11,6 +11,7 @@ static ZONE: RwLock<Option<chrono_tz::Tz>> = RwLock::new(None);
 pub fn set(name: &str) -> Result<(), String> {
     let zone = if name.trim().is_empty() { None } else { Some(name.trim().parse::<chrono_tz::Tz>().map_err(|_| format!("unknown time zone '{}'", name.trim()))?) };
     *ZONE.write().unwrap_or_else(|e| e.into_inner()) = zone;
+    super::messages::looks_changed();
     Ok(())
 }
 
