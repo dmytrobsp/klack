@@ -1,0 +1,381 @@
+# ttyak distribution: the accounts you set up
+
+This page lists the accounts, keys and certificates that ttyak's releases need. Only a person can do these steps
+(identity checks, payment, captchas). Claude does the rest: DNS records, repositories, workflows, signing in CI.
+
+Prices and steps were checked on **2026-10-23**. Websites change. Where a step could not be confirmed, it says
+**(verify)**: if what you see is different, do what the site says and tell Claude what was different.
+
+## Safety rules for every step
+
+- **Never paste a secret into a chat with Claude**, into an issue, or into a file inside the repository.
+- Secrets go into GitHub in one of two ways:
+  - In your own terminal: `gh secret set NAME -R dmytrobsp/ttyak`. It asks for the value and hides it. Paste the value
+    and press Enter.
+  - Or in the browser: the repository's **Settings → Secrets and variables → Actions → New repository secret**.
+- Never use `gh secret set … --body VALUE`: that puts the secret into your shell history.
+- To send a whole file (for example the Apple key file): `gh secret set NAME -R dmytrobsp/ttyak < path/to/file`.
+- If GitHub says the repository `dmytrobsp/ttyak` is not found, the rename is not done yet. Wait until Claude says it is
+  done. (Secrets stay with the repository when it is renamed.)
+- To check what you have set: `gh secret list -R dmytrobsp/ttyak`. It shows names only, never values. Claude can run it
+  too.
+- When a step is done, tell Claude "the X secrets are set". Do not tell the values.
+
+## Order and waiting times
+
+Start the slow ones first. They wait for other people.
+
+| Order | What | Your time | Waiting | Price (2026-10-23) |
+|---|---|---|---|---|
+| 1 | SSL.com certificate (Windows) | ~30 min | ID checks: 3–5 days ("standard validation") | $129/year + eSigner $180/year |
+| 2 | Apple Developer Program (macOS) | ~20 min | review: often ~2 days, sometimes weeks (verify) | 99 USD/year |
+| 3 | Domain `ttyak.sh` at Porkbun | ~15 min | none (DNS: minutes to hours) | $31.20 first year, then $46.65/year |
+| 4 | AUR account (Arch Linux) | ~10 min | none | free |
+| 5 | Chocolatey account (Windows) | ~10 min | email confirmation | free |
+| 6 | GitHub: fork of winget-pkgs, two tokens | ~15 min | the token for the tap and bucket waits until Claude makes those repositories | free |
+| later | Apple API key and certificate | ~20 min | after Apple approves you | — |
+| later | SSL.com eSigner enrolment | ~15 min | after SSL.com validates you | — |
+
+Total per year, roughly: $46.65 + $99 + $129 + $180 ≈ **$455**.
+
+Start 1 and 2 today. 3 to 6 can be done any time, in any order.
+
+## All the secrets
+
+The release workflows use these GitHub secrets, by name only. A workflow job skips itself with a notice when its
+secrets are missing.
+
+| Secret name | What it is | Who sets it | Used for |
+|---|---|---|---|
+| `PUBLISH_TOKEN` | GitHub fine-grained token: Contents read/write on `homebrew-ttyak` and `scoop-ttyak` | you | Homebrew tap, Scoop bucket |
+| `WINGET_TOKEN` | GitHub classic token with the `public_repo` scope | you | winget pull requests |
+| `CHOCOLATEY_API_KEY` | Chocolatey API key | you | Chocolatey push |
+| `AUR_SSH_KEY` | private SSH key for the AUR | Claude's script `tools/publish/aur-key.sh` | AUR push |
+| `APPLE_P12` | Developer ID Application certificate and its key (p12, base64) | Claude's script `tools/signing/apple-csr.sh` | macOS signing |
+| `APPLE_P12_PASSWORD` | the p12's password (random) | Claude's script `tools/signing/apple-csr.sh` | macOS signing |
+| `APPLE_API_KEY` | the App Store Connect API key file (`AuthKey_….p8`), its whole text | you | macOS notarization |
+| `APPLE_API_KEY_ID` | that key's Key ID | you | macOS notarization |
+| `APPLE_API_ISSUER` | the Issuer ID | you | macOS notarization |
+| `APPLE_TEAM_ID` | your Apple Team ID | you | macOS signing check |
+| `ES_USERNAME` | your SSL.com account username | you | Windows signing |
+| `ES_PASSWORD` | your SSL.com account password | you | Windows signing |
+| `ES_CREDENTIAL_ID` | the eSigner credential ID of the certificate | you | Windows signing |
+| `ES_TOTP_SECRET` | the eSigner TOTP "secret code" | you | Windows signing |
+
+Not a GitHub secret: the Porkbun API key. It goes into a file on this machine,
+`~/.config/ttyak-site/porkbun.json` (see the Porkbun section). Claude's DNS script reads it from there and never prints
+it.
+
+Claude's scripts never print a secret. They pipe it straight into `gh secret set`.
+
+---
+
+## 1. SSL.com: the Windows code-signing certificate
+
+**What it is for.** Windows shows your legal name as the publisher of `ttyak.exe`. The certificate is an
+"Individual Validation" (IV) code-signing certificate. Its key lives in SSL.com's cloud ("eSigner"), so CI can sign
+without a USB token.
+
+**Price (2026-10-23).** IV code signing: $129 for 1 year (longer terms are cheaper per year, down to $96.75/year for 5
+years). eSigner "Tier 1": $180/year billed yearly (240 signings a year), or $20/month billed monthly (20 signings a
+month). The first 30 days of eSigner are free. ttyak signs one file per release. Expedited validation (+$599) is not
+needed.
+
+**What you need.** A government photo ID that shows your full name, address, year of birth and photo. A camera for a
+photo of you holding that ID next to your face (at least 5 megapixels). If your ID does not show your address, SSL.com
+may ask for another document (verify).
+
+**Steps (start today).**
+
+1. Open the IV code-signing page: <https://www.ssl.com/products/software-integrity/code-signing/iv/>.
+2. Choose **1 year** (or more). Where it asks how the key is stored, choose **eSigner Cloud Signing**, not a YubiKey
+   (verify the exact label).
+3. Pay, and create your SSL.com account. Use your **legal name**, exactly as on your ID. This name goes on the
+   certificate and Windows shows it.
+4. Prove who you are. Either:
+   - the online check at <https://secure.ssl.com/users/iv_verification> (AI-based, after you log in), or
+   - **Orders** → your order → **Documents** → **UPLOAD DOCUMENTS**: the ID (front, and back if it has one) and the
+     photo of you holding it. Then **SUBMIT DOCUMENTS**.
+5. Answer SSL.com's emails or phone call if they contact you (verify whether they call). Standard validation takes 3–5
+   days.
+
+**When SSL.com says you are validated: eSigner enrolment.**
+
+6. Install an authenticator app on your phone if you have none (for example Google Authenticator or Authy).
+7. Log in to SSL.com → **Orders** → your order → **details**.
+8. In **eSigner Cloud Signing Enrollment**, under **Second factor authentication**, choose **OTP APP**.
+9. Make a **4 digit PIN**. Save it in your password manager.
+10. Click **create OTP and issue certificate**. A QR code appears, with a **secret code** next to it.
+11. Scan the QR code with your authenticator app.
+12. Set the TOTP secret now, in your terminal: `gh secret set ES_TOTP_SECRET -R dmytrobsp/ttyak`, and paste the
+    **secret code**.
+    - SSL.com says the QR code is shown only once. Other guides say you can see it (and the secret code) again: order
+      → **download** → enter the PIN → **Show QR Code** (verify). Do not "reset" the QR code later: that may replace
+      the secret, and CI signing would stop until you set the new one.
+13. Find the **credential ID**: on the order's details page, in **SIGNING CREDENTIALS** (verify). It looks like a long
+    id with dashes. Set it: `gh secret set ES_CREDENTIAL_ID -R dmytrobsp/ttyak`. If you cannot find it, tell Claude:
+    CI can list it with the signer's `get_credential_ids` command.
+14. Set your login: `gh secret set ES_USERNAME -R dmytrobsp/ttyak` (your SSL.com username, the one you log in with)
+    and `gh secret set ES_PASSWORD -R dmytrobsp/ttyak` (your SSL.com password).
+15. Buy the eSigner subscription (Tier 1, yearly) when SSL.com asks, before the 30 free days end (verify where it
+    asks).
+
+**Remember.** With these four values anyone can sign programs in your name. Keep them only in GitHub secrets, your
+password manager and the authenticator app. If you change your SSL.com password, set `ES_PASSWORD` again.
+
+**Claude then:** signs `ttyak.exe` in the release workflow with SSL.com's GitHub action `sslcom/esigner-codesign`
+(Task 20).
+
+---
+
+## 2. Apple Developer Program: signing and notarizing for macOS
+
+**What it is for.** macOS opens ttyak without a warning. Apple checks ("notarizes") each build. You enrol as an
+**individual**; the certificate carries your legal name.
+
+**Price (2026-10-23).** 99 USD per year (shown in your local currency). It renews every year until you cancel.
+
+**What you need.** An Apple Account with two-factor authentication on
+(<https://support.apple.com/en-us/102660>). Your **legal first and last name** in that Apple Account (no nickname: a
+nickname delays the review). A real street address (no P.O. box). A photo ID (a passport is accepted in most
+regions). A payment card in your name (a card in another person's name may cause a manual review).
+
+**Steps (start today).**
+
+1. Easiest: the **Apple Developer app** on an iPhone, iPad, or the Apple-silicon Mac. Use the **same device** from
+   start to end. (The web, <https://developer.apple.com/programs/enroll/>, also has "Start your enrollment" (verify
+   that it works for your region).)
+2. Open the app → **Account** tab → sign in.
+3. Tap **Enroll Now** → **Continue**.
+4. Enter your legal first and last name and your phone number.
+5. Take a photo of your photo ID when it asks.
+6. Choose **Individual** as the entity type. Agree to the license agreement.
+7. Under **Complete purchase**, tap **Subscribe** and pay.
+8. Wait for Apple's email. Apple gives no official time. Reports say often about 2 days, sometimes weeks. If nothing
+   happens after a week, contact Apple: <https://developer.apple.com/contact/>.
+
+**When Apple has approved you: the API key (for notarization).**
+
+9. Sign in to App Store Connect: <https://appstoreconnect.apple.com/> → **Users and Access** → **Integrations**.
+10. If it shows **Request Access**: click it, tick the box, **Submit**. Apple approves it "case by case" (verify how
+    long; often at once).
+11. Click **Team Keys** → **Generate API Key** (or **+**).
+12. Name: `ttyak notary`. Access: **Developer** (verify: reports say Developer is enough for notarization; if Claude's
+    first run says "unauthorized", make a new key with **App Manager** and revoke the old one).
+13. Click **Generate**. Then download the key file (the **Download** link in the key's row; verify the label). You can
+    download it **only once**. The file is called `AuthKey_XXXXXXXXXX.p8`.
+14. On the same page you see the **Issuer ID** (above the list) and the **Key ID** (in the key's row).
+15. Set the four secrets in your terminal:
+    - `gh secret set APPLE_API_KEY -R dmytrobsp/ttyak < ~/Downloads/AuthKey_XXXXXXXXXX.p8` (use your file's name)
+    - `gh secret set APPLE_API_KEY_ID -R dmytrobsp/ttyak` (paste the Key ID)
+    - `gh secret set APPLE_API_ISSUER -R dmytrobsp/ttyak` (paste the Issuer ID)
+    - `gh secret set APPLE_TEAM_ID -R dmytrobsp/ttyak` (paste the Team ID: <https://developer.apple.com/account> →
+      **Membership details** → **Team ID**, 10 characters)
+16. Move the `.p8` file into your password manager, or delete it. If it is lost, revoke the key and make a new one.
+
+**Then: the Developer ID Application certificate (with Claude).** Apple lets only the Account Holder (you) make this
+certificate, on the website. Claude found no way to make it with the API key.
+
+17. Tell Claude you are ready. Claude runs `tools/signing/apple-csr.sh`. It makes a private key and a certificate
+    request in `~/.config/ttyak-signing/` (your backup; only you can read it) and prints the request file's path.
+18. Open <https://developer.apple.com/account/resources/certificates/list> → **+**.
+19. Under **Software**, choose **Developer ID**, then **Developer ID Application** → **Continue**.
+20. If it asks for a "Developer ID Certificate Intermediary", choose **G2 Sub-CA (Xcode 11.4.1 or later)**.
+21. **Choose File** → the `.certSigningRequest` file Claude's script printed → **Continue** → **Download**.
+22. Tell Claude the `.cer` file is in `~/Downloads`. The script puts the certificate into `APPLE_P12` and
+    `APPLE_P12_PASSWORD`. It prints nothing secret.
+
+**Remember.** Certificates from Apple's G2 authority are **valid for one year**. Each year: steps 17–22 again (about 10
+minutes). Builds signed before then stay valid.
+
+**Claude then:** signs and notarizes both macOS binaries in the release workflow (Task 19).
+
+---
+
+## 3. Porkbun: the domain `ttyak.sh`
+
+**What it is for.** The site and the install one-liners live at `https://ttyak.sh` (for example
+`curl -fsSL https://ttyak.sh/install.sh | sh`). Claude sets the DNS records with Porkbun's API.
+
+**Price (2026-10-23).** $31.20 for the first year, then $46.65 per year. WHOIS privacy is free. On 2026-10-22 the `.sh`
+registry said `ttyak.sh` was not registered.
+
+**Steps.**
+
+1. Go to <https://porkbun.com>, make an account, and turn on two-factor login in the account settings.
+2. Search for `ttyak.sh`. Add it to the cart. Keep **WHOIS privacy** on. Turn **auto-renew** on. Do not buy extras
+   (email, hosting, SSL: GitHub gives the site a free certificate).
+3. Pay.
+4. Turn on API access for the domain: **ACCOUNT** (top right) → **Domain Management** → find `ttyak.sh` → **Details**
+   → turn **API Access** on.
+5. Make the key: **ACCOUNT** → **API Access**.
+   - Title: `ttyak dns`.
+   - Permissions: **Manage, but no purchases** (verify the label). It must be able to change DNS records.
+   - Limit it to the domain `ttyak.sh`. Do not limit it to an IP address (your home IP can change).
+   - Click **Create API Key**.
+6. A box shows the **API Key** and the **Secret Key**. The Secret Key is shown **only this one time**. Do not close the
+   page yet.
+7. In your terminal, make the private file (these lines work in fish and bash):
+
+   ```
+   mkdir -p ~/.config/ttyak-site
+   chmod 700 ~/.config/ttyak-site
+   touch ~/.config/ttyak-site/porkbun.json
+   chmod 600 ~/.config/ttyak-site/porkbun.json
+   ```
+
+8. Open `~/.config/ttyak-site/porkbun.json` in your editor (for example `nano ~/.config/ttyak-site/porkbun.json`).
+   Write exactly this, with your two keys between the quotes, and save:
+
+   ```
+   {"apikey": "YOUR_API_KEY", "secretapikey": "YOUR_SECRET_KEY"}
+   ```
+
+9. Now you can close the Porkbun page. If you lose the Secret Key, delete the key on Porkbun and make a new one.
+10. Tell Claude the domain and the key file are ready.
+
+**Claude then:** checks the file's mode, sets the records for GitHub Pages, sets the custom domain and HTTPS
+(Task 21). The script only reads the file; it never prints the keys.
+
+---
+
+## 4. AUR: the Arch Linux package `ttyak-bin`
+
+**What it is for.** Arch users install with an AUR helper (`yay -S ttyak-bin`). CI pushes each new version over SSH.
+
+**Price.** Free.
+
+**Steps.**
+
+1. Open <https://aur.archlinux.org/register>.
+2. Fill in **Username** and **Email Address**. You may tick **Hide Email Address**. Leave **SSH Public Key** empty for
+   now.
+3. The form shows a captcha: a command that starts with `LC_ALL=C pacman -V`. It needs `pacman`, which only Arch has.
+   Either ask Claude to run it for you in a throwaway Arch container (the answer is not secret), or run it yourself:
+   `podman run --rm docker.io/library/archlinux:latest sh -c 'PASTE_THE_COMMAND_HERE'`. Type the 6 characters into
+   **Answer**.
+4. Click **Create**. The form has no password field: the AUR emails you a link to set your password.
+5. Tell Claude your AUR account exists. Claude runs `tools/publish/aur-key.sh`: it makes a new SSH key, stores the
+   private key straight into the secret `AUR_SSH_KEY`, and prints only the **public** key (one line starting with
+   `ssh-ed25519`). The public key is not secret.
+6. On the AUR: log in → **My Account** → paste the public key into **SSH Public Key** → type **Your current
+   password** → **Update**.
+7. Tell Claude it is done.
+
+**Claude then:** makes the package and pushes it on each release (Task 18). On 2026-10-23 the name `ttyak-bin` was
+free.
+
+---
+
+## 5. Chocolatey: the Windows package `ttyak`
+
+**What it is for.** Windows users install with `choco install ttyak`. CI pushes each new version. Chocolatey reviews
+every version before it is public (automatic checks start about 30 minutes after a push, then a person looks).
+
+**Price.** Free.
+
+**Steps.**
+
+1. Open <https://community.chocolatey.org/> → **Sign Up** (verify the label), make an account, confirm the email.
+2. Log in at <https://push.chocolatey.org/> and open <https://push.chocolatey.org/account>.
+3. Copy the **API Key** shown there.
+4. In your terminal: `gh secret set CHOCOLATEY_API_KEY -R dmytrobsp/ttyak`, and paste the key.
+5. Tell Claude it is done.
+
+**Claude then:** makes the package and pushes it on each release (Task 18). Chocolatey sends review emails to you:
+if a review asks for a change, forward the request (not any key) to Claude. On 2026-10-23 the id `ttyak` was free.
+
+---
+
+## 6. GitHub: winget fork and two tokens
+
+**What it is for.** The release workflow pushes to two small repositories of yours (the Homebrew tap
+`dmytrobsp/homebrew-ttyak` and the Scoop bucket `dmytrobsp/scoop-ttyak`) and opens a pull request to Microsoft's
+winget list (`microsoft/winget-pkgs`) from your account.
+
+**Price.** Free.
+
+### 6a. Fork winget-pkgs (once)
+
+The winget tool (Komac) sends its pull request from **your fork** of `microsoft/winget-pkgs`. It does not make the fork
+itself.
+
+1. Open <https://github.com/microsoft/winget-pkgs> → **Fork**.
+2. Owner: your account. Name: `winget-pkgs` (keep it). **Create fork**.
+3. On the first ttyak pull request, Microsoft's bot asks you to sign their Contributor License Agreement (once for all
+   Microsoft repositories). Do what the bot's comment says: usually a reply `@microsoft-github-policy-service agree`
+   (verify the wording in the bot's comment). Claude will tell you when that pull request exists.
+
+### 6b. `WINGET_TOKEN`: a classic token
+
+Komac needs a **classic** token. A fine-grained token cannot open the pull request to winget-pkgs.
+
+1. GitHub → your picture → **Settings** → **Developer settings** → **Personal access tokens** → **Tokens (classic)** →
+   **Generate new token** → **Generate new token (classic)**.
+2. Note: `ttyak winget`. Expiration: **1 year** (put a reminder in your calendar to renew it).
+3. Tick only **public_repo** (inside "repo").
+4. **Generate token**. Copy it (GitHub shows it once).
+5. In your terminal: `gh secret set WINGET_TOKEN -R dmytrobsp/ttyak`, and paste it.
+
+### 6c. `PUBLISH_TOKEN`: a fine-grained token
+
+**Wait** until Claude says the repositories `homebrew-ttyak` and `scoop-ttyak` exist: you can only pick repositories
+that exist.
+
+1. GitHub → **Settings** → **Developer settings** → **Personal access tokens** → **Fine-grained tokens** →
+   **Generate new token**.
+2. Token name: `ttyak publish`. Expiration: **1 year** (calendar reminder) or **No expiration**.
+3. Resource owner: your account.
+4. Repository access: **Only select repositories** → choose `homebrew-ttyak` and `scoop-ttyak`.
+5. Permissions → Repository permissions → **Contents**: **Read and write**. (GitHub adds **Metadata: Read-only** by
+   itself.) Nothing else.
+6. **Generate token**. Copy it.
+7. In your terminal: `gh secret set PUBLISH_TOKEN -R dmytrobsp/ttyak`, and paste it.
+8. Tell Claude both tokens are set.
+
+**When a token expires**, the publishing jobs fail with an error about authentication. Make a new token the same way
+and set the secret again.
+
+**Claude then:** creates the tap and bucket repositories (with your OK), and the workflow jobs that push to them and to
+winget (Task 18).
+
+---
+
+## Sources
+
+Checked on 2026-10-23.
+
+- Porkbun API keys and per-domain API access: <https://kb.porkbun.com/article/190-getting-started-with-the-porkbun-api>
+- Porkbun API reference (host `api.porkbun.com`, fields `apikey` / `secretapikey`):
+  <https://porkbun.com/api/json/v3/documentation>
+- Porkbun `.sh` price: <https://porkbun.com/tld/sh>
+- Apple enrolment requirements and fee: <https://developer.apple.com/programs/enroll/>
+- Apple Developer app enrolment steps: <https://developer.apple.com/support/app-account/>
+- Apple two-factor authentication: <https://support.apple.com/en-us/102660>
+- App Store Connect API access and team keys: <https://developer.apple.com/help/app-store-connect/get-started/app-store-connect-api/>
+- Developer ID certificates (Account Holder only, up to five):
+  <https://developer.apple.com/help/account/certificates/create-developer-id-certificates/>
+- G2 Sub-CA, one-year validity: <https://developer.apple.com/help/account/certificates/replace-developer-id-certificates>
+- Notarization role (user reports, not official): <https://developer.apple.com/forums/thread/133063>
+- SSL.com IV code signing price and validation time: <https://www.ssl.com/products/software-integrity/code-signing/iv/>
+- SSL.com eSigner tiers: <https://www.ssl.com/products/software-integrity/signing-service/>,
+  <https://www.ssl.com/guide/esigner-pricing/>
+- SSL.com identity documents: <https://www.ssl.com/how-to/how-to-upload-validation-documents-for-ssl-com-certificates/>
+- SSL.com eSigner enrolment: <https://www.ssl.com/how-to/enroll-esigner-remote-document-ev-code-signing/>
+- SSL.com QR code and PIN: <https://www.ssl.com/how-to/view-reset-esigner-qr-code-reset-pin/>
+- SSL.com TOTP secret for automation: <https://www.ssl.com/how-to/automate-esigner-ev-code-signing/>
+- Viewing the QR code and secret code again (third-party): <https://infra.apache.org/code-signing-use.html>
+- SSL.com GitHub action (current): <https://github.com/SSLcom/esigner-codesign>; the old `SSLcom/actions-codesigner`
+  says it is deprecated: <https://github.com/SSLcom/actions-codesigner>
+- AUR SSH keys and `ssh://aur@aur.archlinux.org/<pkgbase>.git`: <https://wiki.archlinux.org/title/AUR_submission_guidelines>
+- AUR registration form and captcha (source code):
+  <https://gitlab.archlinux.org/archlinux/aurweb/-/blob/master/templates/partials/account_form.html>,
+  <https://gitlab.archlinux.org/archlinux/aurweb/-/blob/master/aurweb/captcha.py>
+- Chocolatey API key location: <https://docs.chocolatey.org/en-us/create/commands/api-key>
+- Chocolatey push: <https://docs.chocolatey.org/en-us/create/create-packages/>
+- Chocolatey moderation: <https://docs.chocolatey.org/en-us/community-repository/moderation/>
+- Komac (classic token with `public_repo`; uses your fork): <https://github.com/russellbanks/Komac>
+- Microsoft CLA bot on winget-pkgs: <https://github.com/microsoft/winget-pkgs/pull/108450>
+- GitHub personal access tokens:
+  <https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens>
+- `gh secret set`: <https://cli.github.com/manual/gh_secret_set>
