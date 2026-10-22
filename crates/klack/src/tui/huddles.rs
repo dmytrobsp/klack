@@ -76,6 +76,11 @@ pub struct Huddles {
     follow: bool,
     /// The size (columns, rows) of the list at the last draw.
     size: (u16, u16),
+    /// Scrolled since the last draw (the keys and the wheel move the selection instead): only then does the selection
+    /// follow the view.
+    scrolled: bool,
+    /// The selection and the row its first line was on at the last draw (above the view: negative).
+    spot: Option<(Row, isize)>,
     /// Last drawn area (empty while the view is not shown), for the mouse.
     pub area: Rect,
     /// The list's rows at the last draw, and what each row belongs to.
@@ -247,6 +252,11 @@ impl Huddles {
         if self.size != (inner.width, inner.height) {
             (self.size, self.follow) = ((inner.width, inner.height), true);
         }
+        let scrolled = std::mem::take(&mut self.scrolled);
+        if let Some(sel) = self.selected.as_ref().filter(|_| !self.follow && !scrolled) {
+            let spot = self.spot.as_ref().map(|(s, row)| (s, *row));
+            (self.scroll, self.follow) = super::threads::keep_spot(&owners, self.scroll, height, sel, spot);
+        }
         if std::mem::take(&mut self.follow) {
             if let Some(sel) = &self.selected {
                 if let (Some(first), Some(last)) = (owners.iter().position(|o| o.as_ref() == Some(sel)), owners.iter().rposition(|o| o.as_ref() == Some(sel))) {
@@ -261,9 +271,10 @@ impl Huddles {
         let start = self.scroll.min(lines.len());
         let end = (start + height).min(lines.len());
         // Scrolled off the selection: it follows onto the screen; the view stays.
-        if let Some(next) = self.selected.as_ref().and_then(|s| super::threads::follow_view(&owners, start, end, s)) {
+        if let Some(next) = self.selected.as_ref().filter(|_| scrolled).and_then(|s| super::threads::follow_view(&owners, start, end, s)) {
             self.selected = Some(next);
         }
+        self.spot = self.selected.clone().and_then(|s| Some((owners.iter().position(|o| o.as_ref() == Some(&s))? as isize - start as isize, s))).map(|(row, s)| (s, row));
         let mut shown: Vec<Line<'static>> = lines.drain(start..end).collect();
         let mut rows: Vec<Option<Row>> = owners[start..end].to_vec();
         if more > 0 && shown.len() < height {
@@ -597,8 +608,8 @@ mod tests {
             v.dedup();
             v
         };
-        // Scrolled down (however): the top row on screen; ↓ moves from there.
-        h.scroll = 30;
+        // Scrolled down (a scroll of yours): the top row on screen; ↓ moves from there.
+        (h.scroll, h.scrolled) = (30, true);
         drawn(&mut h, &ws, 60, 12);
         // (The top or bottom one on screen may be cut by the edge: the next one in is shown whole.)
         let shown = on_screen(&h);
@@ -608,7 +619,7 @@ mod tests {
         drawn(&mut h, &ws, 60, 12);
         assert_eq!(h.selected.as_ref(), shown.iter().skip_while(|r| **r != sel).nth(1), "the next one");
         // Scrolled up: the bottom one.
-        h.scroll = 0;
+        (h.scroll, h.scrolled) = (0, true);
         drawn(&mut h, &ws, 60, 12);
         let shown = on_screen(&h);
         assert!(shown[shown.len() - 2..].contains(h.selected.as_ref().unwrap()), "the bottom one");
@@ -631,5 +642,24 @@ mod tests {
             assert_eq!(h.selected, sel, "{width}×{height}: the same row");
             assert!(h.rows.contains(&sel), "{width}×{height}: on screen");
         }
+    }
+
+    #[test]
+    fn growth_above_the_selection_never_moves_it() {
+        // Not a scroll: a huddle starting (the live list above grows).
+        let mut ws = ws();
+        let mut h = Huddles::default();
+        let first = h.reload();
+        h.add_page(first, false, (1..=30).map(|n| past(&format!("R{n}"), "C1", NOW - 3600 * n as i64, 60, &["U2"], &[], None)).collect(), None);
+        drawn(&mut h, &ws, 60, 30);
+        let row_of = |h: &Huddles| h.rows.iter().position(|r| r.as_ref() == h.selected.as_ref());
+        while row_of(&h).is_none_or(|row| row < 20) {
+            h.move_by(1);
+            drawn(&mut h, &ws, 60, 30);
+        }
+        let (sel, at) = (h.selected.clone(), row_of(&h));
+        ws.huddles.insert("D1".into(), Huddle { room: "R99".into(), participants: vec!["U2".into()], thread: None, start: NOW - 60 });
+        drawn(&mut h, &ws, 60, 30);
+        assert_eq!((h.selected.clone(), row_of(&h)), (sel, at), "the same row selected, where it was");
     }
 }

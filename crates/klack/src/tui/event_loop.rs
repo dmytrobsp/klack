@@ -11473,4 +11473,38 @@ mod tests {
         terminal.draw(|f| super::draw(f, &mut app)).unwrap();
         assert!(!terminal.backend().buffer()[(x, y)].modifier.contains(ratatui::style::Modifier::BOLD), "no longer yours");
     }
+
+    #[tokio::test]
+    async fn a_reply_coming_in_above_leaves_the_feeds_selection_and_i_aims_at_its_thread() {
+        use super::Net;
+        let (mut app, _net) = with_channels(&["C1"]);
+        // Twelve threads of two replies each; a reply far down selected.
+        let parents: Vec<String> = (1..=12).map(|n| format!("{}.000000", 100 - n)).collect();
+        let replies: Vec<[String; 2]> = parents.iter().map(|p| [p.replace(".000000", ".100000"), p.replace(".000000", ".200000")]).collect();
+        let threads: Vec<(&str, &str, Vec<&str>)> = parents.iter().zip(&replies).map(|(p, r)| ("C1", p.as_str(), r.iter().map(String::as_str).collect())).collect();
+        let threads: Vec<(&str, &str, &[&str])> = threads.iter().map(|(c, p, r)| (*c, *p, r.as_slice())).collect();
+        super::run_global(&mut app, super::Action::Threads);
+        settle(&mut app, true);
+        super::handle_net(&mut app, Net::ThreadView { result: Ok(feed_page(&threads, false)), more: false });
+        drawn(&mut app);
+        let row = |app: &super::App| {
+            let l = app.threads.list;
+            (l.y..l.bottom()).position(|y| app.threads.message_at(l.x + 2, y) == app.threads.selected)
+        };
+        while row(&app).is_none_or(|r| r < 30) {
+            go(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
+            drawn(&mut app);
+        }
+        let (picked, at) = (app.threads.selected.clone(), row(&app));
+        let thread = app.threads.selected_thread();
+        // A reply comes in, live, in the first thread (above it).
+        super::handle_rtm(&mut app, slack_core::rtm::RtmEvent::Event(serde_json::json!({"type": "message", "channel": "C1", "user": "U2", "text": "a new reply above", "ts": "99.300000", "thread_ts": parents[0]})));
+        settle(&mut app, false);
+        drawn(&mut app);
+        assert!(app.threads.find("C1", "99.300000").is_some(), "in the feed");
+        assert_eq!((app.threads.selected.clone(), row(&app)), (picked, at), "the same message, on its row");
+        // `i`: the box replies in the thread picked.
+        go(&mut app, KeyCode::Char('i'), KeyModifiers::NONE);
+        assert_eq!(app.feed_reply, thread, "aimed at the thread picked");
+    }
 }

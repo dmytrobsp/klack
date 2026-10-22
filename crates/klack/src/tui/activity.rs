@@ -368,6 +368,11 @@ pub struct Activity {
     follow: bool,
     /// The size (columns, rows) of the list at the last draw.
     size: (u16, u16),
+    /// Scrolled since the last draw (the keys and the wheel move the selection instead): only then does the selection
+    /// follow the view.
+    scrolled: bool,
+    /// The selected item (its key) and the row its first line was on at the last draw (above the view: negative).
+    spot: Option<(String, isize)>,
     /// Last drawn area (empty while the view is not shown), for the mouse.
     pub area: Rect,
     /// The list's rows (under the tab bar) at the last draw, and the item each row belongs to.
@@ -824,6 +829,12 @@ impl Activity {
         if self.size != (list.width, list.height) {
             (self.size, self.follow) = ((list.width, list.height), true);
         }
+        let scrolled = std::mem::take(&mut self.scrolled);
+        if !self.follow && !scrolled {
+            let key = self.selected_item().map(|it| it.key.clone());
+            let spot = self.spot.as_ref().filter(|(k, _)| key.as_ref() == Some(k)).map(|(_, row)| (&self.selected, *row));
+            (self.scroll, self.follow) = super::threads::keep_spot(owners, self.scroll, height, &self.selected, spot);
+        }
         // Bring a selection moved by the keys into view (with its date header, when it is the first of its day).
         if std::mem::take(&mut self.follow) {
             if let (Some(first), Some(last)) = (owners.iter().position(|o| *o == Some(self.selected)), owners.iter().rposition(|o| *o == Some(self.selected))) {
@@ -842,9 +853,11 @@ impl Activity {
         let start = self.scroll.min(built.lines.len());
         let end = (start + height).min(built.lines.len());
         // Scrolled off the selection: it follows onto the screen; the view stays.
-        if let Some(next) = super::threads::follow_view(owners, start, end, &self.selected) {
+        if let Some(next) = super::threads::follow_view(owners, start, end, &self.selected).filter(|_| scrolled) {
             self.selected = next;
         }
+        let first = owners.iter().position(|o| *o == Some(self.selected));
+        self.spot = self.selected_item().map(|it| it.key.clone()).zip(first).map(|(key, first)| (key, first as isize - start as isize));
         let mut lines: Vec<Line<'static>> = built.lines[start..end].to_vec();
         let mut rows: Vec<Option<usize>> = owners[start..end].to_vec();
         if self.loading && lines.len() < height {
@@ -2011,8 +2024,8 @@ mod tests {
             terminal.draw(|f| a.draw(f, f.area(), &Here::alone(&ws), true, &media)).unwrap();
         };
         draw(&mut a);
-        // Scrolled down (however): the top item on screen.
-        a.scroll = 40;
+        // Scrolled down (a scroll of yours): the top item on screen.
+        (a.scroll, a.scrolled) = (40, true);
         draw(&mut a);
         assert_eq!(Some(&a.selected), a.shown.first(), "the top one");
         // ↓ and a page down move from there.
@@ -2024,7 +2037,7 @@ mod tests {
         draw(&mut a);
         assert!(a.shown.contains(&a.selected) && a.selected > first[1], "a page further, on screen");
         // Scrolled up: the bottom one.
-        a.scroll = 0;
+        (a.scroll, a.scrolled) = (0, true);
         draw(&mut a);
         assert_eq!(Some(&a.selected), a.shown.last(), "the bottom one");
     }
@@ -2050,5 +2063,35 @@ mod tests {
             assert_eq!(a.selected, sel, "{width}×{height}: the same item");
             assert!(a.shown.contains(&sel), "{width}×{height}: on screen");
         }
+    }
+
+    #[test]
+    fn growth_above_the_selection_never_moves_it() {
+        // Not a scroll: an item's message coming in, then a pill row on it, above the selection.
+        let ws = ws();
+        let media = super::super::media::Media::with(ratatui_image::picker::Picker::halfblocks());
+        let it = |key: &str| item(key, Kind::Mention("at_user".into()), "C1", key, None, false, noon(0));
+        let mut a = Activity::default();
+        a.set_items(Tab::All, (1..=40).map(|n| it(&n.to_string())).collect(), None);
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        let mut draw = |a: &mut Activity| {
+            terminal.draw(|f| a.draw(f, f.area(), &Here::alone(&ws), true, &media)).unwrap();
+        };
+        draw(&mut a);
+        let row_of = |a: &Activity| a.rows.iter().position(|r| *r == Some(a.selected));
+        while row_of(&a).is_none_or(|row| row < 24) {
+            a.move_by(1);
+            draw(&mut a);
+        }
+        let (sel, at) = (a.selected, row_of(&a));
+        let top = a.items.as_ref().unwrap()[a.shown[0]].message_key();
+        a.add_message(top.clone(), Some(Message { ts: top.1.clone(), user: Some("U2".into()), text: "one\ntwo\nthree".into(), ..Default::default() }));
+        draw(&mut a);
+        assert_eq!((a.selected, row_of(&a)), (sel, at), "its message came in above: the same item, on its row");
+        for m in a.copies_mut(&top.0, &top.1) {
+            m.reactions.push(slack_core::types::Reaction { name: "eyes".into(), users: vec!["U2".into()], count: 1 });
+        }
+        draw(&mut a);
+        assert_eq!((a.selected, row_of(&a)), (sel, at), "a pill row above");
     }
 }

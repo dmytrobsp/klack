@@ -113,6 +113,10 @@ pub struct Threads {
     follow: bool,
     /// The size (columns, rows) of the list at the last draw.
     size: (u16, u16),
+    /// Scrolled by you (the wheel) since the last draw: only then does the selection follow the view.
+    scrolled: bool,
+    /// The selection and the row its first line was on at the last draw (above the view: negative).
+    spot: Option<((String, String), isize)>,
     /// Last drawn area (empty while the view is not shown), for the mouse.
     pub area: Rect,
     /// The feed's rows at the last draw.
@@ -217,6 +221,7 @@ impl Threads {
     /// Scroll the feed by `delta` lines (the wheel); a selection scrolled off goes onto the screen at the next draw.
     pub fn scroll_by(&mut self, delta: isize) {
         self.scroll = self.scroll.saturating_add_signed(delta);
+        self.scrolled = true;
     }
 
     /// The message drawn at a terminal position.
@@ -539,6 +544,11 @@ impl Threads {
         let height = inner.height as usize;
         let more = if self.loading { 1 } else { 0 };
         let total = feed.lines.len() + more;
+        let scrolled = std::mem::take(&mut self.scrolled);
+        if let Some(sel) = self.selected.as_ref().filter(|_| !self.follow && !scrolled) {
+            let spot = self.spot.as_ref().map(|(s, row)| (s, *row));
+            (self.scroll, self.follow) = keep_spot(&feed.owners, self.scroll, height, sel, spot);
+        }
         // Bring a selection moved by the keys into view (with its thread's header, for a parent).
         if std::mem::take(&mut self.follow) {
             if let Some(sel) = &self.selected {
@@ -552,10 +562,11 @@ impl Threads {
         // (No room at all leaves `total` one past the lines: start at most at their end.)
         let start = self.scroll.min(feed.lines.len());
         let end = (start + height).min(feed.lines.len());
-        // Scrolled off the selection (the wheel, …): it follows onto the screen; the view stays.
-        if let Some(next) = self.selected.as_ref().and_then(|s| follow_view(&feed.owners, start, end, s)) {
+        // Scrolled off the selection by you (the wheel): it follows onto the screen; the view stays.
+        if let Some(next) = self.selected.as_ref().filter(|_| scrolled).and_then(|s| follow_view(&feed.owners, start, end, s)) {
             self.selected = Some(next);
         }
+        self.spot = self.selected.clone().and_then(|s| Some((feed.owners.iter().position(|o| o.as_ref() == Some(&s))? as isize - start as isize, s))).map(|(row, s)| (s, row));
         let mut lines: Vec<Line<'static>> = feed.lines[start..end].to_vec();
         let mut rows: Vec<Option<(String, String)>> = feed.owners[start..end].to_vec();
         if self.loading && lines.len() < height {
@@ -627,6 +638,19 @@ pub(super) fn view_edge<T: PartialEq + Clone>(owners: &[Option<T>], start: usize
     let full: Vec<&T> = shown.iter().copied().filter(whole).collect();
     let pick = if full.is_empty() { shown } else { full };
     if top { pick.first() } else { pick.last() }.map(|t| (*t).clone())
+}
+
+/// The scroll of a list (`owners` as in [`follow_view`], `height` rows) that nothing scrolled since its last draw, and
+/// whether its selection `sel` must still be brought into view: back on the row it was on (`spot`: the selection then
+/// and that row) after the list changed above it (a reply, a message coming in, a pill row, an edit), which is not a
+/// scroll and never moves the selection.
+pub(super) fn keep_spot<T: PartialEq + Clone>(owners: &[Option<T>], scroll: usize, height: usize, sel: &T, spot: Option<(&T, isize)>) -> (usize, bool) {
+    let mut scroll = scroll;
+    if let (Some((_, row)), Some((first, _))) = (spot.filter(|(was, _)| *was == sel), span(owners, sel)) {
+        scroll = (first as isize - row).max(0) as usize;
+    }
+    let off = follow_view(owners, scroll, (scroll + height).min(owners.len()), sel).is_some();
+    (scroll, off)
 }
 
 /// The first and last lines of item `t` in a list (`owners` as in [`follow_view`]).
@@ -1135,5 +1159,36 @@ mod tests {
             assert_eq!(t.selected, sel, "{width}×{height}: the same message");
             assert!(t.rows.contains(&sel), "{width}×{height}: on screen");
         }
+    }
+
+    #[test]
+    fn growth_above_the_selection_never_moves_it() {
+        // Not a scroll: a live reply, replies fetched, a pill row, an edit in a block above the selection.
+        let mut t = Threads::default();
+        t.add_page((1..=12).map(|n| thread(n, false)).collect(), false);
+        drawn(&mut t);
+        let row_of = |t: &Threads| t.rows.iter().position(|r| r.as_ref() == t.selected.as_ref());
+        while row_of(&t).is_none_or(|row| row < 25) {
+            t.move_by(1);
+            drawn(&mut t);
+        }
+        let (sel, at) = (t.selected.clone(), row_of(&t));
+        let check = |t: &mut Threads, what: &str| {
+            drawn(t);
+            assert_eq!(t.selected, sel, "{what}: the same message selected");
+            assert_eq!(t.rows.iter().position(|r| r.as_ref() == t.selected.as_ref()), at, "{what}: on its row");
+        };
+        assert!(t.add_reply("C1", &reply(1, 3), true));
+        check(&mut t, "a live reply above");
+        t.merge_replies("C1", "2.000100", vec![reply(2, 4), reply(2, 5)]);
+        check(&mut t, "replies fetched above");
+        for m in t.copies_mut("C1", "1.000100") {
+            m.reactions.push(slack_core::types::Reaction { name: "eyes".into(), users: vec!["U2".into()], count: 1 });
+        }
+        check(&mut t, "a pill row above");
+        for m in t.copies_mut("C1", "2.000100") {
+            m.text = "parent 2\nnow\nfour\nlines".into();
+        }
+        check(&mut t, "an edit above");
     }
 }
