@@ -2447,7 +2447,7 @@ impl App {
     /// Slack's client does (with the `huddles_set_status` pref on): only its expiry, 5 minutes on,
     /// every ~4 minutes. Slack sets the state when you join and clears it when you leave.
     fn beat_huddle(&mut self, in_call: bool, now: std::time::Instant) {
-        if !super::call::huddle_beat_due(&mut self.huddle_beat, in_call, self.ws.huddles_set_status, now, super::call::beat_jitter()) {
+        if !super::call::huddle_beat_due(&mut self.huddle_beat, in_call, self.ws.huddles_set_status, now, super::call::beat_jitter) {
             return;
         }
         let client = self.client.clone();

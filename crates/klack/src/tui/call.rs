@@ -593,7 +593,7 @@ const HUDDLE_STATE_HOLD_SECS: f64 = 300.0;
 /// stretched by `jitter` (−0.1…0.1). With the pref (`huddles_set_status`) off a due beat is
 /// skipped but the timer runs on, so turning it on takes effect at the next one, as in Slack's
 /// client. Out of a call: nothing (Slack clears the state itself when you leave).
-pub fn huddle_beat_due(next: &mut Option<std::time::Instant>, in_call: bool, pref_on: bool, now: std::time::Instant, jitter: f64) -> bool {
+pub fn huddle_beat_due(next: &mut Option<std::time::Instant>, in_call: bool, pref_on: bool, now: std::time::Instant, jitter: impl FnOnce() -> f64) -> bool {
     if !in_call {
         *next = None;
         return false;
@@ -601,7 +601,8 @@ pub fn huddle_beat_due(next: &mut Option<std::time::Instant>, in_call: bool, pre
     if next.is_some_and(|t| now < t) {
         return false;
     }
-    *next = Some(now + HUDDLE_BEAT.mul_f64(1.0 + jitter.clamp(-0.1, 0.1)));
+    // (The jitter is drawn only now, when a beat is due: not on every turn of the loop.)
+    *next = Some(now + HUDDLE_BEAT.mul_f64(1.0 + jitter().clamp(-0.1, 0.1)));
     pref_on
 }
 
@@ -640,31 +641,43 @@ mod tests {
         let at = |s: u64| t0 + std::time::Duration::from_secs(s);
         // Connected, pref on: a beat as the call connects, the next after 240 s, not before.
         let mut next = None;
-        assert!(due(&mut next, true, true, at(0), 0.0), "at join");
-        assert!(!due(&mut next, true, true, at(1), 0.0));
-        assert!(!due(&mut next, true, true, at(239), 0.0), "not before 240 s");
-        assert!(due(&mut next, true, true, at(240), 0.0), "after 240 s");
-        assert!(!due(&mut next, true, true, at(300), 0.0));
-        assert!(due(&mut next, true, true, at(480), 0.0));
+        assert!(due(&mut next, true, true, at(0), || 0.0), "at join");
+        assert!(!due(&mut next, true, true, at(1), || 0.0));
+        assert!(!due(&mut next, true, true, at(239), || 0.0), "not before 240 s");
+        assert!(due(&mut next, true, true, at(240), || 0.0), "after 240 s");
+        assert!(!due(&mut next, true, true, at(300), || 0.0));
+        assert!(due(&mut next, true, true, at(480), || 0.0));
         // ±10 %: the wait is stretched by the jitter it is given.
         let mut next = None;
-        assert!(due(&mut next, true, true, at(0), 0.1));
-        assert!(!due(&mut next, true, true, at(263), 0.0));
-        assert!(due(&mut next, true, true, at(264), 0.0));
+        assert!(due(&mut next, true, true, at(0), || 0.1));
+        assert!(!due(&mut next, true, true, at(263), || 0.0));
+        assert!(due(&mut next, true, true, at(264), || 0.0));
         let mut next = None;
-        assert!(due(&mut next, true, true, at(0), -0.1));
-        assert!(due(&mut next, true, true, at(216), 0.0));
+        assert!(due(&mut next, true, true, at(0), || -0.1));
+        assert!(due(&mut next, true, true, at(216), || 0.0));
         // Pref off: never, though the timer runs; turned on, the next due beat goes.
         let mut next = None;
-        assert!((0..=600).all(|s| !due(&mut next, true, false, at(s), 0.0)), "pref off: never");
-        assert!(due(&mut next, true, true, at(720), 0.0), "pref on again: at the next beat");
+        assert!((0..=600).all(|s| !due(&mut next, true, false, at(s), || 0.0)), "pref off: never");
+        assert!(due(&mut next, true, true, at(720), || 0.0), "pref on again: at the next beat");
         // Ended (or not connected yet): nothing, now or later; the next call starts over.
         let mut next = None;
-        assert!(due(&mut next, true, true, at(0), 0.0));
-        assert!(!due(&mut next, false, true, at(10), 0.0), "ended: nothing to send (Slack clears the state itself)");
+        assert!(due(&mut next, true, true, at(0), || 0.0));
+        assert!(!due(&mut next, false, true, at(10), || 0.0), "ended: nothing to send (Slack clears the state itself)");
         assert_eq!(next, None);
-        assert!((10..=1000).all(|s| !due(&mut next, false, true, at(s), 0.0)), "then nothing");
-        assert!(due(&mut next, true, true, at(1001), 0.0), "a new call: a beat at its join");
+        assert!((10..=1000).all(|s| !due(&mut next, false, true, at(s), || 0.0)), "then nothing");
+        assert!(due(&mut next, true, true, at(1001), || 0.0), "a new call: a beat at its join");
+        // The jitter is drawn only when a beat is due (not on each turn of the loop), once.
+        let drawn = std::cell::Cell::new(0);
+        let jitter = || {
+            drawn.set(drawn.get() + 1);
+            0.0
+        };
+        let mut next = None;
+        assert!(!due(&mut next, false, true, at(0), jitter), "out of a call");
+        assert!(due(&mut next, true, true, at(0), jitter));
+        assert!((1..240).all(|s| !due(&mut next, true, true, at(s), jitter)));
+        assert!(!due(&mut next, true, false, at(240), jitter), "due, pref off");
+        assert_eq!(drawn.get(), 2, "only for the two due beats");
         // The jitter Slack's client uses: within ±10 %.
         assert!((0..200).map(|_| super::beat_jitter()).all(|j| (-0.1..=0.1).contains(&j)));
     }
