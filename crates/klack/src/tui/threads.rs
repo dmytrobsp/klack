@@ -518,7 +518,7 @@ impl Threads {
             let messages: Vec<Message> = entries.iter().flat_map(|e| std::iter::once(&e.root).chain(&e.unread).chain(&e.latest)).cloned().collect();
             let owners: Vec<Option<String>> = self.feed.owners.iter().map(|o| o.as_ref().map(|(_, ts)| ts.clone())).collect();
             self.feed_links = super::messages::link_spots(here, &messages, &self.feed.lines, &owners);
-            self.feed_pills = super::messages::pill_spots(&messages, &self.feed.lines, &owners);
+            self.feed_pills = super::messages::pill_spots(ws, &messages, &self.feed.lines, &owners);
             self.order = self.feed.owners.iter().flatten().cloned().collect();
             self.order.dedup();
             let people = messages.iter().filter_map(|m| m.user.as_deref());

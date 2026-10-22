@@ -904,7 +904,7 @@ impl Activity {
         let built = build(here, &items, &self.messages, width, super::clock::now().date_naive(), avatars);
         let owners = built.owners.iter().map(|o| o.map(|n| visible[n])).collect();
         let links = messages::link_spots(here, &built.messages, &built.lines, &built.message_rows);
-        let mut pills = messages::pill_spots(&built.messages, &built.lines, &built.message_rows);
+        let mut pills = messages::pill_spots(here.ws, &built.messages, &built.lines, &built.message_rows);
         pills.extend(built.pills.iter().cloned());
         // Whose statuses it shows: who reacted, the authors.
         let reacted = items.iter().filter_map(|it| match &it.kind {
@@ -983,14 +983,14 @@ pub fn build(here: &Here, items: &[&Item], messages: &HashMap<(String, String), 
         let start = out.lines.len();
         let parent = it.parent_key().and_then(|k| messages.get(&k)).and_then(Option::as_ref);
         let (lines, slots, rows, message) = item_lines(here, it, messages.get(&it.message_key()), parent, body, avatars);
-        // A reaction's pill: the first one in its lines (the header has none).
+        // A reaction's pill: the first one of its emoji in its lines (the header has none).
         if let (Kind::Reaction { name, .. }, Some(m)) = (&it.kind, &message) {
             let pill = lines.iter().enumerate().find_map(|(k, line)| {
                 let mut col = 0u16;
                 line.spans.iter().find_map(|span| {
                     let width = unicode_width::UnicodeWidthStr::width(span.content.as_ref()) as u16;
                     col += width;
-                    messages::pill_count(span).map(|_| (k, col - width, width))
+                    messages::pill_of(here.ws, span, name, None).then_some((k, col - width, width))
                 })
             });
             if let Some((k, col, width)) = pill {
@@ -1072,10 +1072,11 @@ fn item_lines(here: &Here, it: &Item, msg: Option<&Option<Message>>, parent: Opt
     }
     if let Some((name, _)) = reaction {
         // "Reacted (:x: 2) to:", then the message reacted to.
-        let count = message.and_then(|m| m.reactions.iter().find(|r| r.name == name)).map_or(1, |r| r.count);
+        let reaction = message.and_then(|m| m.reactions.iter().find(|r| r.name == name));
+        let (count, mine) = reaction.map_or((1, false), |r| (r.count, r.users.contains(&ws.self_id)));
         let words = tr(REACTED);
         let (before, after) = words.split_once("{emoji}").unwrap_or((&words, ""));
-        let mut lead = [Line::from(vec![Span::styled(before.to_string(), dim), messages::reaction_pill(&text::emoji_cell(ws, name, None), count, false), Span::styled(after.to_string(), dim)])];
+        let mut lead = [Line::from(vec![Span::styled(before.to_string(), dim), messages::reaction_pill(&text::emoji_cell(ws, name, None), count, mine), Span::styled(after.to_string(), dim)])];
         for (_, col, emoji) in text::emoji_cells(ws, &mut lead) {
             if let Some(file) = super::media::emoji_file(ws, &emoji) {
                 slots.push(ImageSlot { line: lines.len(), col, file, size: super::media::AVATAR_SIZE });

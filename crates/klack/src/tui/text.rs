@@ -72,6 +72,12 @@ pub fn emoji_cell(ws: &Workspace, name: &str, unicode: Option<&str>) -> String {
     }
 }
 
+/// Emoji `name` as it stands in drawn lines: [`emoji_cell`], a picture's cells blank (as [`emoji_cells`] leaves them).
+pub fn emoji_shown(ws: &Workspace, name: &str) -> String {
+    let number = |c: char| (c as u32).checked_sub(EMOJI_CELL).is_some_and(|n| (n as usize) < ws.emoji_ids.len());
+    emoji_cell(ws, name, None).chars().map(|c| if number(c) { ' ' } else { c }).collect()
+}
+
 /// Person `user`'s status emoji at `now`, as the message pane shows it ([`emoji_cell`]).
 pub fn status_span(ws: &Workspace, user: &str, now: i64) -> Option<String> {
     ws.status_of(user, now).map(|s| emoji_cell(ws, &s.emoji, None))

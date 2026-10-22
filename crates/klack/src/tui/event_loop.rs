@@ -25,6 +25,8 @@ use super::terminal::TerminalGuard;
 
 /// Results of background API calls.
 enum Net {
+    /// Slack answered reaction `name` added (`add`) or taken off on message `ts` of `channel`: the error, if refused.
+    Reacted { channel: String, ts: String, name: String, add: bool, error: Option<String> },
     /// Muting (`true`) or unmuting a conversation failed.
     MuteFailed { channel: String, muted: bool, error: String },
     /// Marking a conversation unread failed: Slack still has it read.
@@ -370,6 +372,8 @@ struct App {
     status: String,
     /// What the link under the mouse pointer does (the status line shows it while nothing else is said).
     link_note: Option<String>,
+    /// Reactions (channel, ts, name) sent and not answered yet: another toggle of one waits for Slack's answer.
+    reacting: std::collections::HashSet<(String, String, String)>,
     /// Where the mouse pointer was last seen (None when it left the window): the hover note is worked out from it at
     /// every draw, so scrolling, a keyboard move or a new conversation under a still pointer is followed too.
     pointer: Option<(u16, u16)>,
@@ -648,10 +652,14 @@ impl App {
         });
     }
 
-    /// Toggle our reaction `name` on message `ts` in `channel` (optimistic, then API).
+    /// Toggle our reaction `name` on message `ts` in `channel` (optimistic, then API). Not while the last toggle of it
+    /// is still on its way (a double-click is one), so they reach Slack in order.
     fn toggle_reaction(&mut self, channel: String, ts: String, name: String) {
         let me = self.ws.self_id.clone();
         let Some(had) = self.find_message(&channel, &ts).map(|m| m.reactions.iter().any(|r| r.name == name && r.users.contains(&me))) else { return };
+        if !self.reacting.insert((channel.clone(), ts.clone(), name.clone())) {
+            return;
+        }
         for msg in self.copies_mut(&channel, &ts) {
             match msg.reactions.iter().position(|r| r.name == name) {
                 Some(i) if had => {
@@ -671,9 +679,8 @@ impl App {
         }
         let (client, tx) = (self.client.clone(), self.net.clone());
         tokio::spawn(async move {
-            if let Err(e) = client.react(&channel, &ts, &name, !had).await {
-                let _ = tx.send(Net::Error(format!("reaction failed: {e}")));
-            }
+            let error = client.react(&channel, &ts, &name, !had).await.err().map(|e| e.to_string());
+            let _ = tx.send(Net::Reacted { channel, ts, name, add: !had, error });
         });
     }
 
@@ -2650,7 +2657,7 @@ impl App {
         if let Some(n) = self.sidebar.item_at(column, row) {
             return self.sidebar.status_note(&self.ws, n, chrono::Utc::now().timestamp());
         }
-        if let Some((t, name)) = self.pill_at(column, row) {
+        if let Some((t, name, _)) = self.pill_at(column, row) {
             let r = self.find_message(&t.channel, &t.ts)?.reactions.iter().find(|r| r.name == name)?;
             return Some(super::picker::who_reacted(r, &self.ws.self_id, &|u| self.ws.user_name(u)));
         }
@@ -2660,27 +2667,27 @@ impl App {
     }
 
     /// The reaction pill drawn at a terminal position (the thread pane, the messages, the Threads feed, Activity): its
-    /// message as a target, and the reaction's name.
-    fn pill_at(&self, column: u16, row: u16) -> Option<(MessageTarget, String)> {
-        let pane = |thread: bool, (ts, name): (String, String)| Some((self.pane_target(thread, ts)?, name));
+    /// message as a target, the reaction's name, and in Activity its item.
+    fn pill_at(&self, column: u16, row: u16) -> Option<(MessageTarget, String, Option<usize>)> {
+        let pane = |thread: bool, (ts, name): (String, String)| Some((self.pane_target(thread, ts)?, name, None));
         self.thread
             .as_ref()
             .and_then(|_| self.thread_pane.pill_at(column, row))
             .and_then(|p| pane(true, p))
             .or_else(|| self.messages.pill_at(column, row).and_then(|p| pane(false, p)))
-            .or_else(|| self.threads.pill_at(column, row).map(|((channel, ts), name)| (MessageTarget { channel, ts, shown: Shown::Feed }, name)))
-            .or_else(|| self.activity.pill_at(column, row).map(|(_, (channel, ts), name)| (MessageTarget { channel, ts, shown: Shown::Activity }, name)))
+            .or_else(|| self.threads.pill_at(column, row).map(|((channel, ts), name)| (MessageTarget { channel, ts, shown: Shown::Feed }, name, None)))
+            .or_else(|| self.activity.pill_at(column, row).map(|(n, (channel, ts), name)| (MessageTarget { channel, ts, shown: Shown::Activity }, name, Some(n))))
     }
 
-    /// A click on reaction pill `name` of message `t`: the message selected, as a click on it does (an Activity item
-    /// is not opened), then your reaction with that emoji added or taken off.
-    fn click_pill(&mut self, column: u16, row: u16, t: MessageTarget, name: String) {
+    /// A click on reaction pill `name` of message `t` (in Activity: on `item`): the message selected, as a click on it
+    /// does (an Activity item is not opened), then your reaction with that emoji added or taken off.
+    fn click_pill(&mut self, t: MessageTarget, name: String, item: Option<usize>) {
         match t.shown {
             Shown::Messages => (self.messages.selected, self.focus) = (Some(t.ts.clone()), Focus::Messages),
             Shown::Thread => (self.thread_pane.selected, self.focus) = (Some(t.ts.clone()), Focus::Thread),
             Shown::Feed => (self.threads.selected, self.focus) = (Some((t.channel.clone(), t.ts.clone())), Focus::Messages),
             Shown::Activity => {
-                if let Some((n, ..)) = self.activity.pill_at(column, row) {
+                if let Some(n) = item {
                     self.activity.selected = n;
                 }
                 self.focus = Focus::Messages;
@@ -4451,6 +4458,9 @@ const SEEK_STOPPED: &str = "stopped looking for the message";
 /// The note when a file link's file is not one klack shows.
 const FILE_NOT_SHOWN: &str = "klack can't show that file here";
 
+/// Slack refused a reaction (`{why}`: its reason): it is shown as before.
+pub const REACTION_REFUSED: &str = "Slack refused the reaction: {why}";
+
 const CHOOSE_LIVE: &str = "choose a live huddle to join";
 const RECENT_FAILED: &str = "recent huddles failed";
 
@@ -4470,7 +4480,7 @@ fn spawn_leave(client: slack_core::api::Client, params: Vec<(&'static str, Strin
 }
 
 /// The status notes of links into klack, for `ctl locale-template`.
-pub const LINK_NOTES: &[&str] = &[LINK_GONE, HISTORY_GONE, CONVERSATION_GONE, SEEKING, SEEK_STOPPED, FILE_NOT_SHOWN, super::applink::OPENS_IN_KLACK];
+pub const LINK_NOTES: &[&str] = &[LINK_GONE, HISTORY_GONE, CONVERSATION_GONE, SEEKING, SEEK_STOPPED, FILE_NOT_SHOWN, super::applink::OPENS_IN_KLACK, REACTION_REFUSED];
 
 /// A history request for a conversation (`tl`) failed: it may be asked again (no longer loading). The note to show:
 /// a link's seek in it (`seeking`) ends with its not-found note, anything else says what failed.
@@ -4876,6 +4886,7 @@ impl App {
             current: None,
             status: "loading workspace…".into(),
             link_note: None,
+            reacting: Default::default(),
             pointer: None,
             status_shown: (String::new(), std::time::Instant::now()),
             loading: true,
@@ -5755,8 +5766,9 @@ fn handle_main(app: &mut App, ev: Event) -> bool {
                 } else if app.sidebar.click(m.column, m.row) {
                     // On its messages in NORMAL, as Jump to (`i` types).
                     app.focus = Focus::Messages;
-                } else if let Some((t, name)) = app.pill_at(m.column, m.row) {
-                    app.click_pill(m.column, m.row, t, name);
+                } else if let Some((t, name, item)) = app.pill_at(m.column, m.row) {
+                    // (Any click, as on a message: Ctrl+Shift+click is the terminal's.)
+                    app.click_pill(t, name, item);
                 } else if let Some(link) = m.modifiers.is_empty().then(|| app.threads.link_under(m.column, m.row).and_then(|(_, app)| app)).flatten() {
                     // A plain click on a link into your Slack in the Threads feed opens it here.
                     app.open_app_link(&link);
@@ -6824,6 +6836,23 @@ fn handle_net(app: &mut App, msg: Net) {
         Net::Error(e) => {
             app.loading = false;
             app.status = e;
+        }
+        Net::Reacted { channel, ts, name, add, error } => {
+            app.reacting.remove(&(channel.clone(), ts.clone(), name.clone()));
+            let Some(error) = error else { return };
+            let me = app.ws.self_id.clone();
+            for m in app.copies_mut(&channel, &ts) {
+                match m.reactions.iter_mut().find(|r| r.name == name) {
+                    // Slack has it as asked already (its list of who reacted left you out): only the count was off.
+                    Some(r) if add && error.contains("already_reacted") => r.count = r.count.saturating_sub(1).max(r.users.len() as u64),
+                    _ if !add && error.contains("no_reaction") => {}
+                    // Refused: yours as before (others' meanwhile stay).
+                    _ => super::live::apply_reaction(m, &name, &me, !add),
+                }
+            }
+            if !error.contains("already_reacted") && !error.contains("no_reaction") {
+                app.status = super::i18n::tr(REACTION_REFUSED).replace("{why}", &error);
+            }
         }
     }
 }
@@ -8377,7 +8406,7 @@ mod tests {
     async fn a_reaction_in_the_threads_feed_goes_to_its_message_and_shows_there() {
         use crossterm::event::{KeyCode, KeyModifiers};
         let (url, mut asked) = fake_slack(&[]).await;
-        let (mut app, _net) = feed_app(&url);
+        let (mut app, mut net) = feed_app(&url);
         app.ws.self_id = "U0".into();
         let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
         terminal.draw(|f| super::draw(f, &mut app)).unwrap();
@@ -8389,6 +8418,7 @@ mod tests {
         react_with(&mut app, "eyes");
         let req = asked_for(&mut asked, "reactions.add").await;
         assert!(req.contains("channel=C1") && req.contains("timestamp=1729440000.000200") && req.contains("name=eyes"), "{req}");
+        answered(&mut app, &mut net).await;
         terminal.draw(|f| super::draw(f, &mut app)).unwrap();
         assert!(screen(&terminal).join("\n").contains("👀"), "shown in its block at once");
         assert_eq!(app.threads.entries.as_ref().unwrap()[0].latest[0].reactions[0].users, ["U0"]);
@@ -11164,6 +11194,23 @@ mod tests {
         assert_eq!(app.messages.new_since.as_deref(), Some(order[at - 1].as_str()), "unread from the message clicked");
     }
 
+    /// Slack's answer to the reaction sent, handled (the pill takes another click again).
+    async fn answered(app: &mut super::App, net: &mut tokio::sync::mpsc::UnboundedReceiver<super::Net>) {
+        loop {
+            match tokio::time::timeout(std::time::Duration::from_secs(10), net.recv()).await.expect("Slack's answer").unwrap() {
+                msg @ super::Net::Reacted { .. } => return super::handle_net(app, msg),
+                _ => {}
+            }
+        }
+    }
+
+    /// The pill `emoji` drawn with count `n` somewhere on screen (160 × 40).
+    fn pill_shown(app: &mut super::App, emoji: &str, n: u64) -> bool {
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 40)).unwrap();
+        terminal.draw(|f| super::draw(f, app)).unwrap();
+        screen(&terminal).iter().any(|row| row.split(emoji).skip(1).any(|rest| rest.trim_start_matches(' ').starts_with(&format!("\u{a0}{n}\u{a0}"))))
+    }
+
     /// Draw (160 × 40), then the cell showing `symbol` inside `area` (as the draw left it: `area(app)`).
     fn cell_in(app: &mut super::App, symbol: &str, area: fn(&super::App) -> ratatui::layout::Rect) -> (u16, u16) {
         let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 40)).unwrap();
@@ -11188,7 +11235,7 @@ mod tests {
         use super::Focus;
         use slack_core::types::{Message, Reaction};
         let (url, mut asked) = fake_slack(&[]).await;
-        let (mut app, _net) = test_app_at(&url);
+        let (mut app, mut net) = test_app_at(&url);
         app.ws.self_id = "U0".into();
         app.ws.conversations.insert("C1".into(), slack_core::types::Conversation { id: "C1".into(), name: "general".into(), is_channel: true, is_member: true, ..Default::default() });
         app.loading = false;
@@ -11196,6 +11243,10 @@ mod tests {
         let parent = Message { ts: top_ts(1), user: Some("U2".into()), text: "the parent".into(), thread_ts: Some(top_ts(1)), reply_count: 1, reactions: vec![r("eyes", &["U2"])], ..Default::default() };
         let other = Message { ts: top_ts(2), user: Some("U2".into()), text: "another one".into(), ..Default::default() };
         let reply = Message { ts: reply_ts(1), thread_ts: Some(top_ts(1)), user: Some("U2".into()), text: "a reply".into(), reactions: vec![r("tada", &["U2", "U0"])], ..Default::default() };
+        let other = Message { reactions: vec![r("piggy", &["U2"])], ..other };
+        app.ws.custom_emoji.insert("piggy".into(), "https://emoji.slack-edge.com/T1/piggy/b77.png".into());
+        (app.ws.emoji_pictures, app.ws.settings.messages.emoji_as_names) = (true, false);
+        app.ws.number_emoji();
         app.ws.timelines.insert("C1".into(), super::super::state::Timeline { messages: vec![parent.clone(), other], loaded: true, ..Default::default() });
         app.ws.threads.insert(super::super::state::thread_key("C1", &top_ts(1)), super::super::state::Timeline { messages: vec![parent, reply], loaded: true, ..Default::default() });
         app.jump_to("C1");
@@ -11208,6 +11259,7 @@ mod tests {
         let (x, y) = cell_in(&mut app, "👀", |a| a.messages.area);
         click(&mut app, x, y);
         let req = asked_for(&mut asked, "reactions.add").await;
+        answered(&mut app, &mut net).await;
         assert!(req.contains("channel=C1") && req.contains(&format!("timestamp={}", top_ts(1))) && req.contains("name=eyes"), "{req}");
         assert_eq!(reacted(&app, &top_ts(1), "eyes"), (vec!["U2".to_string(), "U0".to_string()], 2), "shown at once");
         assert_eq!((app.messages.selected.clone(), app.focus), (Some(top_ts(1)), Focus::Messages), "the message clicked selected");
@@ -11215,22 +11267,37 @@ mod tests {
         let (x, y) = cell_in(&mut app, "👀", |a| a.messages.area);
         click(&mut app, x + 2, y);
         asked_for(&mut asked, "reactions.remove").await;
+        answered(&mut app, &mut net).await;
         assert_eq!(reacted(&app, &top_ts(1), "eyes"), (vec!["U2".to_string()], 1));
         // Beside the pill (the space after it) and on the text: nothing toggled.
         click(&mut app, x + 5, y);
         let (tx, ty) = cell_in(&mut app, "p", |a| a.messages.area);
         click(&mut app, tx, ty);
         assert_eq!(reacted(&app, &top_ts(1), "eyes"), (vec!["U2".to_string()], 1), "beside a pill");
+        // A custom emoji's pill (its picture's cells).
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 40)).unwrap();
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        let area = app.messages.area;
+        let (px, py) = (area.y..area.bottom()).flat_map(|y| (area.x..area.right()).map(move |x| (x, y))).find(|&(x, y)| app.messages.pill_at(x, y).is_some_and(|p| p.1 == "piggy")).expect("the picture's pill");
+        click(&mut app, px, py);
+        let req = asked_for(&mut asked, "reactions.add").await;
+        answered(&mut app, &mut net).await;
+        assert!(req.contains(&format!("timestamp={}", top_ts(2))) && req.contains("name=piggy"), "{req}");
+        assert_eq!(reacted(&app, &top_ts(2), "piggy"), (vec!["U2".to_string(), "U0".to_string()], 2));
         // The thread pane: the reply's pill is yours, so it is taken off first, then given back.
         let (x, y) = cell_in(&mut app, "🎉", |a| a.thread_pane.area);
         click(&mut app, x, y);
         let req = asked_for(&mut asked, "reactions.remove").await;
+        answered(&mut app, &mut net).await;
         assert!(req.contains(&format!("timestamp={}", reply_ts(1))) && req.contains("name=tada"), "{req}");
         assert_eq!(reacted(&app, &reply_ts(1), "tada"), (vec!["U2".to_string()], 1));
         assert_eq!((app.thread_pane.selected.clone(), app.focus), (Some(reply_ts(1)), Focus::Thread));
+        click(&mut app, x + 5, y);
+        assert_eq!(reacted(&app, &reply_ts(1), "tada"), (vec!["U2".to_string()], 1), "beside a pill in the thread pane");
         let (x, y) = cell_in(&mut app, "🎉", |a| a.thread_pane.area);
         click(&mut app, x, y);
         asked_for(&mut asked, "reactions.add").await;
+        answered(&mut app, &mut net).await;
         assert_eq!(reacted(&app, &reply_ts(1), "tada"), (vec!["U2".to_string(), "U0".to_string()], 2));
         // Slack's own event for it changes nothing more.
         super::handle_rtm(&mut app, slack_core::rtm::RtmEvent::Event(serde_json::json!({"type": "reaction_added", "user": "U0", "reaction": "tada", "item": {"type": "message", "channel": "C1", "ts": reply_ts(1)}})));
@@ -11257,22 +11324,25 @@ mod tests {
     async fn a_click_on_a_reaction_pill_toggles_your_reaction_in_the_threads_feed() {
         use slack_core::types::Reaction;
         let (url, mut asked) = fake_slack(&[]).await;
-        let (mut app, _net) = feed_app(&url);
+        let (mut app, mut net) = feed_app(&url);
         app.ws.self_id = "U0".into();
         app.threads.entries.as_mut().unwrap()[0].latest[0].reactions = vec![Reaction { name: "eyes".into(), users: vec!["U2".into()], count: 1 }];
         let reply = ("C1".to_string(), "1729440000.000200".to_string());
         let (x, y) = cell_in(&mut app, "👀", |a| a.threads.area);
         click(&mut app, x, y);
         let req = asked_for(&mut asked, "reactions.add").await;
+        answered(&mut app, &mut net).await;
         assert!(req.contains("channel=C1") && req.contains("timestamp=1729440000.000200") && req.contains("name=eyes"), "{req}");
         assert_eq!(reacted(&app, &reply.1, "eyes"), (vec!["U2".to_string(), "U0".to_string()], 2), "shown at once");
         assert_eq!((app.view, app.threads.selected.clone()), (super::View::Threads, Some(reply.clone())), "selected; the view stays");
+        assert!(pill_shown(&mut app, "👀", 2), "the pill on screen at once");
         // Slack's own event for it changes nothing more.
         super::handle_rtm(&mut app, slack_core::rtm::RtmEvent::Event(serde_json::json!({"type": "reaction_added", "user": "U0", "reaction": "eyes", "item": {"type": "message", "channel": "C1", "ts": reply.1}})));
         assert_eq!(reacted(&app, &reply.1, "eyes").1, 2, "counted once");
         let (x, y) = cell_in(&mut app, "👀", |a| a.threads.area);
         click(&mut app, x, y);
         asked_for(&mut asked, "reactions.remove").await;
+        answered(&mut app, &mut net).await;
         assert_eq!(reacted(&app, &reply.1, "eyes"), (vec!["U2".to_string()], 1));
         click(&mut app, x + 5, y);
         assert_eq!(reacted(&app, &reply.1, "eyes"), (vec!["U2".to_string()], 1), "beside a pill");
@@ -11283,7 +11353,7 @@ mod tests {
     async fn a_click_on_a_reaction_pill_toggles_your_reaction_in_activity() {
         use slack_core::types::Reaction;
         let (url, mut asked) = fake_slack(&[]).await;
-        let (mut app, _net) = activity_app(&url);
+        let (mut app, mut net) = activity_app(&url);
         let (t1, t2) = ("1729440000.000100", "1729440000.000300");
         let key = ("C1".to_string(), t1.to_string());
         let mut mention = app.activity.messages[&key].clone().unwrap();
@@ -11295,23 +11365,29 @@ mod tests {
         let (x, y) = cell_in(&mut app, "👀", |a| a.activity.area);
         click(&mut app, x, y);
         let req = asked_for(&mut asked, "reactions.add").await;
+        answered(&mut app, &mut net).await;
         assert!(req.contains("channel=C1") && req.contains(&format!("timestamp={t1}")) && req.contains("name=eyes"), "{req}");
         assert_eq!(reacted(&app, t1, "eyes"), (vec!["U2".to_string(), "U0".to_string()], 2), "shown at once");
         assert_eq!((app.view, app.activity.selected), (super::View::Activity, 0), "selected, not opened");
+        assert!(pill_shown(&mut app, "👀", 2), "the pill on screen at once");
         let (x, y) = cell_in(&mut app, "👀", |a| a.activity.area);
         click(&mut app, x, y);
         asked_for(&mut asked, "reactions.remove").await;
+        answered(&mut app, &mut net).await;
         assert_eq!(reacted(&app, t1, "eyes"), (vec!["U2".to_string()], 1));
         // The reaction item's pill: yours with that emoji on the message reacted to.
         let (x, y) = cell_in(&mut app, "🎉", |a| a.activity.area);
         click(&mut app, x, y);
         let req = asked_for(&mut asked, "reactions.add").await;
+        answered(&mut app, &mut net).await;
         assert!(req.contains(&format!("timestamp={t2}")) && req.contains("name=tada"), "{req}");
         assert_eq!(reacted(&app, t2, "tada"), (vec!["U1".to_string(), "U0".to_string()], 2));
         assert_eq!((app.view, app.activity.selected), (super::View::Activity, 1), "selected, not opened");
+        assert!(pill_shown(&mut app, "🎉", 2), "the item's pill on screen at once");
         let (x, y) = cell_in(&mut app, "🎉", |a| a.activity.area);
         click(&mut app, x, y);
         asked_for(&mut asked, "reactions.remove").await;
+        answered(&mut app, &mut net).await;
         assert_eq!(reacted(&app, t2, "tada"), (vec!["U1".to_string()], 1));
         settle(&mut app, true);
         assert_eq!(steps(&app), history, "no step in the history");
@@ -11320,5 +11396,81 @@ mod tests {
         click(&mut app, x + 5, y);
         assert_eq!(reacted(&app, t1, "eyes"), (vec!["U2".to_string()], 1), "beside a pill");
         assert_eq!(app.view, super::View::Conversation, "opened");
+    }
+
+    #[tokio::test]
+    async fn a_second_click_while_the_first_is_on_its_way_is_ignored() {
+        use slack_core::types::Reaction;
+        let (url, mut asked) = fake_slack(&[]).await;
+        let (mut app, mut net) = feed_app(&url);
+        app.ws.self_id = "U0".into();
+        app.threads.entries.as_mut().unwrap()[0].latest[0].reactions = vec![Reaction { name: "eyes".into(), users: vec!["U2".into()], count: 1 }];
+        let ts = "1729440000.000200";
+        // A double-click: one reaction, sent once.
+        let (x, y) = cell_in(&mut app, "👀", |a| a.threads.area);
+        click(&mut app, x, y);
+        click(&mut app, x, y);
+        assert_eq!(reacted(&app, ts, "eyes"), (vec!["U2".to_string(), "U0".to_string()], 2), "the second click ignored");
+        asked_for(&mut asked, "reactions.add").await;
+        answered(&mut app, &mut net).await;
+        assert!(asked.try_recv().is_err(), "nothing more sent");
+        // Answered: the next click takes it off.
+        click(&mut app, x, y);
+        asked_for(&mut asked, "reactions.remove").await;
+        assert_eq!(reacted(&app, ts, "eyes"), (vec!["U2".to_string()], 1));
+    }
+
+    #[tokio::test]
+    async fn a_reaction_slack_refuses_is_undone_and_said_why() {
+        use slack_core::types::Reaction;
+        let (url, mut asked) = fake_slack(&[("reactions.add", r#"{"ok":false,"error":"is_archived"}"#)]).await;
+        let (mut app, mut net) = feed_app(&url);
+        app.ws.self_id = "U0".into();
+        app.threads.entries.as_mut().unwrap()[0].latest[0].reactions = vec![Reaction { name: "eyes".into(), users: vec!["U2".into()], count: 1 }];
+        let ts = "1729440000.000200";
+        let (x, y) = cell_in(&mut app, "👀", |a| a.threads.area);
+        click(&mut app, x, y);
+        assert_eq!(reacted(&app, ts, "eyes").1, 2, "at once");
+        // Someone else reacts meanwhile: theirs stays.
+        super::handle_rtm(&mut app, slack_core::rtm::RtmEvent::Event(serde_json::json!({"type": "reaction_added", "user": "U3", "reaction": "eyes", "item": {"type": "message", "channel": "C1", "ts": ts}})));
+        asked_for(&mut asked, "reactions.add").await;
+        answered(&mut app, &mut net).await;
+        assert_eq!(reacted(&app, ts, "eyes"), (vec!["U2".to_string(), "U3".to_string()], 2), "yours undone, theirs kept");
+        assert!(pill_shown(&mut app, "👀", 2));
+        assert!(app.status.starts_with(&*super::super::i18n::tr(super::REACTION_REFUSED).replace("{why}", "")) && app.status.contains("is_archived"), "{}", app.status);
+        // A big reaction whose users Slack listed without you: it is yours already, the count put right.
+        let (url, mut asked) = fake_slack(&[("reactions.add", r#"{"ok":false,"error":"already_reacted"}"#)]).await;
+        let (mut app, mut net) = feed_app(&url);
+        app.ws.self_id = "U0".into();
+        app.threads.entries.as_mut().unwrap()[0].latest[0].reactions = vec![Reaction { name: "eyes".into(), users: vec!["U2".into()], count: 5 }];
+        let (x, y) = cell_in(&mut app, "👀", |a| a.threads.area);
+        click(&mut app, x, y);
+        asked_for(&mut asked, "reactions.add").await;
+        answered(&mut app, &mut net).await;
+        assert_eq!(reacted(&app, ts, "eyes"), (vec!["U2".to_string(), "U0".to_string()], 5), "yours, counted once");
+    }
+
+    #[tokio::test]
+    async fn a_reacted_to_pill_in_activity_says_when_it_is_yours() {
+        use slack_core::types::Reaction;
+        let (url, mut asked) = fake_slack(&[]).await;
+        let (mut app, mut net) = activity_app(&url);
+        let (t2, key) = ("1729440000.000300", ("C1".to_string(), "1729440000.000300".to_string()));
+        let mut mine = app.activity.messages[&key].clone().unwrap();
+        mine.reactions = vec![Reaction { name: "tada".into(), users: vec!["U1".into(), "U0".into()], count: 2 }];
+        app.activity.add_message(key, Some(mine));
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 40)).unwrap();
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        let (x, y) = cell_in(&mut app, "🎉", |a| a.activity.area);
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        assert!(terminal.backend().buffer()[(x, y)].modifier.contains(ratatui::style::Modifier::BOLD), "drawn as yours");
+        click(&mut app, x, y);
+        let req = asked_for(&mut asked, "reactions.remove").await;
+        answered(&mut app, &mut net).await;
+        assert!(req.contains("name=tada"), "{req}");
+        assert_eq!(reacted(&app, t2, "tada"), (vec!["U1".to_string()], 1));
+        let (x, y) = cell_in(&mut app, "🎉", |a| a.activity.area);
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        assert!(!terminal.backend().buffer()[(x, y)].modifier.contains(ratatui::style::Modifier::BOLD), "no longer yours");
     }
 }
