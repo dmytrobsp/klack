@@ -31,6 +31,9 @@ rtc-turn 0.21.1 handled that badly in all three places where it refreshes someth
   under the transaction id the caller was given for the first request (`Event::CreatePermissionResponse`,
   `CreatePermissionError`, and `TransactionTimeout` too). webrtc's TURN relayer matches its pending
   permissions by that id.
+- CreatePermission whose retry cannot be built (say the server's new nonce is longer than STUN allows):
+  the error is logged and the permission fails as before (`CreatePermissionError` under the caller's id,
+  the permission removed). Before, the error returned early and the permission waited forever.
 - Refresh: the retry asks for the same lifetime. That is why the refresh transaction now carries the
   lifetime it asked for (`TransactionType::RefreshRequest(addr, lifetime)`): a `close()` (lifetime 0)
   answered 438 stays a release and does not extend the allocation. The refresh timer is not moved: the

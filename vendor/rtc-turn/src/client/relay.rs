@@ -381,9 +381,15 @@ impl Relay<'_> {
                     };
                     if original.is_none() && !addrs.is_empty() {
                         debug!("CreatePermission: 438, sending it again with the new nonce");
-                        let retry = self.create_permissions(now, &addrs, peer_addr_opt)?;
-                        self.client.stale_nonce_retries.insert(retry, tid);
-                        return Ok(());
+                        // klack: a retry that cannot be sent fails the permission as before,
+                        // klack: instead of returning with the permission waiting forever.
+                        match self.create_permissions(now, &addrs, peer_addr_opt) {
+                            Ok(retry) => {
+                                self.client.stale_nonce_retries.insert(retry, tid);
+                                return Ok(());
+                            }
+                            Err(e) => warn!("CreatePermission: 438, but it cannot be sent again: {e}"), // klack
+                        }
                     }
                     Error::ErrTryAgain
                 } else {
@@ -393,7 +399,10 @@ impl Relay<'_> {
                     self.client
                         .events
                         .push_back(Event::CreatePermissionError(tid, err)); // klack: tid
-                    relay.perm_map.remove(&peer_addr);
+                    // klack: looked up again (a failed retry above borrowed the client)
+                    if let Some(relay) = self.client.relays.get_mut(&self.relayed_addr) {
+                        relay.perm_map.remove(&peer_addr);
+                    }
                 }
             } else if let Some(peer_addr) = peer_addr_opt
                 && let Some(perm) = relay.perm_map.get_mut(&peer_addr)

@@ -111,11 +111,31 @@ const GATEWAY_FAILURES: u32 = 2;
 const GATEWAY_RETRY: Duration = Duration::from_secs(600);
 
 /// Which websocket the next connect opens: the gateway, unless it failed [`GATEWAY_FAILURES`] times in a row
-/// (refused, closed before Slack's hello) — then `rtm.connect`'s for [`GATEWAY_RETRY`].
+/// (refused with an HTTP error, closed by the server before Slack's hello; not a network drop) — then `rtm.connect`'s for [`GATEWAY_RETRY`].
 #[derive(Debug, Default)]
 struct Route {
     failures: u32,
     rtm_until: Option<std::time::Instant>,
+}
+
+/// How a connection ended, for [`Route`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Outcome {
+    /// Slack said hello on it.
+    Hello,
+    /// No hello, and the server is to blame: the handshake got an HTTP error status, or the server
+    /// closed the connection (or said goodbye) before its hello.
+    Refused,
+    /// No hello because the network went (an IO error, a timeout, a stall): not the gateway's failure.
+    Lost,
+}
+
+/// How a websocket handshake that failed with `e` ended.
+fn handshake_outcome(e: &tokio_tungstenite::tungstenite::Error) -> Outcome {
+    match e {
+        tokio_tungstenite::tungstenite::Error::Http(_) => Outcome::Refused,
+        _ => Outcome::Lost,
+    }
 }
 
 impl Route {
@@ -123,11 +143,11 @@ impl Route {
         self.rtm_until.is_none_or(|until| now >= until)
     }
 
-    /// A connection on `socket` ended, Slack having said hello on it or not.
-    fn ended(&mut self, socket: Socket, hello: bool, now: std::time::Instant) {
-        match (socket, hello) {
-            (Socket::Gateway, true) => *self = Route::default(),
-            (Socket::Gateway, false) => {
+    /// A connection on `socket` ended so.
+    fn ended(&mut self, socket: Socket, outcome: Outcome, now: std::time::Instant) {
+        match (socket, outcome) {
+            (Socket::Gateway, Outcome::Hello) => *self = Route::default(),
+            (Socket::Gateway, Outcome::Refused) => {
                 self.rtm_until = None;
                 self.failures += 1;
                 if self.failures >= GATEWAY_FAILURES {
@@ -135,7 +155,8 @@ impl Route {
                     *self = Route { failures: 0, rtm_until: Some(now + GATEWAY_RETRY) };
                 }
             }
-            (Socket::Rtm, _) => {}
+            // (A network drop says nothing about the gateway: the count stays as it was.)
+            (Socket::Gateway, Outcome::Lost) | (Socket::Rtm, _) => {}
         }
     }
 }
@@ -148,11 +169,11 @@ pub fn spawn(client: Client) -> Rtm {
         let mut backoff = 1u64;
         let mut route = Route::default();
         loop {
-            // (Which socket it was and whether Slack said hello; none when no address was had.)
+            // (Which socket it was and how it ended; none when no address was had.)
             let mut opened = None;
             let result = run_once(&client, &ev_tx, &mut cmd_rx, route.gateway(std::time::Instant::now()), &mut opened).await;
-            if let Some((socket, hello)) = opened {
-                route.ended(socket, hello, std::time::Instant::now());
+            if let Some((socket, outcome)) = opened {
+                route.ended(socket, outcome, std::time::Instant::now());
             }
             let step = next_step(result.as_ref().err(), client.signed_out(), backoff);
             if let Err(e) = &result {
@@ -178,16 +199,17 @@ pub fn spawn(client: Client) -> Rtm {
     Rtm { events: ev_rx, commands: cmd_tx }
 }
 
-/// One connection, to the gateway if `gateway`; `opened` says which socket it tried and whether Slack said hello.
+/// One connection, to the gateway if `gateway`; `opened` says which socket it tried and how it ended.
 async fn run_once(
     client: &Client,
     ev_tx: &mpsc::UnboundedSender<RtmEvent>,
     cmd_rx: &mut mpsc::UnboundedReceiver<RtmCommand>,
     gateway: bool,
-    opened: &mut Option<(Socket, bool)>,
+    opened: &mut Option<(Socket, Outcome)>,
 ) -> anyhow::Result<()> {
     let (url, socket) = client.socket_url(gateway).await?;
-    *opened = Some((socket, false));
+    // (Until Slack's hello, or the server is seen refusing or closing: a network drop.)
+    *opened = Some((socket, Outcome::Lost));
     // The gateway's address carries the token: errors naming it lose it.
     let connect = async {
         let mut req = url.as_str().into_client_request()?;
@@ -197,7 +219,12 @@ async fn run_once(
         headers.insert("Origin", HeaderValue::from_static("https://app.slack.com"));
         anyhow::Ok(tokio_tungstenite::connect_async(req).await?)
     };
-    let (ws, _) = connect.await.map_err(|e| anyhow::anyhow!("websocket: {}", crate::api::scrub(&e, &url, &client.session.token)))?;
+    let (ws, _) = connect.await.map_err(|e| {
+        if let Some(e) = e.downcast_ref::<tokio_tungstenite::tungstenite::Error>() {
+            *opened = Some((socket, handshake_outcome(e)));
+        }
+        anyhow::anyhow!("websocket: {}", crate::api::scrub(&e, &url, &client.session.token))
+    })?;
     drop(url);
     let (mut sink, mut stream) = ws.split();
     let mut next_id = 1u64;
@@ -206,7 +233,10 @@ async fn run_once(
     loop {
         tokio::select! {
             frame = stream.next() => {
-                let Some(frame) = frame else { anyhow::bail!("websocket closed") };
+                let Some(frame) = frame else {
+                    closed_before_hello(opened);
+                    anyhow::bail!("websocket closed")
+                };
                 // Another call of the client found the session ended.
                 if client.signed_out() {
                     anyhow::bail!("signed out");
@@ -217,11 +247,14 @@ async fn run_once(
                         let Ok(v) = serde_json::from_str::<Value>(&text) else { continue };
                         match incoming(&v) {
                             Incoming::Hello => {
-                                *opened = Some((socket, true));
+                                *opened = Some((socket, Outcome::Hello));
                                 let _ = ev_tx.send(RtmEvent::Connected(socket));
                             }
                             Incoming::Skip => {}
-                            Incoming::Goodbye => anyhow::bail!("server said goodbye"),
+                            Incoming::Goodbye => {
+                                closed_before_hello(opened);
+                                anyhow::bail!("server said goodbye")
+                            }
                             Incoming::Event => {
                                 if ev_tx.send(RtmEvent::Event(v)).is_err() {
                                     return Ok(());
@@ -230,7 +263,10 @@ async fn run_once(
                         }
                     }
                     WsMessage::Ping(p) => sink.send(WsMessage::Pong(p)).await?,
-                    WsMessage::Close(c) => anyhow::bail!("websocket closed: {c:?}"),
+                    WsMessage::Close(c) => {
+                        closed_before_hello(opened);
+                        anyhow::bail!("websocket closed: {c:?}")
+                    }
                     _ => {}
                 }
             }
@@ -250,6 +286,13 @@ async fn run_once(
                 sink.send(WsMessage::Text(frame(cmd, next_id).to_string().into())).await?;
             }
         }
+    }
+}
+
+/// The server closed the connection: before Slack's hello, that is the gateway refusing.
+fn closed_before_hello(opened: &mut Option<(Socket, Outcome)>) {
+    if let Some((_, outcome @ Outcome::Lost)) = opened {
+        *outcome = Outcome::Refused;
     }
 }
 
@@ -280,21 +323,54 @@ mod tests {
         let t0 = std::time::Instant::now();
         let mut route = Route::default();
         assert!(route.gateway(t0), "the gateway first");
-        route.ended(Socket::Gateway, false, t0);
+        route.ended(Socket::Gateway, Outcome::Refused, t0);
         assert!(route.gateway(t0), "one failed connect: the gateway again");
-        route.ended(Socket::Gateway, false, t0);
+        route.ended(Socket::Gateway, Outcome::Refused, t0);
         assert!(!route.gateway(t0), "two: rtm.connect for the next attempt");
-        route.ended(Socket::Rtm, true, t0 + Duration::from_secs(60));
+        route.ended(Socket::Rtm, Outcome::Hello, t0 + Duration::from_secs(60));
         assert!(!route.gateway(t0 + GATEWAY_RETRY - Duration::from_secs(1)), "rtm.connect for a while");
         assert!(route.gateway(t0 + GATEWAY_RETRY), "then the gateway again");
-        route.ended(Socket::Gateway, false, t0 + GATEWAY_RETRY);
+        route.ended(Socket::Gateway, Outcome::Refused, t0 + GATEWAY_RETRY);
         assert!(route.gateway(t0 + GATEWAY_RETRY), "counted afresh");
         // A hello in between: the failures are forgotten.
         let mut route = Route::default();
-        route.ended(Socket::Gateway, false, t0);
-        route.ended(Socket::Gateway, true, t0);
-        route.ended(Socket::Gateway, false, t0);
+        route.ended(Socket::Gateway, Outcome::Refused, t0);
+        route.ended(Socket::Gateway, Outcome::Hello, t0);
+        route.ended(Socket::Gateway, Outcome::Refused, t0);
         assert!(route.gateway(t0));
+    }
+
+    #[test]
+    fn a_network_drop_before_hello_is_not_the_gateways_failure() {
+        let t0 = std::time::Instant::now();
+        let mut route = Route::default();
+        // The network gone (an IO error, a timeout): the gateway is not to blame.
+        for _ in 0..4 {
+            route.ended(Socket::Gateway, Outcome::Lost, t0);
+        }
+        assert!(route.gateway(t0), "dropped connects do not switch to rtm.connect");
+        // Nor do they reset the count of real refusals.
+        route.ended(Socket::Gateway, Outcome::Refused, t0);
+        route.ended(Socket::Gateway, Outcome::Lost, t0);
+        route.ended(Socket::Gateway, Outcome::Refused, t0);
+        assert!(!route.gateway(t0), "two refusals: rtm.connect");
+        // Which handshake errors are the gateway refusing.
+        use tokio_tungstenite::tungstenite::{Error, http::Response};
+        let status = |code: u16| Error::Http(Box::new(Response::builder().status(code).body(None).unwrap()));
+        assert_eq!(handshake_outcome(&status(403)), Outcome::Refused, "an HTTP error status");
+        assert_eq!(handshake_outcome(&status(502)), Outcome::Refused);
+        let io = |kind: std::io::ErrorKind| Error::Io(std::io::Error::from(kind));
+        for kind in [std::io::ErrorKind::ConnectionReset, std::io::ErrorKind::TimedOut, std::io::ErrorKind::ConnectionRefused, std::io::ErrorKind::UnexpectedEof] {
+            assert_eq!(handshake_outcome(&io(kind)), Outcome::Lost, "{kind:?}");
+        }
+        assert_eq!(handshake_outcome(&Error::ConnectionClosed), Outcome::Lost);
+        // The server closing (or saying goodbye) before its hello is a refusal; after it, nothing changes.
+        let mut opened = Some((Socket::Gateway, Outcome::Lost));
+        closed_before_hello(&mut opened);
+        assert_eq!(opened, Some((Socket::Gateway, Outcome::Refused)));
+        let mut opened = Some((Socket::Gateway, Outcome::Hello));
+        closed_before_hello(&mut opened);
+        assert_eq!(opened, Some((Socket::Gateway, Outcome::Hello)));
     }
 
     #[test]

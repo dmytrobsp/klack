@@ -247,7 +247,9 @@ that does not exist, no camera. Shapes and log messages only.
     out; during the wait between tries it just stops); LEAVE_ACK; the server closing the signaling WebSocket
     (close frame or end of stream — how a meeting end arrives); the media's channels closing; the very first
     connection failing (an error, as before); 3 tries in a row that do not stay up 30 s (0, 2, 4 s apart; a try
-    that connects and drops sooner counts as failed); more than 10 reconnects within an hour. OBSERVED: with a forced drop (`KLACK_HUDDLE_DROP=40`,
+    that connects and drops sooner counts as failed); more than 10 reconnects within an hour. In those last two
+    cases (a call that had connected, not left by us) the app sends `rooms.leave` with the same args as a leave by
+    hand, once (VX-final). OBSERVED: with a forced drop (`KLACK_HUDDLE_DROP=40`,
   debug builds) B was connected again 3 s later; Slack sent one more `sh_room_join` (no `sh_room_leave`) and the
   huddle went on. In the 13-minute run after the fix, B's binding hit the 438 at 10:00, B joined again 4 s
   after `disconnected` and was connected ~12 s after the loss; A was unaffected and the huddle lasted the whole

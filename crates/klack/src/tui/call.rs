@@ -40,6 +40,8 @@ pub struct Call {
     volume: Option<Volume>,
     pub muted: bool,
     pub connected: bool,
+    /// The connection was lost and the session is joining again (`connected` stays true meanwhile).
+    pub reconnecting: bool,
     /// We asked to leave (the session ends next).
     pub leaving: bool,
     /// When media connected: roster changes in the first moments are the people already
@@ -206,6 +208,7 @@ impl Call {
             volume,
             muted: true,
             connected: false,
+            reconnecting: false,
             leaving: false,
             connected_at: None,
             joined: 0,
@@ -310,6 +313,7 @@ impl Call {
         match ev {
             SessionEvent::Connected => {
                 self.connected = true;
+                self.reconnecting = false;
                 self.connected_at = Some(std::time::Instant::now());
             }
             // A screen share joins as a second attendee: it is shown as a share, not a person.
@@ -336,14 +340,20 @@ impl Call {
             }
             SessionEvent::Error(e) => tracing::warn!("huddle: {e}"),
             // Joining again: the roster settles anew once connected (no join/leave sounds for it).
+            // The bar says so meanwhile, with no levels (nothing is heard or sent); mute stays as it is.
             SessionEvent::Reconnecting => {
                 tracing::info!("huddle: connection lost, joining again");
                 self.connected_at = None;
+                self.reconnecting = true;
+                self.levels.clear();
             }
             SessionEvent::VideoSources(sources) => self.shares = screen_shares(&sources),
             SessionEvent::SendingVideo { .. } => {}
             SessionEvent::ReceiveCodecs(c) => tracing::info!("meeting receive codecs: {c:?}"),
-            SessionEvent::Ended => return true,
+            SessionEvent::Ended => {
+                self.reconnecting = false;
+                return true;
+            }
         }
         false
     }
@@ -428,6 +438,8 @@ impl Call {
         let mut state = vec![piece(format!("🎧 {}", self.place(ws)), green.add_modifier(Modifier::BOLD))];
         if !self.connected {
             state.push(piece("connecting…".into(), dim));
+        } else if self.reconnecting {
+            state.push(piece("reconnecting…".into(), dim));
         }
         let speaker = self.last_speaker.as_deref().and_then(|id| self.roster.iter().find(|p| p.attendee_id == id));
         if let Some(sp) = speaker {
@@ -460,6 +472,9 @@ impl Call {
         state.push(piece(people(self.roster.len()), dim));
         let mic = if self.muted {
             piece("🔇 muted".into(), Style::default())
+        } else if self.reconnecting {
+            // (No level: nothing reaches the meeting until it is back.)
+            piece("🎙\u{fe0f} live".into(), dim)
         } else {
             let (level, open) = (f32::from_bits(self.mic_level.load(std::sync::atomic::Ordering::Relaxed)), self.mic_open.load(std::sync::atomic::Ordering::Relaxed));
             Piece { spans: vec![Span::styled("🎙\u{fe0f} live ", green.add_modifier(Modifier::BOLD)), Span::styled(meter(level), if open { green } else { dim })], avatar: None }

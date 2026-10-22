@@ -248,6 +248,10 @@ struct App {
     lookups: Lookups,
     /// The kind of the current (or last) websocket; None before the first connection.
     socket: Option<slack_core::api::Socket>,
+    /// Since when the websocket is down (the first drop of a run of failed reconnects).
+    rtm_down_since: Option<std::time::Instant>,
+    /// When a reconnect last queued the people shown for a look-up.
+    people_requeued: Option<std::time::Instant>,
     /// Where the next status refresh goes on among the sidebar's DMs and group DMs off screen.
     status_turn: usize,
     /// Open "move to section" picker.
@@ -2377,17 +2381,41 @@ impl App {
         }
     }
 
+    /// The huddle's session has ended: we left, it ended before connecting, or its connection was lost for good.
+    fn huddle_ended(&mut self) {
+        let Some(call) = self.call.take() else { return };
+        self.status = "left the huddle".into();
+        // Lost for good (the reconnect tries used up): Slack is told we left, as when leaving by hand (once: the
+        // call is gone now).
+        if call.connected && !call.leaving {
+            self.send_leave(&call);
+            self.status = super::i18n::tr(CONNECTION_LOST_LEFT).into_owned();
+        }
+        // Right after a huddle emptied, Slack can still hand out its room though the
+        // meeting is over: the session ends before connecting. Ask again once.
+        match rejoin_after_end(call.connected, call.leaving, self.rejoined) {
+            Some(true) => {
+                tracing::info!(channel = call.channel, "the huddle ended before connecting; joining again");
+                self.rejoined = true;
+                self.join_huddle_after(call.channel, call.thread, REJOIN_DELAY);
+            }
+            Some(false) => self.status = "cannot join the huddle: it ended as we joined".into(),
+            None => {}
+        }
+    }
+
+    /// Tell Slack we left `call` (`rooms.leave`, in the background; a failure is benign).
+    fn send_leave(&self, call: &super::call::Call) {
+        spawn_leave(self.client.clone(), call.leave_request());
+    }
+
     /// Join (or start) the huddle of the current conversation, or leave the one we are in.
     fn toggle_huddle(&mut self) {
         if let Some(call) = self.call.as_mut() {
             // Slack is told too (the session ending alone does not), once; a failure is benign.
             if !call.leaving {
                 let (client, params) = (self.client.clone(), call.leave_request());
-                tokio::spawn(async move {
-                    if let Err(e) = client.call_raw("rooms.leave", &params).await {
-                        tracing::info!("rooms.leave: {e}");
-                    }
-                });
+                spawn_leave(client, params);
             }
             call.leave();
             self.status = "leaving the huddle…".into();
@@ -3943,8 +3971,20 @@ const FILE_NOT_SHOWN: &str = "klack can't show that file here";
 const CHOOSE_LIVE: &str = "choose a live huddle to join";
 const RECENT_FAILED: &str = "recent huddles failed";
 
-/// The Huddles view's status notes, for `ctl locale-template`.
-pub const HUDDLE_NOTES: &[&str] = &[CHOOSE_LIVE, RECENT_FAILED];
+/// A huddle whose connection could not be brought back (the reconnect tries used up).
+const CONNECTION_LOST_LEFT: &str = "huddle connection lost — left the huddle";
+
+/// The Huddles view's and a huddle's status notes, for `ctl locale-template`.
+pub const HUDDLE_NOTES: &[&str] = &[CHOOSE_LIVE, RECENT_FAILED, CONNECTION_LOST_LEFT];
+
+/// `rooms.leave` with `params`, in the background (a failure is benign).
+fn spawn_leave(client: slack_core::api::Client, params: Vec<(&'static str, String)>) {
+    tokio::spawn(async move {
+        if let Err(e) = client.call_raw("rooms.leave", &params).await {
+            tracing::info!("rooms.leave: {e}");
+        }
+    });
+}
 
 /// The status notes of links into klack, for `ctl locale-template`.
 pub const LINK_NOTES: &[&str] = &[LINK_GONE, HISTORY_GONE, CONVERSATION_GONE, SEEKING, SEEK_STOPPED, FILE_NOT_SHOWN, super::applink::OPENS_IN_KLACK];
@@ -4240,6 +4280,8 @@ impl App {
             statuses_polled: None,
             lookups: Lookups::default(),
             socket: None,
+            rtm_down_since: None,
+            people_requeued: None,
             status_turn: 0,
             prefs: None,
             huddle_view: None,
@@ -4407,21 +4449,7 @@ async fn run_workspace(
                     }
                 }
                 if ended {
-                    let call = app.call.take();
-                    app.status = "left the huddle".into();
-                    // Right after a huddle emptied, Slack can still hand out its room though the
-                    // meeting is over: the session ends before connecting. Ask again once.
-                    if let Some(call) = call {
-                        match rejoin_after_end(call.connected, call.leaving, app.rejoined) {
-                            Some(true) => {
-                                tracing::info!(channel = call.channel, "the huddle ended before connecting; joining again");
-                                app.rejoined = true;
-                                app.join_huddle_after(call.channel, call.thread, REJOIN_DELAY);
-                            }
-                            Some(false) => app.status = "cannot join the huddle: it ended as we joined".into(),
-                            None => {}
-                        }
-                    }
+                    app.huddle_ended();
                 }
             }
             _ = tick.tick() => {}
@@ -5493,8 +5521,14 @@ fn handle_rtm(app: &mut App, ev: slack_core::rtm::RtmEvent) {
         RtmEvent::Connected(socket) => {
             tracing::info!("rtm connected ({socket:?})");
             // Profile changes pushed while the connection was away are lost: the people shown are looked up.
+            let down_since = app.rtm_down_since.take();
             if app.socket.replace(socket).is_some() {
-                app.queue_people_shown();
+                // (Not at each reconnect of a flapping link: up to STATUS_REFRESH_MAX look-ups each time.)
+                let now = std::time::Instant::now();
+                if requeue_people(down_since.map(|t| now.duration_since(t)), app.people_requeued.map(|t| now.duration_since(t))) {
+                    app.people_requeued = Some(now);
+                    app.queue_people_shown();
+                }
                 // (Slack's client asks for its counts at each connect: badge changes while away are not pushed.)
                 app.fetch_activity_badge();
             }
@@ -5509,6 +5543,8 @@ fn handle_rtm(app: &mut App, ev: slack_core::rtm::RtmEvent) {
         }
         RtmEvent::Disconnected(reason) => {
             app.connected = false;
+            // (Each failed reconnect says so again: the first drop counts.)
+            app.rtm_down_since.get_or_insert_with(std::time::Instant::now);
             tracing::warn!("rtm disconnected: {reason}");
         }
         RtmEvent::SignedOut => {
@@ -6144,6 +6180,17 @@ const FEED_REPLIES: usize = 4;
 
 /// How long to wait before joining again a huddle that ended before it connected.
 const REJOIN_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// A reconnect looks the people shown up again when the websocket was down this long ...
+const REQUEUE_DOWN: Duration = Duration::from_secs(30);
+/// ... or the last reconnect's look-up was this long ago (a short drop misses few pushes).
+const REQUEUE_EVERY: Duration = Duration::from_secs(300);
+
+/// Whether a reconnect after `down` (None: not known) looks the people shown up again, the last time having
+/// been `since_last` ago (None: never).
+fn requeue_people(down: Option<Duration>, since_last: Option<Duration>) -> bool {
+    down.is_some_and(|d| d >= REQUEUE_DOWN) || since_last.is_none_or(|d| d >= REQUEUE_EVERY)
+}
 
 /// A call's session ended: None when that is an ordinary end (it had connected, or we left),
 /// else whether to join again (only once; Some(false): give up).
@@ -7414,6 +7461,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_huddle_lost_for_good_tells_slack_we_left() {
+        use huddle::session::SessionEvent;
+        let (url, mut asked) = fake_slack(&[]).await;
+        let (mut app, _net) = test_app_at(&url);
+        // The session gave up joining again (tries used up, or too many reconnects in an hour).
+        let mut call = test_call("C1");
+        call.apply(SessionEvent::Connected);
+        app.call = Some(call);
+        app.huddle_ended();
+        assert!(app.call.is_none());
+        assert_eq!(app.status, "huddle connection lost — left the huddle");
+        let req = asked_for(&mut asked, "rooms.leave").await;
+        for want in ["channel_id=C1", "call_id=R9", "attendee_id=A9", "reason=user_initiated"] {
+            assert!(req.contains(want), "{want} in {req}");
+        }
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(300), asked.recv()).await.is_err(), "sent once");
+        // Left by hand: Slack was told then, not again.
+        let mut call = test_call("C1");
+        call.apply(SessionEvent::Connected);
+        call.leave();
+        app.call = Some(call);
+        app.huddle_ended();
+        assert_eq!(app.status, "left the huddle");
+        // Ended before connecting: there is nothing to leave.
+        app.rejoined = true;
+        app.call = Some(test_call("C1"));
+        app.huddle_ended();
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(300), asked.recv()).await.is_err(), "nothing sent");
+    }
+
+    #[tokio::test]
+    async fn the_call_bar_says_reconnecting_and_shows_no_live_level_meanwhile() {
+        use huddle::session::SessionEvent;
+        let (mut app, _net) = test_app();
+        let mut call = test_call("C1");
+        call.apply(SessionEvent::Connected);
+        // (Only the state: no microphone is opened.)
+        call.muted = false;
+        app.call = Some(call);
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 24)).unwrap();
+        let mut bar = |app: &mut super::App| {
+            terminal.draw(|f| super::draw(f, app)).unwrap();
+            screen(&terminal).join("\n")
+        };
+        let live = bar(&mut app);
+        assert!(live.contains("live ····") && !live.contains("reconnecting"), "{live}");
+        app.call.as_mut().unwrap().apply(SessionEvent::Reconnecting);
+        let lost = bar(&mut app);
+        assert!(lost.contains("reconnecting…"), "{lost}");
+        assert!(!lost.contains("····"), "no microphone level while nothing is sent: {lost}");
+        assert!(!app.call.as_ref().unwrap().muted, "mute is left as it was");
+        app.call.as_mut().unwrap().apply(SessionEvent::Connected);
+        let back = bar(&mut app);
+        assert!(back.contains("live ····") && !back.contains("reconnecting"), "{back}");
+    }
+
+    #[tokio::test]
     async fn i_replies_to_the_selected_thread() {
         use super::{run_global, Action, Focus, Net, View};
         use crossterm::event::{KeyCode, KeyModifiers};
@@ -8005,6 +8109,35 @@ mod tests {
         app.statuses_polled = Some(std::time::Instant::now() - std::time::Duration::from_secs(601));
         app.refresh_statuses();
         assert_eq!(app.lookups.due.iter().collect::<Vec<_>>(), ["U2"], "every ten minutes");
+    }
+
+    #[tokio::test]
+    async fn a_flapping_connection_does_not_look_the_people_up_each_time() {
+        use slack_core::rtm::RtmEvent;
+        let gateway = || RtmEvent::Connected(slack_core::api::Socket::Gateway);
+        let (mut app, _net) = test_app();
+        with_dm(&mut app, "U2");
+        super::handle_rtm(&mut app, gateway());
+        super::handle_rtm(&mut app, RtmEvent::Disconnected("gone".into()));
+        super::handle_rtm(&mut app, gateway());
+        assert_eq!(app.lookups.due.iter().collect::<Vec<_>>(), ["U2"], "the first reconnect");
+        app.lookups.due.clear();
+        // A short drop soon after: not again.
+        super::handle_rtm(&mut app, RtmEvent::Disconnected("gone".into()));
+        super::handle_rtm(&mut app, gateway());
+        assert!(app.lookups.due.is_empty(), "a flap");
+        // Down for 30 s (over several failed tries): again.
+        super::handle_rtm(&mut app, RtmEvent::Disconnected("gone".into()));
+        app.rtm_down_since = app.rtm_down_since.map(|t| t - std::time::Duration::from_secs(30));
+        super::handle_rtm(&mut app, RtmEvent::Disconnected("still gone".into()));
+        super::handle_rtm(&mut app, gateway());
+        assert_eq!(app.lookups.due.iter().collect::<Vec<_>>(), ["U2"], "down long enough");
+        app.lookups.due.clear();
+        // A short drop five minutes after the last look-up: again.
+        app.people_requeued = app.people_requeued.map(|t| t - std::time::Duration::from_secs(300));
+        super::handle_rtm(&mut app, RtmEvent::Disconnected("gone".into()));
+        super::handle_rtm(&mut app, gateway());
+        assert_eq!(app.lookups.due.iter().collect::<Vec<_>>(), ["U2"], "five minutes on");
     }
 
     #[tokio::test]

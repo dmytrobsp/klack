@@ -91,9 +91,11 @@ huddle already). An expired status is gone at once, without waiting for Slack. k
 own websocket gateway, as Slack's web client does, and asks it for the profile changes of the people it
 shows: when someone's status or huddle state changes, Slack says so within a second or two and klack looks
 that one person up. As a safety net — and on the older `rtm.connect` connection klack falls back to when
-Slack offers no gateway or it fails twice in a row (the gateway is tried again ten minutes later), which gets
+Slack offers no gateway or it fails twice in a row (refused, or closed before Slack's hello; a network drop
+does not count; the gateway is tried again ten minutes later), which gets
 no such pushes — the people shown are also looked up again every ten
-minutes and once after the connection was lost, up to 50 at a time: first the authors in the open
+minutes and once after the connection was lost (when it was down for 30 s or more, or the last such look-up
+was five minutes ago or more, so a flapping link does not bring the bursts back), up to 50 at a time: first the authors in the open
 conversation and thread, then the people of the DMs and group DMs on screen in the sidebar, then the
 sidebar's other DMs and group DMs in turn, so that everyone's comes round: F6 → Messages & media → Refresh
 people's statuses (`[messages] status_refresh_secs`, default 600, 0 = off).
@@ -356,13 +358,15 @@ desktop notification. While you are in Do Not Disturb (snoozed or in your schedu
 invitation at all, so nothing rings — as in Slack's own app.
 
 If a huddle's connection is lost (a network change, say), klack joins again by itself, as Slack's app
-does: the status line says "huddle connection lost — joining again…", then "back in the huddle", usually
-a few seconds later; mute and camera stay as they were (also when changed meanwhile). Once you were
+does: the status line says "huddle connection lost — joining again…" and the call bar "reconnecting…"
+(with no microphone level meanwhile), then "back in the huddle", usually a few seconds later; mute and camera
+stay as they were (also when changed meanwhile). Once you were
 connected, any trouble with the connection joins again: the media failing or staying disconnected for
 4 s, a signaling error from the server, a broken signaling socket. The call ends when you leave (also while
 it is joining again), when the server closes the signaling connection (the huddle ended, or you were
 removed), when the very first join fails, after three tries in a row that do not stay up for 30 s
-(0, 2 and 4 s apart), or after more than ten reconnects within an hour.
+(0, 2 and 4 s apart), or after more than ten reconnects within an hour. In those last two cases klack tells
+Slack it left, as when you leave, and the status line says "huddle connection lost — left the huddle".
 
 Clicking a desktop notification (Linux desktops with an XDG notification server) opens its
 conversation in klack — a thread reply opens the thread with the reply selected — for 30

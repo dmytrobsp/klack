@@ -328,3 +328,35 @@ fn a_stale_nonce_on_an_allocation_refresh_resends_it_at_once() {
     let retry = turn.next_request();
     assert_eq!(lifetime_of(&retry), Duration::ZERO, "a release stays a release");
 }
+
+/// A NONCE longer than STUN allows (763 bytes): taken from a 438, it cannot be put in a request.
+struct LongNonce;
+
+impl Setter for LongNonce {
+    fn add_to(&self, m: &mut Message) -> rtc::shared::error::Result<()> {
+        m.add(ATTR_NONCE, &[b'n'; 800]);
+        Ok(())
+    }
+}
+
+#[test]
+fn a_permission_whose_retry_cannot_be_sent_fails_instead_of_waiting_forever() {
+    let mut turn = Turn::allocated();
+    let now = turn.at(0);
+    let tid = turn.client.relay(addr(RELAYED)).unwrap().create_permission(now, addr(PEER)).unwrap().unwrap();
+    let first = turn.next_request();
+    let setters: Vec<Box<dyn Setter>> = vec![
+        Box::new(first.transaction_id),
+        Box::new(MessageType::new(first.typ.method, CLASS_ERROR_RESPONSE)),
+        error(CODE_STALE_NONCE),
+        Box::new(LongNonce),
+    ];
+    let mut res = Message::new();
+    res.build(&setters).unwrap();
+    turn.deliver(now, res.raw).expect("the answer is handled");
+    assert!(turn.requests().is_empty(), "no retry could be sent");
+    assert!(
+        turn.events().iter().any(|e| matches!(e, Event::CreatePermissionError(id, _) if *id == tid)),
+        "the caller is told the permission failed, under its id"
+    );
+}

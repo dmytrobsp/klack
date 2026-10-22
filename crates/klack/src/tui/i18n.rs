@@ -98,7 +98,7 @@ mod tests {
         let template = template();
         assert!(template.contains("\"Preferences\" = \"\"") && template.contains("\"add a reaction\" = \"\""));
         assert!(parse(&template).unwrap().is_empty(), "the template parses and translates nothing");
-        for s in ["In klack", "In the browser", "Files", "that message isn't there any more, or you can't see it", "looking for the message… ({} loaded)", "opens {} in klack", "klack can't show that file here", "In a huddle", "Reply in {where} thread", "message not available", "No threads yet: the threads you start, reply in or follow show up here.", "The threads could not be loaded", "choose a live huddle to join", "recent huddles failed"] {
+        for s in ["In klack", "In the browser", "Files", "that message isn't there any more, or you can't see it", "looking for the message… ({} loaded)", "opens {} in klack", "klack can't show that file here", "In a huddle", "Reply in {where} thread", "message not available", "No threads yet: the threads you start, reply in or follow show up here.", "The threads could not be loaded", "choose a live huddle to join", "recent huddles failed", "huddle connection lost — left the huddle"] {
             assert!(template.contains(&format!("\"{s}\" = \"\"")), "{s}");
         }
     }
