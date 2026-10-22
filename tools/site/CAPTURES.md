@@ -1,4 +1,4 @@
-# How the page's terminal captures were made (LP7, redrawn in LP7b, re-captured in LP12a and LP12b)
+# How the page's terminal captures were made (LP7, redrawn in LP7b, re-captured in LP12a, LP12b and TY7)
 
 `site/captures/{hero,keys,huddle,signin}.html` are fragments that `python3 tools/site/fill.py site` puts into
 the page's `hero-capture` and `capture-<name>` regions (a region without its file keeps what it has). They are
@@ -6,8 +6,8 @@ built by `python3 tools/site/captures.py RAW_DIR site/captures` from raw kitty c
 committed), `~/.config/ttyak-site/rename.json` and `~/.config/ttyak-site/fixes.json` (both outside the repo, 0600,
 never printed or committed) and styled by the "terminal captures" block of `site/css/site.css`.
 
-The captures were taken before the rename, from the app's old name; the rename (TY5) changed by hand only the
-words around them — the window titles, the labels and the sign-in's typed command line — until they are re-captured.
+The rename (TY5) first changed by hand only the words around the captures — the window titles, the labels and the
+sign-in's typed command line; TY7 then took all four again from the renamed app, `ttyak`, as below.
 
 ## Drawn like a terminal (LP7b)
 
@@ -52,7 +52,9 @@ the real strings; it also covers the two-letter initials drawn before a name and
 `~/.config/ttyak-site/forbidden.txt` (0600) lists the real strings: both accounts' names, display names, handles,
 emails and user ids, the other members', the team id, the workspace name and domain, and every channel name except
 the two demo channels. Both files were written by a script straight from `ttyak ctl whoami`, `team.info`,
-`users.list`, `channels` and the profiles' session files; nothing from them is printed. `python3
+`users.list`, `channels` and the profiles' session files; nothing from them is printed. In TY7 a test channel made
+since then showed in A's sidebar; a script added it to both files (a made-up name as wide as the real one, and its
+form cut short with `…`), checked against `ttyak ctl channels` that no other channel was missing. `python3
 tools/site/check_private.py site` checks the result, and each capture was also checked for any 5-character piece
 of a listed string (only generic words share one: "channel", "search", "staging", Slack's own address).
 
@@ -69,14 +71,22 @@ cells and each screen taken with `kitty @ get-text --extent screen --ansi`. The 
 was checked against kitty's plain `get-text` of the same screen, row by row: equal (the picture's placeholder cells
 aside). B's window was never captured.
 
+TY7 did the same from `ttyak` (windows `ttyak-cap-a`, `ttyak-cap-b`, each with its own socket, floating on a hidden
+special workspace; `TTYAK_LOG=ttyak=debug,huddle=debug` into the fake home's cache, deleted after). It was night, so
+A's Do Not Disturb schedule was on and the status line drew 🔕: A's current DND session was ended (`dnd.endDnd`,
+the test account only, the schedule untouched) for the captures and put back after with `dnd.setSnooze` to the
+same end time (within a minute), so the status line reads "0 unread · 0 mentions · ● active" as before.
+
 - **hero** — the main view on `#prod-deploys` (reached with Ctrl+K), the last message, the one with the link,
-  selected. The channel starts on screen ("beginning of conversation"), and nothing follows the link message.
+  selected (a channel just opened has no selection: `k` then `j` selects the last message). The channel starts on
+  screen ("beginning of conversation"), and nothing follows the link message.
 - **keys** — then Space: the which-key panel.
 - **huddle** — held in `#coffee`, never in the channel the other captures show, so it gets no note. B ran
   `ttyak ctl --profile b huddle-media coffee 300 --share-test` (a synthetic screen share only: no `--video-test`,
   so B's camera is off, and no microphone); A joined with `␣hh` (muted, as always) and opened the huddle view with
-  `␣hv`; afterwards `␣hh` left. In LP12b B's ctl ran for a fixed 150 s and left the huddle by itself (its LEAVE),
-nobody was killed, and the sidebar showed no huddle in `#coffee` afterwards. No other key was pressed in the huddle.
+  `␣hv`; afterwards `␣hh` left. In LP12b and TY7 B's ctl ran for a fixed 150 s and left the huddle by itself (its
+  LEAVE), nobody was killed, and the sidebar showed no huddle in `#coffee` afterwards. No other key was pressed in
+  the huddle. In TY7 A went to `#coffee` (Ctrl+K) before `␣hh`.
   The shared screen is a kitty picture, so the text capture has placeholder cells there: they are blanked and the
   page puts the Swan Lake still over them. Both tiles show a letter instead of a picture: the first letter of the
   real name. `~/.config/ttyak-site/fixes.json` (0600, next to `rename.json`) puts the made-up names' letters into
@@ -106,7 +116,9 @@ Slack…") before it draws the code screen, and this capture was to send nothing
 own layout function, `qr::code_screen("demo@example.com", 120, 30)` (the "beside" layout), written to a file by a
 throwaway test that was not committed, with the command line above it and the guide's hint line and
 `Code: ___-___` prompt below, as `auth.rs` prints them. That file was printed in a second kitty window
-(`lp-7bb`, 120 × 30) and taken with `get-text --ansi` like the others, so kitty laid it out.
+(`lp-7bb`, 120 × 30) and taken with `get-text --ansi` like the others, so kitty laid it out. TY7 made the file with
+the ignored `qr_print` test (`TTYAK_QR_OUT=… TTYAK_QR_SIZE=120x30`, its address changed to `demo@example.com` for
+the run and changed back, not committed), printed it in `ttyak-cap-s`: the fragment came out byte for byte the same.
 
 The QR code: `signin_link("demo@example.com")` is
 `https://app.slack.com/get-started?email=demo%40example.com#/createnew` — Slack's public "get started" page with
