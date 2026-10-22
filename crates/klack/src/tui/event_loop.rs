@@ -16,6 +16,7 @@ use super::composer::{Composer, KeyOutcome};
 use super::history::{Place, Went};
 use super::keymap::{Action, Context, Key, Keymap, LEADER, Mode, Pending, Resolved};
 use super::keys_file::Change;
+use super::menu::{MessageTarget, Shown};
 use super::messages::MessagePane;
 use super::picker::EmojiPicker;
 use super::sidebar::Sidebar;
@@ -626,8 +627,8 @@ impl App {
     /// Toggle our reaction `name` on message `ts` in `channel` (optimistic, then API).
     fn toggle_reaction(&mut self, channel: String, ts: String, name: String) {
         let me = self.ws.self_id.clone();
-        let Some(had) = self.ws.find_message(&channel, &ts).map(|m| m.reactions.iter().any(|r| r.name == name && r.users.contains(&me))) else { return };
-        for msg in self.ws.copies_mut(&channel, &ts) {
+        let Some(had) = self.find_message(&channel, &ts).map(|m| m.reactions.iter().any(|r| r.name == name && r.users.contains(&me))) else { return };
+        for msg in self.copies_mut(&channel, &ts) {
             match msg.reactions.iter().position(|r| r.name == name) {
                 Some(i) if had => {
                     let r = &mut msg.reactions[i];
@@ -1148,9 +1149,9 @@ impl App {
                 if pane.selected.is_none() {
                     pane.move_selection(&order, 0);
                 }
-                if let Some(ts) = pane.selected.clone() {
-                    let at = pane.spot(&ts);
-                    self.message_menu(in_thread, ts, at);
+                if let Some(t) = self.message_target(in_thread) {
+                    let at = self.spot(&t);
+                    self.message_menu(t, at);
                 }
             }
             Some(Action::Top) => pane.move_selection(&order, isize::MIN / 2),
@@ -1182,68 +1183,119 @@ impl App {
                 }
             }
             Some(Action::OpenThread) => self.status = "already in the thread".into(),
-            Some(Action::React) => {
-                if let (Some(channel), Some(ts)) = (self.current.clone(), self.selected_ts()) {
-                    let picker = self.ws.find_message(&channel, &ts).map(|m| EmojiPicker::for_message(&m.reactions, &self.ws.self_id)).unwrap_or_default();
-                    self.picker = Some((picker, channel, ts));
-                }
-            }
-            Some(Action::Edit) => {
-                if let Some(ts) = self.selected_ts() {
-                    self.start_edit(&ts, in_thread);
-                }
-            }
-            Some(Action::Copy) => {
-                if let Some(ts) = self.selected_ts() {
-                    self.copy_text(&ts);
-                }
-            }
-            Some(Action::Pin) => {
-                if let Some(ts) = self.selected_ts() {
-                    self.toggle_pin(&ts);
-                }
-            }
             Some(Action::MarkUnread) => self.mark_unread(self.messages.selected.clone(), in_thread),
-            Some(Action::ThreadHuddle) => {
-                let target = self.selected_ts().and_then(|ts| self.current.clone().map(|c| (c, ts)));
-                match target {
-                    _ if self.call.is_some() => self.status = "leave the current huddle first".into(),
-                    Some((channel, ts)) => {
-                        // A reply's huddle belongs to its thread.
-                        let root = self.ws.find_message(&channel, &ts).and_then(|m| m.thread_ts.clone()).unwrap_or(ts);
-                        self.join_huddle(channel, Some(root));
-                    }
-                    None => {}
+            // The others act on the selected message.
+            Some(action) => {
+                if let Some(t) = self.message_target(in_thread) {
+                    self.act_on(action, t);
                 }
             }
-            Some(Action::Profile) => {
-                let m = self.selected_ts().and_then(|ts| self.current.as_deref().and_then(|c| self.ws.find_message(c, &ts)));
-                match m.map(super::profile::people_in).and_then(super::profile::ProfileCard::new) {
-                    Some(card) => self.profile = Some(card),
-                    None => self.status = "no person on this message".into(),
-                }
+            None => {}
+        }
+    }
+
+    /// The message the keys act on: the thread pane's selection (`in_thread`), else the selected message of the view
+    /// shown, or of the conversation's messages.
+    fn message_target(&self, in_thread: bool) -> Option<MessageTarget> {
+        let (channel, ts, shown) = match self.view {
+            _ if in_thread => (self.thread.as_ref()?.0.clone(), self.thread_pane.selected.clone()?, Shown::Thread),
+            View::Threads => {
+                let (channel, ts) = self.threads.selected_message()?;
+                (channel, ts, Shown::Feed)
             }
-            Some(Action::Save) => {
-                if let Some(ts) = self.selected_ts() {
-                    self.save_files(&ts);
-                }
+            View::Activity => {
+                let (channel, ts) = self.activity.selected_message()?;
+                (channel, ts, Shown::Activity)
             }
-            Some(Action::Open) => {
-                if let Some(ts) = self.selected_ts() {
-                    self.open_things(&ts, in_thread);
-                }
+            _ => (self.current.clone()?, self.messages.selected.clone()?, Shown::Messages),
+        };
+        Some(MessageTarget { channel, ts, shown })
+    }
+
+    /// Message `ts` selected in the messages pane or (`thread`) the thread pane, as a target.
+    fn pane_target(&self, thread: bool, ts: String) -> Option<MessageTarget> {
+        let channel = if thread { self.thread.as_ref()?.0.clone() } else { self.current.clone()? };
+        Some(MessageTarget { channel, ts, shown: if thread { Shown::Thread } else { Shown::Messages } })
+    }
+
+    /// Message `ts` of `channel` wherever klack holds it: a loaded timeline or thread, the Threads feed, the Activity
+    /// view.
+    fn find_message(&self, channel: &str, ts: &str) -> Option<&slack_core::types::Message> {
+        self.ws.find_message(channel, ts).or_else(|| self.threads.find(channel, ts)).or_else(|| self.activity.find(channel, ts))
+    }
+
+    /// Every copy klack holds of message `ts` of `channel` (as [`App::find_message`] finds them), to change in place.
+    fn copies_mut(&mut self, channel: &str, ts: &str) -> Vec<&mut slack_core::types::Message> {
+        let mut out = self.ws.copies_mut(channel, ts);
+        out.extend(self.threads.copies_mut(channel, ts));
+        out.extend(self.activity.copies_mut(channel, ts));
+        out
+    }
+
+    /// Where a menu for message `t` opens: beside it, where it is drawn.
+    fn spot(&self, t: &MessageTarget) -> (u16, u16) {
+        match t.shown {
+            Shown::Messages => self.messages.spot(&t.ts),
+            Shown::Thread => self.thread_pane.spot(&t.ts),
+            Shown::Feed => self.threads.spot(&t.channel, &t.ts),
+            Shown::Activity => self.activity.spot(),
+        }
+    }
+
+    /// A messages action in the Threads or Activity view, on its selected message (an item that is none: said so).
+    fn view_message_action(&mut self, action: Action) {
+        let Some(t) = self.message_target(false) else {
+            self.status = super::i18n::tr(super::activity::NO_MESSAGE).into_owned();
+            return;
+        };
+        match action {
+            Action::ContextMenu => {
+                let at = self.spot(&t);
+                self.message_menu(t, at);
             }
-            Some(Action::CopyLink) => {
-                if let Some(ts) = self.selected_ts() {
-                    self.copy_permalink(&ts);
-                }
+            Action::OpenLink => self.act_on(Action::Open, t),
+            _ => self.act_on(action, t),
+        }
+    }
+
+    /// Messages action `action` on message `t`, from its key or its menu.
+    fn act_on(&mut self, action: Action, t: MessageTarget) {
+        match action {
+            Action::React => {
+                let picker = self.find_message(&t.channel, &t.ts).map(|m| EmojiPicker::for_message(&m.reactions, &self.ws.self_id)).unwrap_or_default();
+                self.picker = Some((picker, t.channel, t.ts));
             }
-            Some(Action::Delete) => {
-                if let Some(ts) = self.selected_ts() {
-                    self.ask_delete(&ts);
-                }
+            Action::Edit => self.start_edit(&t),
+            Action::Copy => self.copy_text(&t),
+            Action::Pin => self.toggle_pin(&t),
+            Action::MarkUnread => self.mark_message_unread(&t),
+            Action::ThreadHuddle if self.call.is_some() => self.status = "leave the current huddle first".into(),
+            Action::ThreadHuddle => {
+                // A reply's huddle belongs to its thread.
+                let root = self.find_message(&t.channel, &t.ts).and_then(|m| m.thread_ts.clone()).unwrap_or(t.ts);
+                self.join_huddle(t.channel, Some(root));
             }
+            Action::Profile => match self.find_message(&t.channel, &t.ts).map(super::profile::people_in).and_then(super::profile::ProfileCard::new) {
+                Some(card) => self.profile = Some(card),
+                None => self.status = "no person on this message".into(),
+            },
+            Action::Save => self.save_files(&t),
+            Action::Open => self.open_things(&t),
+            Action::CopyLink => self.copy_permalink(&t),
+            Action::Delete => self.ask_delete(&t),
+            Action::OpenThread if t.shown == Shown::Messages => self.open_thread(&t.ts),
             _ => {}
+        }
+    }
+
+    /// "Mark unread" on message `t`: its conversation unread from it (a thread's replies are not marked).
+    fn mark_message_unread(&mut self, t: &MessageTarget) {
+        let reply = self.find_message(&t.channel, &t.ts).is_some_and(|m| m.is_reply());
+        match t.shown {
+            Shown::Messages => self.mark_unread(Some(t.ts.clone()), false),
+            Shown::Thread => self.mark_unread(None, true),
+            _ if reply => self.mark_unread(None, true),
+            _ => self.mark_unread_in(t.channel.clone(), Some(t.ts.clone())),
         }
     }
 
@@ -1252,8 +1304,17 @@ impl App {
         use super::menu::{Menu, Target};
         let at = (column, row);
         let panes = [(false, self.messages.message_at(column, row)), (true, if self.thread.is_some() { self.thread_pane.message_at(column, row) } else { None })];
-        if let Some((thread, ts)) = panes.into_iter().find_map(|(t, ts)| ts.map(|ts| (t, ts))) {
-            self.message_menu(thread, ts, at);
+        if let Some(t) = panes.into_iter().find_map(|(t, ts)| ts.and_then(|ts| self.pane_target(t, ts))) {
+            self.message_menu(t, at);
+        } else if let Some((channel, ts)) = self.threads.message_at(column, row) {
+            self.message_menu(MessageTarget { channel, ts, shown: Shown::Feed }, at);
+        } else if let Some(n) = self.activity.row_at(column, row) {
+            // The item is selected; it has a menu when it is a message.
+            self.activity.selected = n;
+            self.focus = Focus::Messages;
+            if let Some((channel, ts)) = self.activity.selected_message() {
+                self.message_menu(MessageTarget { channel, ts, shown: Shown::Activity }, at);
+            }
         } else if let Some(n) = self.sidebar.item_at(column, row) {
             self.sidebar.selected = n;
             let id = self.sidebar.selected_id().unwrap_or_default().to_string();
@@ -1263,19 +1324,18 @@ impl App {
         }
     }
 
-    /// The context menu of a message (selected now, its pane focused), at `at`.
-    fn message_menu(&mut self, thread: bool, ts: String, at: (u16, u16)) {
+    /// The context menu of message `t` (selected now where it is shown, that pane focused), at `at`.
+    fn message_menu(&mut self, t: MessageTarget, at: (u16, u16)) {
         use super::menu::{Menu, Target};
-        let channel = self.current.clone().unwrap_or_default();
-        let Some(offers) = self.ws.find_message(&channel, &ts).map(|m| super::menu::Offers::of(m, &self.ws.self_id)) else { return };
-        if thread {
-            self.thread_pane.selected = Some(ts);
-            self.focus = Focus::Thread;
-        } else {
-            self.messages.selected = Some(ts);
-            self.focus = Focus::Messages;
+        let Some(offers) = self.find_message(&t.channel, &t.ts).map(|m| super::menu::Offers::of(m, &self.ws.self_id)) else { return };
+        match t.shown {
+            Shown::Messages => self.messages.selected = Some(t.ts.clone()),
+            Shown::Thread => self.thread_pane.selected = Some(t.ts.clone()),
+            Shown::Feed => self.threads.selected = Some((t.channel.clone(), t.ts.clone())),
+            Shown::Activity => {}
         }
-        self.menu = Some(Menu::new(Target::Message { thread }, at, &self.keys, offers, false, false, false));
+        self.focus = if t.shown == Shown::Thread { Focus::Thread } else { Focus::Messages };
+        self.menu = Some(Menu::new(Target::Message(t), at, &self.keys, offers, false, false, false));
     }
 
     /// Run the context menu's chosen item, like its key would.
@@ -1288,18 +1348,18 @@ impl App {
             self.sync_current();
         }
         match (menu.target, item) {
-            (Target::Message { thread }, Item::Do(action)) => {
-                self.focus = if thread { Focus::Thread } else { Focus::Messages };
-                self.message_action(action, thread);
+            (Target::Message(t), Item::Do(action)) => {
+                self.focus = if t.shown == Shown::Thread { Focus::Thread } else { Focus::Messages };
+                self.act_on(action, t);
             }
             (Target::Conversation, Item::Do(action)) => self.sidebar_action(action),
-            (Target::Opener { thread, ts }, Item::Thing(n)) => {
-                self.focus = if thread { Focus::Thread } else { Focus::Messages };
+            (Target::Opener(t), Item::Thing(n)) => {
+                self.focus = if t.shown == Shown::Thread { Focus::Thread } else { Focus::Messages };
                 if let Some(thing) = menu.things.get(n).cloned() {
-                    self.open_thing(&ts, thing);
+                    self.open_thing(&t.channel, &t.ts, thing);
                 }
             }
-            (_, Item::Thing(_) | Item::Heading) | (Target::Opener { .. }, _) => {}
+            (_, Item::Thing(_) | Item::Heading) | (Target::Opener(_), _) => {}
             (_, Item::Details) => self.open_details(),
             (_, Item::Leave) => {
                 if let Some(id) = self.current.clone() {
@@ -1368,19 +1428,25 @@ impl App {
         });
     }
 
-    /// Load our own message `ts` in the current conversation into a composer for editing.
-    fn start_edit(&mut self, ts: &str, thread: bool) {
-        let Some(channel) = self.current.clone() else { return };
-        let Some(m) = self.ws.find_message(&channel, ts) else { return };
+    /// Load our own message `t` into a composer for editing: the one under its pane; from a view the thread pane's,
+    /// its thread opened there beside the view (the view stays).
+    fn start_edit(&mut self, t: &MessageTarget) {
+        let Some(m) = self.find_message(&t.channel, &t.ts) else { return };
         if m.user.as_deref() != Some(self.ws.self_id.as_str()) || super::messages::is_system(m) {
             self.status = "you can only edit your own messages".into();
             return;
         }
+        let text = m.text.clone();
+        let root = m.thread_ts.clone().filter(|_| m.is_reply()).unwrap_or_else(|| t.ts.clone());
+        if matches!(t.shown, Shown::Feed | Shown::Activity) && self.thread.as_ref() != Some(&(t.channel.clone(), root.clone())) {
+            self.open_thread_at(t.channel.clone(), root);
+        }
+        let (ts, thread) = (t.ts.as_str(), t.shown != Shown::Messages);
         let ws = &self.ws;
         let user_name = |id: &str| ws.user_name(id);
         let channel_name = |id: &str| ws.channel_label(id);
         let c = if thread { &mut self.thread_composer } else { &mut self.composer };
-        c.load_for_edit(ts, &m.text, user_name, channel_name);
+        c.load_for_edit(ts, &text, user_name, channel_name);
         if thread {
             self.thread_pane.selected = Some(ts.to_string());
             self.focus = Focus::ThreadComposer;
@@ -1415,7 +1481,9 @@ impl App {
         if self.refused_signed_out() {
             return;
         }
-        let Some(channel) = self.current.clone() else { return };
+        // (The thread pane's box edits in its thread's conversation.)
+        let channel = if thread { self.thread.as_ref().map(|(c, _)| c.clone()) } else { self.current.clone() };
+        let Some(channel) = channel else { return };
         let c = self.composer_for(thread);
         let Some(ts) = c.editing.clone() else { return };
         if c.is_empty() {
@@ -1424,10 +1492,10 @@ impl App {
         }
         let text = c.to_mrkdwn();
         c.clear();
-        let Some(original) = self.ws.find_message(&channel, &ts).cloned() else { return };
+        let Some(original) = self.find_message(&channel, &ts).cloned() else { return };
         let me = self.ws.self_id.clone();
         let now = format!("{:.6}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64());
-        for msg in self.ws.copies_mut(&channel, &ts) {
+        for msg in self.copies_mut(&channel, &ts) {
             msg.text = text.clone();
             msg.blocks.clear();
             msg.edited = Some(slack_core::types::Edited { user: me.clone(), ts: now.clone() });
@@ -1440,15 +1508,14 @@ impl App {
         });
     }
 
-    /// Ask to delete our own message `ts` in the current conversation.
-    fn ask_delete(&mut self, ts: &str) {
+    /// Ask to delete our own message `t`.
+    fn ask_delete(&mut self, t: &MessageTarget) {
         if self.refused_signed_out() {
             return;
         }
-        let Some(channel) = self.current.clone() else { return };
-        let own = self.ws.find_message(&channel, ts).is_some_and(|m| m.user.as_deref() == Some(self.ws.self_id.as_str()) && !super::messages::is_system(m));
+        let own = self.find_message(&t.channel, &t.ts).is_some_and(|m| m.user.as_deref() == Some(self.ws.self_id.as_str()) && !super::messages::is_system(m));
         if own {
-            self.confirm = Some(Confirm::Delete { channel, ts: ts.to_string() });
+            self.confirm = Some(Confirm::Delete { channel: t.channel.clone(), ts: t.ts.clone() });
         } else {
             self.status = "you can only delete your own messages".into();
         }
@@ -1459,13 +1526,17 @@ impl App {
         if self.refused_signed_out() {
             return;
         }
-        let Some(original) = self.ws.find_message(&channel, &ts).cloned() else { return };
+        let Some(original) = self.find_message(&channel, &ts).cloned() else { return };
         self.ws.remove_message(&channel, &ts);
         if let Some(parent) = original.thread_ts.as_ref().filter(|_| original.is_reply()) {
             for p in self.ws.copies_mut(&channel, parent) {
                 p.reply_count = p.reply_count.saturating_sub(1);
             }
         }
+        // Out of the views as Slack's own deletion would take it (it comes later, and changes nothing then).
+        let gone = serde_json::json!({"type": "message", "subtype": "message_deleted", "channel": channel, "deleted_ts": ts});
+        self.threads.apply_live(&gone);
+        self.activity.apply_live(&gone);
         for pane in [&mut self.messages, &mut self.thread_pane] {
             if pane.selected.as_deref() == Some(ts.as_str()) {
                 pane.selected = None;
@@ -1487,9 +1558,9 @@ impl App {
         });
     }
 
-    /// Copy message `ts` of the current conversation as plain text.
-    fn copy_text(&mut self, ts: &str) {
-        let Some(m) = self.current.as_deref().and_then(|c| self.ws.find_message(c, ts)) else { return };
+    /// Copy message `t` as plain text.
+    fn copy_text(&mut self, t: &MessageTarget) {
+        let Some(m) = self.find_message(&t.channel, &t.ts) else { return };
         let ws = &self.ws;
         let text = slack_core::format::plain_text(&slack_core::format::message_blocks(&m.text, &m.blocks), &|i| super::text::inline_plain(ws, i));
         if text.trim().is_empty() {
@@ -1500,10 +1571,9 @@ impl App {
         self.status = format!("copied message text to the {how}");
     }
 
-    /// Fetch the permalink of message `ts` and copy it when it arrives.
-    fn copy_permalink(&mut self, ts: &str) {
-        let Some(channel) = self.current.clone() else { return };
-        let (client, tx, ts) = (self.client.clone(), self.net.clone(), ts.to_string());
+    /// Fetch the permalink of message `t` and copy it when it arrives.
+    fn copy_permalink(&mut self, t: &MessageTarget) {
+        let (client, tx, channel, ts) = (self.client.clone(), self.net.clone(), t.channel.clone(), t.ts.clone());
         tokio::spawn(async move {
             let msg = match client.permalink(&channel, &ts).await {
                 Ok(url) => Net::Permalink(url),
@@ -1982,6 +2052,7 @@ impl App {
                     Action::HalfPageDown => t.move_by((t.page() / 2).max(1)),
                     Action::Refresh => self.open_view(View::Threads),
                     Action::Open => self.open_thread_item(),
+                    a if is_message_action(a) => self.view_message_action(a),
                     // The composer under the feed, replying in the selected message's thread.
                     Action::Type => {
                         if let Some(focus) = self.aim_feed_composer() {
@@ -2020,6 +2091,7 @@ impl App {
                     Action::Tab3 => self.show_activity_tab(super::activity::Tab::Mentions),
                     Action::Tab4 => self.show_activity_tab(super::activity::Tab::Threads),
                     Action::Unreads => a.toggle_unread(),
+                    a if is_message_action(a) => self.view_message_action(a),
                     _ => {}
                 }
             }
@@ -2304,9 +2376,9 @@ impl App {
             self.viewer = Some(super::viewer::Viewer::new(pictures, n));
             self.load_viewer_image();
         } else if file.is_video() {
-            self.open_thing("", Thing::Video(file));
+            self.open_thing("", "", Thing::Video(file));
         } else if file.is_snippet() {
-            self.open_thing("", Thing::Snippet(file));
+            self.open_thing("", "", Thing::Snippet(file));
         } else {
             self.status = super::i18n::tr(FILE_NOT_SHOWN).into_owned();
         }
@@ -2987,18 +3059,29 @@ impl App {
             return;
         }
         let Some(channel) = self.current.clone() else { return };
+        self.mark_unread_in(channel, selected);
+    }
+
+    /// [`App::mark_unread`] in `channel`: the current conversation, or (from a view) the one of the message `selected`.
+    fn mark_unread_in(&mut self, channel: String, selected: Option<String>) {
         if self.ws.is_outside(&channel) {
             self.status = "join the channel to mark it unread".into();
             return;
         }
         let order: Vec<String> = self.ws.timelines.get(&channel).map(|t| super::messages::shown_messages(t, false).map(|m| m.ts.clone()).collect()).unwrap_or_default();
-        let Some(ts) = mark_unread_ts(&order, selected.as_deref()) else {
+        // (A message of a conversation not loaded here: just before it.)
+        let Some(ts) = mark_unread_ts(&order, selected.as_deref()).or_else(|| selected.as_deref().filter(|s| !order.iter().any(|o| o == s)).and_then(ts_just_before)) else {
             self.status = "no messages to mark unread".into();
             return;
         };
         hold_unread(&mut self.ws, &mut self.marked, &channel, &ts);
-        self.messages.new_since = Some(ts.clone());
-        self.messages.jump_to_new = false;
+        if self.current.as_deref() == Some(channel.as_str()) {
+            self.messages.new_since = Some(ts.clone());
+            self.messages.jump_to_new = false;
+        } else {
+            // (Held only while it is open: opening it later marks it read as usual.)
+            self.ws.release_unread(&channel);
+        }
         self.sidebar.rebuild(&self.ws);
         self.status = format!("marked {} unread", self.ws.channel_label(&channel));
         let (client, tx) = (self.client.clone(), self.net.clone());
@@ -3541,11 +3624,11 @@ impl App {
         });
     }
 
-    /// Pin or unpin message `ts` in the current conversation (optimistic, then the API).
-    fn toggle_pin(&mut self, ts: &str) {
-        let Some(channel) = self.current.clone() else { return };
-        let Some(pinned) = self.ws.find_message(&channel, ts).map(|m| m.pinned_to.contains(&channel)) else { return };
-        for m in self.ws.copies_mut(&channel, ts) {
+    /// Pin or unpin message `t` (optimistic, then the API).
+    fn toggle_pin(&mut self, t: &MessageTarget) {
+        let (channel, ts) = (t.channel.clone(), t.ts.as_str());
+        let Some(pinned) = self.find_message(&channel, ts).map(|m| m.pinned_to.contains(&channel)) else { return };
+        for m in self.copies_mut(&channel, ts) {
             m.pinned_to.retain(|c| *c != channel);
             if !pinned {
                 m.pinned_to.push(channel.clone());
@@ -3673,10 +3756,9 @@ impl App {
         }
     }
 
-    /// `s` on message `ts`: the save dialog for its files.
-    fn save_files(&mut self, ts: &str) {
-        let Some(channel) = self.current.clone() else { return };
-        let files = self.ws.find_message(&channel, ts).map(|m| m.files.clone()).unwrap_or_default();
+    /// `s` on message `t`: the save dialog for its files.
+    fn save_files(&mut self, t: &MessageTarget) {
+        let files = self.find_message(&t.channel, &t.ts).map(|m| m.files.clone()).unwrap_or_default();
         if files.is_empty() {
             self.status = "no files in this message".into();
             return;
@@ -3707,11 +3789,11 @@ impl App {
         }
     }
 
-    /// `o` on message `ts`: open what it holds — at once when it is one thing, else from a
+    /// `o` on message `t`: open what it holds — at once when it is one thing, else from a
     /// list of them beside the message.
-    fn open_things(&mut self, ts: &str, thread: bool) {
+    fn open_things(&mut self, t: &MessageTarget) {
         let here = super::applink::Here { ws: &self.ws, workspaces: &self.addresses, names: &self.workspaces, shown: self.workspace, authors: &self.authors, message: None };
-        let Some(m) = self.current.as_deref().and_then(|c| self.ws.find_message(c, ts)) else { return };
+        let Some(m) = self.find_message(&t.channel, &t.ts) else { return };
         let things = super::open::things(m, Some(&here));
         let here = here.of(m);
         let opened = match things.as_slice() {
@@ -3719,20 +3801,19 @@ impl App {
             [one] => Some(Err(one.clone())),
             _ => {
                 let labels = things.iter().map(|t| super::open::label(t, m, &here)).collect();
-                let at = if thread { self.thread_pane.spot(ts) } else { self.messages.spot(ts) };
-                Some(Ok(super::menu::Menu::opener(thread, ts.to_string(), things, labels, at)))
+                Some(Ok(super::menu::Menu::opener(t.clone(), things, labels, self.spot(t))))
             }
         };
         match opened {
             None => self.status = "nothing to open in this message".into(),
-            Some(Err(one)) => self.open_thing(ts, one),
+            Some(Err(one)) => self.open_thing(&t.channel, &t.ts, one),
             Some(Ok(menu)) => self.menu = Some(menu),
         }
     }
 
-    /// Open one thing of message `ts`: a link in the browser, a picture in the viewer (the
+    /// Open one thing of message `ts` of `channel`: a link in the browser, a picture in the viewer (the
     /// others a step away), a video in the player, a snippet in full.
-    fn open_thing(&mut self, ts: &str, thing: super::open::Thing) {
+    fn open_thing(&mut self, channel: &str, ts: &str, thing: super::open::Thing) {
         use super::open::Thing;
         match thing {
             Thing::Link { app: Some(link), .. } => self.open_app_link(&link),
@@ -3743,7 +3824,7 @@ impl App {
                 };
             }
             Thing::Picture(n) => {
-                let pictures: Vec<slack_core::types::File> = self.current.as_deref().and_then(|c| self.ws.find_message(c, ts)).map(|m| m.files.iter().filter(|f| f.is_image()).cloned().collect()).unwrap_or_default();
+                let pictures: Vec<slack_core::types::File> = self.find_message(channel, ts).map(|m| m.files.iter().filter(|f| f.is_image()).cloned().collect()).unwrap_or_default();
                 if n < pictures.len() {
                     self.viewer = Some(super::viewer::Viewer::new(pictures, n));
                     self.load_viewer_image();
@@ -3863,7 +3944,7 @@ impl App {
         let leavable = |id: &str| self.ws.conversations.get(id).is_some_and(|c| !c.is_dm() && c.is_member);
         let selected = self.sidebar.selected_id();
         let here = Here {
-            offers: self.selected_ts().and_then(|ts| self.current.as_deref().and_then(|c| self.ws.find_message(c, &ts))).map(|m| super::menu::Offers::of(m, &self.ws.self_id)),
+            offers: self.message_target(self.focus == Focus::Thread).and_then(|t| self.find_message(&t.channel, &t.ts)).map(|m| super::menu::Offers::of(m, &self.ws.self_id)),
             in_thread: self.focus == Focus::Thread,
             outside: self.current.as_deref().is_some_and(|c| self.ws.is_outside(c)),
             leavable: self.current.as_deref().is_some_and(leavable),
@@ -3888,14 +3969,6 @@ impl App {
         self.keys.follow_state(&mut children, self.ws.dnd_active(now));
         self.keys.name_workspaces(&mut children, &self.workspaces);
         children
-    }
-
-    /// The selected message of the focused pane.
-    fn selected_ts(&self) -> Option<String> {
-        match self.focus {
-            Focus::Thread => self.thread_pane.selected.clone(),
-            _ => self.messages.selected.clone(),
-        }
     }
 
     /// Load older history once the top is visible.
@@ -5246,8 +5319,8 @@ fn handle_main(app: &mut App, ev: Event) -> bool {
                         // (Not under the Threads feed: the conversation's messages are not on screen.)
                         KeyOutcome::UpWhenEmpty if !thread && app.view == View::Threads => {}
                         KeyOutcome::UpWhenEmpty => {
-                            if let Some(ts) = app.last_own_message(thread) {
-                                app.start_edit(&ts, thread);
+                            if let Some(t) = app.last_own_message(thread).and_then(|ts| app.pane_target(thread, ts)) {
+                                app.start_edit(&t);
                             }
                         }
                         KeyOutcome::Paste => app.paste(thread),
@@ -5526,6 +5599,8 @@ fn applies(here: &Here, context: Context, action: Action) -> bool {
         (Context::Messages, MarkUnread) => !here.in_thread && here.offers.is_some(),
         (Context::Global, MarkUnread) => !here.in_thread && !here.outside,
         (Context::Messages, Edit | Delete | Open | Save | Copy) => here.offers.is_some_and(|o| o.allows(action)),
+        // A view's item that is no message has none of them.
+        (Context::Threads | Context::Activity, _) if is_message_action(action) => here.offers.is_some_and(|o| o.allows(if action == OpenLink { Open } else { action })),
         (Context::Global, JoinConversation) => here.outside,
         (Context::Global, LeaveConversation) => here.leavable,
         (Context::Sidebar, LeaveConversation) => here.selected_leavable,
@@ -5535,6 +5610,12 @@ fn applies(here: &Here, context: Context, action: Action) -> bool {
         (Context::Global, _) if super::keymap::workspace_of(action).is_some() => super::keymap::workspace_of(action).is_some_and(|i| i < here.workspaces),
         _ => true,
     }
+}
+
+/// A messages action the Threads and Activity views have on their selected message.
+fn is_message_action(action: Action) -> bool {
+    use Action::*;
+    matches!(action, React | Edit | Delete | Copy | CopyLink | OpenLink | Save | Pin | Profile | MarkUnread | ThreadHuddle | ContextMenu)
 }
 
 /// What a global key does. False to quit.
@@ -5713,8 +5794,10 @@ fn handle_rtm(app: &mut App, ev: slack_core::rtm::RtmEvent) {
         }
         RtmEvent::Event(v) => {
             let fx = super::live::apply(&mut app.ws, &v, app.current.as_deref());
-            // An edit, a deletion or a reaction in a thread of the Threads feed: in its block.
+            // An edit, a deletion or a reaction in a thread of the Threads feed: in its block; on an Activity item's
+            // message: on it.
             app.threads.apply_live(&v);
+            app.activity.apply_live(&v);
             if v["type"] == "pref_change" {
                 // (The pref's name only, never its value.)
                 tracing::debug!(name = v["name"].as_str().unwrap_or_default(), "pref_change applied");
@@ -6310,6 +6393,8 @@ fn handle_net(app: &mut App, msg: Net) {
             app.status = format!("copied link to the {how}");
         }
         Net::Restore { channel, message, error } => {
+            app.threads.put_back(&channel, &message);
+            app.activity.put_back(&channel, &message);
             let mut copies = app.ws.copies_mut(&channel, &message.ts);
             if copies.is_empty() {
                 drop(copies);
@@ -7842,6 +7927,275 @@ mod tests {
         press(&mut app, KeyCode::Down, KeyModifiers::NONE);
         press(&mut app, KeyCode::Char('i'), KeyModifiers::NONE);
         assert_eq!((app.focus, app.feed_reply.clone()), (Focus::Composer, Some(("C3".to_string(), "1729440500.000100".to_string()))));
+    }
+
+    /// Choose `name` in the open reaction picker, with Enter.
+    fn react_with(app: &mut super::App, name: &str) {
+        let custom = app.ws.custom_emoji.clone();
+        let (picker, ..) = app.picker.as_mut().expect("the picker is open");
+        picker.query = name.into();
+        picker.selected = picker.candidates(&custom).iter().position(|c| c.name == name).expect("offered");
+        press(app, crossterm::event::KeyCode::Enter, crossterm::event::KeyModifiers::NONE);
+    }
+
+    /// The leader, then `keys`, one by one (as the terminal sends them: held while they make a sequence).
+    fn leader(app: &mut super::App, keys: &str) {
+        use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+        for c in std::iter::once(' ').chain(keys.chars()) {
+            assert!(super::handle_terminal(app, Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))));
+        }
+    }
+
+    fn right_click(app: &mut super::App, column: u16, row: u16) {
+        use crossterm::event::{Event, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+        assert!(super::handle_event(app, Event::Mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Right), column, row, modifiers: KeyModifiers::NONE })));
+    }
+
+    /// The row (and a column inside the text) where `what` is drawn.
+    fn spot_of(terminal: &ratatui::Terminal<ratatui::backend::TestBackend>, what: &str) -> (u16, u16) {
+        let rows = screen(terminal);
+        let y = rows.iter().position(|l| l.contains(what)).unwrap_or_else(|| panic!("{what} is drawn: {rows:#?}"));
+        let x = rows[y].chars().collect::<String>().find(what).map_or(0, |b| rows[y][..b].chars().count());
+        (x as u16 + 1, y as u16)
+    }
+
+    #[tokio::test]
+    async fn a_reaction_in_the_threads_feed_goes_to_its_message_and_shows_there() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let (url, mut asked) = fake_slack(&[]).await;
+        let (mut app, _net) = feed_app(&url);
+        app.ws.self_id = "U0".into();
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        let history = format!("{:?}", app.history);
+        leader(&mut app, "r");
+        let (_, channel, ts) = app.picker.as_ref().expect("the picker");
+        assert_eq!((channel.as_str(), ts.as_str()), ("C1", "1729440000.000200"), "the selected reply, in its own conversation");
+        react_with(&mut app, "eyes");
+        let req = asked_for(&mut asked, "reactions.add").await;
+        assert!(req.contains("channel=C1") && req.contains("timestamp=1729440000.000200") && req.contains("name=eyes"), "{req}");
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        assert!(screen(&terminal).join("\n").contains("👀"), "shown in its block at once");
+        assert_eq!(app.threads.entries.as_ref().unwrap()[0].latest[0].reactions[0].users, ["U0"]);
+        assert_eq!((app.view, format!("{:?}", app.history)), (super::View::Threads, history), "the view stays; no step in the history");
+        // Again: taken off.
+        leader(&mut app, "r");
+        react_with(&mut app, "eyes");
+        asked_for(&mut asked, "reactions.remove").await;
+        assert!(app.threads.entries.as_ref().unwrap()[0].latest[0].reactions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn your_reply_in_the_threads_feed_is_edited_in_the_thread_pane_beside_it() {
+        use super::{Focus, View};
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let (url, mut asked) = fake_slack(&[]).await;
+        let (mut app, _net) = feed_app(&url);
+        app.ws.self_id = "U0".into();
+        app.threads.entries.as_mut().unwrap()[0].latest[0].user = Some("U0".into());
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(140, 30)).unwrap();
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        // Someone else's parent: refused.
+        leader(&mut app, "e");
+        assert_eq!(app.status, "you can only edit your own messages");
+        assert!(app.thread_composer.editing.is_none() && app.composer.editing.is_none() && app.thread.is_none());
+        // Your reply: its thread opens beside the feed, the reply in that pane's box.
+        press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        leader(&mut app, "e");
+        assert_eq!(app.thread, Some(("C1".to_string(), "1729440000.000100".to_string())));
+        assert_eq!((app.view, app.focus, app.thread_composer.editing.as_deref()), (View::Threads, Focus::ThreadComposer, Some("1729440000.000200")));
+        assert_eq!((app.thread_composer.text(), app.feed_reply.clone()), ("a reply".to_string(), None), "the box under the feed is left alone");
+        press(&mut app, KeyCode::End, KeyModifiers::NONE);
+        for c in ", better".chars() {
+            press(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        let req = asked_for(&mut asked, "chat.update").await;
+        assert!(req.contains("channel=C1") && req.contains("ts=1729440000.000200") && req.contains("text=a+reply%2C+better"), "{req}");
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        assert!(screen(&terminal).iter().any(|l| l.contains("a reply, better (edited)")), "in the feed at once: {:#?}", screen(&terminal));
+        assert_eq!(app.view, View::Threads);
+    }
+
+    #[tokio::test]
+    async fn your_reply_in_the_threads_feed_is_deleted_there() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let (url, mut asked) = fake_slack(&[]).await;
+        let (mut app, _net) = feed_app(&url);
+        app.ws.self_id = "U0".into();
+        app.threads.entries.as_mut().unwrap()[0].latest[0].user = Some("U0".into());
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        // Someone else's: refused.
+        leader(&mut app, "d");
+        assert!(app.confirm.is_none() && app.status == "you can only delete your own messages");
+        press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        leader(&mut app, "d");
+        assert!(matches!(&app.confirm, Some(super::Confirm::Delete { channel, ts }) if channel == "C1" && ts == "1729440000.000200"));
+        press(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
+        let req = asked_for(&mut asked, "chat.delete").await;
+        assert!(req.contains("channel=C1") && req.contains("ts=1729440000.000200"), "{req}");
+        let e = &app.threads.entries.as_ref().unwrap()[0];
+        assert!(e.latest.is_empty() && e.root.reply_count == 0, "gone from its block at once");
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        assert!(!screen(&terminal).join("\n").contains("a reply"));
+        assert_eq!(app.view, super::View::Threads);
+    }
+
+    #[tokio::test]
+    async fn a_right_click_in_the_threads_feed_offers_the_messages_actions() {
+        use super::super::menu::{Item, Shown, Target};
+        use super::Action;
+        let (url, _asked) = fake_slack(&[]).await;
+        let (mut app, _net) = feed_app(&url);
+        app.ws.self_id = "U0".into();
+        app.threads.entries.as_mut().unwrap()[0].latest[0].user = Some("U0".into());
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        let (x, y) = spot_of(&terminal, "a reply");
+        right_click(&mut app, x, y);
+        let menu = app.menu.as_ref().expect("its menu");
+        assert!(matches!(&menu.target, Target::Message(t) if t.channel == "C1" && t.ts == "1729440000.000200" && t.shown == Shown::Feed), "{:?}", menu.target);
+        let actions: Vec<Action> = menu.items.iter().filter_map(|i| if let Item::Do(a) = i.0 { Some(a) } else { None }).collect();
+        assert!(actions.contains(&Action::React) && actions.contains(&Action::Edit) && actions.contains(&Action::Delete), "{actions:?}");
+        assert!(!actions.contains(&Action::OpenThread), "Enter opens it: {actions:?}");
+        assert_eq!(app.threads.selected, Some(("C1".into(), "1729440000.000200".into())), "selected, as in a conversation");
+        let react = menu.items.iter().find(|i| i.0 == Item::Do(Action::React)).unwrap();
+        assert_eq!(react.2, "␣r", "its key in the view");
+        // Run from the menu: the picker on it.
+        app.menu.as_mut().unwrap().selected = app.menu.as_ref().unwrap().items.iter().position(|i| i.0 == Item::Do(Action::React)).unwrap();
+        app.run_menu();
+        assert!(matches!(&app.picker, Some((_, c, ts)) if c == "C1" && ts == "1729440000.000200"));
+        app.picker = None;
+        // Someone else's parent: no edit or delete.
+        let (x, y) = spot_of(&terminal, "the parent");
+        right_click(&mut app, x, y);
+        let actions: Vec<Action> = app.menu.as_ref().unwrap().items.iter().filter_map(|i| if let Item::Do(a) = i.0 { Some(a) } else { None }).collect();
+        assert!(actions.contains(&Action::React) && !actions.contains(&Action::Edit) && !actions.contains(&Action::Delete), "{actions:?}");
+        assert_eq!(app.view, super::View::Threads);
+    }
+
+    /// An app on the Activity view at `url`: a mention of you by U1 in #general (T1), a reaction to your message
+    /// there (T2), and a Slack Connect invitation (no message).
+    fn activity_app(url: &str) -> (super::App, tokio::sync::mpsc::UnboundedReceiver<super::Net>) {
+        use super::super::activity::{Item, Kind, Tab};
+        use slack_core::types::{Message, Reaction};
+        let (mut app, net) = test_app_at(url);
+        app.ws.self_id = "U0".into();
+        app.ws.conversations.insert("C1".into(), slack_core::types::Conversation { id: "C1".into(), name: "general".into(), is_channel: true, is_member: true, ..Default::default() });
+        app.current = Some("C2".into());
+        app.sidebar.rebuild(&app.ws);
+        super::run_global(&mut app, super::Action::Activity);
+        let (t1, t2) = ("1729440000.000100", "1729440000.000300");
+        let items = vec![
+            Item { key: "k1".into(), ty: "at_user".into(), kind: Kind::Mention("at_user".into()), channel: "C1".into(), ts: t1.into(), author: Some("U1".into()), unread: true, when: 1729440000.0, ..Default::default() },
+            Item { key: "k2".into(), ty: "message_reaction".into(), kind: Kind::Reaction { name: "tada".into(), user: "U1".into() }, channel: "C1".into(), ts: t2.into(), unread: false, when: 1729439000.0, ..Default::default() },
+            Item { key: "k3".into(), ty: "external_dm_invite".into(), kind: Kind::Notice("external_dm_invite".into()), unread: false, when: 1729438000.0, ..Default::default() },
+        ];
+        app.activity.set_items(Tab::All, items, None);
+        let mention = Message { ts: t1.into(), user: Some("U1".into()), text: "hey <@U0> look at this".into(), ..Default::default() };
+        let mine = Message { ts: t2.into(), user: Some("U0".into()), text: "my message".into(), reactions: vec![Reaction { name: "tada".into(), users: vec!["U1".into()], count: 1 }], ..Default::default() };
+        for m in [mention, mine] {
+            app.activity.requested.insert(("C1".into(), m.ts.clone()));
+            app.activity.add_message(("C1".into(), m.ts.clone()), Some(m));
+        }
+        (app, net)
+    }
+
+    #[tokio::test]
+    async fn a_reaction_in_the_activity_view_goes_to_its_message_and_shows_there() {
+        let (url, mut asked) = fake_slack(&[]).await;
+        let (mut app, _net) = activity_app(&url);
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        let history = format!("{:?}", app.history);
+        leader(&mut app, "r");
+        let (_, channel, ts) = app.picker.as_ref().expect("the picker");
+        assert_eq!((channel.as_str(), ts.as_str()), ("C1", "1729440000.000100"));
+        react_with(&mut app, "eyes");
+        let req = asked_for(&mut asked, "reactions.add").await;
+        assert!(req.contains("channel=C1") && req.contains("timestamp=1729440000.000100") && req.contains("name=eyes"), "{req}");
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        assert!(screen(&terminal).join("\n").contains("👀"), "shown on the item at once: {:#?}", screen(&terminal));
+        assert_eq!((app.view, format!("{:?}", app.history)), (super::View::Activity, history), "the view stays; no step in the history");
+        // Someone's live reaction to it shows too.
+        super::handle_rtm(&mut app, slack_core::rtm::RtmEvent::Event(serde_json::json!({"type": "reaction_added", "user": "U2", "reaction": "eyes", "item": {"type": "message", "channel": "C1", "ts": "1729440000.000100"}})));
+        let m = app.activity.messages[&("C1".to_string(), "1729440000.000100".to_string())].clone().unwrap();
+        assert_eq!(m.reactions[0].count, 2);
+        // An item that is no message: nothing to react to.
+        press(&mut app, crossterm::event::KeyCode::End, crossterm::event::KeyModifiers::NONE);
+        leader(&mut app, "r");
+        assert!(app.picker.is_none());
+    }
+
+    #[tokio::test]
+    async fn your_message_in_the_activity_view_is_edited_and_deleted_there() {
+        use super::{Focus, View};
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let (url, mut asked) = fake_slack(&[]).await;
+        let (mut app, _net) = activity_app(&url);
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(140, 30)).unwrap();
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        // The mention is someone else's: refused, both ways.
+        leader(&mut app, "e");
+        assert_eq!(app.status, "you can only edit your own messages");
+        assert!(app.thread_composer.editing.is_none() && app.thread.is_none());
+        leader(&mut app, "d");
+        assert!(app.confirm.is_none());
+        // Your message (the one reacted to): in the thread pane's box beside the view.
+        press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        leader(&mut app, "e");
+        assert_eq!((app.view, app.focus, app.thread_composer.editing.as_deref()), (View::Activity, Focus::ThreadComposer, Some("1729440000.000300")));
+        assert_eq!(app.thread_composer.text(), "my message");
+        press(&mut app, KeyCode::End, KeyModifiers::NONE);
+        for c in " again".chars() {
+            press(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        let req = asked_for(&mut asked, "chat.update").await;
+        assert!(req.contains("channel=C1") && req.contains("ts=1729440000.000300") && req.contains("text=my+message+again"), "{req}");
+        assert_eq!(app.activity.messages[&("C1".to_string(), "1729440000.000300".to_string())].as_ref().unwrap().text, "my message again", "at once");
+        // Deleted: the item says it is gone.
+        app.focus = Focus::Messages;
+        leader(&mut app, "d");
+        press(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
+        let req = asked_for(&mut asked, "chat.delete").await;
+        assert!(req.contains("channel=C1") && req.contains("ts=1729440000.000300"), "{req}");
+        assert!(app.activity.messages[&("C1".to_string(), "1729440000.000300".to_string())].is_none());
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        let shown = screen(&terminal).join("\n");
+        assert!(!shown.contains("my message") && shown.contains("message not available"), "{shown}");
+        assert_eq!(app.view, View::Activity);
+    }
+
+    #[tokio::test]
+    async fn a_right_click_in_the_activity_view_offers_the_messages_actions() {
+        use super::super::menu::{Item, Shown, Target};
+        use super::Action;
+        let (url, _asked) = fake_slack(&[]).await;
+        let (mut app, _net) = activity_app(&url);
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        let (x, y) = spot_of(&terminal, "my message");
+        right_click(&mut app, x, y);
+        let menu = app.menu.as_ref().expect("its menu");
+        assert!(matches!(&menu.target, Target::Message(t) if t.channel == "C1" && t.ts == "1729440000.000300" && t.shown == Shown::Activity), "{:?}", menu.target);
+        assert_eq!(app.activity.selected, 1, "the item is selected");
+        let actions: Vec<Action> = menu.items.iter().filter_map(|i| if let Item::Do(a) = i.0 { Some(a) } else { None }).collect();
+        assert!(actions.contains(&Action::React) && actions.contains(&Action::Edit) && actions.contains(&Action::Delete) && !actions.contains(&Action::OpenThread), "{actions:?}");
+        app.menu = None;
+        // Someone else's mention: no edit.
+        let (x, y) = spot_of(&terminal, "look at this");
+        right_click(&mut app, x, y);
+        let actions: Vec<Action> = app.menu.as_ref().unwrap().items.iter().filter_map(|i| if let Item::Do(a) = i.0 { Some(a) } else { None }).collect();
+        assert!(actions.contains(&Action::React) && !actions.contains(&Action::Edit), "{actions:?}");
+        app.menu = None;
+        // The invitation is no message: no menu.
+        let (x, y) = spot_of(&terminal, "Slack Connect");
+        right_click(&mut app, x, y);
+        assert!(app.menu.is_none());
+        assert_eq!(app.view, super::View::Activity);
     }
 
     #[tokio::test]

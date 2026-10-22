@@ -179,7 +179,7 @@ mod tests {
         let got = things(&m, Some(&here));
         let labels: Vec<String> = got.iter().map(|t| label(t, &m, &here.of(&m))).collect();
         assert_eq!(labels, ["↪ the fix — #backend › thread reply", "↪ #backend", "🔗 docs.acme.dev/x", "🖼\u{fe0f} one.png"], "in klack first, in message order within each group");
-        let menu = Menu::opener(false, "1.0".into(), got.clone(), labels, (0, 0));
+        let menu = Menu::opener(crate::tui::menu::MessageTarget { channel: "C1".into(), ts: "1.0".into(), shown: crate::tui::menu::Shown::Messages }, got.clone(), labels, (0, 0));
         let rows: Vec<(Item, &str)> = menu.items.iter().map(|i| (i.0, i.1.as_str())).collect();
         assert_eq!(
             rows,
@@ -202,7 +202,7 @@ mod tests {
         menu.move_by(-5);
         assert_eq!(menu.chosen(), Some(Item::Thing(0)), "and the top is a row");
         // Without links into klack there are no headings.
-        let plain = Menu::opener(false, "1.0".into(), things(&Message { text: "<https://a.b/> <https://c.d/>".into(), ..Default::default() }, Some(&here)), vec!["a".into(), "b".into()], (0, 0));
+        let plain = Menu::opener(crate::tui::menu::MessageTarget { channel: "C1".into(), ts: "1.0".into(), shown: crate::tui::menu::Shown::Messages }, things(&Message { text: "<https://a.b/> <https://c.d/>".into(), ..Default::default() }, Some(&here)), vec!["a".into(), "b".into()], (0, 0));
         assert!(plain.items.iter().all(|i| matches!(i.0, Item::Thing(_))));
         // A message with one thing that is an in-app link: that thing opens at once.
         let single = things(&Message { text: format!("<{reply}|>"), ..Default::default() }, Some(&here));
@@ -214,7 +214,7 @@ mod tests {
         // Files only, after links into klack: no "In the browser".
         let files = Message { text: "<https://acme.slack.com/archives/C1>".into(), files: vec![File { id: "F2".into(), name: "two.png".into(), mimetype: "image/png".into(), ..Default::default() }], ..Default::default() };
         let got = things(&files, Some(&here));
-        let rows: Vec<String> = Menu::opener(false, "1.0".into(), got, vec!["a".into(), "b".into()], (0, 0)).items.iter().map(|i| i.1.clone()).collect();
+        let rows: Vec<String> = Menu::opener(crate::tui::menu::MessageTarget { channel: "C1".into(), ts: "1.0".into(), shown: crate::tui::menu::Shown::Messages }, got, vec!["a".into(), "b".into()], (0, 0)).items.iter().map(|i| i.1.clone()).collect();
         assert_eq!(rows, ["In klack", "a", "Files", "b"]);
         // Another workspace's link is an outside one.
         let other = things(&Message { text: "<https://other.slack.com/archives/C9>".into(), ..Default::default() }, Some(&here));

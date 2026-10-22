@@ -454,6 +454,28 @@ fn update_everywhere(ws: &mut Workspace, channel: &str, m: Message) {
 }
 
 /// `user` added (or took back) reaction `name` on `m`.
+/// The message (channel, ts) a live edit, deletion or reaction is about; None for any other event.
+pub fn changed_message(ev: &Value) -> Option<(&str, &str)> {
+    let (channel, ts) = match ev["type"].as_str() {
+        Some("message") if ev["subtype"] == "message_changed" => (&ev["channel"], &ev["message"]["ts"]),
+        Some("message") if ev["subtype"] == "message_deleted" => (&ev["channel"], &ev["deleted_ts"]),
+        Some("reaction_added" | "reaction_removed") => (&ev["item"]["channel"], &ev["item"]["ts"]),
+        _ => return None,
+    };
+    Some((channel.as_str()?, ts.as_str()?))
+}
+
+/// A live edit or reaction (not a deletion) applied to `m`, the message it is about.
+pub fn apply_change(m: &mut Message, ev: &Value) {
+    if ev["type"] == "message" {
+        if let Some(new) = edited(ev, Some(m)) {
+            *m = new;
+        }
+    } else {
+        apply_reaction(m, ev["reaction"].as_str().unwrap_or_default(), ev["user"].as_str().unwrap_or_default(), ev["type"] == "reaction_added");
+    }
+}
+
 pub fn apply_reaction(m: &mut Message, name: &str, user: &str, added: bool) {
     match m.reactions.iter_mut().position(|r| r.name == name) {
         Some(i) => {

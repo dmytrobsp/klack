@@ -280,13 +280,7 @@ impl Threads {
     /// place, the threads keep their order. True when the feed has the message.
     pub fn apply_live(&mut self, ev: &Value) -> bool {
         let Some(entries) = self.entries.as_mut() else { return false };
-        let (channel, ts) = match ev["type"].as_str() {
-            Some("message") if ev["subtype"] == "message_changed" => (&ev["channel"], &ev["message"]["ts"]),
-            Some("message") if ev["subtype"] == "message_deleted" => (&ev["channel"], &ev["deleted_ts"]),
-            Some("reaction_added" | "reaction_removed") => (&ev["item"]["channel"], &ev["item"]["ts"]),
-            _ => return false,
-        };
-        let (Some(channel), Some(ts)) = (channel.as_str(), ts.as_str()) else { return false };
+        let Some((channel, ts)) = super::live::changed_message(ev) else { return false };
         let Some(e) = entries.iter_mut().find(|e| e.channel == channel && (e.root.ts == ts || e.unread.iter().chain(&e.latest).any(|r| r.ts == ts))) else { return false };
         if ev["subtype"] == "message_deleted" {
             if e.root.ts == ts {
@@ -314,17 +308,54 @@ impl Threads {
             }
         } else {
             for m in std::iter::once(&mut e.root).chain(&mut e.unread).chain(&mut e.latest).filter(|m| m.ts == ts) {
-                if ev["type"] == "message" {
-                    if let Some(new) = super::live::edited(ev, Some(m)) {
-                        *m = new;
-                    }
-                } else {
-                    super::live::apply_reaction(m, ev["reaction"].as_str().unwrap_or_default(), ev["user"].as_str().unwrap_or_default(), ev["type"] == "reaction_added");
-                }
+                super::live::apply_change(m, ev);
             }
         }
         self.dirty = true;
         true
+    }
+
+    /// The selected message (channel, ts); none selected yet: the first one.
+    pub fn selected_message(&self) -> Option<(String, String)> {
+        let (channel, ts) = self.selected.as_ref().or(self.order.first())?;
+        self.find(channel, ts).map(|_| (channel.clone(), ts.clone()))
+    }
+
+    /// Message `ts` of `channel` in the feed (a parent or a reply; not a parent shown as not available).
+    pub fn find(&self, channel: &str, ts: &str) -> Option<&Message> {
+        let gone = |m: &Message| m.text.trim().is_empty() && m.blocks.is_empty() && m.files.is_empty() && m.attachments.is_empty();
+        self.entries.as_ref()?.iter().filter(|e| e.channel == channel).flat_map(|e| std::iter::once(&e.root).chain(&e.unread).chain(&e.latest)).find(|m| m.ts == ts).filter(|m| !gone(m))
+    }
+
+    /// Every copy of message `ts` of `channel` in the feed, to change in place (it is built again for them).
+    pub fn copies_mut(&mut self, channel: &str, ts: &str) -> Vec<&mut Message> {
+        let Some(entries) = self.entries.as_mut() else { return Vec::new() };
+        let out: Vec<&mut Message> = entries.iter_mut().filter(|e| e.channel == channel).flat_map(|e| std::iter::once(&mut e.root).chain(&mut e.unread).chain(&mut e.latest)).filter(|m| m.ts == ts).collect();
+        self.dirty |= !out.is_empty();
+        out
+    }
+
+    /// A change klack made to message `m` of `channel` failed: it is put back as it was (a reply deleted here goes
+    /// into its block again).
+    pub fn put_back(&mut self, channel: &str, m: &Message) {
+        let mut copies = self.copies_mut(channel, &m.ts);
+        if !copies.is_empty() {
+            for c in copies.iter_mut() {
+                **c = m.clone();
+            }
+            return;
+        }
+        drop(copies);
+        self.add_reply(channel, m, false);
+    }
+
+    /// Where a menu for message (`channel`, `ts`) opens: its first row on screen, past the gutter (the feed's middle
+    /// when it is not on screen).
+    pub fn spot(&self, channel: &str, ts: &str) -> (u16, u16) {
+        match self.rows.iter().position(|o| o.as_ref().is_some_and(|(c, t)| c == channel && t == ts)) {
+            Some(row) => (self.list.x + super::messages::GUTTER + 2, self.list.y + row as u16),
+            None => (self.list.x + self.list.width / 3, self.list.y + self.list.height / 3),
+        }
     }
 
     /// The threads whose blocks have been on screen long enough (`after`) at `now`: to mark read (each once).

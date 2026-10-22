@@ -349,6 +349,8 @@ pub enum Action {
     Top,
     Bottom,
     Open,
+    /// Open what a message holds, in a view whose Enter is its own `Open`.
+    OpenLink,
     Star,
     ContextMenu,
     Paste,
@@ -639,6 +641,18 @@ actions! {
         Unreads "unreads" "only the unread items, or all again" "unreads" "🔵" ["u"]
         Refresh "refresh" "load again" "refresh" "🔄" ["r"]
         Open "open" "go there: the DM, the message (its thread for a reply), the thread at its first unread reply" "go" "🚀" ["enter"]
+        React "react" "add a reaction to the message" "react" "😀" ["<leader> r"]
+        Edit "edit" "edit your message (in the thread pane's box, its thread opened beside the view)" "edit" "📝" ["<leader> e"]
+        Delete "delete" "delete your message" "delete" "❌" ["<leader> d"]
+        Copy "copy" "copy the message's text" "copy" "📄" ["<leader> y"]
+        CopyLink "copy_link" "copy a link to the message" "copy link" "🔗" ["<leader> Y"]
+        OpenLink "open_link" "open a link, picture, video or snippet in the message (a list when there are several)" "open" "📂" ["<leader> o"]
+        Save "save" "save the message's attachments" "save" "💾" ["<leader> s"]
+        Pin "pin" "pin / unpin the message" "pin / unpin" "📌" ["<leader> p"]
+        Profile "profile" "profile card: author, ←/→ people mentioned" "profile" "👤" ["<leader> u"]
+        MarkUnread "mark_unread" "mark its conversation unread from the message" "mark unread" "🔵" ["<leader> U"]
+        ThreadHuddle "thread_huddle" "start or join a huddle in the message's thread" "thread huddle" "🎧" ["<leader> h T"]
+        ContextMenu "menu" "the message's menu (as a right-click does)" "menu" "📜" ["<leader> m"]
         Help "help" "this help" "help" "❓" ["?"]
     }
     Threads {
@@ -654,6 +668,18 @@ actions! {
         Refresh "refresh" "load again" "refresh" "🔄" ["r"]
         Open "open" "open the whole thread at the selected message" "open" "🧵" ["enter"]
         Type "type" "reply in the selected message's thread (the box under the feed)" "reply" "💬" ["i"]
+        React "react" "add a reaction to the message" "react" "😀" ["<leader> r"]
+        Edit "edit" "edit your message (in the thread pane's box, its thread opened beside the view)" "edit" "📝" ["<leader> e"]
+        Delete "delete" "delete your message" "delete" "❌" ["<leader> d"]
+        Copy "copy" "copy the message's text" "copy" "📄" ["<leader> y"]
+        CopyLink "copy_link" "copy a link to the message" "copy link" "🔗" ["<leader> Y"]
+        OpenLink "open_link" "open a link, picture, video or snippet in the message (a list when there are several)" "open" "📂" ["<leader> o"]
+        Save "save" "save the message's attachments" "save" "💾" ["<leader> s"]
+        Pin "pin" "pin / unpin the message" "pin / unpin" "📌" ["<leader> p"]
+        Profile "profile" "profile card: author, ←/→ people mentioned" "profile" "👤" ["<leader> u"]
+        MarkUnread "mark_unread" "mark its conversation unread from the message" "mark unread" "🔵" ["<leader> U"]
+        ThreadHuddle "thread_huddle" "start or join a huddle in the message's thread" "thread huddle" "🎧" ["<leader> h T"]
+        ContextMenu "menu" "the message's menu (as a right-click does)" "menu" "📜" ["<leader> m"]
         Help "help" "this help" "help" "❓" ["?"]
     }
     Huddles {
@@ -2075,13 +2101,15 @@ mod tests {
         }
         // So do the panes' and the card's ␣h… defaults, which would make ␣h wait there.
         assert!(map.sequences(Messages, "thread_huddle").is_empty() && map.sequences(Profile, "huddle").is_empty());
-        assert!(warnings.contains(&"keys.toml: [messages] default Space h T of thread_huddle gives way to [global] huddle".to_string()), "{warnings:#?}");
+        for pane in ["messages", "activity", "threads"] {
+            assert!(warnings.contains(&format!("keys.toml: [{pane}] default Space h T of thread_huddle gives way to [global] huddle")), "{warnings:#?}");
+        }
         assert!(warnings.contains(&"keys.toml: [profile] default Space h p of huddle gives way to [global] huddle".to_string()), "{warnings:#?}");
-        assert_eq!(warnings.len(), 8, "{warnings:#?}");
+        assert_eq!(warnings.len(), 10, "{warnings:#?}");
         // A pane's own binding still hides a global one (reported, not dropped).
         let (map, warnings) = Keymap::load("[global]\nsearch = \"<leader> r\"\n[messages]\nreact = \"<leader> r\"\n");
         assert_eq!(map.resolve(&[Messages, Global], Mode::Normal, &[LEADER], k("r")), Resolved::Action(Messages, Action::React));
-        assert_eq!(warnings, vec!["keys.toml: [global] Space r is hidden by [messages] react".to_string()]);
+        assert_eq!(warnings, ["keys.toml: [activity] default Space r of react gives way to [global] search", "keys.toml: [global] Space r is hidden by [messages] react", "keys.toml: [threads] default Space r of react gives way to [global] search"], "the views' defaults give way");
     }
 
     #[test]
@@ -2143,12 +2171,14 @@ mod tests {
         use Context::*;
         let (map, warnings) = Keymap::load("[global]\nmute = \"<leader> r\"\n");
         assert_eq!(map.resolve(&[Messages, Global], Mode::Normal, &[LEADER], k("r")), Resolved::Action(Global, Action::Mute));
-        assert!(map.sequences(Messages, "react").is_empty());
-        assert_eq!(warnings, vec!["keys.toml: [messages] default Space r of react gives way to [global] mute".to_string()]);
+        assert!(map.sequences(Messages, "react").is_empty() && map.sequences(Threads, "react").is_empty());
+        // (In the views too: their messages' react has the same key.)
+        let gave_way = |pane: &str| format!("keys.toml: [{pane}] default Space r of react gives way to [global] mute");
+        assert_eq!(warnings, ["activity", "messages", "threads"].map(gave_way));
         let (map, warnings) = Keymap::load("[global]\nmute = \"<leader> r x\"\n");
         assert_eq!(map.resolve(&[Messages, Global], Mode::Normal, &[LEADER], k("r")), Resolved::Pending);
         assert_eq!(map.resolve(&[Messages, Global], Mode::Normal, &[LEADER, k("r")], k("x")), Resolved::Action(Global, Action::Mute));
-        assert_eq!(warnings, vec!["keys.toml: [messages] default Space r of react gives way to [global] mute".to_string()]);
+        assert_eq!(warnings, ["activity", "messages", "threads"].map(gave_way));
         // A default written out again is still a default: Ctrl+A stays line start while typing.
         let (map, warnings) = Keymap::load("[global]\nactivity = \"ctrl+a\"\n");
         assert!(warnings.is_empty(), "{warnings:?}");

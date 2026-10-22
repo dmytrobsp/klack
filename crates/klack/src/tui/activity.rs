@@ -301,6 +301,8 @@ const LIST_EDITED: &str = "A list item you follow was edited (open it in Slack)"
 const LIST_MENTION: &str = "A mention in a list (open it in Slack)";
 /// Said when Enter is pressed on an item klack has nowhere to show (a list item, a Slack Connect invitation).
 pub const NOT_HERE: &str = "klack can't show this one: open it in Slack";
+/// What a message's key says on an item that is no message (or whose message is not there).
+pub const NO_MESSAGE: &str = "no message here to act on";
 const UNREAD_ONLY: &str = "unread only";
 const EMPTY: &str = "Nothing here yet: mentions, reactions to your messages, thread replies and direct messages show up here.";
 const NONE_UNREAD: &str = "Nothing unread here.";
@@ -310,7 +312,7 @@ const FAILED: &str = "The activity could not be loaded";
 
 /// The view's words, for the locale template.
 pub const WORDS: &[&str] = &[
-    TODAY, YESTERDAY, MISSING, LOADING, LOADING_MORE, MENTION, GROUP_MENTION, CHANNEL_MENTION, EVERYONE_MENTION, KEYWORD, IN_THREAD, THREAD, NEW_REPLY, NEW_REPLIES, DIRECT, GROUP_DM, REACTED, YOUR_MESSAGE, OTHER, CHANNEL_NEW, APP, NEW, ADDED, UNJOINED, WELCOME, CONNECT_CHANNEL, CONNECT_DM, SHARED_WORKSPACE, LIST_ASSIGNED, LIST_EDITED, LIST_MENTION, NOT_HERE, UNREAD_ONLY, EMPTY, NONE_UNREAD, MORE_HELD, FAILED, "All", "DMs", "Mentions", "Threads",
+    TODAY, YESTERDAY, MISSING, LOADING, LOADING_MORE, MENTION, GROUP_MENTION, CHANNEL_MENTION, EVERYONE_MENTION, KEYWORD, IN_THREAD, THREAD, NEW_REPLY, NEW_REPLIES, DIRECT, GROUP_DM, REACTED, YOUR_MESSAGE, OTHER, CHANNEL_NEW, APP, NEW, ADDED, UNJOINED, WELCOME, CONNECT_CHANNEL, CONNECT_DM, SHARED_WORKSPACE, LIST_ASSIGNED, LIST_EDITED, LIST_MENTION, NOT_HERE, NO_MESSAGE, UNREAD_ONLY, EMPTY, NONE_UNREAD, MORE_HELD, FAILED, "All", "DMs", "Mentions", "Threads",
 ];
 
 /// A tab's list while the view is open, when another tab is shown.
@@ -405,6 +407,56 @@ impl Activity {
     pub fn add_message(&mut self, key: (String, String), message: Option<Message>) {
         self.messages.insert(key, message);
         self.dirty = true;
+    }
+
+    /// The message (channel, ts) the selected item shows, when it is one and it is there (not gone, not loading).
+    pub fn selected_message(&self) -> Option<(String, String)> {
+        let it = self.selected_item().filter(|_| self.visible().contains(&self.selected))?;
+        let key = it.message_key();
+        self.messages.get(&key)?.as_ref().filter(|m| !missing(m)).map(|_| key)
+    }
+
+    /// Message `ts` of `channel`, if an item shows it.
+    pub fn find(&self, channel: &str, ts: &str) -> Option<&Message> {
+        self.messages.get(&(channel.to_string(), ts.to_string()))?.as_ref()
+    }
+
+    /// Message `ts` of `channel`, to change in place (the list is built again for it).
+    pub fn copies_mut(&mut self, channel: &str, ts: &str) -> Vec<&mut Message> {
+        let out: Vec<&mut Message> = self.messages.get_mut(&(channel.to_string(), ts.to_string())).and_then(Option::as_mut).into_iter().collect();
+        self.dirty |= !out.is_empty();
+        out
+    }
+
+    /// A live edit, deletion or reaction (an RTM event) on a message an item shows: applied to it (a deleted one is
+    /// gone). True when an item shows it.
+    pub fn apply_live(&mut self, ev: &Value) -> bool {
+        let Some((channel, ts)) = super::live::changed_message(ev) else { return false };
+        let Some(slot) = self.messages.get_mut(&(channel.to_string(), ts.to_string())) else { return false };
+        if ev["subtype"] == "message_deleted" {
+            *slot = None;
+        } else if let Some(m) = slot.as_mut() {
+            super::live::apply_change(m, ev);
+        }
+        self.dirty = true;
+        true
+    }
+
+    /// A change klack made to message `m` of `channel` failed: it is put back as it was.
+    pub fn put_back(&mut self, channel: &str, m: &Message) {
+        if let Some(slot) = self.messages.get_mut(&(channel.to_string(), m.ts.clone())) {
+            *slot = Some(m.clone());
+            self.dirty = true;
+        }
+    }
+
+    /// Where a menu for the selected item's message opens: its first row on screen, past the gutter (the list's middle
+    /// when it is not on screen).
+    pub fn spot(&self) -> (u16, u16) {
+        match self.rows.iter().position(|o| *o == Some(self.selected)) {
+            Some(row) => (self.list.x + messages::GUTTER + 2, self.list.y + row as u16),
+            None => (self.list.x + self.list.width / 3, self.list.y + self.list.height / 3),
+        }
     }
 
     /// Mark the items opened in this run read (see [`apply_seen`]).
@@ -1838,5 +1890,25 @@ mod tests {
             assert_eq!(lit, selected.contains(&y), "row {y}");
         }
         assert_ne!(buf[(x1 + 1, selected[0])].bg, p.selection, "not the border");
+    }
+
+    #[test]
+    fn live_changes_reach_the_items_messages() {
+        let mut a = Activity::default();
+        let key = ("C1".to_string(), "2.0".to_string());
+        let m = Message { ts: "2.0".into(), user: Some("U2".into()), text: "the message".into(), ..Default::default() };
+        a.add_message(key.clone(), Some(m.clone()));
+        let reacted = serde_json::json!({"type": "reaction_added", "user": "U3", "reaction": "eyes", "item": {"type": "message", "channel": "C1", "ts": "2.0"}});
+        assert!(a.apply_live(&reacted) && a.apply_live(&reacted), "an echo counts once");
+        assert_eq!(a.find("C1", "2.0").unwrap().reactions[0].count, 1);
+        let edit = serde_json::json!({"type": "message", "subtype": "message_changed", "channel": "C1", "message": {"type": "message", "user": "U2", "text": "better", "ts": "2.0", "edited": {"user": "U2", "ts": "3.0"}}});
+        assert!(a.apply_live(&edit));
+        assert_eq!((a.find("C1", "2.0").unwrap().text.as_str(), a.find("C1", "2.0").unwrap().reactions.len()), ("better", 1), "its reactions kept");
+        assert!(!a.apply_live(&serde_json::json!({"type": "message", "subtype": "message_deleted", "channel": "C9", "deleted_ts": "2.0"})), "not an item's");
+        assert!(a.apply_live(&serde_json::json!({"type": "message", "subtype": "message_deleted", "channel": "C1", "deleted_ts": "2.0"})));
+        assert!(a.find("C1", "2.0").is_none() && a.messages.contains_key(&key), "gone, said so");
+        // A deletion klack asked for failed: back as it was.
+        a.put_back("C1", &m);
+        assert_eq!(a.find("C1", "2.0").unwrap().text, "the message");
     }
 }
