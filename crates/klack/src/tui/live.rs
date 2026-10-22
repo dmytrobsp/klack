@@ -27,6 +27,19 @@ pub struct Effects {
     /// Your DND (snooze, schedule) changed: the gateway says only that (`dnd_invalidated`, where
     /// `rtm.connect` sends `dnd_updated` with it); it is to be asked for again.
     pub dnd_invalidated: bool,
+    /// An Activity item came, changed (read, a newer reply) or went, or Slack dropped them all.
+    pub activity: Option<ActivityPush>,
+}
+
+/// What an `activity` event says to the Activity view.
+#[derive(Debug)]
+pub enum ActivityPush {
+    /// `activity_updated`: the item as it is now.
+    Updated(super::activity::Item),
+    /// `activity_deleted`: the item with this key is gone.
+    Deleted(String),
+    /// `activity_invalidated`: the lists are to be loaded again.
+    Invalidated,
 }
 
 fn parse_message(v: &Value, channel: &str) -> Option<Message> {
@@ -224,6 +237,18 @@ pub fn apply(ws: &mut Workspace, ev: &Value, current: Option<&str>) -> Effects {
             }
         }
         "dnd_updated" => ws.dnd.set_info(&ev["dnd_status"]),
+        // Slack's own Activity badge, pushed as it changes (an item came, or was read here or elsewhere).
+        "badge_counts_updated" => {
+            ws.set_activity_counts(&ev["activity_v2"]);
+        }
+        "activity" => {
+            fx.activity = match ev["subtype"].as_str() {
+                Some("activity_updated") => super::activity::Item::from_event(ev).map(ActivityPush::Updated),
+                Some("activity_deleted") => ev["key"].as_str().map(|k| ActivityPush::Deleted(k.to_string())),
+                Some("activity_invalidated") => Some(ActivityPush::Invalidated),
+                _ => None,
+            }
+        }
         "dnd_invalidated" => fx.dnd_invalidated = ev["user"]["id"].as_str() == Some(ws.self_id.as_str()),
         // Threads you follow got replies, or were read (here or elsewhere).
         "update_global_thread_state" => ws.thread_unread = super::state::ThreadUnread::from_json(ev),
@@ -447,6 +472,28 @@ mod tests {
         ws.conversations.insert("C1".into(), Conversation { id: "C1".into(), name: "general".into(), is_member: true, ..Default::default() });
         ws.timelines.insert("C1".into(), Timeline { loaded: true, ..Default::default() });
         ws
+    }
+
+    #[test]
+    fn the_activity_badge_and_items_are_pushed() {
+        let mut w = ws();
+        assert_eq!((w.activity_unread, w.activity_counts.is_some()), (0, false));
+        // Made-up counts in the shape seen on the gateway (every type listed; `counts` sometimes too).
+        let badge = |dm: u64, mentions: u64, reactions: u64| json!({"type": "badge_counts_updated", "event_ts": "1.5", "counts": {}, "activity_v2": {"at_user": mentions, "dm": dm, "message_reaction": reactions, "thread_v2": 1, "mpdm": 0}});
+        apply(&mut w, &badge(2, 1, 3), None);
+        assert_eq!((w.activity_unread, w.activity_counts.is_some()), (4, true), "Slack's own badge: no reactions");
+        apply(&mut w, &badge(1, 0, 3), None);
+        assert_eq!(w.activity_unread, 2, "read elsewhere: lower");
+        // An item came, changed or went: the Activity view is told.
+        let updated = json!({"type": "activity", "subtype": "activity_updated", "key": "at_user-C1-9.5", "event_ts": "9.5",
+            "entry": {"feed_ts": "9.5", "is_archived": false, "is_unread": true, "key": "at_user-C1-9.5", "version": "1", "item": {"type": "at_user", "message": {"author_user_id": "U2", "channel": "C1", "ts": "9.5"}}}});
+        assert!(matches!(apply(&mut w, &updated, None).activity, Some(ActivityPush::Updated(it)) if it.key == "at_user-C1-9.5" && it.unread));
+        let deleted = json!({"type": "activity", "subtype": "activity_deleted", "key": "k1", "event_ts": "9.6"});
+        assert!(matches!(apply(&mut w, &deleted, None).activity, Some(ActivityPush::Deleted(k)) if k == "k1"));
+        let invalidated = json!({"type": "activity", "subtype": "activity_invalidated", "event_ts": "9.7"});
+        assert!(matches!(apply(&mut w, &invalidated, None).activity, Some(ActivityPush::Invalidated)));
+        assert!(apply(&mut w, &json!({"type": "activity", "subtype": "activity_views_updated", "views": []}), None).activity.is_none());
+        assert_eq!(w.activity_unread, 2, "items do not change the badge: its own event does");
     }
 
     #[test]

@@ -449,6 +449,12 @@ impl Client {
         self.call_raw("activity.feed", &activity_params(types, limit, cursor)).await
     }
 
+    /// Mark an Activity item read (`params`: its `type`, `feed_ts`, `key` and for some types `ts`), as Slack's client
+    /// does when one is opened; Slack marks its conversation or thread read too.
+    pub async fn activity_mark_read(&self, params: &[(&str, String)]) -> Result<()> {
+        self.call_raw("activity.markRead", params).await.map(|_| ())
+    }
+
     /// The threads you are in (the client's Threads view): unread ones first, then by latest
     /// reply; with `before`, the page of threads active before that time.
     pub async fn thread_view(&self, before: Option<&str>, limit: u32) -> Result<Value> {

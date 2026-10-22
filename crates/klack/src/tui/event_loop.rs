@@ -89,8 +89,10 @@ enum Net {
     Prefs(Value),
     /// A tab of the Activity view.
     ActivityFeed { tab: super::activity::Tab, more: bool, result: Result<Value, String> },
-    /// The activity feed fetched at start, for the sidebar row's unread count.
+    /// The activity feed fetched at start, for the sidebar row's unread count (when Slack's counts have no badge).
     ActivityUnread(Result<Value, String>),
+    /// `client.counts` asked again after a reconnect, for Slack's Activity badge (`activity_v2`).
+    ActivityBadge(Result<Value, String>),
     /// The huddles going on now (at start, after a reconnect, when one starts, when the Huddles view opens).
     /// `since`: the workspace's `huddle_seq` when it was asked for.
     LiveHuddles { since: u64, result: Result<Vec<slack_core::types::LiveHuddle>, String> },
@@ -1619,13 +1621,27 @@ impl App {
         self.open_hit(super::search::Hit { channel, ts, thread_ts, user: None, text: String::new(), ..Default::default() });
     }
 
-    /// Mark the Activity view's selected item seen and leave the view for it (Enter, or a click on it).
+    /// Mark the Activity view's selected item seen (and read on Slack, as its own client does: the badge drops
+    /// at once) and leave the view for it (Enter, or a click on it).
     fn open_activity_item(&mut self) {
-        if let Some(key) = self.activity.selected_item().map(|it| it.key.clone()) {
-            self.seen.insert(key, opened_now());
+        if let Some(it) = self.activity.selected_item().cloned() {
+            self.seen.insert(it.key.clone(), opened_now());
+            if let Some(params) = super::activity::mark_read_params(&it) {
+                let client = self.client.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = client.activity_mark_read(&params).await {
+                        tracing::warn!("marking the activity item read failed: {e}");
+                    }
+                });
+            }
+            if it.unread {
+                self.ws.activity_item_read(&it.ty);
+            }
             if let Some(items) = self.activity.items.as_mut() {
                 super::activity::apply_seen(items, &self.seen);
-                self.ws.activity_unread = super::activity::unread_count(items);
+                if self.ws.activity_counts.is_none() {
+                    self.ws.activity_unread = super::activity::unread_count(items);
+                }
             }
         }
         let Some((channel, ts, thread_ts)) = self.activity.target() else { return };
@@ -2927,6 +2943,24 @@ impl App {
         });
     }
 
+    /// The feed's first page for the sidebar's Activity row (Slack's counts had no badge).
+    fn fetch_activity_unread(&self) {
+        let (client, tx) = (self.client.clone(), self.net.clone());
+        tokio::spawn(async move {
+            let result = client.activity_feed(super::activity::ALL_TYPES, 50).await.map_err(|e| e.to_string());
+            let _ = tx.send(Net::ActivityUnread(result));
+        });
+    }
+
+    /// Slack's Activity badge asked for again (`client.counts`, as its client does at each connect).
+    fn fetch_activity_badge(&self) {
+        let (client, tx) = (self.client.clone(), self.net.clone());
+        tokio::spawn(async move {
+            let result = client.counts().await.map_err(|e| e.to_string());
+            let _ = tx.send(Net::ActivityBadge(result));
+        });
+    }
+
     /// The Activity view's next page, once the end of its list is on screen.
     fn request_activity_page(&mut self) {
         if self.view != View::Activity {
@@ -3729,7 +3763,6 @@ impl App {
 }
 
 fn spawn_boot(client: Client, tx: mpsc::UnboundedSender<Net>) {
-    let (activity, unread) = (client.clone(), tx.clone());
     tokio::spawn(async move {
         let result = async {
             let (boot, users, counts) = tokio::join!(client.user_boot(), client.users_list(), client.counts());
@@ -3737,10 +3770,6 @@ fn spawn_boot(client: Client, tx: mpsc::UnboundedSender<Net>) {
         }
         .await;
         let _ = tx.send(result.unwrap_or_else(|e| Net::Error(format!("loading workspace failed: {e}"))));
-    });
-    tokio::spawn(async move {
-        let result = activity.activity_feed(super::activity::ALL_TYPES, 50).await.map_err(|e| e.to_string());
-        let _ = unread.send(Net::ActivityUnread(result));
     });
 }
 
@@ -5446,6 +5475,8 @@ fn handle_rtm(app: &mut App, ev: slack_core::rtm::RtmEvent) {
             // Profile changes pushed while the connection was away are lost: the people shown are looked up.
             if app.socket.replace(socket).is_some() {
                 app.queue_people_shown();
+                // (Slack's client asks for its counts at each connect: badge changes while away are not pushed.)
+                app.fetch_activity_badge();
             }
             app.connected = true;
             app.presence_subscribed = false;
@@ -5466,6 +5497,10 @@ fn handle_rtm(app: &mut App, ev: slack_core::rtm::RtmEvent) {
         }
         RtmEvent::Event(v) => {
             let fx = super::live::apply(&mut app.ws, &v, app.current.as_deref());
+            if v["type"] == "pref_change" {
+                // (The pref's name only, never its value.)
+                tracing::debug!(name = v["name"].as_str().unwrap_or_default(), "pref_change applied");
+            }
             if v["type"] == "pref_change" && v["name"].as_str().is_some_and(|n| n.starts_with("dnd_")) {
                 show_pending_schedule(&mut app.ws, &app.schedule_writes);
             }
@@ -5480,6 +5515,16 @@ fn handle_rtm(app: &mut App, ev: slack_core::rtm::RtmEvent) {
             }
             if fx.dnd_invalidated {
                 app.fetch_dnd();
+            }
+            match fx.activity {
+                Some(super::live::ActivityPush::Updated(mut it)) => {
+                    super::activity::apply_seen(std::slice::from_mut(&mut it), &app.seen);
+                    app.activity.upsert(it);
+                }
+                Some(super::live::ActivityPush::Deleted(key)) => app.activity.remove_key(&key),
+                // (As Slack's client does: its lists are dropped and the one shown is loaded again.)
+                Some(super::live::ActivityPush::Invalidated) if app.view == View::Activity => app.open_activity(true),
+                _ => {}
             }
             // (As the official client does: an ended huddle the view shows may now be among the recent ones.)
             if app.view == View::Huddles && app.huddles.concerns(&fx.huddles_ended) {
@@ -5544,6 +5589,10 @@ fn handle_net(app: &mut App, msg: Net) {
             app.ws.apply_boot(&boot);
             if let Some(c) = counts {
                 app.ws.apply_counts(&c);
+            }
+            // (No Activity badge in Slack's counts: the row counts the feed's unread items.)
+            if app.ws.activity_counts.is_none() {
+                app.fetch_activity_unread();
             }
             app.sidebar.rebuild(&app.ws);
             app.loading = false;
@@ -5933,8 +5982,8 @@ fn handle_net(app: &mut App, msg: Net) {
                 if more {
                     app.activity.add_page(tab, items, cursor);
                 } else {
-                    // (The sidebar row counts the All tab's first page, as at start.)
-                    if tab == super::activity::Tab::All {
+                    // (Without Slack's badge the sidebar row counts the All tab's first page, as at start.)
+                    if tab == super::activity::Tab::All && app.ws.activity_counts.is_none() {
                         app.ws.activity_unread = super::activity::unread_count(&items);
                     }
                     app.activity.set_items(tab, items, cursor);
@@ -5965,14 +6014,21 @@ fn handle_net(app: &mut App, msg: Net) {
                 app.huddles.replies.insert((channel, ts), n);
             }
         }
-        // The sidebar's Activity row, at start.
+        // The sidebar's Activity row, at start (Slack's counts had no badge).
         Net::ActivityUnread(result) => match result {
-            Ok(v) => {
+            Ok(v) if app.ws.activity_counts.is_none() => {
                 let mut items = super::activity::parse(&v);
                 super::activity::apply_seen(&mut items, &app.seen);
                 app.ws.activity_unread = super::activity::unread_count(&items);
             }
+            Ok(_) => {}
             Err(e) => tracing::warn!("activity feed for the sidebar: {e}"),
+        },
+        Net::ActivityBadge(result) => match result {
+            Ok(v) => {
+                app.ws.set_activity_counts(&v["activity_v2"]);
+            }
+            Err(e) => tracing::warn!("counts after a reconnect: {e}"),
         },
         Net::PreviewPage { channel, page } => {
             if let Some(tl) = app.ws.timelines.get_mut(&channel) {
@@ -7684,6 +7740,95 @@ mod tests {
         assert!(app.lookups.due.contains("U3") && app.lookups.stale.is_empty());
     }
 
+    /// The next request to Slack's `method` (others are passed over), within 10 s.
+    async fn next_call(asked: &mut tokio::sync::mpsc::UnboundedReceiver<String>, method: &str) -> Option<String> {
+        let wait = async {
+            while let Some(req) = asked.recv().await {
+                if req.contains(&format!("/api/{method} ")) {
+                    return Some(req);
+                }
+            }
+            None
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(10), wait).await.ok().flatten()
+    }
+
+    #[tokio::test]
+    async fn the_activity_count_follows_slacks_pushes() {
+        use super::{run_global, Action, Net, View};
+        use slack_core::rtm::RtmEvent;
+        let (url, mut asked) = fake_slack(&[("client.counts", r#"{"ok":true,"activity_v2":{"at_user":0,"dm":5,"message_reaction":1,"thread_v2":0}}"#), ("activity.feed", r#"{"ok":true,"items":[]}"#)]).await;
+        let (mut app, mut net) = test_app_at(&url);
+        // At start: Slack's own badge, from `client.counts` (no feed fetched for it).
+        let counts = serde_json::json!({"activity_v2": {"at_user": 1, "dm": 1, "message_reaction": 2, "thread_v2": 1}});
+        super::handle_net(&mut app, Net::Boot { boot: serde_json::json!({}), users: vec![], counts: Some(counts) });
+        assert_eq!(app.ws.activity_unread, 3);
+        // Pushed: higher (B mentions A), lower (read elsewhere).
+        let badge = |n: u64| RtmEvent::Event(serde_json::json!({"type": "badge_counts_updated", "event_ts": "9.0", "activity_v2": {"at_user": n, "dm": 1, "thread_v2": 1}}));
+        super::handle_rtm(&mut app, badge(2));
+        assert_eq!(app.ws.activity_unread, 4);
+        // The view's list (with its own unread reactions) does not change the badge.
+        run_global(&mut app, Action::Activity);
+        let feed = serde_json::json!({"items": [{"feed_ts": "5.0", "is_unread": true, "key": "r1", "item": {"type": "message_reaction", "message": {"channel": "C1", "ts": "4.0"}, "reaction": {"name": "eyes", "user": "U2"}}}]});
+        super::handle_net(&mut app, Net::ActivityFeed { tab: super::super::activity::Tab::All, more: false, result: Ok(feed) });
+        assert_eq!(app.ws.activity_unread, 4);
+        // A new item pushed: on top of the view.
+        let mention = serde_json::json!({"type": "activity", "subtype": "activity_updated", "key": "at_user-C1-9.5", "event_ts": "9.5",
+            "entry": {"feed_ts": "9.5", "is_archived": false, "is_unread": true, "key": "at_user-C1-9.5", "version": "1", "item": {"type": "at_user", "message": {"author_user_id": "U2", "channel": "C1", "is_broadcast": false, "ts": "9.5"}}}});
+        super::handle_rtm(&mut app, RtmEvent::Event(mention));
+        assert_eq!(app.activity.items.as_ref().map(|l| l.iter().map(|i| i.key.as_str()).collect::<Vec<_>>()), Some(vec!["at_user-C1-9.5", "r1"]));
+        // Opened: marked read on Slack as its own client does, one less at once.
+        app.activity.selected = 0;
+        app.open_activity_item();
+        let req = next_call(&mut asked, "activity.markRead").await.expect("activity.markRead");
+        for want in ["type=at_user", "feed_ts=9.5", "key=at_user-C1-9.5"] {
+            assert!(req.contains(want), "{want} in {req}");
+        }
+        assert_eq!((app.ws.activity_unread, app.view), (3, View::Conversation));
+        // Slack drops its items (`activity_invalidated`) while the view is shown: loaded again.
+        run_global(&mut app, Action::Activity);
+        assert!(next_call(&mut asked, "activity.feed").await.is_some());
+        super::handle_rtm(&mut app, RtmEvent::Event(serde_json::json!({"type": "activity", "subtype": "activity_invalidated", "event_ts": "9.8"})));
+        assert!(next_call(&mut asked, "activity.feed").await.is_some(), "loaded again");
+        // A reconnect: the count is asked for again, as Slack's client does (`client.counts`).
+        super::handle_rtm(&mut app, RtmEvent::Connected(slack_core::api::Socket::Gateway));
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(300), next_call(&mut asked, "client.counts")).await.is_err(), "not at the first connect: the boot asked");
+        super::handle_rtm(&mut app, RtmEvent::Disconnected("gone".into()));
+        super::handle_rtm(&mut app, RtmEvent::Connected(slack_core::api::Socket::Gateway));
+        assert!(next_call(&mut asked, "client.counts").await.is_some());
+        loop {
+            match tokio::time::timeout(std::time::Duration::from_secs(10), net.recv()).await {
+                Ok(Some(msg @ Net::ActivityBadge(_))) => {
+                    super::handle_net(&mut app, msg);
+                    break;
+                }
+                Ok(Some(_)) => {}
+                other => panic!("no counts: {}", other.is_ok()),
+            }
+        }
+        assert_eq!(app.ws.activity_unread, 5);
+    }
+
+    #[tokio::test]
+    async fn without_slacks_badge_the_feed_counts_as_before() {
+        use super::Net;
+        let (url, mut asked) = fake_slack(&[("activity.feed", r#"{"ok":true,"items":[{"feed_ts":"5.0","is_unread":true,"key":"r1","item":{"type":"message_reaction","message":{"channel":"C1","ts":"4.0"},"reaction":{"name":"eyes","user":"U2"}}}]}"#)]).await;
+        let (mut app, mut net) = test_app_at(&url);
+        super::handle_net(&mut app, Net::Boot { boot: serde_json::json!({}), users: vec![], counts: Some(serde_json::json!({"ims": []})) });
+        assert!(next_call(&mut asked, "activity.feed").await.is_some(), "the feed is asked for the count");
+        loop {
+            match tokio::time::timeout(std::time::Duration::from_secs(10), net.recv()).await {
+                Ok(Some(msg @ Net::ActivityUnread(_))) => {
+                    super::handle_net(&mut app, msg);
+                    break;
+                }
+                Ok(Some(_)) => {}
+                other => panic!("no feed: {}", other.is_ok()),
+            }
+        }
+        assert_eq!(app.ws.activity_unread, 1);
+    }
+
     #[tokio::test]
     async fn a_pushed_dnd_change_of_yours_is_fetched() {
         use super::Net;
@@ -7807,7 +7952,7 @@ mod tests {
         // An 80-column terminal: the sidebar takes 20, the view the rest down to the status line.
         let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
         run_global(&mut app, Action::Activity);
-        let item = super::super::activity::Item { key: "k1".into(), kind: super::super::activity::Kind::Mention("at_user".into()), channel: "C1".into(), ts: "1.0".into(), author: None, unread: true, when: 0.0 };
+        let item = super::super::activity::Item { key: "k1".into(), kind: super::super::activity::Kind::Mention("at_user".into()), channel: "C1".into(), ts: "1.0".into(), author: None, unread: true, when: 0.0, ..Default::default() };
         app.activity.items = Some(vec![item]);
         terminal.draw(|f| super::draw(f, &mut app)).unwrap();
         let screen = rows(&terminal);
@@ -7848,7 +7993,7 @@ mod tests {
         // From the sidebar, a click on the Activity row, then Enter on its item: the conversation.
         app.focus = Focus::Sidebar;
         click(&mut app, 3, 2);
-        app.activity.items = Some(vec![super::super::activity::Item { key: "k1".into(), kind: super::super::activity::Kind::Mention("at_user".into()), channel: "C1".into(), ts: "1.0".into(), author: None, unread: true, when: 0.0 }]);
+        app.activity.items = Some(vec![super::super::activity::Item { key: "k1".into(), kind: super::super::activity::Kind::Mention("at_user".into()), channel: "C1".into(), ts: "1.0".into(), author: None, unread: true, when: 0.0, ..Default::default() }]);
         assert_eq!((app.view, app.focus), (View::Activity, Focus::Messages));
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!((app.view, app.current.as_deref()), (View::Conversation, Some("C1")));

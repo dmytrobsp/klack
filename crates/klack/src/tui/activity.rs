@@ -34,9 +34,19 @@ pub enum Kind {
     Other(String),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+impl Default for Kind {
+    fn default() -> Kind {
+        Kind::Other(String::new())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Item {
     pub key: String,
+    /// Slack's item type (`at_user`, `thread_v2`, `dm`, …).
+    pub ty: String,
+    /// When it came (or last changed) as Slack writes it (`when` is the same as a number).
+    pub feed_ts: String,
     pub kind: Kind,
     pub channel: String,
     /// The message the item is about (for threads: the parent).
@@ -84,6 +94,8 @@ impl Item {
         };
         Some(Item {
             key: v["key"].as_str().unwrap_or_default().to_string(),
+            ty: ty.to_string(),
+            feed_ts: v["feed_ts"].as_str().unwrap_or_default().to_string(),
             kind,
             channel: channel.to_string(),
             ts: ts.to_string(),
@@ -91,6 +103,11 @@ impl Item {
             unread: v["is_unread"].as_bool().unwrap_or(false),
             when: v["feed_ts"].as_str().and_then(|t| t.parse().ok()).unwrap_or(0.0),
         })
+    }
+
+    /// The item of a pushed `activity` event (`activity_updated`: its `entry` is shaped as a listed item).
+    pub fn from_event(ev: &Value) -> Option<Item> {
+        (ev["subtype"] == "activity_updated").then(|| Item::from_json(&ev["entry"])).flatten()
     }
 
     /// The message the item shows (channel, ts): a thread's newest reply, else its own message.
@@ -157,14 +174,51 @@ impl Tab {
     fn index(self) -> usize {
         Tab::ALL.iter().position(|t| *t == self).unwrap_or(0)
     }
+
+    /// Whether its list has items of type `ty`.
+    pub fn lists(self, ty: &str) -> bool {
+        self.types().split(',').any(|t| t == ty)
+    }
 }
 
 /// The feed's item types on the All tab (`activity.feed`; the sidebar row's count).
 pub const ALL_TYPES: &str = "at_user,at_user_group,at_channel,at_everyone,keyword,message_reaction,thread_v2,dm,mpdm";
 
-/// How many of `items` are unread (the sidebar's Activity row).
+/// How many of `items` are unread (the sidebar's Activity row when Slack does not say).
 pub fn unread_count(items: &[Item]) -> usize {
     items.iter().filter(|it| it.unread).count()
+}
+
+/// The item types Slack's own Activity badge adds up (its `activity_v2` counts; reactions, group DMs and the
+/// types behind its feature checks other than DMs never count).
+const BADGE_TYPES: &[&str] = &[
+    "thread_v2", "channel", "internal_channel_invite", "list_record_edited", "bot_dm_bundle", "at_user", "at_user_group", "at_channel", "at_everyone", "keyword", "list_record_assigned", "list_user_mentioned",
+    "external_channel_invite", "external_dm_invite", "shared_workspace_invite", "unjoined_channel_mention", "quietly_added_to_channel", "prejoin_dm_welcome_party_alert", "dm",
+];
+
+/// Whether an unread item of type `ty` is in the Activity badge.
+pub fn counts_in_badge(ty: &str) -> bool {
+    BADGE_TYPES.contains(&ty)
+}
+
+/// The Activity badge from Slack's unread counts by item type (`activity_v2` of `client.counts` and
+/// `badge_counts_updated`); none when they are not given.
+pub fn badge_total(activity_v2: &Value) -> Option<usize> {
+    let counts = activity_v2.as_object()?;
+    Some(counts.iter().filter(|(ty, _)| counts_in_badge(ty)).map(|(_, n)| n.as_u64().unwrap_or(0) as usize).sum())
+}
+
+/// What `activity.markRead` is sent when the unread item `it` is opened, as Slack's client does (`type`, `feed_ts`,
+/// `key`; a DM: also its `feed_ts` as `ts`); none for a reaction (never marked) or an item read already.
+pub fn mark_read_params(it: &Item) -> Option<Vec<(&'static str, String)>> {
+    if !it.unread || it.ty == "message_reaction" || it.ty.is_empty() || it.key.is_empty() || it.feed_ts.is_empty() {
+        return None;
+    }
+    let mut params = vec![("type", it.ty.clone()), ("feed_ts", it.feed_ts.clone()), ("key", it.key.clone())];
+    if it.ty == "dm" {
+        params.push(("ts", it.feed_ts.clone()));
+    }
+    Some(params)
 }
 
 /// Lines of a message an item shows; a longer one is cut with "…" (Enter shows it all).
@@ -335,6 +389,37 @@ impl Activity {
             }
         }
         (*at, *loading) = (cursor, false);
+    }
+
+    /// An item Slack pushed (new, or changed: read, a newer reply): into each loaded list it belongs to, in its place
+    /// by time (newest first); the selected item stays selected.
+    pub fn upsert(&mut self, it: Item) {
+        let key = self.selected_item().map(|i| i.key.clone());
+        let lists = std::iter::once((self.tab, &mut self.items)).chain(self.kept.iter_mut().map(|(t, k)| (*t, &mut k.items)));
+        for (_, items) in lists.filter(|(tab, _)| tab.lists(&it.ty)) {
+            let Some(items) = items.as_mut() else { continue };
+            items.retain(|o| o.key != it.key);
+            let at = items.iter().position(|o| o.when < it.when).unwrap_or(items.len());
+            items.insert(at, it.clone());
+        }
+        self.reselect(key);
+    }
+
+    /// The item `key` is gone (Slack deleted it): out of every list.
+    pub fn remove_key(&mut self, key: &str) {
+        let selected = self.selected_item().map(|i| i.key.clone()).filter(|k| k != key);
+        for items in std::iter::once(&mut self.items).chain(self.kept.values_mut().map(|k| &mut k.items)).flatten() {
+            items.retain(|o| o.key != key);
+        }
+        self.reselect(selected);
+    }
+
+    /// The selection back on item `key` after the list changed (gone: the one now at its place).
+    fn reselect(&mut self, key: Option<String>) {
+        let len = self.items.as_ref().map_or(0, Vec::len);
+        let at = key.and_then(|k| self.items.as_ref()?.iter().position(|i| i.key == k));
+        self.selected = at.unwrap_or(self.selected.min(len.saturating_sub(1)));
+        self.keep_selection_shown();
     }
 
     /// A page could not be loaded: what is listed stays (the next one is asked for again when the end comes).
@@ -748,7 +833,7 @@ mod tests {
     use crate::tui::applink::Here;
 
     fn item(key: &str, kind: Kind, channel: &str, ts: &str, author: Option<&str>, unread: bool, when: f64) -> Item {
-        Item { key: key.into(), kind, channel: channel.into(), ts: ts.into(), author: author.map(String::from), unread, when }
+        Item { key: key.into(), kind, channel: channel.into(), ts: ts.into(), author: author.map(String::from), unread, when, ..Default::default() }
     }
 
     fn plain(line: &Line) -> String {
@@ -826,6 +911,89 @@ mod tests {
         }
         assert_eq!(ALL_TYPES, Tab::All.types(), "the sidebar's count is the All tab's");
         assert_eq!((Tab::All.next(), Tab::Threads.next(), Tab::All.prev(), Tab::Mentions.prev()), (Tab::Dms, Tab::All, Tab::Threads, Tab::Dms), "round");
+    }
+
+    #[test]
+    fn the_badge_counts_what_slacks_own_does() {
+        // `client.counts` / `badge_counts_updated` → `activity_v2`: every type listed, most at 0.
+        let v = serde_json::json!({"at_channel": 0, "at_everyone": 0, "at_user": 1, "at_user_group": 0, "bot_dm_bundle": 0, "channel": 1, "code_review_requested": 7, "dm": 2,
+            "internal_channel_invite": 1, "keyword": 0, "message_reaction": 4, "saved_reminder": 3, "thread_v2": 3, "unjoined_channel_mention": 0, "mpdm": 5});
+        assert_eq!(badge_total(&v), Some(8), "reactions, group DMs, reminders and code reviews do not count");
+        assert_eq!(badge_total(&serde_json::json!({})), Some(0));
+        assert_eq!(badge_total(&Value::Null), None, "not said: not known");
+        assert!(counts_in_badge("thread_v2") && counts_in_badge("dm") && !counts_in_badge("message_reaction") && !counts_in_badge("thread_reply"));
+    }
+
+    /// A pushed `activity_updated` entry (made up, in the shape seen on the gateway).
+    fn pushed(ty: &str, key: &str, feed_ts: &str, unread: bool) -> Value {
+        let item = match ty {
+            "dm" => serde_json::json!({"type": "dm", "bundle_info": {"payload": {"dm_entry": {"latest_message": {"channel": "D1", "ts": feed_ts}}}}}),
+            "thread_v2" => serde_json::json!({"type": "thread_v2", "bundle_info": {"payload": {"thread_entry": {"channel_id": "C1", "latest_ts": feed_ts, "min_unread_ts": feed_ts, "thread_ts": "1.0", "unread_msg_count": 1}}}}),
+            "message_reaction" => serde_json::json!({"type": ty, "message": {"channel": "C1", "ts": "1.0"}, "reaction": {"name": "eyes", "user": "U2"}}),
+            _ => serde_json::json!({"type": ty, "message": {"author_user_id": "U2", "channel": "C1", "is_broadcast": false, "ts": feed_ts}}),
+        };
+        serde_json::json!({"type": "activity", "subtype": "activity_updated", "key": key, "event_ts": feed_ts,
+            "entry": {"feed_ts": feed_ts, "is_archived": false, "is_bot": false, "is_unread": unread, "key": key, "version": "1", "item": item}})
+    }
+
+    #[test]
+    fn a_pushed_item_reads_like_a_listed_one() {
+        let it = Item::from_event(&pushed("at_user", "at_user-C1-9.5", "9.5", true)).unwrap();
+        assert_eq!((it.key.as_str(), &it.kind, it.channel.as_str(), it.ts.as_str(), it.unread), ("at_user-C1-9.5", &Kind::Mention("at_user".into()), "C1", "9.5", true));
+        assert_eq!((it.ty.as_str(), it.feed_ts.as_str(), it.when), ("at_user", "9.5", 9.5));
+        let listed = parse(&serde_json::json!({"items": [pushed("at_user", "at_user-C1-9.5", "9.5", true)["entry"]]}));
+        assert_eq!(listed, vec![it]);
+        assert!(Item::from_event(&serde_json::json!({"type": "activity", "subtype": "activity_deleted", "key": "k"})).is_none());
+    }
+
+    #[test]
+    fn pushed_items_go_into_the_lists_they_belong_to() {
+        let entry = |ty: &str, key: &str, ts: &str, unread: bool| Item::from_event(&pushed(ty, key, ts, unread)).unwrap();
+        let mut a = Activity::default();
+        a.set_items(Tab::All, vec![entry("at_user", "m5", "5.0", false), entry("thread_v2", "t1", "1.0", true)], None);
+        a.selected = 1;
+        a.set_items(Tab::Mentions, vec![entry("at_user", "m5", "5.0", false)], None);
+        a.set_items(Tab::Threads, vec![], None);
+        // A new mention: on top of All (the selection stays on its item) and of the Mentions tab's list.
+        a.upsert(entry("at_user", "m9", "9.0", true));
+        let keys = |items: &Option<Vec<Item>>| items.as_ref().map(|l| l.iter().map(|i| i.key.clone()).collect::<Vec<_>>());
+        assert_eq!(keys(&a.items), Some(vec!["m9".into(), "m5".into(), "t1".into()]));
+        assert_eq!(a.selected_item().map(|i| i.key.as_str()), Some("t1"));
+        a.set_tab(Tab::Mentions);
+        assert_eq!(keys(&a.items), Some(vec!["m9".into(), "m5".into()]));
+        a.set_tab(Tab::Threads);
+        assert_eq!(keys(&a.items), Some(vec![]), "not a thread");
+        a.set_tab(Tab::All);
+        // Read elsewhere: the same item, read now; a newer reply to a thread moves it up.
+        a.upsert(entry("at_user", "m9", "9.0", false));
+        a.upsert(entry("thread_v2", "t1", "12.0", true));
+        assert_eq!(keys(&a.items), Some(vec!["t1".into(), "m9".into(), "m5".into()]));
+        assert_eq!(a.items.as_ref().unwrap().iter().map(|i| i.unread).collect::<Vec<_>>(), [true, false, false]);
+        assert_eq!(a.selected_item().map(|i| i.key.as_str()), Some("t1"));
+        // Types the feed does not list (the reply that comes with a thread's entry) stay out; a list not loaded yet too.
+        a.upsert(entry("thread_reply", "r1", "13.0", true));
+        assert_eq!(a.items.as_ref().unwrap().len(), 3);
+        a.upsert(entry("dm", "dm-D1", "14.0", true));
+        assert_eq!(a.items.as_ref().unwrap()[0].key, "dm-D1");
+        a.set_tab(Tab::Dms);
+        assert!(a.items.is_none(), "the DMs tab was never loaded: it is loaded when shown");
+        a.set_tab(Tab::All);
+        // Deleted: out of every list.
+        a.remove_key("m9");
+        assert_eq!(keys(&a.items), Some(vec!["dm-D1".into(), "t1".into(), "m5".into()]));
+        a.set_tab(Tab::Mentions);
+        assert_eq!(keys(&a.items), Some(vec!["m5".into()]));
+    }
+
+    #[test]
+    fn opening_an_unread_item_marks_it_read_on_slack() {
+        let it = |ty: &str, unread: bool| Item::from_event(&pushed(ty, "k1", "9.5", unread)).unwrap();
+        let args = |i: &Item| mark_read_params(i).map(|p| p.into_iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>());
+        assert_eq!(args(&it("at_user", true)), Some(vec!["type=at_user".into(), "feed_ts=9.5".into(), "key=k1".into()]));
+        assert_eq!(args(&it("thread_v2", true)), Some(vec!["type=thread_v2".into(), "feed_ts=9.5".into(), "key=k1".into()]));
+        assert_eq!(args(&it("dm", true)), Some(vec!["type=dm".into(), "feed_ts=9.5".into(), "key=k1".into(), "ts=9.5".into()]), "a DM: its feed ts as `ts` too");
+        assert_eq!(args(&it("message_reaction", true)), None, "reactions are never marked");
+        assert_eq!(args(&it("at_user", false)), None, "read already");
     }
 
     #[test]

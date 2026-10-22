@@ -112,8 +112,11 @@ pub struct Status {
 pub struct Workspace {
     /// Replies in threads you follow not read yet (the sidebar's Threads row).
     pub thread_unread: ThreadUnread,
-    /// Unread items in the activity feed (the sidebar's Activity row), as of its last load.
+    /// The sidebar's Activity row: Slack's own Activity badge (`activity_counts` added up), else (an older
+    /// workspace that sends no counts) the unread items of the feed's last load.
     pub activity_unread: usize,
+    /// Slack's unread Activity items by type (`activity_v2` of `client.counts` and `badge_counts_updated`), once known.
+    pub activity_counts: Option<std::collections::BTreeMap<String, u64>>,
     /// Custom emoji pictures are drawn in the message pane (set while drawing: the terminal
     /// draws pictures and the settings allow it).
     pub emoji_pictures: bool,
@@ -819,6 +822,7 @@ impl Workspace {
 
     /// Apply `client.counts` unread state.
     pub fn apply_counts(&mut self, counts: &Value) {
+        self.set_activity_counts(&counts["activity_v2"]);
         if counts["threads"].is_object() {
             self.thread_unread = ThreadUnread::from_json(&counts["threads"]);
         }
@@ -837,6 +841,25 @@ impl Workspace {
                     Unread { has_unreads: c["has_unreads"].as_bool().unwrap_or(false), mentions: c["mention_count"].as_u64().unwrap_or(0) },
                 );
             }
+        }
+    }
+
+    /// Slack's unread Activity counts by type (`activity_v2`) came: the Activity row shows its badge. False when
+    /// they are not given.
+    pub fn set_activity_counts(&mut self, activity_v2: &Value) -> bool {
+        let Some(total) = super::activity::badge_total(activity_v2) else { return false };
+        let counts = activity_v2.as_object().into_iter().flatten().map(|(ty, n)| (ty.clone(), n.as_u64().unwrap_or(0))).collect();
+        (self.activity_counts, self.activity_unread) = (Some(counts), total);
+        true
+    }
+
+    /// An unread item of type `ty` was read here: one less in the badge at once, as Slack's client does (its next
+    /// count replaces it).
+    pub fn activity_item_read(&mut self, ty: &str) {
+        let Some(counts) = self.activity_counts.as_mut() else { return };
+        if let Some(n) = counts.get_mut(ty).filter(|n| **n > 0 && super::activity::counts_in_badge(ty)) {
+            *n -= 1;
+            self.activity_unread = self.activity_unread.saturating_sub(1);
         }
     }
 
@@ -1497,6 +1520,25 @@ mod tests {
         let own = Conversation { is_im: true, user: Some("UME".into()), ..Default::default() };
         assert_eq!(ws.conversation_label(&own), "alice (You)");
         assert_eq!(ws.person_label("U2"), "Bob B");
+    }
+
+    #[test]
+    fn counts_carry_the_activity_badge() {
+        let mut ws = Workspace::default();
+        // Without `activity_v2` (an older workspace): not known, the feed counts.
+        ws.apply_counts(&serde_json::json!({"ims": []}));
+        assert!(ws.activity_counts.is_none());
+        ws.apply_counts(&serde_json::json!({"activity_v2": {"at_user": 1, "dm": 2, "message_reaction": 5, "thread_v2": 0}}));
+        assert_eq!(ws.activity_unread, 3);
+        // An item read here: one less of its type at once (Slack's next count replaces it), never below 0.
+        ws.activity_item_read("dm");
+        assert_eq!(ws.activity_unread, 2);
+        ws.activity_item_read("thread_v2");
+        ws.activity_item_read("message_reaction");
+        assert_eq!(ws.activity_unread, 2, "nothing to take off");
+        ws.activity_item_read("dm");
+        ws.activity_item_read("dm");
+        assert_eq!((ws.activity_unread, ws.activity_counts.as_ref().map(|c| c["dm"])), (1, Some(0)));
     }
 
     #[test]
