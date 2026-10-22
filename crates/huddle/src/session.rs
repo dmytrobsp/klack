@@ -426,28 +426,39 @@ async fn run(creds: Credentials, mut shared: Shared) -> Result<()> {
 /// A command that came while not connected: only the state it sets is kept (mute, camera);
 /// audio and video frames are dropped.
 fn keep_for_next_connection(shared: &mut Shared, cmd: Command) {
+    keep_state(&mut shared.muted, &mut shared.send_video, cmd);
+}
+
+/// The state a command sets (mute, camera), kept the moment it comes so no way out of a try can
+/// lose it; anything else is ignored.
+fn keep_state(muted: &mut bool, camera: &mut bool, cmd: Command) {
     match cmd {
-        Command::Mute(m) => shared.muted = m,
-        Command::Camera(on) => shared.send_video = on,
+        Command::Mute(m) => *muted = m,
+        Command::Camera(on) => *camera = on,
         Command::Pcm(_) | Command::Video(..) | Command::Leave => {}
     }
+}
+
+/// What a try joins with: the latest mute and camera state.
+fn joining_state(shared: &Shared) -> (bool, bool) {
+    (shared.muted, shared.send_video)
 }
 
 /// The most a signaling connection may take to open.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// `step` (a part of joining), unless a leave comes first: Leave (or the session going away)
-/// aborts it at once (`None`); mute and camera changes meanwhile wait in `pending`, audio and
-/// video frames are dropped.
-async fn unless_left<T>(step: impl std::future::Future<Output = Result<T>>, commands: &mut mpsc::UnboundedReceiver<Command>, pending: &mut Vec<Command>) -> Result<Option<T>> {
+/// aborts it at once (`None`); mute and camera changes meanwhile go into `muted` / `camera` at
+/// once (the session's state, so a try that fails cannot lose them); audio and video frames
+/// are dropped.
+async fn unless_left<T>(step: impl std::future::Future<Output = Result<T>>, commands: &mut mpsc::UnboundedReceiver<Command>, muted: &mut bool, camera: &mut bool) -> Result<Option<T>> {
     tokio::pin!(step);
     loop {
         tokio::select! {
             r = &mut step => return r.map(Some),
             cmd = commands.recv() => match cmd {
                 Some(Command::Leave) | None => return Ok(None),
-                Some(Command::Pcm(_) | Command::Video(..)) => {}
-                Some(cmd) => pending.push(cmd),
+                Some(cmd) => keep_state(muted, camera, cmd),
             },
         }
     }
@@ -457,13 +468,12 @@ async fn unless_left<T>(step: impl std::future::Future<Output = Result<T>>, comm
 /// `connected_at` is set once media flows. Whatever ends it, its peer connection and signaling
 /// are closed before it returns.
 async fn connect(creds: &Credentials, shared: &mut Shared, connected_at: &mut Option<tokio::time::Instant>) -> Result<Outcome> {
-    let mut pending = Vec::new();
     let opening = async { tokio::time::timeout(CONNECT_TIMEOUT, Signaling::connect(creds)).await.map_err(|_| anyhow!("signaling connect timed out"))? };
-    let Some(mut sig) = unless_left(opening, &mut shared.commands, &mut pending).await? else {
+    let Some(mut sig) = unless_left(opening, &mut shared.commands, &mut shared.muted, &mut shared.send_video).await? else {
         return Ok(Outcome::Over);
     };
     let mut media: Option<Media> = None;
-    let result = on_signaling(creds, shared, connected_at, &mut sig, &mut media, pending).await;
+    let result = on_signaling(creds, shared, connected_at, &mut sig, &mut media).await;
     if let Some(media) = media {
         media.close().await;
     }
@@ -472,10 +482,10 @@ async fn connect(creds: &Credentials, shared: &mut Shared, connected_at: &mut Op
 }
 
 /// [`connect`] once the signaling is open; the peer connection it makes goes into `media_slot`.
-async fn on_signaling(creds: &Credentials, shared: &mut Shared, connected_at: &mut Option<tokio::time::Instant>, sig: &mut Signaling, media_slot: &mut Option<Media>, mut pending: Vec<Command>) -> Result<Outcome> {
+async fn on_signaling(creds: &Credentials, shared: &mut Shared, connected_at: &mut Option<tokio::time::Instant>, sig: &mut Signaling, media_slot: &mut Option<Media>) -> Result<Outcome> {
+    let (joined_muted, joined_camera) = joining_state(shared);
     let Shared { muted, send_video, receive_video, keyframe, commands, events, audio, video, drop_after } = shared;
     let receive_video = *receive_video;
-    let (joined_muted, joined_camera) = (*muted, *send_video);
     // Joining: a leave meanwhile aborts it at once (and says LEAVE if JOIN went out).
     let joining = async {
         sig.send(&signaling::join_frame(audio_session_id())).await?;
@@ -493,7 +503,7 @@ async fn on_signaling(creds: &Credentials, shared: &mut Shared, connected_at: &m
         media.accept(answer).await?;
         Ok((limit, earlier, suback))
     };
-    let Some((limit, earlier, suback)) = unless_left(joining, commands, &mut pending).await? else {
+    let Some((limit, earlier, suback)) = unless_left(joining, commands, muted, send_video).await? else {
         let _ = tokio::time::timeout(Duration::from_secs(2), sig.send(&signaling::frame(Type::Leave))).await;
         return Ok(Outcome::Over);
     };
@@ -527,27 +537,21 @@ async fn on_signaling(creds: &Credentials, shared: &mut Shared, connected_at: &m
     let mut disconnected_since: Option<tokio::time::Instant> = None;
     // Frames queued while connecting are stale: drop them, keep what they set.
     while let Ok(cmd) = commands.try_recv() {
-        pending.push(cmd);
-    }
-    for cmd in pending {
-        match cmd {
-            Command::Leave => {
-                sig.send(&signaling::frame(Type::Leave)).await?;
-                let _ = tokio::time::timeout(Duration::from_secs(3), expect(sig, Type::LeaveAck)).await;
-                return Ok(Outcome::Over);
-            }
-            Command::Mute(m) if m != *muted => {
-                *muted = m;
-                sig.send(&signaling::mute_frame(m)).await?;
-            }
-            Command::Camera(on) if on != *send_video => {
-                *send_video = on;
-                media.set_camera(on).await?;
-                camera_changed = true;
-                keyframe.store(on, Ordering::Relaxed);
-            }
-            _ => {}
+        if matches!(cmd, Command::Leave) {
+            sig.send(&signaling::frame(Type::Leave)).await?;
+            let _ = tokio::time::timeout(Duration::from_secs(3), expect(sig, Type::LeaveAck)).await;
+            return Ok(Outcome::Over);
         }
+        keep_state(muted, send_video, cmd);
+    }
+    // Changes made while joining: tell the server and the media what the latest state is.
+    if *muted != joined_muted {
+        sig.send(&signaling::mute_frame(*muted)).await?;
+    }
+    if *send_video != joined_camera {
+        media.set_camera(*send_video).await?;
+        camera_changed = true;
+        keyframe.store(*send_video, Ordering::Relaxed);
     }
     let outcome = loop {
         if (resubscribe || camera_changed) && !subscribing {
@@ -862,19 +866,52 @@ mod tests {
     #[tokio::test]
     async fn a_leave_aborts_joining_at_once() {
         let (tx, mut commands) = mpsc::unbounded_channel();
-        let mut pending = Vec::new();
+        let (mut muted, mut camera) = (true, false);
         // A step that never finishes (a hanging connect): the leave ends the wait.
         tx.send(Command::Mute(false)).unwrap();
         tx.send(Command::Pcm(vec![0; FRAME_SAMPLES])).unwrap();
         tx.send(Command::Leave).unwrap();
-        let r = unless_left(std::future::pending::<Result<u32>>(), &mut commands, &mut pending).await.unwrap();
+        let r = unless_left(std::future::pending::<Result<u32>>(), &mut commands, &mut muted, &mut camera).await.unwrap();
         assert_eq!(r, None);
-        // What the other commands set waits for the connection; frames are dropped.
-        assert!(matches!(pending.as_slice(), [Command::Mute(false)]));
+        // What the other commands set is kept at once; frames are dropped.
+        assert!(!muted && !camera);
         // A step that finishes gives its result; the session going away aborts too.
-        assert_eq!(unless_left(async { Ok(7u32) }, &mut commands, &mut pending).await.unwrap(), Some(7));
+        assert_eq!(unless_left(async { Ok(7u32) }, &mut commands, &mut muted, &mut camera).await.unwrap(), Some(7));
         drop(tx);
-        assert_eq!(unless_left(std::future::pending::<Result<u32>>(), &mut commands, &mut pending).await.unwrap(), None);
+        assert_eq!(unless_left(std::future::pending::<Result<u32>>(), &mut commands, &mut muted, &mut camera).await.unwrap(), None);
+    }
+
+    /// Microphone safety: muting (or switching the camera off) while a reconnect is joining is
+    /// never lost when that try fails — the next try joins muted.
+    #[tokio::test]
+    async fn mute_during_a_failed_try_holds_for_the_next() {
+        let (tx, commands) = mpsc::unbounded_channel();
+        let mut s = Shared {
+            muted: false,
+            send_video: true,
+            receive_video: true,
+            keyframe: Arc::new(AtomicBool::new(false)),
+            commands,
+            events: mpsc::unbounded_channel().0,
+            audio: mpsc::unbounded_channel().0,
+            video: mpsc::unbounded_channel().0,
+            drop_after: None,
+        };
+        tx.send(Command::Mute(true)).unwrap();
+        tx.send(Command::Camera(false)).unwrap();
+        // The try fails after the commands came (a JOIN_ACK that never arrives).
+        let failing = async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            Err::<(), _>(anyhow!("timed out waiting for JoinAck"))
+        };
+        assert!(unless_left(failing, &mut s.commands, &mut s.muted, &mut s.send_video).await.is_err());
+        assert!(s.muted, "the mute is kept");
+        assert!(!s.send_video, "the camera stays off");
+        // The next try's SUBSCRIBE says muted and offers no camera.
+        let (muted, camera) = joining_state(&s);
+        let sub = signaling::subscribe_frame(String::new(), "audio.host", "att", muted, camera, receive_ids(true, &[])).sub.unwrap();
+        assert_eq!(sub.audio_muted, Some(true));
+        assert_eq!(sub.send_streams.len(), 1, "audio only");
     }
 
     #[test]
