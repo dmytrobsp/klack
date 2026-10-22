@@ -93,6 +93,14 @@ mod tests {
     }
 
     #[test]
+    fn profile_reads_the_big_pictures() {
+        let p: super::UserProfile = serde_json::from_value(serde_json::json!({"image_192": "https://a/1_192.png", "image_512": "https://a/1_512.png", "image_original": "https://a/1_original.png"})).unwrap();
+        assert_eq!((p.image_192.as_deref(), p.image_512.as_deref(), p.image_original.as_deref()), (Some("https://a/1_192.png"), Some("https://a/1_512.png"), Some("https://a/1_original.png")));
+        let p: super::UserProfile = serde_json::from_value(serde_json::json!({"image_192": "https://a/1_192.png"})).unwrap();
+        assert_eq!((p.image_512, p.image_original), (None, None), "Slack's default pictures have no original");
+    }
+
+    #[test]
     fn slash_commands_from_slack() {
         use super::SlashCommand;
         let v = serde_json::json!({"ok": true, "commands": {
@@ -194,6 +202,9 @@ pub struct UserProfile {
     pub status_emoji: String,
     pub image_48: Option<String>,
     pub image_192: Option<String>,
+    /// The big pictures, for the profile card (a default picture has no original).
+    pub image_512: Option<String>,
+    pub image_original: Option<String>,
     pub email: Option<String>,
     pub title: String,
     pub pronouns: Option<String>,

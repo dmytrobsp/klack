@@ -235,7 +235,7 @@ After `Space` (written `␣`), on a **message**:
 | `␣y` `␣Y` | copy the text · copy a link to the message |
 | `␣o` | open what the message holds — a link (one into your Slack opens in klack, others in your browser), a picture, a video (Space pauses, ← / → jump 10 s), a snippet; with several, a list to pick from |
 | `␣s` | save files (a dialog: Space / `a` pick which, Tab changes the folder for this save, Enter saves) |
-| `␣p` `␣u` `␣m` | pin · profile card of the author (←/→: people the message mentions; Enter messages them, `␣hp` starts a huddle) · the message's menu, as a right-click opens it |
+| `␣p` `␣u` `␣m` | pin · profile card of the author — their big profile picture on top (as Slack shows it; smaller on a short terminal, none when too short; their initials while it loads and where the terminal draws no pictures), then name, status, local time and the rest (←/→: people the message mentions; Enter messages them, `␣hp` starts a huddle) · the message's menu, as a right-click opens it |
 | `␣U` | mark unread from this message (the conversation is unread again from here; klack leaves it so until you switch away and back) |
 | `␣hT` | start (or join) a huddle in the message's thread |
 

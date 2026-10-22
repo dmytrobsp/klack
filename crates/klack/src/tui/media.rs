@@ -74,6 +74,15 @@ pub fn avatar_file_sized(user: &slack_core::types::User, large: bool) -> Option<
     picture_file(id, source?)
 }
 
+/// The profile card's big picture of `user` at `size` cells: the 512-pixel one, else the original,
+/// else the 192-pixel one (cached under its own id per size, as the huddle view's).
+pub fn profile_picture_file(user: &slack_core::types::User, size: (u16, u16)) -> Option<File> {
+    let p = &user.profile;
+    let mut file = [&p.image_512, &p.image_original, &p.image_192].into_iter().flatten().find_map(|source| picture_file(format!("{AVATAR_PREFIX}{}@512", user.id), source))?;
+    file.id = format!("{}:{}x{}", file.id, size.0, size.1);
+    Some(file)
+}
+
 /// The picture beside a message: its author's, else (bots, apps, webhooks) the icon it carries in
 /// `bot_profile.icons` or `icons`.
 pub fn message_avatar(ws: &super::state::Workspace, m: &slack_core::types::Message, large: bool) -> Option<File> {
@@ -649,6 +658,24 @@ mod tests {
         // A new picture is a new URL, so a new cache entry (not the old picture).
         let changed = avatar_file(&user("https://avatars.slack-edge.com/2026-10-19/2_48.png")).unwrap();
         assert_ne!(changed.id, own.id);
+    }
+
+    #[test]
+    fn the_profile_card_takes_the_biggest_picture() {
+        let mut u = slack_core::types::User { id: "U1".into(), ..Default::default() };
+        u.profile.image_48 = Some("https://avatars.slack-edge.com/1_48.png".into());
+        assert!(profile_picture_file(&u, (24, 12)).is_none(), "no big picture: the initials");
+        u.profile.image_192 = Some("https://avatars.slack-edge.com/1_192.png".into());
+        assert_eq!(profile_picture_file(&u, (24, 12)).unwrap().thumb_360.as_deref(), Some("https://avatars.slack-edge.com/1_192.png"));
+        u.profile.image_original = Some("https://avatars.slack-edge.com/1_original.jpg".into());
+        assert_eq!(profile_picture_file(&u, (24, 12)).unwrap().thumb_360.as_deref(), Some("https://avatars.slack-edge.com/1_original.jpg"));
+        u.profile.image_512 = Some("https://avatars.slack-edge.com/1_512.png".into());
+        let big = profile_picture_file(&u, (24, 12)).unwrap();
+        assert_eq!((big.id.as_str(), big.thumb_360.as_deref()), ("avatar:U1@512:1_512.png:24x12", Some("https://avatars.slack-edge.com/1_512.png")));
+        assert_eq!(profile_picture_file(&u, (16, 8)).unwrap().id, "avatar:U1@512:1_512.png:16x8", "each size its own entry");
+        assert_ne!(big.id, avatar_file_sized(&u, true).unwrap().id, "not the huddle's or the messages' picture");
+        u.profile.image_512 = Some("https://evil.example/1_512.png".into());
+        assert_eq!(profile_picture_file(&u, (24, 12)).unwrap().thumb_360.as_deref(), Some("https://avatars.slack-edge.com/1_original.jpg"), "only from Slack: the next one");
     }
 
     #[test]

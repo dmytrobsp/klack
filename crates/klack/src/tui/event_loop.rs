@@ -3800,7 +3800,8 @@ impl App {
     /// Start loading thumbnails that were on screen but not cached yet.
     fn request_thumbs(&mut self) {
         let view = self.huddle_view.as_mut().map(|v| std::mem::take(&mut v.wanted)).unwrap_or_default();
-        let wanted: Vec<_> = self.messages.wanted.drain(..).chain(self.thread_pane.wanted.drain(..)).chain(self.threads.wanted.drain(..)).chain(self.activity.pictures.drain(..)).chain(view).chain(self.call_bar_wanted.take()).chain(self.rail_wanted.drain(..)).collect();
+        let card = self.profile.as_mut().map(|c| std::mem::take(&mut c.wanted)).unwrap_or_default();
+        let wanted: Vec<_> = self.messages.wanted.drain(..).chain(self.thread_pane.wanted.drain(..)).chain(self.threads.wanted.drain(..)).chain(self.activity.pictures.drain(..)).chain(view).chain(card).chain(self.call_bar_wanted.take()).chain(self.rail_wanted.drain(..)).collect();
         for (file, size) in wanted {
             if self.media.thumbs.contains_key(&file.id) {
                 continue;
@@ -6539,7 +6540,7 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         d.draw(f, body, &app.ws);
     }
     if let Some(card) = app.profile.as_mut() {
-        card.draw(f, body, &app.ws);
+        card.draw(f, body, &app.ws, &app.media);
     }
     if let Some(m) = app.mover.as_mut() {
         m.draw(f, body, &app.ws);
@@ -7893,6 +7894,78 @@ mod tests {
     fn click(app: &mut super::App, column: u16, row: u16) {
         use crossterm::event::{Event, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
         assert!(super::handle_event(app, Event::Mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column, row, modifiers: KeyModifiers::NONE })));
+    }
+
+    #[tokio::test]
+    async fn the_cards_picture_goes_with_the_card() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let (mut app, _net) = test_app();
+        // A kitty terminal drawing profile pictures; B (U2) and C (U3) with big pictures.
+        let mut picker = ratatui_image::picker::Picker::halfblocks();
+        picker.set_protocol_type(ratatui_image::picker::ProtocolType::Kitty);
+        app.media = super::super::media::Media::with(picker);
+        app.media.avatars = true;
+        for id in ["U2", "U3"] {
+            let mut u = slack_core::types::User { id: id.into(), name: id.to_lowercase(), ..Default::default() };
+            u.profile.image_512 = Some(format!("https://avatars.slack-edge.com/{id}_512.png"));
+            app.ws.users.insert(id.into(), u);
+        }
+        let load = |app: &mut super::App| {
+            let font = app.media.picker.font_size();
+            for (file, size) in std::mem::take(&mut app.profile.as_mut().unwrap().wanted) {
+                let img = image::DynamicImage::new_rgb8(size.0 as u32 * font.width as u32, size.1 as u32 * font.height as u32);
+                let proto = ratatui_image::sliced::SlicedProtocol::new(&app.media.picker, img, Some(ratatui::layout::Size::new(size.0, size.1))).unwrap();
+                app.media.thumbs.insert(file.id, super::super::media::Thumb::Ready(proto));
+            }
+        };
+        // Where a picture shows (kitty's placeholder cells), and in which colour (it names the picture).
+        let pictures = |t: &ratatui::Terminal<ratatui::backend::TestBackend>| {
+            let buf = t.backend().buffer();
+            let cells: Vec<_> = (0..buf.area.height).flat_map(|y| (0..buf.area.width).map(move |x| (x, y))).filter(|&(x, y)| buf[(x, y)].symbol().contains('\u{10EEEE}')).collect();
+            let colours: std::collections::HashSet<_> = cells.iter().map(|&c| buf[c].fg).collect();
+            (cells.len(), colours)
+        };
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40)).unwrap();
+        app.profile = super::super::profile::ProfileCard::new(vec!["U2".into(), "U3".into()]);
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        load(&mut app);
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        let (cells, b_colour) = pictures(&terminal);
+        assert_eq!((cells, b_colour.len()), (24 * 12, 1), "B's picture is drawn");
+        // The next person: B's picture is gone, C's initials until C's comes.
+        press(&mut app, KeyCode::Right, KeyModifiers::NONE);
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        assert_eq!(pictures(&terminal).0, 0, "stepping on leaves nothing of B's picture");
+        assert!(!app.profile.as_ref().unwrap().wanted.is_empty(), "C's is asked for");
+        load(&mut app);
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        let (cells, c_colour) = pictures(&terminal);
+        assert!(cells == 24 * 12 && c_colour.len() == 1 && c_colour != b_colour, "C's own picture");
+        // Back to B: from the cache, not asked for again.
+        press(&mut app, KeyCode::Left, KeyModifiers::NONE);
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        assert_eq!(pictures(&terminal), (24 * 12, b_colour.clone()));
+        assert!(app.profile.as_ref().unwrap().wanted.is_empty());
+        // A dialog over the card hides it.
+        app.help = Some(super::super::help::Help::default());
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        assert_eq!(pictures(&terminal).0, 0, "nothing shows through the dialog");
+        app.help = None;
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        assert_eq!(pictures(&terminal).0, 24 * 12, "and back once it closes");
+        // A resize to fewer rows: a smaller picture, none of the big one's cells left.
+        terminal.backend_mut().resize(120, 26);
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        assert_eq!(pictures(&terminal).0, 0, "the smaller one loads afresh; the big one is gone");
+        assert_eq!(app.profile.as_ref().unwrap().wanted.iter().map(|(_, size)| *size).collect::<Vec<_>>(), [(16, 8)]);
+        load(&mut app);
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        assert_eq!(pictures(&terminal).0, 16 * 8);
+        // Closed: no picture anywhere.
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(app.profile.is_none());
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        assert_eq!(pictures(&terminal).0, 0, "closing the card takes its picture with it");
     }
 
     #[tokio::test]
