@@ -453,7 +453,6 @@ fn update_everywhere(ws: &mut Workspace, channel: &str, m: Message) {
     }
 }
 
-/// `user` added (or took back) reaction `name` on `m`.
 /// The message (channel, ts) a live edit, deletion or reaction is about; None for any other event.
 pub fn changed_message(ev: &Value) -> Option<(&str, &str)> {
     let (channel, ts) = match ev["type"].as_str() {
@@ -476,6 +475,7 @@ pub fn apply_change(m: &mut Message, ev: &Value) {
     }
 }
 
+/// `user` added (or took back) reaction `name` on `m`.
 pub fn apply_reaction(m: &mut Message, name: &str, user: &str, added: bool) {
     match m.reactions.iter_mut().position(|r| r.name == name) {
         Some(i) => {

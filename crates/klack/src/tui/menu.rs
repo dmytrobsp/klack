@@ -9,7 +9,7 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 
 use super::keymap::{ACTIONS, Action, Context, Key, Keymap, Mode, Resolved};
 
-/// Where a message is shown: what its actions find it by, and the keys they have there.
+/// Where a message is shown: what its actions find it by, and where its menu opens.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shown {
     /// The conversation's messages pane.
@@ -20,26 +20,6 @@ pub enum Shown {
     Feed,
     /// The Activity view.
     Activity,
-}
-
-impl Shown {
-    /// The keys' context its message actions are bound in.
-    pub fn context(self) -> Context {
-        match self {
-            Shown::Messages | Shown::Thread => Context::Messages,
-            Shown::Feed => Context::Threads,
-            Shown::Activity => Context::Activity,
-        }
-    }
-
-    /// The action bound there for messages action `a` (Enter is a view's own: opening what a message holds is
-    /// `OpenLink` in it).
-    pub fn bound(self, a: Action) -> Action {
-        match (self, a) {
-            (Shown::Feed | Shown::Activity, Action::Open) => Action::OpenLink,
-            _ => a,
-        }
-    }
 }
 
 /// A message acted on: its conversation, its ts, and where it is shown.
@@ -105,11 +85,13 @@ pub struct Offers {
     pub save: bool,
     /// It has text to copy.
     pub text: bool,
+    /// It is a reply in a thread.
+    pub reply: bool,
 }
 
 impl Offers {
     pub fn of(m: &slack_core::types::Message, self_id: &str) -> Offers {
-        Offers { own: m.user.as_deref() == Some(self_id), open: !super::open::things(m, None).is_empty(), save: !m.files.is_empty(), text: !m.text.trim().is_empty() }
+        Offers { own: m.user.as_deref() == Some(self_id), open: !super::open::things(m, None).is_empty(), save: !m.files.is_empty(), text: !m.text.trim().is_empty(), reply: m.is_reply() }
     }
 
     /// Whether a messages action makes sense on the message (edit / delete yours, open, save
@@ -154,7 +136,9 @@ impl Menu {
                 .filter(|a| offers.allows(**a))
                 .filter(|a| !(t.shown == Shown::Thread && matches!(**a, Action::OpenThread | Action::MarkUnread)))
                 .filter(|a| !(matches!(t.shown, Shown::Feed | Shown::Activity) && **a == Action::OpenThread))
-                .map(|a| (Item::Do(*a), describe(t.shown.context(), t.shown.bound(*a)), key(t.shown.context(), t.shown.bound(*a))))
+                // (A reply there is in a thread, which is not marked unread.)
+                .filter(|a| !(matches!(t.shown, Shown::Feed | Shown::Activity) && offers.reply && **a == Action::MarkUnread))
+                .map(|a| (Item::Do(*a), describe(Context::Messages, *a), key(Context::Messages, *a)))
                 .collect(),
             Target::Opener(_) => Vec::new(),
             Target::Conversation => {
@@ -175,7 +159,7 @@ impl Menu {
         };
         // Each item's key as its pane binds it, run here by its last key.
         let pane = |item: &Item| match (&target, item) {
-            (Target::Message(t), Item::Do(a)) => Some((t.shown.context(), t.shown.bound(*a))),
+            (Target::Message(_), Item::Do(a)) => Some((Context::Messages, *a)),
             (Target::Conversation, Item::Do(a)) => Some((Context::Sidebar, *a)),
             (Target::Conversation, Item::Details) => Some((Context::Sidebar, Action::Details)),
             (Target::Conversation, Item::Leave) => Some((Context::Sidebar, Action::LeaveConversation)),
@@ -279,16 +263,16 @@ mod tests {
     #[test]
     fn items_fit_the_target() {
         let keys = Keymap::load("").0;
-        let all = Offers { own: true, open: true, save: true, text: true };
+        let all = Offers { own: true, open: true, save: true, text: true, reply: false };
         let theirs = Menu::new(Target::Message(at(Shown::Messages)), (0, 0), &keys, Offers { own: false, ..all }, true, false, false);
         assert!(!theirs.items.iter().any(|i| matches!(i.0, Item::Do(Action::Edit | Action::Delete))), "not on others' messages");
         assert_eq!(theirs.items[0], (Item::Do(Action::OpenThread), "open the message's thread".into(), "Enter".into()));
         let mine_in_thread = Menu::new(Target::Message(at(Shown::Thread)), (0, 0), &keys, all, true, false, false);
         assert!(mine_in_thread.items.iter().any(|i| i.0 == Item::Do(Action::Delete)));
         assert!(!mine_in_thread.items.iter().any(|i| i.0 == Item::Do(Action::OpenThread)));
-        let plain = Menu::new(Target::Message(at(Shown::Messages)), (0, 0), &keys, Offers { own: false, open: false, save: false, text: true }, true, false, false);
+        let plain = Menu::new(Target::Message(at(Shown::Messages)), (0, 0), &keys, Offers { own: false, open: false, save: false, text: true, reply: false }, true, false, false);
         assert!(!plain.items.iter().any(|i| matches!(i.0, Item::Do(Action::Open | Action::Save))), "nothing to open or save: not offered");
-        let picture_only = Menu::new(Target::Message(at(Shown::Messages)), (0, 0), &keys, Offers { own: false, open: true, save: true, text: false }, true, false, false);
+        let picture_only = Menu::new(Target::Message(at(Shown::Messages)), (0, 0), &keys, Offers { own: false, open: true, save: true, text: false, reply: false }, true, false, false);
         assert!(!picture_only.items.iter().any(|i| i.0 == Item::Do(Action::Copy)), "no text to copy");
         assert!(picture_only.items.iter().any(|i| i.0 == Item::Do(Action::Open)) && picture_only.items.iter().any(|i| i.0 == Item::Do(Action::Save)));
         let dm = Menu::new(Target::Conversation, (0, 0), &keys, all, false, true, false);
@@ -296,23 +280,29 @@ mod tests {
     }
 
     #[test]
-    fn a_views_message_has_the_views_keys() {
+    fn a_views_message_has_the_messages_keys() {
         let keys = Keymap::load("").0;
-        let all = Offers { own: true, open: true, save: true, text: true };
+        let all = Offers { own: true, open: true, save: true, text: true, reply: false };
         for shown in [Shown::Feed, Shown::Activity] {
             let m = Menu::new(Target::Message(at(shown)), (0, 0), &keys, all, false, false, false);
             assert!(!m.items.iter().any(|i| i.0 == Item::Do(Action::OpenThread)), "Enter is the view's: {shown:?}");
             let open = m.items.iter().find(|i| i.0 == Item::Do(Action::Open)).unwrap();
-            assert_eq!((open.1.as_str(), open.2.as_str()), ("open a link, picture, video or snippet in the message (a list when there are several)", "␣o"), "{shown:?}");
+            assert_eq!((open.1.as_str(), open.2.as_str()), ("open a link, picture, video or snippet (a list when there are several)", "␣o"), "the messages' own: {shown:?}");
             let key = |s: &str| super::super::keymap::Key::parse(s).unwrap();
             assert_eq!((m.item_for_key(key("r")), m.item_for_key(key("o")), m.item_for_key(key("U"))), (Some(Item::Do(Action::React)), Some(Item::Do(Action::Open)), Some(Item::Do(Action::MarkUnread))));
+            // A reply there is not marked unread.
+            let reply = Menu::new(Target::Message(at(shown)), (0, 0), &keys, Offers { reply: true, ..all }, false, false, false);
+            assert!(!reply.items.iter().any(|i| i.0 == Item::Do(Action::MarkUnread)), "{shown:?}");
         }
+        // In a conversation's messages a reply sent to the channel too is.
+        let broadcast = Menu::new(Target::Message(at(Shown::Messages)), (0, 0), &keys, Offers { reply: true, ..all }, false, false, false);
+        assert!(broadcast.items.iter().any(|i| i.0 == Item::Do(Action::MarkUnread)));
     }
 
     #[test]
     fn item_keys_run_items() {
         let keys = Keymap::load("").0;
-        let all = Offers { own: true, open: true, save: true, text: true };
+        let all = Offers { own: true, open: true, save: true, text: true, reply: false };
         let m = Menu::new(Target::Message(at(Shown::Messages)), (0, 0), &keys, all, false, false, false);
         let react = m.items.iter().find(|i| i.0 == Item::Do(Action::React)).unwrap();
         assert_eq!(react.2, "␣r", "the key column shows the sequence");
@@ -333,7 +323,7 @@ mod tests {
     #[test]
     fn stays_on_screen_and_hits_items() {
         let keys = Keymap::load("").0;
-        let mut m = Menu::new(Target::Conversation, (78, 22), &keys, Offers { own: false, open: false, save: false, text: false }, true, false, false);
+        let mut m = Menu::new(Target::Conversation, (78, 22), &keys, Offers { own: false, open: false, save: false, text: false, reply: false }, true, false, false);
         m.area = Rect { x: 50, y: 10, width: 30, height: 7 };
         assert_eq!(m.item_at(55, 11), Some(0));
         assert_eq!(m.item_at(55, 15), Some(4));

@@ -135,6 +135,8 @@ pub struct Threads {
     links: Vec<(Rect, String, Option<AppLink>, bool)>,
     /// Pictures on screen but not loaded at the last draw.
     pub wanted: Vec<(File, (u16, u16))>,
+    /// Replies deleted here (`delete_here`), to put back if Slack refuses.
+    deleted: std::collections::HashSet<(String, String)>,
 }
 
 impl Threads {
@@ -336,7 +338,7 @@ impl Threads {
     }
 
     /// A change klack made to message `m` of `channel` failed: it is put back as it was (a reply deleted here goes
-    /// into its block again).
+    /// into its block again; one the feed never showed stays out).
     pub fn put_back(&mut self, channel: &str, m: &Message) {
         let mut copies = self.copies_mut(channel, &m.ts);
         if !copies.is_empty() {
@@ -346,7 +348,21 @@ impl Threads {
             return;
         }
         drop(copies);
-        self.add_reply(channel, m, false);
+        if self.deleted.remove(&(channel.to_string(), m.ts.clone())) {
+            self.add_reply(channel, m, false);
+        }
+    }
+
+    /// Message `ts` of `channel` deleted here: out of the feed as Slack's own deletion would take it (that comes later
+    /// and changes nothing then). True when the feed showed it.
+    pub fn delete_here(&mut self, channel: &str, ts: &str) -> bool {
+        let reply = self.find(channel, ts).is_some_and(Message::is_reply);
+        let gone = serde_json::json!({"type": "message", "subtype": "message_deleted", "channel": channel, "deleted_ts": ts});
+        let shown = self.apply_live(&gone);
+        if shown && reply {
+            self.deleted.insert((channel.to_string(), ts.to_string()));
+        }
+        shown
     }
 
     /// Where a menu for message (`channel`, `ts`) opens: its first row on screen, past the gutter (the feed's middle
@@ -812,6 +828,30 @@ mod tests {
         assert!(!t.apply_live(&serde_json::json!({"type": "message", "subtype": "message_changed", "channel": "C1", "message": {"type": "message", "text": "x", "ts": "7.0"}})));
         text(&mut t);
         assert_eq!(t.builds, builds);
+    }
+
+    #[test]
+    fn only_a_reply_deleted_here_is_put_back() {
+        let mut t = Threads::default();
+        t.add_page(three(), false);
+        // An old reply the feed never showed (an edit of it failed elsewhere): not added.
+        let old = Message { ts: "2.000150".into(), ..reply(2, 1) };
+        t.put_back("C1", &old);
+        assert_eq!(t.entries.as_ref().unwrap()[1].latest.len(), 1);
+        assert!(t.find("C1", "2.000150").is_none());
+        // One deleted here whose deletion failed: back in its block.
+        let gone = reply(2, 2);
+        assert!(t.delete_here("C1", &gone.ts));
+        assert!(t.find("C1", &gone.ts).is_none());
+        t.put_back("C1", &gone);
+        assert!(t.find("C1", &gone.ts).is_some());
+        assert_eq!(t.entries.as_ref().unwrap()[1].root.reply_count, 1, "counted again");
+        // An edit that failed: the copy as it was.
+        let mut edited = gone.clone();
+        edited.text = "reply 2, edited".into();
+        t.copies_mut("C1", &gone.ts)[0].text = edited.text.clone();
+        t.put_back("C1", &gone);
+        assert_eq!(t.find("C1", &gone.ts).unwrap().text, "reply 2");
     }
 
     #[test]

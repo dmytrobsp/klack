@@ -301,8 +301,10 @@ const LIST_EDITED: &str = "A list item you follow was edited (open it in Slack)"
 const LIST_MENTION: &str = "A mention in a list (open it in Slack)";
 /// Said when Enter is pressed on an item klack has nowhere to show (a list item, a Slack Connect invitation).
 pub const NOT_HERE: &str = "klack can't show this one: open it in Slack";
-/// What a message's key says on an item that is no message (or whose message is not there).
+/// What a message's key says on an item that is no message (or whose message is gone).
 pub const NO_MESSAGE: &str = "no message here to act on";
+/// ... and on one whose message is still being fetched.
+pub const MESSAGE_LOADING: &str = "the message is still loading";
 const UNREAD_ONLY: &str = "unread only";
 const EMPTY: &str = "Nothing here yet: mentions, reactions to your messages, thread replies and direct messages show up here.";
 const NONE_UNREAD: &str = "Nothing unread here.";
@@ -312,7 +314,7 @@ const FAILED: &str = "The activity could not be loaded";
 
 /// The view's words, for the locale template.
 pub const WORDS: &[&str] = &[
-    TODAY, YESTERDAY, MISSING, LOADING, LOADING_MORE, MENTION, GROUP_MENTION, CHANNEL_MENTION, EVERYONE_MENTION, KEYWORD, IN_THREAD, THREAD, NEW_REPLY, NEW_REPLIES, DIRECT, GROUP_DM, REACTED, YOUR_MESSAGE, OTHER, CHANNEL_NEW, APP, NEW, ADDED, UNJOINED, WELCOME, CONNECT_CHANNEL, CONNECT_DM, SHARED_WORKSPACE, LIST_ASSIGNED, LIST_EDITED, LIST_MENTION, NOT_HERE, NO_MESSAGE, UNREAD_ONLY, EMPTY, NONE_UNREAD, MORE_HELD, FAILED, "All", "DMs", "Mentions", "Threads",
+    TODAY, YESTERDAY, MISSING, LOADING, LOADING_MORE, MENTION, GROUP_MENTION, CHANNEL_MENTION, EVERYONE_MENTION, KEYWORD, IN_THREAD, THREAD, NEW_REPLY, NEW_REPLIES, DIRECT, GROUP_DM, REACTED, YOUR_MESSAGE, OTHER, CHANNEL_NEW, APP, NEW, ADDED, UNJOINED, WELCOME, CONNECT_CHANNEL, CONNECT_DM, SHARED_WORKSPACE, LIST_ASSIGNED, LIST_EDITED, LIST_MENTION, NOT_HERE, NO_MESSAGE, MESSAGE_LOADING, UNREAD_ONLY, EMPTY, NONE_UNREAD, MORE_HELD, FAILED, "All", "DMs", "Mentions", "Threads",
 ];
 
 /// A tab's list while the view is open, when another tab is shown.
@@ -414,6 +416,11 @@ impl Activity {
         let it = self.selected_item().filter(|_| self.visible().contains(&self.selected))?;
         let key = it.message_key();
         self.messages.get(&key)?.as_ref().filter(|m| !missing(m)).map(|_| key)
+    }
+
+    /// The selected item is a message not fetched yet.
+    pub fn selected_loading(&self) -> bool {
+        self.selected_item().filter(|_| self.visible().contains(&self.selected)).is_some_and(|it| !it.message_key().1.is_empty() && !self.messages.contains_key(&it.message_key()))
     }
 
     /// Message `ts` of `channel`, if an item shows it.
