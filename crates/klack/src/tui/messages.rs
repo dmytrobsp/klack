@@ -167,6 +167,9 @@ pub struct MessagePane {
     top: bool,
     /// Selected message ts (message focus).
     pub selected: Option<String>,
+    /// The selection was put there (a step back or forward, a link) and has not been on screen since, nor left: it is
+    /// where you are even so.
+    put: bool,
     /// The selection (or message being edited) last brought into view: it is brought into view
     /// once, when it changes, so the wheel can scroll away from it afterwards.
     shown: Option<String>,
@@ -220,7 +223,7 @@ impl MessagePane {
 
     /// Back to the newest message, following new ones.
     pub fn to_bottom(&mut self) {
-        (self.anchor, self.scroll, self.down) = (None, 0, 0);
+        (self.anchor, self.scroll, self.down, self.put) = (None, 0, 0, false);
     }
 
     /// True once the top of the loaded history is on screen.
@@ -232,17 +235,18 @@ impl MessagePane {
     /// (`newest`), or when the pane follows the newest and it was not on screen at the last draw.
     pub fn kept_selection(&self, newest: Option<&str>) -> Option<String> {
         let selected = self.selected.as_ref()?;
-        let left = self.anchor.is_none() && !self.rows.iter().flatten().any(|r| r == selected);
+        let left = !self.put && self.anchor.is_none() && !self.rows.iter().flatten().any(|r| r == selected);
         (newest != Some(selected.as_str()) && !left).then(|| selected.clone())
     }
 
     /// Select message `ts`, brought into view at the next draw (even when it was the one last brought into view).
     pub fn select(&mut self, ts: Option<String>) {
-        (self.selected, self.shown) = (ts, None);
+        (self.selected, self.shown, self.put) = (ts, None, true);
     }
 
     /// Move the selection by `delta` messages among the shown ones (`order` = ts list).
     pub fn move_selection(&mut self, order: &[String], delta: isize) {
+        self.put = false;
         if order.is_empty() {
             self.selected = None;
             return;
@@ -494,6 +498,9 @@ impl MessagePane {
             rows = prow;
         }
         self.rows = rows;
+        if self.selected.as_ref().is_some_and(|s| self.rows.iter().flatten().any(|r| r == s)) {
+            self.put = false;
+        }
         // Where we are, counted in messages (only part of a long history is built).
         let mut on_screen: Vec<&str> = self.rows.iter().flatten().map(String::as_str).collect();
         on_screen.dedup();

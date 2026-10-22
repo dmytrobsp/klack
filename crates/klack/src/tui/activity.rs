@@ -665,6 +665,10 @@ impl Activity {
     /// Tab `tab`'s list (`more`: its next page) could not be loaded: said there, in place of the list when it has none
     /// to show; a page's failure at the list's end, and it is not asked for again by itself.
     pub fn fail(&mut self, tab: Tab, more: bool, error: String) {
+        // (The item a step looks for is given up.)
+        if tab == self.tab {
+            self.want = None;
+        }
         if tab == self.tab && self.items.is_none() {
             self.failed = Some(error);
         } else if tab == self.tab && more {

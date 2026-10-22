@@ -2138,6 +2138,7 @@ impl App {
         if v != self.view {
             self.note_place();
             self.end_view_edit(true);
+            (self.activity.want, self.threads.want) = (None, None);
         }
         let old = self.composer_key();
         if v != View::Threads {
@@ -5080,6 +5081,10 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
 }
 
 fn handle_event(app: &mut App, ev: Event) -> bool {
+    // Anything you do gives up the item a step back or forward still looks for in a view.
+    if !passive(&ev) {
+        (app.activity.want, app.threads.want) = (None, None);
+    }
     match &ev {
         Event::Mouse(m) => app.pointer = Some((m.column, m.row)),
         Event::FocusLost => app.pointer = None,
@@ -6711,14 +6716,14 @@ fn handle_net(app: &mut App, msg: Net) {
                     t.entries = None;
                 }
                 t.add_page(page, has_more);
-                // (A step back or forward to a message further down the feed.)
-                if t.want_more() {
+                // (A step back or forward to a message further down the feed, while it is shown.)
+                if app.view == View::Threads && app.threads.want_more() {
                     app.load_threads(true);
                 }
             }
             Err(e) => {
                 app.status = format!("threads failed: {e}");
-                app.threads.loading = false;
+                (app.threads.loading, app.threads.want) = (false, None);
                 // A next page that failed leaves what is listed.
                 if !more {
                     app.threads.failed = Some(e);
@@ -10623,5 +10628,208 @@ mod tests {
         super::handle_net(&mut app, Net::ActivityFeed { tab: Tab::All, more: true, result: Ok(second) });
         settle(&mut app, false);
         assert_eq!(app.activity.selected_item().map(|it| it.key.as_str()), Some("b2"));
+    }
+
+    /// Activity's All tab, its first page in (`a1`, `a2`, more at `p2`) and its second one (`b1`, `b2`) asked for: a step
+    /// back lands on `b2`, the item opened from it. The two pages.
+    fn activity_finding_b2(app: &mut super::App) -> (serde_json::Value, serde_json::Value) {
+        use super::super::activity::Tab;
+        use super::Net;
+        let dm = |key: &str, feed_ts: &str| serde_json::json!({"feed_ts": feed_ts, "is_unread": true, "key": key, "item": {"type": "dm", "bundle_info": {"payload": {"dm_entry": {"latest_message": {"channel": "DU2", "ts": "1.0"}}}}}});
+        let first = serde_json::json!({"items": [dm("a1", "9.0"), dm("a2", "8.0")], "response_metadata": {"next_cursor": "p2"}});
+        let second = serde_json::json!({"items": [dm("b1", "7.0"), dm("b2", "6.0")]});
+        go(app, KeyCode::Char('a'), KeyModifiers::CONTROL);
+        super::handle_net(app, Net::ActivityFeed { tab: Tab::All, more: false, result: Ok(first.clone()) });
+        app.activity.loading = true;
+        super::handle_net(app, Net::ActivityFeed { tab: Tab::All, more: true, result: Ok(second.clone()) });
+        app.activity.selected = 3;
+        settle(app, false);
+        go(app, KeyCode::Enter, KeyModifiers::NONE);
+        go(app, KeyCode::Char('o'), KeyModifiers::CONTROL);
+        super::handle_net(app, Net::ActivityFeed { tab: Tab::All, more: false, result: Ok(first.clone()) });
+        settle(app, false);
+        app.request_activity_page();
+        assert!(app.activity.loading && app.activity.want.is_some());
+        drawn(app);
+        (first, second)
+    }
+
+    #[tokio::test]
+    async fn what_you_do_in_activity_drops_the_item_a_step_looks_for() {
+        use super::super::activity::Tab;
+        use super::Net;
+        use crossterm::event::{Event, MouseEvent, MouseEventKind};
+        let wheel = |app: &mut super::App| {
+            let list = app.activity.list;
+            super::handle_event(app, Event::Mouse(MouseEvent { kind: MouseEventKind::ScrollDown, column: list.x + 2, row: list.y + 1, modifiers: KeyModifiers::NONE }));
+            settle(app, true);
+        };
+        let actions: [(&str, &dyn Fn(&mut super::App)); 6] = [
+            ("a move", &|app| go(app, KeyCode::Char('j'), KeyModifiers::NONE)),
+            ("the wheel", &wheel),
+            ("a tab", &|app| go(app, KeyCode::Char('2'), KeyModifiers::NONE)),
+            ("the unread filter", &|app| go(app, KeyCode::Char('u'), KeyModifiers::NONE)),
+            ("loading it again", &|app| go(app, KeyCode::Char('r'), KeyModifiers::NONE)),
+            ("opening it again", &|app| go(app, KeyCode::Char('a'), KeyModifiers::CONTROL)),
+        ];
+        for (what, act) in actions {
+            let (mut app, _net) = with_channels(&["C1"]);
+            let (_, second) = activity_finding_b2(&mut app);
+            act(&mut app);
+            assert!(app.activity.want.is_none(), "{what}");
+            app.activity.loading = true;
+            super::handle_net(&mut app, Net::ActivityFeed { tab: Tab::All, more: true, result: Ok(second) });
+            settle(&mut app, false);
+            assert_ne!(app.activity.selected_item().map(|it| it.key.as_str()), Some("b2"), "{what}: the page that comes later leaves the selection");
+        }
+        // A page that fails: given up.
+        let (mut app, _net) = with_channels(&["C1"]);
+        activity_finding_b2(&mut app);
+        super::handle_net(&mut app, Net::ActivityFeed { tab: Tab::All, more: true, result: Err("x".into()) });
+        assert!(app.activity.want.is_none(), "a page error");
+    }
+
+    /// The Threads feed, its first page in and its second asked for: a step back lands on reply `42` on that page. The
+    /// two pages.
+    fn feed_finding_42(app: &mut super::App) -> (serde_json::Value, serde_json::Value) {
+        use super::Net;
+        let one = feed_page(&[("C1", "50.000000", &["51.000000"]), ("C1", "49.000000", &["49.500000"])], true);
+        let two = feed_page(&[("C3", "40.000000", &["41.000000", "42.000000"])], false);
+        super::run_global(app, super::Action::Threads);
+        settle(app, true);
+        super::handle_net(app, Net::ThreadView { result: Ok(one.clone()), more: false });
+        super::handle_net(app, Net::ThreadView { result: Ok(two.clone()), more: true });
+        drawn(app);
+        app.threads.selected = Some(("C3".into(), "42.000000".into()));
+        settle(app, false);
+        app.jump_to("C1");
+        settle(app, true);
+        go(app, KeyCode::Char('o'), KeyModifiers::CONTROL);
+        super::handle_net(app, Net::ThreadView { result: Ok(one.clone()), more: false });
+        settle(app, false);
+        assert!(app.threads.loading && app.threads.want.is_some());
+        drawn(app);
+        (one, two)
+    }
+
+    #[tokio::test]
+    async fn what_you_do_in_the_feed_drops_the_message_a_step_looks_for() {
+        use super::Net;
+        use crossterm::event::{Event, MouseButton, MouseEvent, MouseEventKind};
+        let mouse = |app: &mut super::App, kind| {
+            let list = app.threads.list;
+            let y = (list.y..list.bottom()).find(|&y| app.threads.message_at(list.x + 4, y).is_some()).expect("a message's row");
+            super::handle_event(app, Event::Mouse(MouseEvent { kind, column: list.x + 4, row: y, modifiers: KeyModifiers::NONE }));
+            settle(app, true);
+        };
+        let actions: [(&str, &dyn Fn(&mut super::App)); 3] = [
+            ("a move", &|app| go(app, KeyCode::Char('j'), KeyModifiers::NONE)),
+            ("the wheel", &|app| mouse(app, MouseEventKind::ScrollDown)),
+            ("a click", &|app| mouse(app, MouseEventKind::Down(MouseButton::Left))),
+        ];
+        for (what, act) in actions {
+            let (mut app, _net) = with_channels(&["C1", "C3"]);
+            let (_, two) = feed_finding_42(&mut app);
+            act(&mut app);
+            assert!(app.threads.want.is_none(), "{what}");
+            super::handle_net(&mut app, Net::ThreadView { result: Ok(two), more: true });
+            drawn(&mut app);
+            assert_ne!(app.threads.selected, Some(("C3".into(), "42.000000".into())), "{what}: the page that comes later leaves the selection");
+        }
+        // A page that fails: given up, a page loaded later (the end scrolled to) leaves the selection.
+        let (mut app, _net) = with_channels(&["C1", "C3"]);
+        let (_, two) = feed_finding_42(&mut app);
+        super::handle_net(&mut app, Net::ThreadView { result: Err("x".into()), more: true });
+        assert!(app.threads.want.is_none(), "a page error");
+        super::handle_net(&mut app, Net::ThreadView { result: Ok(two), more: true });
+        drawn(&mut app);
+        assert_ne!(app.threads.selected, Some(("C3".into(), "42.000000".into())));
+        // The view left before its first page came: no pages asked for it.
+        let (mut app, _net) = with_channels(&["C1", "C3"]);
+        let (one, _) = feed_finding_42(&mut app);
+        go(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
+        go(&mut app, KeyCode::Right, KeyModifiers::ALT);
+        assert_eq!(app.view, super::View::Threads);
+        app.jump_to("C3");
+        settle(&mut app, true);
+        super::handle_net(&mut app, Net::ThreadView { result: Ok(one), more: false });
+        assert!(!app.threads.loading && app.threads.want.is_none(), "not paged for a view not shown");
+    }
+
+    #[tokio::test]
+    async fn the_search_for_a_views_item_ends_after_five_pages_or_at_the_end() {
+        use super::super::activity::Tab;
+        use super::Net;
+        // The feed: pages that never have it.
+        let (mut app, _net) = with_channels(&["C1", "C3"]);
+        feed_finding_42(&mut app);
+        let mut asked = 1;
+        for n in 0..10 {
+            let parent = format!("{}.000000", 30 - n);
+            super::handle_net(&mut app, Net::ThreadView { result: Ok(feed_page(&[("C1", &parent, &[])], true)), more: true });
+            asked += app.threads.loading as usize;
+        }
+        assert_eq!((asked, app.threads.want.is_none()), (5, true), "five pages, then given up");
+        // The feed's end: given up at once.
+        let (mut app, _net) = with_channels(&["C1", "C3"]);
+        feed_finding_42(&mut app);
+        super::handle_net(&mut app, Net::ThreadView { result: Ok(feed_page(&[("C1", "30.000000", &[])], false)), more: true });
+        assert!(!app.threads.loading && app.threads.want.is_none());
+        // Activity: pages that never have it.
+        let (mut app, _net) = with_channels(&["C1"]);
+        activity_finding_b2(&mut app);
+        let dm = |key: String| serde_json::json!({"feed_ts": "1.0", "is_unread": true, "key": key, "item": {"type": "dm", "bundle_info": {"payload": {"dm_entry": {"latest_message": {"channel": "DU2", "ts": "1.0"}}}}}});
+        let mut asked = 1;
+        for n in 0..10 {
+            let page = serde_json::json!({"items": [dm(format!("c{n}"))], "response_metadata": {"next_cursor": format!("q{n}")}});
+            super::handle_net(&mut app, Net::ActivityFeed { tab: Tab::All, more: true, result: Ok(page) });
+            app.request_activity_page();
+            asked += app.activity.loading as usize;
+        }
+        assert_eq!((asked, app.activity.want.is_none()), (5, true), "five pages, then given up");
+        // Its end: given up at once.
+        let (mut app, _net) = with_channels(&["C1"]);
+        activity_finding_b2(&mut app);
+        super::handle_net(&mut app, Net::ActivityFeed { tab: Tab::All, more: true, result: Ok(serde_json::json!({"items": [dm("z".into())]})) });
+        app.request_activity_page();
+        assert!(!app.activity.loading && app.activity.want.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_spot_restored_is_kept_before_it_is_drawn() {
+        let (mut app, _net) = with_channels(&["C1", "C2"]);
+        long_c1(&mut app, 120, 0);
+        app.focus = super::Focus::Messages;
+        app.messages.selected = Some(top_ts(10));
+        settle(&mut app, false);
+        drawn(&mut app);
+        app.jump_to("C2");
+        settle(&mut app, true);
+        drawn(&mut app);
+        // Back and forward before a draw: still at message 10.
+        go(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
+        go(&mut app, KeyCode::Right, KeyModifiers::ALT);
+        go(&mut app, KeyCode::Left, KeyModifiers::ALT);
+        assert_eq!((app.current.as_deref(), app.messages.selected.clone()), (Some("C1"), Some(top_ts(10))));
+        // While its history is still on its way (drawn meanwhile), forward and back: still there.
+        app.jump_to("C2");
+        settle(&mut app, true);
+        drawn(&mut app);
+        app.ws.timelines.remove("C1");
+        go(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
+        drawn(&mut app);
+        go(&mut app, KeyCode::Right, KeyModifiers::ALT);
+        drawn(&mut app);
+        go(&mut app, KeyCode::Left, KeyModifiers::ALT);
+        assert_eq!((app.current.as_deref(), app.messages.selected.clone()), (Some("C1"), Some(top_ts(10))));
+        // Sending then: at the newest again.
+        long_c1(&mut app, 120, 0);
+        drawn(&mut app);
+        send(&mut app, "hi");
+        drawn(&mut app);
+        app.jump_to("C2");
+        settle(&mut app, true);
+        go(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
+        assert_eq!(app.messages.selected, None);
     }
 }
