@@ -327,7 +327,7 @@ pub struct Activity {
     pub selected: usize,
     /// Why the feed could not be loaded (said in the view).
     pub failed: Option<String>,
-    /// Only the unread items are shown.
+    /// Only the unread items are shown (kept for the run: each opening of the view keeps it).
     pub unread_only: bool,
     /// Where the next page of the list starts (none: it is all there), and whether it is being loaded.
     pub cursor: Option<String>,
@@ -480,6 +480,10 @@ impl Activity {
             }
         }
         (*at, *loading) = (cursor, false);
+        // (Filtered with none shown before: the selection onto the first one shown now.)
+        if tab == self.tab && !self.visible().contains(&self.selected) {
+            self.keep_selection_shown();
+        }
     }
 
     /// An item Slack pushed (new, or changed: read, a newer reply): into each loaded list it belongs to, in its place
@@ -648,9 +652,12 @@ impl Activity {
             self.refresh(here, list.width, avatars);
         }
         let none_shown = self.cache.as_ref().is_none_or(|c| c.visible.is_empty());
+        // (None shown with more to load — every item loaded is read —: the next page, as when the end is on screen.)
+        self.at_end = none_shown && self.items.is_some() && self.cursor.is_some();
         let note = match &self.items {
             None if self.failed.is_some() => Some(Line::styled(format!("{}: {}", tr(FAILED), self.failed.as_deref().unwrap_or_default()), Style::default().fg(p.danger))),
             None => Some(Line::styled(tr(LOADING).into_owned(), Style::default().fg(p.dim))),
+            Some(_) if self.at_end => Some(Line::styled(tr(LOADING_MORE).into_owned(), Style::default().fg(p.dim))),
             Some(items) if none_shown => Some(Line::styled(tr(if items.is_empty() { EMPTY } else { NONE_UNREAD }).into_owned(), Style::default().fg(p.dim))),
             Some(_) => None,
         };
@@ -1588,6 +1595,39 @@ mod tests {
         let buf = terminal.backend().buffer();
         assert!((0..buf.area.height).any(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect::<String>().contains("Nothing unread here.")));
         assert_eq!(a.builds, 1, "\"Nothing unread\" frames do not build it again");
+    }
+
+    #[test]
+    fn the_filter_loads_pages_until_one_has_unread_items() {
+        let ws = ws();
+        let media = super::super::media::Media::with(ratatui_image::picker::Picker::halfblocks());
+        let it = |key: &str, unread: bool| item(key, Kind::Mention("at_user".into()), "C1", key, Some("U2"), unread, noon(0));
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 20)).unwrap();
+        let mut draw = |a: &mut Activity| {
+            terminal.draw(|f| a.draw(f, f.area(), &Here::alone(&ws), true, &media)).unwrap();
+            let buf = terminal.backend().buffer();
+            (0..buf.area.height).map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect::<String>()).collect::<Vec<_>>().join("\n")
+        };
+        let mut a = Activity::default();
+        a.toggle_unread();
+        // The first page all read (the one unread there was opened), unread ones further down.
+        a.set_items(Tab::All, (1..=50).map(|n| it(&n.to_string(), false)).collect(), Some("next".into()));
+        let screen = draw(&mut a);
+        assert!(!screen.contains(NONE_UNREAD), "more to load: not \"nothing unread\" yet\n{screen}");
+        assert_eq!(a.next_page().as_deref(), Some("next"), "the next page is asked for");
+        assert!(draw(&mut a).contains(LOADING_MORE));
+        a.add_page(Tab::All, vec![it("51", false), it("52", true)], Some("last".into()));
+        draw(&mut a);
+        assert_eq!((a.visible(), a.selected), (vec![51], 51), "the unread one on the next page is shown, and selected");
+        assert_eq!(a.next_page().as_deref(), Some("last"), "and the list goes on loading (its end is on screen)");
+        a.add_page(Tab::All, vec![it("53", false)], None);
+        draw(&mut a);
+        assert_eq!(a.next_page(), None, "all loaded");
+        // All loaded, none unread: said so.
+        a.items.as_mut().unwrap()[51].unread = false;
+        a.dirty = true;
+        assert!(draw(&mut a).contains(NONE_UNREAD));
+        assert_eq!(a.next_page(), None);
     }
 
     #[test]

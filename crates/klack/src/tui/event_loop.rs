@@ -2961,10 +2961,10 @@ impl App {
     }
 
     /// Load the Activity view afresh: opened, on its All tab (whose unread count is the sidebar row's); `again` (it is
-    /// shown already), the tab shown, as it was filtered.
+    /// shown already), the tab shown. Filtered as it was (the filter is kept for the run).
     fn open_activity(&mut self, again: bool) {
         let a = &self.activity;
-        let (tab, unread_only) = if again { (a.tab, a.unread_only) } else { Default::default() };
+        let (tab, unread_only) = (if again { a.tab } else { Default::default() }, a.unread_only);
         self.activity = super::activity::Activity::default();
         (self.activity.tab, self.activity.unread_only) = (tab, unread_only);
         self.fetch_activity(tab, None);
@@ -8048,6 +8048,73 @@ mod tests {
             }
         }
         assert_eq!(app.ws.activity_unread, 4, "the push is newer than the answer (7)");
+    }
+
+    /// The reported sequence: Activity, `u`, Enter on an unread item, Activity again: the unread items further down the
+    /// All tab are still shown (its first page is all read now), and the filter is kept for the run.
+    #[tokio::test]
+    async fn the_unread_filter_shows_whats_still_unread_and_is_kept() {
+        use super::super::activity::Tab;
+        use super::{run_global, Action, Net, View};
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let (url, mut asked) = fake_slack(&[("activity.feed", r#"{"ok":true,"items":[]}"#)]).await;
+        let (mut app, _net) = test_app_at(&url);
+        app.ws.conversations.insert("C1".into(), slack_core::types::Conversation { id: "C1".into(), name: "c".into(), is_channel: true, is_member: true, ..Default::default() });
+        let mention = |ts: &str, unread: bool| serde_json::json!({"feed_ts": ts, "is_unread": unread, "key": format!("at_user-C1-{ts}"), "item": {"type": "at_user", "message": {"channel": "C1", "ts": ts}}});
+        let thread = serde_json::json!({"feed_ts": "3.0", "is_unread": true, "key": "thread_v2-C1-2.0", "item": {"type": "thread_v2", "bundle_info": {"payload": {"thread_entry": {"channel_id": "C1", "thread_ts": "2.0", "latest_ts": "3.0", "min_unread_ts": "3.0", "unread_msg_count": 1}}}}});
+        // The All tab's first page (one unread, many read: reactions, read mentions), its next page an unread thread.
+        let first = |unread: bool| {
+            let items: Vec<_> = std::iter::once(mention("90.0", unread)).chain((0..40).map(|n| mention(&format!("{}.0", 80 - n), false))).collect();
+            serde_json::json!({"items": items, "response_metadata": {"next_cursor": "p2"}})
+        };
+        let next = serde_json::json!({"items": [thread]});
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+        let mut screen = |app: &mut super::App| {
+            terminal.draw(|f| super::draw(f, app)).unwrap();
+            let buf = terminal.backend().buffer();
+            (0..buf.area.height).map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect::<String>()).collect::<Vec<_>>().join("\n")
+        };
+        // Loads the next page as the view asks for it.
+        async fn next_page(app: &mut super::App, asked: &mut tokio::sync::mpsc::UnboundedReceiver<String>, page: &serde_json::Value) {
+            app.request_activity_page();
+            let req = next_call(asked, "activity.feed").await.expect("the next page");
+            assert!(req.contains("cursor=p2"), "{req}");
+            super::handle_net(app, Net::ActivityFeed { tab: Tab::All, more: true, result: Ok(page.clone()) });
+        }
+        run_global(&mut app, Action::Activity);
+        assert!(next_call(&mut asked, "activity.feed").await.is_some());
+        super::handle_net(&mut app, Net::ActivityFeed { tab: Tab::All, more: false, result: Ok(first(true)) });
+        press(&mut app, KeyCode::Char('u'), KeyModifiers::NONE);
+        screen(&mut app);
+        next_page(&mut app, &mut asked, &next).await;
+        screen(&mut app);
+        assert_eq!(app.activity.visible().len(), 2, "both unread ones");
+        // Enter on the first: read, its conversation opens.
+        app.activity.selected = 0;
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(next_call(&mut asked, "activity.markRead").await.is_some());
+        assert_eq!(app.view, View::Conversation);
+        // Back in Activity: still filtered, and what is still unread (the thread, on the next page) is shown.
+        run_global(&mut app, Action::Activity);
+        assert!(next_call(&mut asked, "activity.feed").await.is_some());
+        assert!(app.activity.unread_only, "the filter is kept");
+        super::handle_net(&mut app, Net::ActivityFeed { tab: Tab::All, more: false, result: Ok(first(false)) });
+        let shown = screen(&mut app);
+        assert!(!shown.contains("Nothing unread here."), "{shown}");
+        next_page(&mut app, &mut asked, &next).await;
+        let shown = screen(&mut app);
+        assert_eq!(app.activity.selected_item().map(|i| i.key.as_str()), Some("thread_v2-C1-2.0"), "{shown}");
+        assert!(shown.contains("unread only"));
+        // Kept across tabs and other views; `u` turns it off, and off it stays.
+        press(&mut app, KeyCode::Char('4'), KeyModifiers::NONE);
+        assert!(app.activity.unread_only);
+        run_global(&mut app, Action::Threads);
+        run_global(&mut app, Action::Activity);
+        assert_eq!((app.activity.tab, app.activity.unread_only), (Tab::All, true), "reopened on All, still filtered");
+        press(&mut app, KeyCode::Char('u'), KeyModifiers::NONE);
+        run_global(&mut app, Action::Threads);
+        run_global(&mut app, Action::Activity);
+        assert!(!app.activity.unread_only);
     }
 
     #[tokio::test]
