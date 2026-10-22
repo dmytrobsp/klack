@@ -101,6 +101,8 @@ pub struct Threads {
     pub failed: Option<String>,
     /// The selected message (channel, ts); none: the first one.
     pub selected: Option<(String, String)>,
+    /// The message a step back or forward lands on: selected once its page is in (not in it: the first one).
+    pub want: Option<(String, String)>,
     /// Lines of the feed above the view.
     pub scroll: usize,
     /// Bring the selection into view at the next draw (it moved by the keys).
@@ -158,6 +160,9 @@ impl Threads {
         self.has_more = has_more;
         self.loading = false;
         self.dirty = true;
+        if self.want.as_ref().is_some_and(|(c, ts)| self.thread_of(c, ts).is_none()) {
+            self.want = None;
+        }
     }
 
     /// Where the next page starts: before the oldest latest reply listed.
@@ -173,7 +178,7 @@ impl Threads {
         }
         let at = self.selected.as_ref().and_then(|s| self.order.iter().position(|o| o == s)).unwrap_or(0) as isize;
         self.selected = Some(self.order[(at + delta).clamp(0, self.order.len() as isize - 1) as usize].clone());
-        self.follow = true;
+        (self.follow, self.want) = (true, None);
     }
 
     /// Messages a page moves (those on screen at the last draw).
@@ -483,6 +488,9 @@ impl Threads {
             let look = super::messages::Look::new(here, inner.width, avatars, people);
             (self.built, self.dirty) = (Some((look, Instant::now())), false);
             self.builds += 1;
+        }
+        if let Some(want) = self.want.take_if(|w| self.order.contains(w)) {
+            (self.selected, self.follow) = (Some(want), true);
         }
         if self.selected.as_ref().is_none_or(|s| !self.order.contains(s)) {
             self.selected = self.order.first().cloned();

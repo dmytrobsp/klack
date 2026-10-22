@@ -304,6 +304,9 @@ struct App {
     seek_refreshed: bool,
     /// A thread reply a link leads to (channel, parent, reply): said to be missing once the thread is in without it.
     link_reply: Option<(String, String, String)>,
+    /// A step back or forward started the seek, landing there: a message no longer there gives way to the nearest
+    /// one, said so.
+    seek_back: Option<Landing>,
     /// A huddle invitation ringing now.
     ringing: Option<Ring>,
     /// What was typed in conversations (by id) and threads (by thread key) you left.
@@ -460,6 +463,7 @@ impl App {
             self.set_view(View::Conversation);
         }
         if selected != self.current {
+            self.note_place();
             if self.ws.preview.is_some() && self.ws.preview != selected {
                 self.ws.preview = None;
                 self.sidebar.rebuild(&self.ws);
@@ -1730,6 +1734,7 @@ impl App {
 
     /// Open the thread whose parent is `parent` in `channel`.
     fn open_thread_at(&mut self, channel: String, parent: String) {
+        self.note_place();
         let key = super::state::thread_key(&channel, &parent);
         self.seen.insert(key.clone(), opened_now());
         if self.thread.as_ref().is_none_or(|(c, t)| super::state::thread_key(c, t) != key) {
@@ -1762,6 +1767,9 @@ impl App {
     }
 
     fn close_thread(&mut self) {
+        if self.thread.is_some() {
+            self.note_place();
+        }
         self.sidebar.remember_thread(None);
         if let Some((c, t)) = self.thread.take() {
             stash(&mut self.drafts, &super::state::thread_key(&c, &t), &mut self.thread_composer);
@@ -1984,16 +1992,24 @@ impl App {
     /// Where the main pane is, as the history keeps it (None: no conversation yet).
     fn place(&self) -> Option<Place> {
         match self.view {
-            View::Threads => Some(Place::Threads),
-            View::Activity => Some(Place::Activity(self.activity.tab)),
+            // (Loading afresh: where a step lands.)
+            View::Threads => Some(Place::Threads(self.threads.selected.clone().or_else(|| self.threads.want.clone()))),
+            View::Activity => Some(Place::Activity(self.activity.tab, self.activity.selected_item().map(|it| it.key.clone()).or_else(|| self.activity.want.clone()))),
             View::Huddles => Some(Place::Huddles),
             View::Conversation => {
                 let channel = self.current.clone()?;
                 let thread = self.thread.as_ref().filter(|(c, _)| *c == channel).map(|(_, ts)| ts.clone());
                 let member = !self.ws.is_outside(&channel);
-                Some(Place::Conversation { channel, thread, member })
+                let reply = thread.as_ref().and(self.thread_pane.selected.clone());
+                Some(Place::Conversation { channel, thread, member, at: self.messages.selected.clone(), reply })
             }
         }
+    }
+
+    /// The pane is about to go elsewhere: the place it is at keeps what the event under way chose there.
+    fn note_place(&mut self) {
+        let place = self.place();
+        self.history.note(place);
     }
 
     /// After an event: the place shown now goes into the history, as `went` says (see [`goes_somewhere`]).
@@ -2031,16 +2047,41 @@ impl App {
             return;
         };
         match to {
-            Place::Threads => self.open_view(View::Threads),
-            Place::Huddles => self.open_view(View::Huddles),
-            Place::Activity(tab) => self.show_view(View::Activity, Some(tab)),
-            Place::Conversation { channel, thread: Some(ts), .. } => self.open_hit(super::search::Hit { channel, ts: ts.clone(), thread_ts: Some(ts), ..Default::default() }),
-            Place::Conversation { channel, thread: None, .. } if self.current.as_deref() == Some(channel.as_str()) => {
-                self.close_view();
-                self.close_thread();
+            Place::Threads(at) => {
+                self.open_view(View::Threads);
+                self.threads.want = at;
             }
-            Place::Conversation { channel, thread: None, .. } => self.jump_to(&channel),
+            Place::Huddles => self.open_view(View::Huddles),
+            Place::Activity(tab, at) => {
+                self.show_view(View::Activity, Some(tab));
+                self.activity.want = at;
+            }
+            Place::Conversation { channel, thread, at, reply, .. } => self.reopen(channel, thread, at, reply),
         }
+    }
+
+    /// Back in conversation `channel` as you left it (a step back or forward): at message `at`, its thread `thread`
+    /// open at reply `reply` (None: at its newest), paging back to them as a link to a message does.
+    fn reopen(&mut self, channel: String, thread: Option<String>, at: Option<String>, reply: Option<String>) {
+        let here = self.current.as_deref() == Some(channel.as_str());
+        if thread.is_none() && here {
+            self.close_view();
+            self.close_thread();
+        }
+        let (hit, landing) = match (thread, at) {
+            (Some(parent), behind) => (super::search::Hit { channel, ts: parent.clone(), thread_ts: Some(parent), ..Default::default() }, Landing { behind, reply }),
+            (None, Some(ts)) => (super::search::Hit { channel, ts, ..Default::default() }, Landing::default()),
+            (None, None) => {
+                if !here {
+                    self.jump_to(&channel);
+                }
+                return;
+            }
+        };
+        if self.ws.is_outside(&hit.channel) {
+            self.ws.preview = Some(hit.channel.clone());
+        }
+        self.open_hit_as(hit, false, Some(landing));
     }
 
     /// Back from a view to the conversation it was opened over, on its messages.
@@ -2084,6 +2125,7 @@ impl App {
     /// Show `v` in the main pane; the composer goes with it (under the Threads feed it replies in a thread).
     fn set_view(&mut self, v: View) {
         if v != self.view {
+            self.note_place();
             self.end_view_edit(true);
         }
         let old = self.composer_key();
@@ -2320,11 +2362,17 @@ impl App {
 
     /// `open_hit`; `from_link`: a link (or a notification) leads there, so a missing message says so.
     fn open_hit_from(&mut self, hit: super::search::Hit, from_link: bool) {
+        self.open_hit_as(hit, from_link, None);
+    }
+
+    /// [`App::open_hit_from`]; `back`: a step back or forward lands there (see [`App::seek_back`]).
+    fn open_hit_as(&mut self, hit: super::search::Hit, from_link: bool, back: Option<Landing>) {
+        self.note_place();
         // Its conversation takes the main pane from a view.
         if self.view != View::Conversation {
             self.close_view();
         }
-        self.seek_from_link = from_link;
+        (self.seek_from_link, self.seek_back) = (from_link, back);
         (self.seek_hit, self.seek_refreshed, self.link_reply) = (None, false, None);
         if self.current.as_deref() == Some(hit.channel.as_str()) {
             self.show_hit(hit);
@@ -2336,8 +2384,15 @@ impl App {
     }
 
     fn show_hit(&mut self, hit: super::search::Hit) {
-        let top = hit.thread_ts.clone().unwrap_or_else(|| hit.ts.clone());
+        let behind = self.seek_back.as_ref().and_then(|l| l.behind.clone());
+        let top = behind.or_else(|| hit.thread_ts.clone()).unwrap_or_else(|| hit.ts.clone());
         self.seeking = Some((hit.channel.clone(), top));
+        if self.seek_back.is_some() {
+            // Selected at once; a message no longer there gives way to the nearest one once the seek is done.
+            self.select_hit(hit);
+            self.continue_seek();
+            return;
+        }
         let seek = self.continue_seek();
         if select_now(self.seek_from_link, seek) {
             self.select_hit(hit);
@@ -2351,16 +2406,20 @@ impl App {
     fn select_hit(&mut self, hit: super::search::Hit) {
         match hit.thread_ts {
             Some(parent) => {
-                self.messages.selected = Some(parent.clone());
-                if self.seek_from_link && hit.ts != parent {
-                    self.link_reply = Some((hit.channel.clone(), parent.clone(), hit.ts.clone()));
+                let (behind, reply) = match self.seek_back.clone() {
+                    Some(l) => (l.behind, l.reply),
+                    None => (None, Some(hit.ts)),
+                };
+                self.messages.select(Some(behind.unwrap_or_else(|| parent.clone())));
+                if let Some(r) = reply.as_ref().filter(|r| (self.seek_from_link || self.seek_back.is_some()) && **r != parent) {
+                    self.link_reply = Some((hit.channel.clone(), parent.clone(), r.clone()));
                 }
                 self.open_thread_at(hit.channel, parent);
-                self.thread_pane.selected = Some(hit.ts);
+                self.thread_pane.select(reply);
                 self.check_link_reply();
             }
             None => {
-                self.messages.selected = Some(hit.ts);
+                self.messages.select(Some(hit.ts));
                 self.focus = Focus::Messages;
             }
         }
@@ -2398,6 +2457,9 @@ impl App {
                 if let Some(hit) = self.seek_hit.take() {
                     self.select_hit(hit);
                 }
+                if self.seek_back.is_some() && !found {
+                    self.land_nearest(&channel, &ts);
+                }
             }
             Seek::More => {
                 self.status = super::i18n::tr(SEEKING).replace("{}", &n.to_string());
@@ -2411,10 +2473,21 @@ impl App {
             Seek::Missing(note) => {
                 // A link's message was never selected: the conversation stays as it is.
                 (self.seeking, self.seek_hit, self.link_reply) = (None, None, None);
+                if self.seek_back.is_some() {
+                    self.land_nearest(&channel, &ts);
+                }
                 self.status = super::i18n::tr(note).into_owned();
             }
         }
         Some(step)
+    }
+
+    /// A step back or forward finds its message `ts` of `channel` gone: the nearest one is selected, said so.
+    fn land_nearest(&mut self, channel: &str, ts: &str) {
+        let Some(tl) = self.ws.timelines.get(channel) else { return };
+        let at = nearest(super::messages::shown_messages(tl, false).map(|m| m.ts.as_str()), ts);
+        self.messages.select(at);
+        self.status = super::i18n::tr(HISTORY_GONE).into_owned();
     }
 
     /// Fetch the newest page of `channel` again, though its history is loaded (merged with what is there).
@@ -2448,8 +2521,13 @@ impl App {
         let Some(tl) = self.ws.threads.get(&super::state::thread_key(&channel, &parent)).filter(|t| t.loaded) else { return };
         self.link_reply = None;
         if tl.index_of(&reply).is_none() && self.thread.as_ref().is_some_and(|(c, t)| *c == channel && *t == parent) {
-            self.thread_pane.selected = None;
-            self.status = super::i18n::tr(LINK_GONE).into_owned();
+            // (A step back or forward: the nearest reply.)
+            let (selected, note) = match self.seek_back {
+                Some(_) => (nearest(super::messages::shown_messages(tl, true).map(|m| m.ts.as_str()), &reply), HISTORY_GONE),
+                None => (None, LINK_GONE),
+            };
+            self.thread_pane.select(selected);
+            self.status = super::i18n::tr(note).into_owned();
         }
     }
 
@@ -4382,6 +4460,27 @@ fn seek_step(sought: Sought, from_link: bool, refreshed: bool) -> Seek {
     }
 }
 
+/// Where a step back or forward lands in a conversation with its thread open (see [`App::reopen`]).
+#[derive(Debug, Clone, Default)]
+struct Landing {
+    /// The conversation's message selected behind the thread (None: its parent).
+    behind: Option<String>,
+    /// The reply selected in the thread (None: none, at its newest).
+    reply: Option<String>,
+}
+
+/// The message nearest `ts` among `order` (oldest first): the last one before it, else the first.
+fn nearest<'a>(order: impl Iterator<Item = &'a str>, ts: &str) -> Option<String> {
+    let (mut first, mut before) = (None, None);
+    for o in order {
+        first = first.or(Some(o));
+        if !seek_older(ts, o) {
+            before = Some(o);
+        }
+    }
+    before.or(first).map(String::from)
+}
+
 /// The search hit that opens a message target (None: not a message).
 fn hit_of(target: super::applink::Target) -> Option<super::search::Hit> {
     match target {
@@ -4678,6 +4777,7 @@ impl App {
             seek_hit: None,
             seek_refreshed: false,
             link_reply: None,
+            seek_back: None,
             drafts: Default::default(),
             player: None,
             screen: Default::default(),
@@ -8400,8 +8500,8 @@ mod tests {
         let (mut app, net) = activity_app(url);
         app.current = Some("C1".into());
         app.loading = false;
-        app.history.arrive(Some(Place::Conversation { channel: "C1".into(), thread: None, member: true }), super::Went::Yes);
-        app.history.arrive(Some(Place::Activity(super::super::activity::Tab::All)), super::Went::Yes);
+        app.history.arrive(Some(Place::Conversation { channel: "C1".into(), thread: None, member: true, at: None, reply: None }), super::Went::Yes);
+        app.history.arrive(Some(Place::Activity(super::super::activity::Tab::All, None)), super::Went::Yes);
         let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(140, 30)).unwrap();
         terminal.draw(|f| super::draw(f, &mut app)).unwrap();
         press(&mut app, KeyCode::Down, KeyModifiers::NONE);
@@ -10179,5 +10279,167 @@ mod tests {
         assert_eq!(app.view, View::Activity);
         go(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
         assert_eq!((app.view, app.current.as_deref()), (View::Conversation, Some("C1")));
+    }
+
+    /// Message `n` of C1 (`1000.000000` on, "message number 001", …), and reply `n` of its first message's thread.
+    fn top_ts(n: usize) -> String {
+        format!("{}.000000", 1000 + n)
+    }
+    fn reply_ts(n: usize) -> String {
+        format!("1001.{n:06}")
+    }
+
+    /// C1's history loaded: messages 1 to `n`, the first a thread's parent with `replies` replies (loaded too).
+    fn long_c1(app: &mut super::App, n: usize, replies: usize) {
+        use slack_core::types::Message;
+        let m = |ts: String, text: String, thread: Option<String>| Message { ts, user: Some("U2".into()), text, thread_ts: thread, ..Default::default() };
+        let mut messages: Vec<Message> = (1..=n).map(|k| m(top_ts(k), format!("message number {k:03}"), None)).collect();
+        (messages[0].thread_ts, messages[0].reply_count) = (Some(top_ts(1)), replies as u64);
+        let parent = messages[0].clone();
+        app.ws.timelines.insert("C1".into(), super::super::state::Timeline { messages, loaded: true, ..Default::default() });
+        let mut thread = vec![parent];
+        thread.extend((1..=replies).map(|r| m(reply_ts(r), format!("reply number {r:03}"), Some(top_ts(1)))));
+        app.ws.threads.insert(super::super::state::thread_key("C1", &top_ts(1)), super::super::state::Timeline { messages: thread, loaded: true, ..Default::default() });
+    }
+
+    fn drawn(app: &mut super::App) -> Vec<String> {
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 40)).unwrap();
+        terminal.draw(|f| super::draw(f, app)).unwrap();
+        screen(&terminal)
+    }
+
+    #[tokio::test]
+    async fn back_opens_the_thread_again_at_the_reply_you_were_on() {
+        use super::super::applink::Target;
+        let (mut app, _net) = with_channels(&["C1", "C2"]);
+        long_c1(&mut app, 30, 60);
+        // The user's case: the thread opened at a reply far up from its newest (a link to it).
+        app.open_in_app(Target::Message { channel: "C1".into(), ts: reply_ts(20), thread_ts: Some(top_ts(1)) }, true);
+        settle(&mut app, true);
+        assert!(drawn(&mut app).iter().any(|l| l.contains("reply number 020")));
+        app.jump_to("C2");
+        settle(&mut app, true);
+        drawn(&mut app);
+        go(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
+        assert_eq!(app.thread, Some(("C1".into(), top_ts(1))));
+        assert_eq!(app.thread_pane.selected, Some(reply_ts(20)), "the same reply selected");
+        let shown = drawn(&mut app);
+        assert!(shown.iter().any(|l| l.contains("reply number 020")), "and on screen:\n{}", shown.join("\n"));
+        // A thread left at its newest (no reply selected) opens at its newest again, not at its parent.
+        app.thread_pane.selected = None;
+        settle(&mut app, false);
+        app.jump_to("C2");
+        settle(&mut app, true);
+        go(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
+        assert_eq!((app.thread.is_some(), app.thread_pane.selected.clone()), (true, None));
+        assert!(drawn(&mut app).iter().any(|l| l.contains("reply number 060")));
+    }
+
+    #[tokio::test]
+    async fn back_brings_a_conversation_back_at_an_old_message() {
+        use slack_core::types::{HistoryPage, Message};
+        let (mut app, _net) = with_channels(&["C1", "C2"]);
+        long_c1(&mut app, 120, 0);
+        app.focus = super::Focus::Messages;
+        app.messages.selected = Some(top_ts(10));
+        settle(&mut app, false);
+        app.jump_to("C2");
+        settle(&mut app, true);
+        // C1's history is fetched afresh (as after a workspace switch): the newest page first, then older ones.
+        let all = app.ws.timelines.remove("C1").unwrap().messages;
+        go(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
+        assert_eq!(app.current.as_deref(), Some("C1"));
+        let page = |from: usize, to: usize, has_more: bool| HistoryPage { messages: all[from - 1..to].iter().rev().cloned().collect::<Vec<Message>>(), has_more, ..Default::default() };
+        super::handle_net(&mut app, super::Net::History { channel: "C1".into(), page: page(71, 120, true), older: false });
+        settle(&mut app, false);
+        assert!(app.ws.timelines["C1"].loading, "older pages are asked for");
+        super::handle_net(&mut app, super::Net::History { channel: "C1".into(), page: page(21, 70, true), older: true });
+        settle(&mut app, false);
+        super::handle_net(&mut app, super::Net::History { channel: "C1".into(), page: page(1, 20, false), older: true });
+        settle(&mut app, false);
+        assert_eq!(app.messages.selected, Some(top_ts(10)), "the message you were on");
+        let shown = drawn(&mut app);
+        assert!(shown.iter().any(|l| l.contains("message number 010")), "on screen:\n{}", shown.join("\n"));
+    }
+
+    #[test]
+    fn the_nearest_message_is_the_one_before() {
+        let order = ["1.0", "2.0", "4.0"];
+        assert_eq!(super::nearest(order.into_iter(), "3.0").as_deref(), Some("2.0"));
+        assert_eq!(super::nearest(order.into_iter(), "4.0").as_deref(), Some("4.0"));
+        assert_eq!(super::nearest(order.into_iter(), "0.5").as_deref(), Some("1.0"), "none before: the first");
+        assert_eq!(super::nearest([].into_iter(), "1.0"), None);
+    }
+
+    #[tokio::test]
+    async fn back_to_a_message_deleted_meanwhile_is_at_the_one_before_it() {
+        use super::super::applink::Target;
+        let (mut app, _net) = with_channels(&["C1", "C2"]);
+        long_c1(&mut app, 30, 40);
+        app.focus = super::Focus::Messages;
+        app.messages.selected = Some(top_ts(15));
+        settle(&mut app, false);
+        app.jump_to("C2");
+        settle(&mut app, true);
+        app.ws.timelines.get_mut("C1").unwrap().messages.retain(|m| m.ts != top_ts(15));
+        go(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
+        assert_eq!((app.current.as_deref(), app.messages.selected.clone()), (Some("C1"), Some(top_ts(14))), "the nearest one");
+        assert_eq!(app.status, super::HISTORY_GONE);
+        // A reply deleted meanwhile: the reply before it, said so too.
+        app.open_in_app(Target::Message { channel: "C1".into(), ts: reply_ts(30), thread_ts: Some(top_ts(1)) }, true);
+        settle(&mut app, true);
+        app.jump_to("C2");
+        settle(&mut app, true);
+        app.status.clear();
+        app.ws.threads.get_mut(&super::super::state::thread_key("C1", &top_ts(1))).unwrap().messages.retain(|m| m.ts != reply_ts(30));
+        go(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
+        assert_eq!((app.thread.is_some(), app.thread_pane.selected.clone()), (true, Some(reply_ts(29))));
+        assert_eq!(app.status, super::HISTORY_GONE);
+    }
+
+    #[tokio::test]
+    async fn back_brings_the_feed_and_activity_back_at_their_items() {
+        use super::super::activity::Tab;
+        use super::{Net, View};
+        use slack_core::types::Message;
+        let (mut app, _net) = with_channels(&["C1", "C3"]);
+        // The Threads feed, on the second thread's parent.
+        let m = |ts: &str, parent: &str, text: &str| Message { ts: ts.into(), thread_ts: Some(parent.into()), user: Some("U2".into()), text: text.into(), ..Default::default() };
+        let t1 = super::super::threads::Entry { channel: "C1".into(), root: Message { reply_count: 1, ..m("1729440000.000100", "1729440000.000100", "the parent") }, latest: vec![m("1729440000.000200", "1729440000.000100", "a reply")], ..Default::default() };
+        let t2 = super::super::threads::Entry { channel: "C3".into(), root: m("1729440500.000100", "1729440500.000100", "another"), ..Default::default() };
+        super::run_global(&mut app, super::Action::Threads);
+        settle(&mut app, true);
+        app.threads.add_page(vec![t1.clone(), t2.clone()], false);
+        drawn(&mut app);
+        go(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
+        go(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
+        let second = Some(("C3".to_string(), "1729440500.000100".to_string()));
+        assert_eq!(app.threads.selected, second);
+        app.jump_to("C1");
+        settle(&mut app, true);
+        go(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
+        assert_eq!(app.view, View::Threads);
+        // (Loaded afresh.)
+        app.threads.add_page(vec![t1, t2], false);
+        drawn(&mut app);
+        assert_eq!(app.threads.selected, second, "the feed at the message you were on");
+        // Activity: a click on its second item opens it; back is Activity at that item.
+        go(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
+        let dm = |key: &str, feed_ts: &str, ts: &str| serde_json::json!({"feed_ts": feed_ts, "is_unread": true, "key": key, "item": {"type": "dm", "bundle_info": {"payload": {"dm_entry": {"latest_message": {"channel": "DU2", "ts": ts}}}}}});
+        let feed = serde_json::json!({"items": [dm("dm-a", "3.0", "1.0"), dm("dm-b", "2.0", "2.0")]});
+        super::handle_net(&mut app, Net::ActivityFeed { tab: Tab::All, more: false, result: Ok(feed.clone()) });
+        settle(&mut app, false);
+        drawn(&mut app);
+        let list = app.activity.list;
+        let y = (list.y..list.bottom()).find(|&y| app.activity.row_at(list.x + 2, y) == Some(1)).expect("the second item's row");
+        for kind in [crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left), crossterm::event::MouseEventKind::Up(crossterm::event::MouseButton::Left)] {
+            super::handle_event(&mut app, crossterm::event::Event::Mouse(crossterm::event::MouseEvent { kind, column: list.x + 2, row: y, modifiers: KeyModifiers::NONE }));
+            settle(&mut app, true);
+        }
+        assert_eq!((app.view, app.current.as_deref()), (View::Conversation, Some("DU2")));
+        go(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
+        super::handle_net(&mut app, Net::ActivityFeed { tab: Tab::All, more: false, result: Ok(feed) });
+        settle(&mut app, false);
+        assert_eq!((app.view, app.activity.selected_item().map(|it| it.key.as_str())), (View::Activity, Some("dm-b")), "at the item clicked");
     }
 }

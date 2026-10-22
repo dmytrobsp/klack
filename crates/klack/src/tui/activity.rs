@@ -334,6 +334,8 @@ pub struct Activity {
     pub items: Option<Vec<Item>>,
     /// The selected item (an index into `items`; always one that is shown).
     pub selected: usize,
+    /// The item (its key) a step back or forward lands on: selected once the list is in (not in it: the first one).
+    pub want: Option<String>,
     /// Why the feed could not be loaded (said in the view).
     pub failed: Option<String>,
     /// Only the unread items are shown (kept for the run: each opening of the view keeps it).
@@ -543,7 +545,7 @@ impl Activity {
             (kept.items, kept.cursor, kept.loading) = (Some(items), cursor, false);
             return;
         }
-        let key = self.selected_item().map(|it| it.key.clone());
+        let key = self.selected_item().map(|it| it.key.clone()).or(self.want.take());
         self.selected = key.and_then(|k| items.iter().position(|it| it.key == k)).unwrap_or(0);
         (self.items, self.failed, self.page_error, self.cursor, self.loading, self.stuck) = (Some(items), None, None, cursor, false, false);
         self.cursors.clear();

@@ -228,6 +228,11 @@ impl MessagePane {
         self.top
     }
 
+    /// Select message `ts`, brought into view at the next draw (even when it was the one last brought into view).
+    pub fn select(&mut self, ts: Option<String>) {
+        (self.selected, self.shown) = (ts, None);
+    }
+
     /// Move the selection by `delta` messages among the shown ones (`order` = ts list).
     pub fn move_selection(&mut self, order: &[String], delta: isize) {
         if order.is_empty() {
