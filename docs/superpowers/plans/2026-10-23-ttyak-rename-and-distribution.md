@@ -618,7 +618,9 @@ stapled. Waits for the user's Apple enrolment (Task 1's runbook).
 - Create: `tools/signing/apple-csr.sh` (key + CSR into `~/.config/ttyak-signing/` 0700 — the user's backup —, the
   CSR path printed for the user to upload; after the user downloads the `.cer`: builds the p12 with a random password
   and pipes the p12 (base64) and the password into `gh secret set APPLE_P12` / `APPLE_P12_PASSWORD`; prints nothing
-  secret)
+  secret). Apple's API cannot create Developer ID certificates and G2 ones last one year (Task 1's research): the
+  user uploads the CSR on the website, and the script is re-run each year (`--renew`: new key + CSR, old ones kept
+  dated) — docs/distribution/accounts.md says when.
 - Modify: `.github/workflows/release.yml` (macOS build jobs: temp keychain, sign, `notarytool submit --wait` of a zip
   of the binary; skipped when the secrets are missing)
 - Modify: `crates/ttyak/src/update.rs` (from Task 13: on macOS, a signed running binary only accepts a new one that
@@ -638,8 +640,9 @@ The spec: SSL.com IV certificate with eSigner and the official GitHub action; th
 Linux, so the signer runs there (CodeSignTool is Java). Waits for the user's SSL.com certificate.
 
 **Files:**
-- Modify: `.github/workflows/release.yml` (sign `ttyak.exe` after the cross-build, before staging; skipped without
-  the `ES_*` secrets)
+- Modify: `.github/workflows/release.yml` (sign `ttyak.exe` after the cross-build, before staging, with
+  `sslcom/esigner-codesign` — the spec's `sslcom/actions-codesigner` is deprecated (Task 1's research; pin the current
+  release, v1.3.2 on 2026-10-23); skipped without the `ES_*` secrets)
 - Modify: `crates/ttyak/src/update.rs` (on Windows, a signed running exe only accepts a new one whose Authenticode
   signer subject matches, via `Get-AuthenticodeSignature` in a hidden `powershell -NoProfile`)
 
