@@ -7,7 +7,7 @@ import tempfile
 import unittest
 
 SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "move-to-ttyak.sh")
-SHELLS = ["/usr/bin/dash", "/usr/bin/bash"]
+SHELLS = [s for s in (shutil.which("dash"), shutil.which("bash")) if s]
 
 
 class MoveToTtyak(unittest.TestCase):
@@ -52,11 +52,11 @@ class MoveToTtyak(unittest.TestCase):
             return f.read()
 
     def make_old(self):
-        self.write(".config/klack/default/session.json", "s", 0o600)
-        self.write(".config/klack/settings.toml", "a = 1\n")
-        self.write(".cache/klack/default/x", "c")
-        self.write(".local/share/klack/data", "d")
-        self.write(".config/klack-site/site.toml", "t")
+        self.write(".config/klack/default/session.json", "s", 0o600)  # old-name-ok
+        self.write(".config/klack/settings.toml", "a = 1\n")  # old-name-ok
+        self.write(".cache/klack/default/x", "c")  # old-name-ok
+        self.write(".local/share/klack/data", "d")  # old-name-ok
+        self.write(".config/klack-site/site.toml", "t")  # old-name-ok
 
     def run_script(self, shell, *args, env=None):
         if env is None:
@@ -77,7 +77,7 @@ class MoveToTtyak(unittest.TestCase):
             self.make_old()
             code, out = self.run_script(shell)
             self.assertEqual(code, 0, out)
-            for old in [".config/klack", ".cache/klack", ".local/share/klack", ".config/klack-site"]:
+            for old in [".config/klack", ".cache/klack", ".local/share/klack", ".config/klack-site"]:  # old-name-ok
                 self.assertFalse(os.path.exists(self.p(old)), old)
             for new, rel in [(".config/ttyak", "default/session.json"), (".config/ttyak", "settings.toml"),
                              (".cache/ttyak", "default/x"), (".local/share/ttyak", "data"),
@@ -90,15 +90,15 @@ class MoveToTtyak(unittest.TestCase):
 
     def test_renames_logs(self):
         def body(shell):
-            self.write(".cache/klack/a/klack.log", "log a")
-            self.write(".cache/klack/b/klack.log", "old b")
-            self.write(".cache/klack/b/ttyak.log", "new b")
+            self.write(".cache/klack/a/klack.log", "log a")  # old-name-ok
+            self.write(".cache/klack/b/klack.log", "old b")  # old-name-ok
+            self.write(".cache/klack/b/ttyak.log", "new b")  # old-name-ok
             code, out = self.run_script(shell)
             self.assertEqual(code, 1, out)
             self.assertEqual(self.read(".cache/ttyak/a/ttyak.log"), "log a")
-            self.assertFalse(os.path.exists(self.p(".cache/ttyak/a/klack.log")))
+            self.assertFalse(os.path.exists(self.p(".cache/ttyak/a/klack.log")))  # old-name-ok
             self.assertEqual(self.read(".cache/ttyak/b/ttyak.log"), "new b")
-            self.assertEqual(self.read(".cache/ttyak/b/klack.log"), "old b")
+            self.assertEqual(self.read(".cache/ttyak/b/klack.log"), "old b")  # old-name-ok
         self.each_shell(body)
 
     def test_never_overwrites(self):
@@ -107,11 +107,11 @@ class MoveToTtyak(unittest.TestCase):
             self.write(".config/ttyak/keep", "mine", 0o640)
             code, out = self.run_script(shell)
             self.assertEqual(code, 1, out)
-            self.assertTrue(os.path.isfile(self.p(".config/klack/settings.toml")))
+            self.assertTrue(os.path.isfile(self.p(".config/klack/settings.toml")))  # old-name-ok
             self.assertEqual(os.listdir(self.p(".config/ttyak")), ["keep"])
             self.assertEqual(self.read(".config/ttyak/keep"), "mine")
             self.assertEqual(stat.S_IMODE(os.stat(self.p(".config/ttyak/keep")).st_mode), 0o640)
-            self.assertFalse(os.path.exists(self.p(".cache/klack")))
+            self.assertFalse(os.path.exists(self.p(".cache/klack")))  # old-name-ok
             self.assertTrue(os.path.isdir(self.p(".cache/ttyak")))
             self.assertTrue(os.path.isdir(self.p(".local/share/ttyak")))
             self.assertTrue(os.path.isdir(self.p(".config/ttyak-site")))
@@ -127,7 +127,7 @@ class MoveToTtyak(unittest.TestCase):
     def test_dry_run_moves_nothing(self):
         def body(shell):
             self.make_old()
-            self.write(".cache/klack/a/klack.log", "l")
+            self.write(".cache/klack/a/klack.log", "l")  # old-name-ok
             before = self.snapshot()
             code, out = self.run_script(shell, "--dry-run")
             self.assertEqual(code, 0, out)
@@ -143,7 +143,7 @@ class MoveToTtyak(unittest.TestCase):
             self.assertEqual(code, 0, out)
         self.each_shell(body)
 
-    def test_refuses_while_klack_runs(self):
+    def test_refuses_while_klack_runs(self):  # old-name-ok
         def body(shell):
             self.make_old()
             self.fake_pgrep("all")
@@ -179,17 +179,17 @@ class MoveToTtyak(unittest.TestCase):
     def test_dangling_symlink_target_is_not_free(self):
         def body(shell):
             self.make_old()
-            self.write(".cache/klack/a/klack.log", "l")
+            self.write(".cache/klack/a/klack.log", "l")  # old-name-ok
             os.symlink(self.p("nowhere"), self.p(".config/ttyak"))
-            os.makedirs(self.p(".cache/klack/b"))
-            os.symlink(self.p("nowhere"), self.p(".cache/klack/b/ttyak.log"))
-            self.write(".cache/klack/b/klack.log", "old")
+            os.makedirs(self.p(".cache/klack/b"))  # old-name-ok
+            os.symlink(self.p("nowhere"), self.p(".cache/klack/b/ttyak.log"))  # old-name-ok
+            self.write(".cache/klack/b/klack.log", "old")  # old-name-ok
             code, out = self.run_script(shell)
             self.assertEqual(code, 1, out)
-            self.assertTrue(os.path.isdir(self.p(".config/klack")))
+            self.assertTrue(os.path.isdir(self.p(".config/klack")))  # old-name-ok
             self.assertTrue(os.path.islink(self.p(".config/ttyak")))
             self.assertTrue(os.path.islink(self.p(".cache/ttyak/b/ttyak.log")))
-            self.assertEqual(self.read(".cache/ttyak/b/klack.log"), "old")
+            self.assertEqual(self.read(".cache/ttyak/b/klack.log"), "old")  # old-name-ok
         self.each_shell(body)
 
     def test_target_that_is_a_file_is_refused(self):
@@ -199,14 +199,14 @@ class MoveToTtyak(unittest.TestCase):
             code, out = self.run_script(shell)
             self.assertEqual(code, 1, out)
             self.assertEqual(self.read(".local/share/ttyak"), "a file")
-            self.assertTrue(os.path.isfile(self.p(".local/share/klack/data")))
+            self.assertTrue(os.path.isfile(self.p(".local/share/klack/data")))  # old-name-ok
             self.assertTrue(os.path.isdir(self.p(".config/ttyak")))
         self.each_shell(body)
 
     def test_existing_ttyak_cache_is_left_alone(self):
         def body(shell):
-            self.write(".cache/ttyak/a/klack.log", "l")
-            self.write(".cache/klack/a/klack.log", "l2")
+            self.write(".cache/ttyak/a/klack.log", "l")  # old-name-ok
+            self.write(".cache/klack/a/klack.log", "l2")  # old-name-ok
             before = self.snapshot()
             code, out = self.run_script(shell)
             self.assertEqual(code, 1, out)
@@ -235,9 +235,9 @@ class MoveToTtyak(unittest.TestCase):
 
     def test_reports_old_names(self):
         def body(shell):
-            self.write(".config/klack/settings.toml", "log = 'klack'\nsecret = 'hunter2'\n")
-            self.write(".config/klack/keys.toml", "quit = 'q'\n")
-            self.write(".config/fish/conf.d/k.fish", "set -x KLACK_LOG 1\n")
+            self.write(".config/klack/settings.toml", "log = 'klack'\nsecret = 'hunter2'\n")  # old-name-ok
+            self.write(".config/klack/keys.toml", "quit = 'q'\n")  # old-name-ok
+            self.write(".config/fish/conf.d/k.fish", "set -x KLACK_LOG 1\n")  # old-name-ok
             self.write(".config/fish/conf.d/other.fish", "set -x FOO 1\n")
             self.write(".bashrc", "export PATH=$PATH\n")
             code, out = self.run_script(shell)
@@ -249,7 +249,7 @@ class MoveToTtyak(unittest.TestCase):
             self.assertNotIn("other.fish", out)
             self.assertNotIn(".bashrc", out)
             self.assertNotIn("hunter2", out)
-            self.assertEqual(self.read(".config/fish/conf.d/k.fish"), "set -x KLACK_LOG 1\n")
+            self.assertEqual(self.read(".config/fish/conf.d/k.fish"), "set -x KLACK_LOG 1\n")  # old-name-ok
         self.each_shell(body)
 
 

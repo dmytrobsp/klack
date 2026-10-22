@@ -827,10 +827,10 @@ pub enum MouseButton {
     Right,
     /// Middle mouse button.
     Middle,
-    // klack: the side buttons, SGR buttons 8 and 9 (upstream drops them as a parse error).
+    // ttyak: the side buttons, SGR buttons 8 and 9 (upstream drops them as a parse error).
     /// Back (side) mouse button.
     Back,
-    // klack: see Back.
+    // ttyak: see Back.
     /// Forward (side) mouse button.
     Forward,
 }

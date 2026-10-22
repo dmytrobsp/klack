@@ -1,5 +1,5 @@
 #![deny(unused_imports, unused_must_use)]
-// klack: upstream's unused parentheses (terminal/sys/unix.rs) would warn in every klack build
+// ttyak: upstream's unused parentheses (terminal/sys/unix.rs) would warn in every ttyak build
 #![allow(unused_parens)]
 
 //! # Cross-platform Terminal Manipulation Library

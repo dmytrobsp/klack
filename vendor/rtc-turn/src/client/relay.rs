@@ -307,7 +307,7 @@ impl Relay<'_> {
     /// Fails if the refresh request cannot be sent.
     pub fn close(&mut self, now: Instant) -> Result<()> {
         self.refresh_allocation(now, Duration::from_secs(0))
-            .map(|_| ()) // klack: it returns the id now
+            .map(|_| ()) // ttyak: it returns the id now
     }
 
     fn create_permissions(
@@ -358,11 +358,11 @@ impl Relay<'_> {
 
     pub(super) fn handle_create_permission_response(
         &mut self,
-        now: Instant, // klack: for a retry
+        now: Instant, // ttyak: for a retry
         res: Message,
         peer_addr_opt: Option<SocketAddr>,
     ) -> Result<()> {
-        // klack: the id the caller was given, also when this answers a retry after a 438.
+        // ttyak: the id the caller was given, also when this answers a retry after a 438.
         let original = self.client.stale_nonce_retries.remove(&res.transaction_id);
         let tid = original.unwrap_or(res.transaction_id);
         if let Some(relay) = self.client.relays.get_mut(&self.relayed_addr) {
@@ -373,7 +373,7 @@ impl Relay<'_> {
                     Error::Other(format!("{}", res.typ))
                 } else if code.code == CODE_STALE_NONCE {
                     relay.set_nonce_from_msg(&res);
-                    // klack: send it again at once with the new nonce (once), keeping the
+                    // ttyak: send it again at once with the new nonce (once), keeping the
                     // permission, instead of failing it.
                     let addrs: Vec<SocketAddr> = match peer_addr_opt {
                         Some(peer_addr) => vec![peer_addr],
@@ -381,14 +381,14 @@ impl Relay<'_> {
                     };
                     if original.is_none() && !addrs.is_empty() {
                         debug!("CreatePermission: 438, sending it again with the new nonce");
-                        // klack: a retry that cannot be sent fails the permission as before,
-                        // klack: instead of returning with the permission waiting forever.
+                        // ttyak: a retry that cannot be sent fails the permission as before,
+                        // ttyak: instead of returning with the permission waiting forever.
                         match self.create_permissions(now, &addrs, peer_addr_opt) {
                             Ok(retry) => {
                                 self.client.stale_nonce_retries.insert(retry, tid);
                                 return Ok(());
                             }
-                            Err(e) => warn!("CreatePermission: 438, but it cannot be sent again: {e}"), // klack
+                            Err(e) => warn!("CreatePermission: 438, but it cannot be sent again: {e}"), // ttyak
                         }
                     }
                     Error::ErrTryAgain
@@ -398,8 +398,8 @@ impl Relay<'_> {
                 if let Some(peer_addr) = peer_addr_opt {
                     self.client
                         .events
-                        .push_back(Event::CreatePermissionError(tid, err)); // klack: tid
-                    // klack: looked up again (a failed retry above borrowed the client)
+                        .push_back(Event::CreatePermissionError(tid, err)); // ttyak: tid
+                    // ttyak: looked up again (a failed retry above borrowed the client)
                     if let Some(relay) = self.client.relays.get_mut(&self.relayed_addr) {
                         relay.perm_map.remove(&peer_addr);
                     }
@@ -411,7 +411,7 @@ impl Relay<'_> {
                 self.client
                     .events
                     .push_back(Event::CreatePermissionResponse(
-                        tid, // klack: tid
+                        tid, // ttyak: tid
                         peer_addr,
                     ));
             }
@@ -422,7 +422,7 @@ impl Relay<'_> {
         }
     }
 
-    // klack: returns the request's id, for a retry after a 438.
+    // ttyak: returns the request's id, for a retry after a 438.
     pub(super) fn refresh_allocation(
         &mut self,
         now: Instant,
@@ -445,7 +445,7 @@ impl Relay<'_> {
                 Box::new(FINGERPRINT),
             ])?;
 
-            // klack: the id is returned, and the lifetime kept with the transaction
+            // ttyak: the id is returned, and the lifetime kept with the transaction
             Ok(self.client.perform_transaction(
                 now,
                 &msg,
@@ -461,9 +461,9 @@ impl Relay<'_> {
         &mut self,
         now: Instant,
         res: Message,
-        lifetime: Duration, // klack: what the request asked for
+        lifetime: Duration, // ttyak: what the request asked for
     ) -> Result<()> {
-        // klack: whether this answers a retry after a 438, which is not retried again
+        // ttyak: whether this answers a retry after a 438, which is not retried again
         let original = self.client.stale_nonce_retries.remove(&res.transaction_id);
         let mut stale = false;
         let mut released = false;
@@ -476,7 +476,7 @@ impl Relay<'_> {
                 } else if code.code == CODE_STALE_NONCE {
                     relay.set_nonce_from_msg(&res);
                     //Error::ErrTryAgain
-                    stale = true; // klack
+                    stale = true; // ttyak
                     Ok(())
                 } else {
                     Err(Error::Other(format!("{} (error {})", res.typ, code)))
@@ -510,7 +510,7 @@ impl Relay<'_> {
             debug!("allocation released; relay {} dropped", self.relayed_addr);
         }
 
-        // klack: send the Refresh again at once with the new nonce (once), for the same lifetime.
+        // ttyak: send the Refresh again at once with the new nonce (once), for the same lifetime.
         // Upstream only kept the nonce; the next refresh, half a lifetime later, came too late.
         if stale && original.is_none() {
             debug!("Refresh: 438, sending it again with the new nonce");
@@ -547,7 +547,7 @@ impl Relay<'_> {
         nonce: Nonce,
         long_term_integrity_key: Vec<u8>,
     ) -> Result<TransactionId> {
-        // klack: returns the request's id, for a retry after a 438
+        // ttyak: returns the request's id, for a retry after a 438
         let (msg, turn_server_addr) = {
             let setters: Vec<Box<dyn Setter + '_>> = vec![
                 Box::new(TransactionId::new()),
@@ -590,7 +590,7 @@ impl Relay<'_> {
         res: Message,
         bind_addr: SocketAddr,
     ) -> Result<()> {
-        // klack: whether this answers a retry after a 438, which is not retried again
+        // ttyak: whether this answers a retry after a 438, which is not retried again
         let original = self.client.stale_nonce_retries.remove(&res.transaction_id);
         if let Some(relay) = self.client.relays.get_mut(&self.relayed_addr) {
             let result = if res.typ.class == CLASS_ERROR_RESPONSE {
@@ -610,7 +610,7 @@ impl Relay<'_> {
                 Ok(())
             };
 
-            // klack: on a 438, send the ChannelBind again at once with the new nonce (once), for
+            // ttyak: on a 438, send the ChannelBind again at once with the new nonce (once), for
             // the same channel, and keep the binding meanwhile. Upstream deleted it, so the peer's
             // data, still relayed on that channel, was dropped, and a new channel number for the
             // same peer was refused (400).

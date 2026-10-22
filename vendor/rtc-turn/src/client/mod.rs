@@ -177,7 +177,7 @@ pub struct Client {
     transmits: VecDeque<TransportMessage<BytesMut>>,
     events: VecDeque<Event>,
 
-    // klack: requests sent again after a 438 Stale Nonce, each mapped to the id of the request it
+    // ttyak: requests sent again after a 438 Stale Nonce, each mapped to the id of the request it
     // replaces: a second 438 is not retried, and the caller hears of it under the id it was given.
     pub(crate) stale_nonce_retries: HashMap<TransactionId, TransactionId>,
 }
@@ -226,7 +226,7 @@ impl Client {
             relays: HashMap::new(),
             transmits: VecDeque::new(),
             events: VecDeque::new(),
-            stale_nonce_retries: HashMap::new(), // klack
+            stale_nonce_retries: HashMap::new(), // ttyak
         })
     }
 
@@ -354,11 +354,11 @@ impl Client {
                             relayed_addr,
                             client: self,
                         };
-                        relay.handle_create_permission_response(now, msg, peer_addr)?; // klack: now
+                        relay.handle_create_permission_response(now, msg, peer_addr)?; // ttyak: now
                     }
                 }
                 METHOD_REFRESH => {
-                    // klack: and the lifetime it asked for
+                    // ttyak: and the lifetime it asked for
                     if let TransactionType::RefreshRequest(relayed_addr, lifetime) =
                         tr.transaction_type
                     {

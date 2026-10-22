@@ -19,7 +19,7 @@ set -- "$@" \
 lines=$(git --no-pager grep -nIi -e klack -- "$@")
 rc=$?
 [ $rc -le 1 ] || { echo "git grep failed (exit $rc)" >&2; exit 2; }
-lines=$(printf '%s\n' "$lines" | grep -v -e old-name-ok)
+lines=$(printf '%s\n' "$lines" | grep -v -e '^[^:]*:[0-9]*:.*old-name-ok')
 
 names=$(git ls-files -- "$@" | grep -i -e klack)
 

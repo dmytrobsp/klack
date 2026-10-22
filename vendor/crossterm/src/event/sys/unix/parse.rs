@@ -790,7 +790,7 @@ fn parse_cb(cb: u8) -> io::Result<(MouseEventKind, KeyModifiers)> {
         (5, false) => MouseEventKind::ScrollDown,
         (6, false) => MouseEventKind::ScrollLeft,
         (7, false) => MouseEventKind::ScrollRight,
-        // klack: the side buttons (SGR 128 and 129; a drag adds 32).
+        // ttyak: the side buttons (SGR 128 and 129; a drag adds 32).
         (8, false) => MouseEventKind::Down(MouseButton::Back),
         (9, false) => MouseEventKind::Down(MouseButton::Forward),
         (8, true) => MouseEventKind::Drag(MouseButton::Back),
@@ -1110,7 +1110,7 @@ mod tests {
         );
     }
 
-    // klack: the side buttons (SGR 8 and 9) decode as Back and Forward.
+    // ttyak: the side buttons (SGR 8 and 9) decode as Back and Forward.
     #[test]
     fn test_parse_csi_sgr_mouse_side_buttons() {
         let ev = |kind, column, row| {

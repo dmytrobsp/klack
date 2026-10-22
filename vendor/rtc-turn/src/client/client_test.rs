@@ -517,7 +517,7 @@ fn test_refresh_response_reschedules_shorter_lifetime_from_response_time() -> Re
     ])?;
     client
         .relay(relayed_addr)?
-        .handle_refresh_allocation_response(t(30), response, Duration::from_secs(600))?; // klack: lifetime
+        .handle_refresh_allocation_response(t(30), response, Duration::from_secs(600))?; // ttyak: lifetime
 
     assert_eq!(
         client.relay(relayed_addr)?.poll_timeout(),
@@ -568,7 +568,7 @@ fn test_refresh_response_reschedule_applies_interval_cap() -> Result<()> {
     ])?;
     client
         .relay(relayed_addr)?
-        .handle_refresh_allocation_response(t(30), response, Duration::from_secs(600))?; // klack: lifetime
+        .handle_refresh_allocation_response(t(30), response, Duration::from_secs(600))?; // ttyak: lifetime
 
     assert_eq!(client.relay(relayed_addr)?.poll_timeout(), Some(t(50)));
     Ok(())
@@ -630,7 +630,7 @@ fn test_zero_lifetime_response_drops_the_relay() -> Result<()> {
 
     client
         .relay(relayed_addr)?
-        .handle_refresh_allocation_response(t(1), res, Duration::ZERO)?; // klack: lifetime
+        .handle_refresh_allocation_response(t(1), res, Duration::ZERO)?; // ttyak: lifetime
 
     assert!(
         !client.relays.contains_key(&relayed_addr),

@@ -92,7 +92,7 @@ pub fn list(d: &Dirs) -> Vec<String> {
 }
 
 /// The folders of `d.config` holding `session.json` that `list` leaves out because their names cannot be a profile's,
-/// each with why (sorted): sign-ins of an earlier ttyak under a name it no longer takes.
+/// each with why (sorted): sign-ins of an earlier version under a name it no longer takes.
 pub fn skipped(d: &Dirs) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = std::fs::read_dir(&d.config)
         .into_iter()
@@ -371,7 +371,7 @@ mod tests {
 
     #[test]
     fn names_of_earlier_versions_still_work() {
-        // ttyak 0.6 took any folder name: a dot or @ inside one is still a profile.
+        // 0.6 took any folder name: a dot or @ inside one is still a profile.
         for name in ["john.doe", "work.acme", "me@work", "a.b.c", "first.last@work.example", "com10.x", "console.app", "themes.old", "x.con"] {
             assert!(valid_name(name).is_ok(), "{name:?}");
         }

@@ -26,7 +26,7 @@ gzip-compressed; decompress before searching. Labels: OBSERVED (seen in code), I
 | `rooms.request` | `app, channel` | Third-party conference apps (Zoom etc.), **not** huddles. |
 | `rooms.notifyMember`, `huddles.knock`, `huddles.knockResponse`, `huddles.get`, `huddles.history`, `huddles.readiness`, `huddles.update`, `huddles.recording.*`, `rooms.startTranscription` | — | Invites, knocking, metadata, recording, transcripts. |
 
-## Plan for klack (INFERRED, to be verified step by step)
+## Plan for ttyak (INFERRED, to be verified step by step)
 
 1. `rooms.join` with `channel_id` → Chime meeting + attendee (never print `JoinToken`).
 2. Chime signaling: WebSocket to `MediaPlacement.SignalingUrl` with protobuf `SdkSignalFrame`s
@@ -57,10 +57,10 @@ gzip-compressed; decompress before searching. Labels: OBSERVED (seen in code), I
   one send stream `{media_type=AUDIO, track_label="AmazonChimeExpressAudio", attendee_id, stream_id=1,
   group_id=1, framerate=15, max_bitrate_kbps=600, avg_bitrate_bps=400000}`; SUBSCRIBE_ACK carries `sdp_answer`.
 - JOIN_ACK may carry `turn_credentials{username,password,ttl,uris}`; otherwise `TurnControlUrl`.
-- OBSERVED (klack `ctl huddle-signal`, 2026-10-18): with the frames above the real Chime service answers
+- OBSERVED (ttyak `ctl huddle-signal`, 2026-10-18): with the frames above the real Chime service answers
   PING (id 1) → JOIN_ACK (2 TURN uris, ttl 300, video limit 25) → INDEX (num_participants 1) and LEAVE → LEAVE_ACK.
   The server pings; the client must answer PONG with the same id.
-- OBSERVED (klack `ctl huddle-media`, 2026-10-18): WebRTC audio works with webrtc-rs 0.21 using only the
+- OBSERVED (ttyak `ctl huddle-media`, 2026-10-18): WebRTC audio works with webrtc-rs 0.21 using only the
   UDP TURN uri from JOIN_ACK (`RTCIceTransportPolicy::Relay`), an Opus/48000/2 sendrecv track labelled
   `AmazonChimeExpressAudio`, and SUBSCRIBE as above; SUBSCRIBE_ACK's `sdp_answer` is accepted as is.
   Two attendees (A sending a 440 Hz sine, B recording) in one huddle: B's recording has the tone at −20 dB in
@@ -94,7 +94,7 @@ From the SDK source (`DefaultSignalingClient.subscribe`, `DefaultVideoStreamInde
   server sends us a PLI at once and another ~3 s later; answering them gets the first picture to the new
   receiver ~0.25 s after it connects (without: up to the 2 s keyframe interval).
 
-OBSERVED (klack `ctl huddle-media --video-test`): an offer with an H.264 (42e01f, packetization-mode=1)
+OBSERVED (ttyak `ctl huddle-media --video-test`): an offer with an H.264 (42e01f, packetization-mode=1)
 sendrecv section at mid 1 is answered sendrecv H.264; SUBSCRIBE_ACK allocates `{AmazonChimeExpressVideo,
 stream_id 1, group_id 1}`; the other attendee's INDEX then lists `{stream_id 1, group_id 1, attendee_id B,
 max_bitrate_kbps 1000}`; the sender's own INDEX leaves itself out. INDEX can arrive **before** SUBSCRIBE_ACK.
@@ -105,17 +105,17 @@ max_bitrate_kbps 1000}`; the sender's own INDEX leaves itself out. INDEX can arr
   is a Chime **content share**. SDK (`DefaultContentShareController.createContentShareMeetingSessionConfigure`):
   a second session with `attendeeId + "#content"`, `joinToken + "#content"`, the same external user id, and
   `NoVideoDownlinkBandwidthPolicy` (it receives no video).
-- OBSERVED (klack `ctl huddle-media --share-test`): such a session joins with the same rooms.join credentials
+- OBSERVED (ttyak `ctl huddle-media --share-test`): such a session joins with the same rooms.join credentials
   plus the suffix; others' INDEX lists `{attendee_id "<id>#content", external_user_id <same as the person>}`, and
   the content attendee may also appear in AUDIO_STREAM_ID_INFO (muted).
 
 ## Codecs with real clients (2026-10-18)
 
 - OBSERVED: INDEX field 5 `supported_receive_codec_intersection` lists all eight codecs while only full clients are
-  in the meeting, and narrows to `H264_CONSTRAINED_BASELINE_PROFILE` once a client offering only H.264 CB (klack)
-  is subscribed. A real Slack web client (Chrome 155, fake camera) then sends H.264: klack decoded 324 pictures
-  (720×720) of Chrome's fake camera, ~3 s after subscribing. The web client also shows klack's H.264 camera.
-  So VP8/VP9 decoding is not needed while klack is in the call.
+  in the meeting, and narrows to `H264_CONSTRAINED_BASELINE_PROFILE` once a client offering only H.264 CB (ttyak)
+  is subscribed. A real Slack web client (Chrome 155, fake camera) then sends H.264: ttyak decoded 324 pictures
+  (720×720) of Chrome's fake camera, ~3 s after subscribing. The web client also shows ttyak's H.264 camera.
+  So VP8/VP9 decoding is not needed while ttyak is in the call.
 
 ## Invitations (ringing), OBSERVED 2026-10-19
 
@@ -140,8 +140,8 @@ max_bitrate_kbps 1000}`; the sender's own INDEX leaves itself out. INDEX can arr
   - OBSERVED (live): with A **out of** Do Not Disturb, B's DM huddle (`ctl huddle-media`) brought A
     `huddle_thread`, `huddle_invite` (keys `call_id, channel_id, event_ts, free_willy{attendee, meeting},
     is_guest, sender_user_id, team_id, type`, as on 2026-10-19), `sh_room_update`, `sh_room_join` within 2 s;
-    klack rang. B left after 6 s → `sh_room_leave`, `huddle_invite_cancel` (`channel_id, event_ts, team_id,
-    type`) ~8 s later, and klack's ringing note went at once (before its 30 s ring timeout).
+    ttyak rang. B left after 6 s → `sh_room_leave`, `huddle_invite_cancel` (`channel_id, event_ts, team_id,
+    type`) ~8 s later, and ttyak's ringing note went at once (before its 30 s ring timeout).
   - OBSERVED (live): the same with A **snoozed** (`dnd.setSnooze`, ended after): `huddle_thread` and `sh_room_*`
     only — no `huddle_invite`, no `huddle_invite_cancel`. Slack withholds the invitation from an invitee in Do
     Not Disturb on the server (a schedule period counts, V1/V27), so a client in DND has nothing to ring for.
@@ -150,13 +150,13 @@ max_bitrate_kbps 1000}`; the sender's own INDEX leaves itself out. INDEX can arr
 
 ## Huddle lists: live and recent (2026-10-21, VW6)
 
-Research: `slack-rea/notes/huddles-list.md` §1–2. Verified live on the test workspace with klack's
+Research: `slack-rea/notes/huddles-list.md` §1–2. Verified live on the test workspace with ttyak's
 `ctl huddles --shape` (prints keys, types and lengths only), while B was alone in a channel huddle
 (`ctl huddle-media`, synthetic media).
 
 - **Flannel** (the edge API): `api.getFlannelHttpUrl include_external_workspaces=true` → `{ok, url, ttl_seconds}`,
   `url` = `https://edgeapi.slack.com/cache/<team or org>`. Calls are **POST** `<url>/<method>` with a JSON body
-  `{token, …args}` and the `d` cookie (GET answers 405); answers carry `ok`. klack keeps the url for `ttl_seconds`
+  `{token, …args}` and the `d` cookie (GET answers 405); answers carry `ok`. ttyak keeps the url for `ttl_seconds`
   and sends the session only to a `https://*.slack.com` / `*.slack-gov.com` url.
 - OBSERVED: `huddles/list {}` → `{ok, huddles: [object]}`, and `huddles/info {channel_ids: [≤100]}` →
   `{ok, huddles: [object]}` with the **same object** (A, who was not in the huddle, saw it):
@@ -165,7 +165,7 @@ Research: `slack-rea/notes/huddles-list.md` §1–2. Verified live on the test w
   `knocks` {}, `last_invite_status_by_user` {}, `pending_invitees` {}, `locale` (5), `name` (empty),
   `thread_root_ts`, `recording {can_record_summary, is_paused, recording_user, summary, transcript}`.
   No `room_id` (the research note's guess). With no huddle running both answer `{ok, huddles: []}`.
-  klack: `members` = `active_members` − `dropped_members` (as the web client counts them); it reads the
+  ttyak: `members` = `active_members` − `dropped_members` (as the web client counts them); it reads the
   `huddles/list` objects as they are, without asking `huddles/info` again (VW-final).
 - OBSERVED: `huddles.history` items as in the research note (`id, channels [1], channel_type, created_by,
   date_start, date_end, has_ended, name, thread_root_ts, huddle_link, participant_history, participants,
@@ -175,7 +175,7 @@ Research: `slack-rea/notes/huddles-list.md` §1–2. Verified live on the test w
 - OBSERVED: the huddle B was alone in (125 s) was **not** in B's `huddles.history` while it ran nor ~1.5 min after it
   ended, though `huddles.get` had it (`has_ended` true, one person in `participant_history`). INFERRED: huddles
   nobody else joined are left out of the history.
-- Unknown: whether a running huddle with two or more people is in `huddles.history` (with `has_ended` false) — klack
+- Unknown: whether a running huddle with two or more people is in `huddles.history` (with `has_ended` false) — ttyak
   keeps `ended` so a list can leave such items out.
 - OBSERVED (2026-10-21, VW7, `ctl listen` keys only): RTM `sh_room_join` / `sh_room_update` / `sh_room_leave` are
   `{type, user, huddle {channel_id}, room {…}, ts, event_ts}`, `room` with the 37 keys of a `huddle_thread` message's
@@ -203,11 +203,11 @@ Research: `slack-rea/notes/huddles-list.md` §4, re-read in the web client bundl
   channel huddle). Within ~40 s of B leaving: `default_unset`, expiration 0, no call id. So the **server sets the
   state on join and clears it on leave**; the client's renewal only moves the expiry (to 5 minutes ahead), and
   without it someone in a long huddle drops out of "In a huddle" after about 22 minutes.
-- OBSERVED (live, klack's renewal): `users.profile.set` with that form answers ok; while the server's own expiry is
+- OBSERVED (live, ttyak's renewal): `users.profile.set` with that form answers ok; while the server's own expiry is
   later than now+300 the expiry read back stays the server's (unchanged). Not seen: what a renewal does once the
   server's expiry comes within 5 minutes (the test huddles on the test workspace ended after ~10 minutes, before
-  that point). Slack's client sends it regardless, and so does klack.
-- klack: the same renewal while a call is connected and not leaving, with the pref from boot / `pref_change`
+  that point). Slack's client sends it regardless, and so does ttyak.
+- ttyak: the same renewal while a call is connected and not leaving, with the pref from boot / `pref_change`
   (off until Slack says on); `Client::set_huddle_state` refuses any field but `huddle_state*`. A fractional
   `huddle_state_expiration_ts` (what a renewal sends) is read as whole seconds, so it cannot break a profile.
 
@@ -220,7 +220,7 @@ that does not exist, no camera. Shapes and log messages only.
   `failed` ~25 s later; both sessions ended, so the huddle emptied: `sh_room_leave` ×2, then `ended_huddle_update`.
   No AUDIO_STATUS frame, no signaling ERROR, no WebSocket close came first; the signaling was fine. A's log had
   webrtc's `handle_read error: no binding found for channel` every 20 ms from 10 min 0.7 s on: the server kept
-  relaying the meeting's audio on a TURN channel that klack's TURN client no longer knew.
+  relaying the meeting's audio on a TURN channel that ttyak's TURN client no longer knew.
 - OBSERVED (with `rtc_turn=debug`): the relay's lifetime is 600 s; the client refreshes the allocation at 300 s
   and 600 s (`updated lifetime: 600 seconds`) and the channel binding with the first packet sent after 300 s. At
   600 s the binding refresh was answered **438 Stale Nonce** (`bind() failed: try again`); rtc-turn 0.21.1
@@ -232,12 +232,12 @@ that does not exist, no camera. Shapes and log messages only.
 - Ruled out: **silence** (both silent huddles behave the same; one lasted past 11 min silent), a **free-plan
   limit** and **Chime's idle/alone end** (that one arrives as AUDIO_STATUS 410 `MeetingEnded`, which Slack's client
   shows as "We ended your huddle since you were the only one there for a bit"; none came), and a missing
-  **keep-alive**: Slack's client (Chime SDK 3.32) sends nothing periodic klack lacks — klack answers the server's
+  **keep-alive**: Slack's client (Chime SDK 3.32) sends nothing periodic ttyak lacks — ttyak answers the server's
   PINGs, and CLIENT_METRIC frames are optional statistics. (Slack's SDK does send audio all the time: muting
   disables the track — the browser then sends silence — and with no microphone it uses an empty WebAudio device.)
 - OBSERVED (code, Chime SDK): on a lost connection the SDK reconnects — a new signaling connection, JOIN, a new
   peer connection and SUBSCRIBE, with the same join token.
-- klack (VX5): the session does the same (`SessionEvent::Reconnecting`, then `Connected`), keeping mute and camera
+- ttyak (VX5): the session does the same (`SessionEvent::Reconnecting`, then `Connected`), keeping mute and camera
   (also changes made meanwhile; queued audio/video frames are dropped). Every try closes its peer connection and
   signaling, whatever ended it.
   - **Joins again**, once it had been connected: the media connection `failed`, or `disconnected` for 4 s; any
@@ -249,13 +249,13 @@ that does not exist, no camera. Shapes and log messages only.
     connection failing (an error, as before); 3 tries in a row that do not stay up 30 s (0, 2, 4 s apart; a try
     that connects and drops sooner counts as failed); more than 10 reconnects within an hour. In those last two
     cases (a call that had connected, not left by us) the app sends `rooms.leave` with the same args as a leave by
-    hand, once (VX-final). OBSERVED: with a forced drop (`KLACK_HUDDLE_DROP=40`,
+    hand, once (VX-final). OBSERVED: with a forced drop (`TTYAK_HUDDLE_DROP=40`,
   debug builds) B was connected again 3 s later; Slack sent one more `sh_room_join` (no `sh_room_leave`) and the
   huddle went on. In the 13-minute run after the fix, B's binding hit the 438 at 10:00, B joined again 4 s
   after `disconnected` and was connected ~12 s after the loss; A was unaffected and the huddle lasted the whole
   13 min 20 s. Left: the ~12 s gap itself would go with a fix in rtc-turn (retry ChannelBind on 438; the
   allocation refresh's 438 is not retried either).
-- klack (VX5b): rtc-turn 0.21.1 is vendored with that fix (`vendor/rtc-turn`, `TTYAK-PATCH.md`). A 438 to a
+- ttyak (VX5b): rtc-turn 0.21.1 is vendored with that fix (`vendor/rtc-turn`, `TTYAK-PATCH.md`). A 438 to a
   ChannelBind, a CreatePermission or an allocation Refresh is sent again at once with the new nonce, once,
   and the binding and permission stay meanwhile (a Refresh keeps the lifetime it asked for). OBSERVED (11:30
   run, A and B both `ctl huddle-media`, B sending a tone): at 10:00 A's ChannelBind refresh got the 438

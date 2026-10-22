@@ -25,7 +25,7 @@ pub struct WorkspaceSession {
     /// Raw value of the `d` cookie as sent by browsers (already URL-encoded).
     pub cookie_d: String,
     /// Where the session came from, to offer it first when signing in again (none in files
-    /// written before ttyak remembered it).
+    /// written before it was remembered).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<SessionSource>,
 }

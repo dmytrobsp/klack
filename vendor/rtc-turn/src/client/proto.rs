@@ -33,7 +33,7 @@ impl sansio::Protocol<TaggedBytesMut, TaggedBytesMut, ()> for Client {
 
     fn poll_event(&mut self) -> Option<Self::Eout> {
         while let Some(event) = self.tr_map.poll_event() {
-            // klack: a retry after a 438 times out under the id the caller was given.
+            // ttyak: a retry after a 438 times out under the id the caller was given.
             let event = match event {
                 Event::TransactionTimeout(tid) => Event::TransactionTimeout(
                     self.stale_nonce_retries.remove(&tid).unwrap_or(tid),

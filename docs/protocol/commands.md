@@ -1,6 +1,6 @@
 # Slash commands
 
-How klack runs slash commands it does not implement itself (I6), found by probing (2026-10-19):
+How ttyak runs slash commands it does not implement itself (I6), found by probing (2026-10-19):
 
 - `chat.command` with `channel`, `command` (with its `/`), `text` (mentions as `<@U…>`), and `thread_ts` for
   a thread → `{"ok": true, "keep_input": false}`. Slack's built-in commands work server-side this way,

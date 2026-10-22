@@ -292,7 +292,7 @@ fn profile_command(dirs: &Dirs, cmd: ProfileCmd) -> Result<()> {
                     Err(e) => println!("    cannot read its session.json: {e:#}"),
                 }
             }
-            // Sign-ins in a folder whose name ttyak no longer takes as a profile's (an earlier ttyak took any).
+            // Sign-ins in a folder whose name ttyak no longer takes as a profile's (an earlier version took any).
             for (name, why) in profiles::skipped(dirs) {
                 println!("skipped {name}: {why}");
             }

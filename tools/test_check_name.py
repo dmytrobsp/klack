@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "check-name.sh")
-SHELLS = ["/usr/bin/dash", "/usr/bin/bash"]
+SHELLS = [s for s in (shutil.which("dash"), shutil.which("bash")) if s]
 # The old name, built so that this file does not carry it.
 OLD = "k" + "lack"
 
@@ -72,6 +72,12 @@ class CheckName(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertNotIn("site/fill.py:1:", out)
         self.assertIn("site/fill.py:2:", out)
+
+    def test_marker_in_the_path_does_not_excuse_a_line(self):
+        self.write("src/old-name-ok.rs", "x = '%s'\n" % OLD)
+        code, out = self.run_guard("src")
+        self.assertEqual(code, 1)
+        self.assertIn("src/old-name-ok.rs:1:", out)
 
     def test_untracked_files_are_ignored(self):
         self.write("src/a.rs", "ttyak\n")

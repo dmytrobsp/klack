@@ -22,7 +22,7 @@ pub(crate) enum TransactionType {
     AllocateAttempt,
     AllocateRequest(TextAttribute),
     CreatePermissionRequest(RelayedAddr, Option<SocketAddr>),
-    // klack: with the lifetime it asked for, so a retry after a 438 asks for the same.
+    // ttyak: with the lifetime it asked for, so a retry after a 438 asks for the same.
     RefreshRequest(RelayedAddr, Duration),
     ChannelBindRequest(RelayedAddr, SocketAddr),
 }

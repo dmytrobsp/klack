@@ -1,7 +1,7 @@
 # Activity feed (web client, 2026-10-18)
 
 From the bundles (`activityFeedFetcher` = `activity.feed`; generic fetchers convert camelCase args to
-snake_case) and live probes with `klack ctl api`.
+snake_case) and live probes with `ttyak ctl api`.
 
 - `activity.feed mode=chrono_reads_and_unreads types=<comma list> limit=N` → `{ok, items:[…]}`.
   `types` is required; without it, or with an unknown type, the answer is `invalid_arguments`.
@@ -45,7 +45,7 @@ From the web client bundles and live checks on the test workspace (event types a
   (`conversations.mark`, `subscriptions.thread.mark`) → `*_marked` + `activity_updated` (read) + `badge_counts_updated`.
 - Opening an unread item (not a reaction) the client calls **`activity.markRead`** `type`, `feed_ts`, `key` (a `dm`:
   also `ts` = its `feed_ts`) → `{ok}`; Slack marks the conversation/thread read too and pushes the new badge.
-- klack (VX3): the sidebar's Activity row shows that badge, from `client.counts` at start and after a reconnect and
+- ttyak (VX3): the sidebar's Activity row shows that badge, from `client.counts` at start and after a reconnect and
   `badge_counts_updated` in between (one less at once when an unread item is opened here); Enter on an unread item
   sends `activity.markRead`; pushed items go into the Activity view's loaded tabs, deleted ones leave, an invalidation
   loads the shown tab again. A workspace whose counts have no `activity_v2` keeps the old count (the All tab's unread
@@ -76,7 +76,7 @@ together; answers' shapes only) and read from the web client's item parser (`bul
     `list_user_mention_payload {…, mentioned_by}`.
 - The client's tabs: Mentions = the `at_*` types, `keyword`, `list_record_assigned`, `list_user_mentioned`;
   Invitations = the invite types and `quietly_added_to_channel`; Apps = `bot_dm_bundle`; Channels = `channel`.
-- klack (VX3b): the All tab asks for every type the badge counts, so its unread items and the badge agree; Mentions
+- ttyak (VX3b): the All tab asks for every type the badge counts, so its unread items and the badge agree; Mentions
   also lists `unjoined_channel_mention`. Enter: a channel item → the channel at its newest message; an app's item →
   its DM (in the thread); `internal_channel_invite` → its join message; `quietly_added_to_channel` /
   `prejoin_dm_welcome_party_alert` → the conversation; Slack Connect invitations and list items have nowhere to go
