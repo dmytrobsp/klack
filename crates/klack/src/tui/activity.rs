@@ -363,8 +363,11 @@ pub struct Activity {
     pub requested: HashSet<(String, String)>,
     /// Lines of the list above the view.
     pub scroll: usize,
-    /// Bring the selection into view at the next draw (it moved by the keys).
+    /// Bring the selection into view at the next draw (it moved by the keys, or the view was drawn at another size: a
+    /// re-wrap is not a scroll).
     follow: bool,
+    /// The size (columns, rows) of the list at the last draw.
+    size: (u16, u16),
     /// Last drawn area (empty while the view is not shown), for the mouse.
     pub area: Rect,
     /// The list's rows (under the tab bar) at the last draw, and the item each row belongs to.
@@ -805,6 +808,9 @@ impl Activity {
         let Some(cache) = self.cache.take() else { return };
         let (built, owners, shown) = (&cache.built, &cache.owners, &cache.visible);
         let height = list.height as usize;
+        if self.size != (list.width, list.height) {
+            (self.size, self.follow) = ((list.width, list.height), true);
+        }
         // Bring a selection moved by the keys into view (with its date header, when it is the first of its day).
         if std::mem::take(&mut self.follow) {
             if let (Some(first), Some(last)) = (owners.iter().position(|o| *o == Some(self.selected)), owners.iter().rposition(|o| *o == Some(self.selected))) {
@@ -1983,5 +1989,28 @@ mod tests {
         a.scroll = 0;
         draw(&mut a);
         assert_eq!(Some(&a.selected), a.shown.last(), "the bottom one");
+    }
+
+    #[test]
+    fn a_rewrap_keeps_the_selection_on_screen() {
+        let ws = ws();
+        let media = super::super::media::Media::with(ratatui_image::picker::Picker::halfblocks());
+        let it = |key: &str| item(key, Kind::Mention("at_user".into()), "C1", key, None, false, noon(0));
+        let mut a = Activity::default();
+        a.set_items(Tab::All, (1..=40).map(|n| it(&n.to_string())).collect(), None);
+        let draw = |a: &mut Activity, width: u16, height: u16| {
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap().draw(|f| a.draw(f, f.area(), &Here::alone(&ws), true, &media)).unwrap();
+        };
+        draw(&mut a, 100, 30);
+        while a.rows.iter().position(|r| *r == Some(a.selected)).is_none_or(|row| row < 20) {
+            a.move_by(1);
+            draw(&mut a, 100, 30);
+        }
+        let sel = a.selected;
+        for (width, height) in [(100, 14), (50, 14)] {
+            draw(&mut a, width, height);
+            assert_eq!(a.selected, sel, "{width}×{height}: the same item");
+            assert!(a.shown.contains(&sel), "{width}×{height}: on screen");
+        }
     }
 }

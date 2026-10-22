@@ -11034,4 +11034,79 @@ mod tests {
         drawn(&mut app);
         assert_eq!(app.activity.selected, at + 1, "j from there");
     }
+
+    /// Message `text` (`ts`) from U2 arriving live in C1.
+    fn arrives(app: &mut super::App, ts: &str, text: &str) {
+        super::handle_rtm(app, slack_core::rtm::RtmEvent::Event(serde_json::json!({"type": "message", "channel": "C1", "user": "U2", "text": text, "ts": ts})));
+        settle(app, false);
+    }
+
+    #[tokio::test]
+    async fn opening_a_thread_beside_keeps_the_conversation_following() {
+        use super::Focus;
+        use slack_core::types::Message;
+        let (mut app, _net) = with_channels(&["C2", "C1"]);
+        // Messages that wrap in the conversation beside a thread, but not across the whole width.
+        let long = "and some more words so that this message wraps onto further rows once the pane gets narrower than it is now";
+        let m = |k: usize| Message { ts: top_ts(k), user: Some("U2".into()), text: format!("message number {k:03} {long}"), thread_ts: Some(top_ts(k)), reply_count: 1, ..Default::default() };
+        let messages: Vec<Message> = (1..=100).map(m).collect();
+        app.ws.timelines.insert("C1".into(), super::super::state::Timeline { messages: messages.clone(), loaded: true, ..Default::default() });
+        app.jump_to("C1");
+        settle(&mut app, true);
+        app.focus = Focus::Messages;
+        drawn(&mut app);
+        // Up to the second message on screen (the view still at the newest), then Enter: its thread opens beside.
+        for _ in 0..on_screen(&app.messages).len() - 1 {
+            go(&mut app, KeyCode::Char('k'), KeyModifiers::NONE);
+        }
+        drawn(&mut app);
+        let parent = app.messages.selected.clone().unwrap();
+        let root = messages.iter().find(|x| x.ts == parent).unwrap().clone();
+        let reply = Message { ts: format!("{}1", &parent[..parent.len() - 1]), text: "a reply".into(), ..root.clone() };
+        app.ws.threads.insert(super::super::state::thread_key("C1", &parent), super::super::state::Timeline { messages: vec![root, reply], loaded: true, ..Default::default() });
+        go(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        let before = app.messages.area.width;
+        drawn(&mut app);
+        assert!(app.thread.is_some() && app.messages.area.width < before, "the thread beside, the conversation narrower");
+        // B posts in the conversation: it shows beside the thread; the conversation's selection is the parent still, or
+        // none once the arrival pushed it off (never another message).
+        arrives(&mut app, "1900000000.000000", "a brand new arrival");
+        assert!(drawn(&mut app).iter().any(|l| l.contains("a brand new arrival")), "the new message shows");
+        assert!(app.messages.selected.as_ref().is_none_or(|s| *s == parent), "{:?}", app.messages.selected);
+        // The thread closed: still at the newest.
+        go(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        drawn(&mut app);
+        arrives(&mut app, "1900000001.000000", "a second arrival");
+        assert!(drawn(&mut app).iter().any(|l| l.contains("a second arrival")));
+    }
+
+    #[tokio::test]
+    async fn a_reaction_goes_to_the_message_picked_even_when_messages_arrive_meanwhile() {
+        use super::Focus;
+        let (mut app, _net) = with_channels(&["C1"]);
+        long_c1(&mut app, 120, 0);
+        app.jump_to("C1");
+        settle(&mut app, true);
+        app.focus = Focus::Messages;
+        drawn(&mut app);
+        // The top message on screen picked, the view still at the newest.
+        go(&mut app, KeyCode::Char('k'), KeyModifiers::NONE);
+        for _ in 0..on_screen(&app.messages).len() - 1 {
+            go(&mut app, KeyCode::Char('k'), KeyModifiers::NONE);
+        }
+        drawn(&mut app);
+        let picked = app.messages.selected.clone().unwrap();
+        assert_eq!(on_screen(&app.messages).first(), Some(&picked));
+        // ␣, then messages arrive (which-key is drawn meanwhile), then r.
+        go(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
+        drawn(&mut app);
+        for k in 0..3 {
+            arrives(&mut app, &format!("190000000{k}.000000"), &format!("arrival {k}"));
+            drawn(&mut app);
+        }
+        assert_ne!(app.messages.selected.as_deref().map(|s| s != picked.as_str()), Some(true), "never another message");
+        go(&mut app, KeyCode::Char('r'), KeyModifiers::NONE);
+        let target = app.picker.as_ref().map(|p| p.2.clone());
+        assert!(target.is_none() || target == Some(picked.clone()), "the reaction is for {picked} or nothing: {target:?}");
+    }
 }

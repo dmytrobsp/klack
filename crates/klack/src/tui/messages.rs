@@ -173,8 +173,10 @@ pub struct MessagePane {
     /// The selection (or message being edited) last brought into view: it is brought into view
     /// once, when it changes; after that a scroll carries the selection along instead.
     shown: Option<String>,
-    /// The width the lines were last built for.
-    width: usize,
+    /// The size (width of the text, rows) the view was last drawn at.
+    size: (usize, usize),
+    /// The selection a re-wrap left off screen in a pane following the newest: left there until you scroll or move.
+    left: Option<String>,
     /// Back at the newest since the last draw ([`MessagePane::to_bottom`]).
     newest: bool,
     /// Scrolled by the keys or the wheel since the last draw.
@@ -333,6 +335,7 @@ impl MessagePane {
 
     pub fn draw(&mut self, f: &mut Frame, area: Rect, here: &Here, title: &str, timeline: Option<&Timeline>, focused: bool, media: &Media) {
         let ws = here.ws;
+        let following = self.anchor.is_none();
         self.area = area;
         self.links.clear();
         let title = if title.is_empty() { String::new() } else { format!(" {title} ") };
@@ -452,9 +455,15 @@ impl MessagePane {
         let total = lines.len();
         // Bring a new selection (or, from the composer, the message being edited) into view; at another width (lines
         // wrapped again: not a scroll) the selection again.
-        let keep = if focused || self.editing.is_none() { self.selected.clone() } else { self.editing.clone() };
-        if keep != self.shown || self.width != width {
-            (self.shown, self.width) = (None, width);
+        // A re-wrap (another width or height: a resize, a thread opened beside, the composer growing) is not a scroll,
+        // and never changes whether the pane follows the newest: scrolled up, the selection is brought back into view.
+        let rewrap = self.size != (width, height);
+        self.size = (width, height);
+        let (newest, scrolled) = (std::mem::take(&mut self.newest), std::mem::take(&mut self.scrolled));
+        let keeps_selection = focused || self.editing.is_none();
+        let keep = if keeps_selection { self.selected.clone() } else { self.editing.clone() };
+        if keep != self.shown || (rewrap && !following && !scrolled) {
+            self.shown = None;
         }
         if let Some(sel) = keep.as_ref().filter(|_| self.shown.is_none()) {
             if let (Some(first), Some(last)) = (owners.iter().position(|o| o.as_ref() == Some(sel)), owners.iter().rposition(|o| o.as_ref() == Some(sel))) {
@@ -471,22 +480,36 @@ impl MessagePane {
             self.jump_to_new = false;
         }
         self.scroll = self.scroll.min(total.saturating_sub(height));
-        let end = total.saturating_sub(self.scroll);
-        let start = end.saturating_sub(height);
-        // Scrolled off the selection (the keys, the wheel, new messages pushing it up): it follows onto the screen and
-        // the view stays; back at the newest, onto the newest. Not one put there and still on its way.
-        // Nothing selected stands for the newest: scrolled off it, the bottom message on screen.
-        let (newest, scrolled) = (std::mem::take(&mut self.newest), std::mem::take(&mut self.scrolled));
-        let next = match self.selected.as_ref().filter(|_| !self.put) {
-            Some(sel) => super::threads::follow_view(&owners, start, end, sel).map(|next| if newest { order.last().map_or(next, |n| n.to_string()) } else { next }),
-            None if scrolled && (to < order.len() || end < total) => super::threads::view_edge(&owners, start, end, false),
-            None => None,
-        };
-        if let Some(next) = next {
-            if keep == self.selected {
-                self.shown = Some(next.clone());
+        let mut end = total.saturating_sub(self.scroll);
+        let mut start = end.saturating_sub(height);
+        // A selection off screen (not one put there and still on its way):
+        // - scrolled off by you (the keys, the wheel), it follows onto the screen and the view stays; back at the
+        //   newest, onto the newest; with nothing selected (it stands for the newest), the focused pane's bottom message;
+        // - left by a re-wrap of a pane following the newest, it stays where it is until you scroll or move it;
+        // - pushed off a pane following the newest by new messages (not a scroll), it is dropped: none, the newest;
+        // - in a pane scrolled up, anything else (a message above grew) brings it back into view.
+        let off = self.selected.as_ref().filter(|_| !self.put).and_then(|sel| super::threads::follow_view(&owners, start, end, sel).map(|next| (sel.clone(), next)));
+        match off {
+            Some((_, next)) if scrolled || newest => {
+                let next = if newest { order.last().map_or(next, |n| n.to_string()) } else { next };
+                if keeps_selection {
+                    self.shown = Some(next.clone());
+                }
+                (self.selected, self.left) = (Some(next), None);
             }
-            self.selected = Some(next);
+            Some((sel, _)) if self.left.as_ref() == Some(&sel) => {}
+            Some((sel, _)) if following && rewrap => self.left = Some(sel),
+            Some(_) if following => self.selected = None,
+            Some((sel, _)) if keeps_selection => {
+                if let (Some(first), Some(last)) = (owners.iter().position(|o| o.as_ref() == Some(&sel)), owners.iter().rposition(|o| o.as_ref() == Some(&sel))) {
+                    self.scroll = keep_in_view(total, height, self.scroll, first, last).min(total.saturating_sub(height));
+                    end = total.saturating_sub(self.scroll);
+                    start = end.saturating_sub(height);
+                }
+            }
+            Some(_) => {}
+            None if self.selected.is_none() && scrolled && focused && (to < order.len() || end < total) => self.selected = super::threads::view_edge(&owners, start, end, false),
+            None => self.left = None,
         }
         let highlight = Style::default().bg(super::theme::p().selection);
         if focused {
@@ -1775,12 +1798,15 @@ mod tests {
         draw(&mut pane, &t);
         assert_eq!(pane.selected, kept, "the arrival leaves it");
         assert_eq!(on_screen(&pane).last().map(String::as_str), Some("1700000201.000000"), "and shows");
-        // Enough of them to push it off: it stays on screen.
+        assert_eq!(pane.kept_selection(order(&t).last().map(String::as_str)), kept, "on screen: where you are");
+        // Enough of them to push it off: not moved onto a message nobody picked, but dropped (none: the newest), so the
+        // history keeps the newest too (VY16 I1); still following.
         for k in 202..=240 {
             t.upsert(msg(&format!("{}.000000", 1_700_000_000 + k), "U1", &format!("message {k}")));
         }
         draw(&mut pane, &t);
-        assert!(on_screen(&pane).contains(pane.selected.as_ref().unwrap()), "on screen");
+        assert_eq!(pane.selected, None, "dropped");
+        assert_eq!(pane.kept_selection(order(&t).last().map(String::as_str)), None);
         assert_eq!(on_screen(&pane).last().map(String::as_str), Some("1700000240.000000"), "following the newest");
     }
 
@@ -1810,6 +1836,12 @@ mod tests {
         pane.move_selection(&order, -1);
         draw(&mut pane);
         assert_eq!(pane.rows, before, "↑ moves from there");
+        // A pane without the focus (the wheel over it, PgUp from the composer) gets no selection from a scroll.
+        let mut other = MessagePane::default();
+        terminal.draw(|f| other.draw(f, f.area(), &Here::alone(&ws), "t", Some(&t), false, &media)).unwrap();
+        other.scroll_up(3);
+        terminal.draw(|f| other.draw(f, f.area(), &Here::alone(&ws), "t", Some(&t), false, &media)).unwrap();
+        assert_eq!((other.selected.clone(), other.kept_selection(order.last().map(String::as_str))), (None, None), "unfocused: none");
     }
 
     #[test]
@@ -1834,25 +1866,91 @@ mod tests {
         assert_ne!(pane.selected, Some(far));
     }
 
-    #[test]
-    fn a_narrower_pane_keeps_the_selection_on_screen() {
-        // Each message one row 100 wide, two or three 40 wide (a thread opened beside the conversation).
-        let (ws, t) = numbered(200, ", which is long enough to need a second row in a narrow pane");
+    /// 200 messages that take one row 100 wide and two or three 40 wide.
+    fn wrapping() -> (Workspace, Timeline) {
+        numbered(200, ", which is long enough to need a second row in a narrow pane")
+    }
+
+    /// Draw `pane` `width`×`height`.
+    fn draw_at(pane: &mut MessagePane, ws: &Workspace, t: &Timeline, width: u16, height: u16, focused: bool) {
         let media = Media::with(ratatui_image::picker::Picker::halfblocks());
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+        terminal.draw(|f| pane.draw(f, f.area(), &Here::alone(ws), "t", Some(t), focused, &media)).unwrap();
+    }
+
+    #[test]
+    fn a_rewrap_keeps_a_following_pane_following() {
+        // Narrower (a thread opened beside, a resize) or shorter (the composer grows), focused or not.
+        for focused in [true, false] {
+            let (ws, mut t) = wrapping();
+            let draw = |pane: &mut MessagePane, t: &Timeline, w: u16, h: u16, focused: bool| draw_at(pane, &ws, t, w, h, focused);
+            let mut pane = MessagePane::default();
+            draw(&mut pane, &t, 100, 22, true);
+            let mut shown: Vec<String> = pane.rows.iter().flatten().cloned().collect();
+            shown.dedup();
+            let top = shown[1].clone();
+            pane.selected = Some(top.clone());
+            draw(&mut pane, &t, 100, 22, true);
+            assert!(pane.anchor.is_none(), "following before");
+            draw(&mut pane, &t, 40, 22, focused);
+            assert!(pane.anchor.is_none(), "focused {focused}: still following");
+            assert_eq!(pane.selected.as_ref(), Some(&top), "the selection left where it was, not moved");
+            assert_eq!(pane.kept_selection(Some("1700000200.000000")), None, "left behind: the history keeps the newest");
+            t.upsert(msg("1700000201.000000", "U1", "message 201 arrived"));
+            draw(&mut pane, &t, 40, 22, focused);
+            assert!(pane.rows.contains(&Some("1700000201.000000".into())), "focused {focused}: the arrival shows");
+            assert_eq!(pane.selected.as_ref(), Some(&top), "and the selection stays left (not dropped)");
+            draw(&mut pane, &t, 40, 12, focused);
+            assert!(pane.anchor.is_none() && pane.selected.as_ref() == Some(&top), "shorter: the same");
+            // Your next scroll carries it along again.
+            pane.scroll_up(3);
+            draw(&mut pane, &t, 40, 12, focused);
+            assert!(pane.rows.contains(&pane.selected.clone()), "a scroll: on screen again");
+        }
+    }
+
+    #[test]
+    fn a_rewrap_brings_the_selection_back_into_a_pane_scrolled_up() {
+        let (ws, t) = wrapping();
+        let draw = |pane: &mut MessagePane, t: &Timeline, w: u16, h: u16, focused: bool| draw_at(pane, &ws, t, w, h, focused);
         let mut pane = MessagePane::default();
-        let draw = |pane: &mut MessagePane, width: u16| {
-            let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, 22)).unwrap();
-            terminal.draw(|f| pane.draw(f, f.area(), &Here::alone(&ws), "t", Some(&t), true, &media)).unwrap();
-        };
-        draw(&mut pane, 100);
+        draw(&mut pane, &t, 100, 22, true);
+        pane.scroll_up(30);
+        draw(&mut pane, &t, 100, 22, true);
         let mut shown: Vec<String> = pane.rows.iter().flatten().cloned().collect();
         shown.dedup();
         let top = shown[1].clone();
         pane.selected = Some(top.clone());
-        draw(&mut pane, 100);
-        draw(&mut pane, 40);
-        assert_eq!(pane.selected.as_ref(), Some(&top), "the same message selected");
-        assert!(pane.rows.contains(&Some(top)), "and on screen");
+        draw(&mut pane, &t, 100, 22, true);
+        assert!(pane.anchor.is_some(), "not following");
+        for (width, height) in [(40, 22), (40, 12)] {
+            draw(&mut pane, &t, width, height, true);
+            assert_eq!(pane.selected.as_ref(), Some(&top), "{width}×{height}: the same message selected");
+            assert!(pane.rows.contains(&Some(top.clone())), "{width}×{height}: and on screen");
+        }
+    }
+
+    #[test]
+    fn scrolling_while_editing_stays() {
+        // Editing message 198 from the composer (the pane without the focus): selected and being edited.
+        let (ws, t) = numbered(200, "");
+        let media = Media::with(ratatui_image::picker::Picker::halfblocks());
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 22)).unwrap();
+        let mut pane = MessagePane::default();
+        let mut draw = |pane: &mut MessagePane| {
+            terminal.draw(|f| pane.draw(f, f.area(), &Here::alone(&ws), "t", Some(&t), false, &media)).unwrap();
+        };
+        draw(&mut pane);
+        let x = "1700000198.000000".to_string();
+        (pane.selected, pane.editing) = (Some(x.clone()), Some(x.clone()));
+        draw(&mut pane);
+        // PgUp from the composer, to look something up; then any redraw (a tick, the next key).
+        pane.scroll_up(40);
+        draw(&mut pane);
+        let after = pane.rows.clone();
+        draw(&mut pane);
+        assert_eq!(pane.rows, after, "the view stays where PgUp put it");
+        assert_eq!(pane.editing.as_ref(), Some(&x), "still editing it");
     }
 
     #[test]

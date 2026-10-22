@@ -71,8 +71,11 @@ pub struct Huddles {
     keep: Option<String>,
     /// Lines of the list above the view.
     pub scroll: usize,
-    /// Bring the selection into view at the next draw (it moved by the keys).
+    /// Bring the selection into view at the next draw (it moved by the keys, or the view was drawn at another size: a
+    /// re-wrap is not a scroll).
     follow: bool,
+    /// The size (columns, rows) of the list at the last draw.
+    size: (u16, u16),
     /// Last drawn area (empty while the view is not shown), for the mouse.
     pub area: Rect,
     /// The list's rows at the last draw, and what each row belongs to.
@@ -241,6 +244,9 @@ impl Huddles {
             self.selected = self.order.first().cloned();
         }
         let height = inner.height as usize;
+        if self.size != (inner.width, inner.height) {
+            (self.size, self.follow) = ((inner.width, inner.height), true);
+        }
         if std::mem::take(&mut self.follow) {
             if let Some(sel) = &self.selected {
                 if let (Some(first), Some(last)) = (owners.iter().position(|o| o.as_ref() == Some(sel)), owners.iter().rposition(|o| o.as_ref() == Some(sel))) {
@@ -606,5 +612,24 @@ mod tests {
         drawn(&mut h, &ws, 60, 12);
         let shown = on_screen(&h);
         assert!(shown[shown.len() - 2..].contains(h.selected.as_ref().unwrap()), "the bottom one");
+    }
+
+    #[test]
+    fn a_rewrap_keeps_the_selection_on_screen() {
+        let ws = ws();
+        let mut h = Huddles::default();
+        let first = h.reload();
+        h.add_page(first, false, (1..=30).map(|n| past(&format!("R{n}"), "C1", NOW - 3600 * n as i64, 60, &["U2"], &[], None)).collect(), None);
+        drawn(&mut h, &ws, 60, 30);
+        while h.rows.iter().position(|r| r.as_ref() == h.selected.as_ref()).is_none_or(|row| row < 20) {
+            h.move_by(1);
+            drawn(&mut h, &ws, 60, 30);
+        }
+        let sel = h.selected.clone();
+        for (width, height) in [(60, 12), (30, 12)] {
+            drawn(&mut h, &ws, width, height);
+            assert_eq!(h.selected, sel, "{width}×{height}: the same row");
+            assert!(h.rows.contains(&sel), "{width}×{height}: on screen");
+        }
     }
 }

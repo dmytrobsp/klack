@@ -108,8 +108,11 @@ pub struct Threads {
     want_pages: usize,
     /// Lines of the feed above the view.
     pub scroll: usize,
-    /// Bring the selection into view at the next draw (it moved by the keys).
+    /// Bring the selection into view at the next draw (it moved by the keys, or the view was drawn at another size: a
+    /// re-wrap is not a scroll).
     follow: bool,
+    /// The size (columns, rows) of the list at the last draw.
+    size: (u16, u16),
     /// Last drawn area (empty while the view is not shown), for the mouse.
     pub area: Rect,
     /// The feed's rows at the last draw.
@@ -514,6 +517,9 @@ impl Threads {
         }
         if self.selected.as_ref().is_none_or(|s| !self.order.contains(s)) {
             self.selected = self.order.first().cloned();
+        }
+        if self.size != (inner.width, inner.height) {
+            (self.size, self.follow) = ((inner.width, inner.height), true);
         }
         let feed = &self.feed;
         let height = inner.height as usize;
@@ -1086,5 +1092,28 @@ mod tests {
         t.scroll_by(1);
         drawn(&mut t);
         assert_eq!(t.selected, kept);
+    }
+
+    #[test]
+    fn a_rewrap_keeps_the_selection_on_screen() {
+        // Shorter or narrower (a resize): not a scroll, the view goes to the selection instead.
+        let ws = Workspace::default();
+        let media = Media::with(ratatui_image::picker::Picker::halfblocks());
+        let mut t = Threads::default();
+        t.add_page((1..=12).map(|n| thread(n, false)).collect(), false);
+        let draw = |t: &mut Threads, width: u16, height: u16| {
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap().draw(|f| t.draw(f, f.area(), &Here::alone(&ws), true, &media)).unwrap();
+        };
+        draw(&mut t, 100, 30);
+        while t.rows.iter().position(|r| r.as_ref() == t.selected.as_ref()).is_none_or(|row| row < 20) {
+            t.move_by(1);
+            draw(&mut t, 100, 30);
+        }
+        let sel = t.selected.clone();
+        for (width, height) in [(100, 16), (50, 16)] {
+            draw(&mut t, width, height);
+            assert_eq!(t.selected, sel, "{width}×{height}: the same message");
+            assert!(t.rows.contains(&sel), "{width}×{height}: on screen");
+        }
     }
 }
