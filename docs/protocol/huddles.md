@@ -237,9 +237,17 @@ that does not exist, no camera. Shapes and log messages only.
   disables the track — the browser then sends silence — and with no microphone it uses an empty WebAudio device.)
 - OBSERVED (code, Chime SDK): on a lost connection the SDK reconnects — a new signaling connection, JOIN, a new
   peer connection and SUBSCRIBE, with the same join token.
-- klack (VX5): the session does the same. A media connection that is `failed`, or `disconnected` for 4 s, makes it
-  join again (`SessionEvent::Reconnecting`, then `Connected`), keeping mute and camera; up to 3 tries in a row that
-  do not connect (0, 2, 4 s apart), then it ends as before. OBSERVED: with a forced drop (`KLACK_HUDDLE_DROP=40`,
+- klack (VX5): the session does the same (`SessionEvent::Reconnecting`, then `Connected`), keeping mute and camera
+  (also changes made meanwhile; queued audio/video frames are dropped). Every try closes its peer connection and
+  signaling, whatever ended it.
+  - **Joins again**, once it had been connected: the media connection `failed`, or `disconnected` for 4 s; any
+    error of a connection or of a try — a signaling ERROR frame, a WebSocket error or failed send, the signaling
+    not opening within 15 s, JOIN_ACK/SUBSCRIBE_ACK missing or timing out (15 s).
+  - **Ends the call**: we leave (a leave during a try's setup aborts it at once and sends LEAVE if JOIN went
+    out; during the wait between tries it just stops); LEAVE_ACK; the server closing the signaling WebSocket
+    (close frame or end of stream — how a meeting end arrives); the media's channels closing; the very first
+    connection failing (an error, as before); 3 tries in a row that do not stay up 30 s (0, 2, 4 s apart; a try
+    that connects and drops sooner counts as failed); more than 10 reconnects within an hour. OBSERVED: with a forced drop (`KLACK_HUDDLE_DROP=40`,
   debug builds) B was connected again 3 s later; Slack sent one more `sh_room_join` (no `sh_room_leave`) and the
   huddle went on. In the 13-minute run after the fix, B's binding hit the 438 at 10:00, B joined again 4 s
   after `disconnected` and was connected ~12 s after the loss; A was unaffected and the huddle lasted the whole

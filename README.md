@@ -358,8 +358,12 @@ invitation at all, so nothing rings — as in Slack's own app.
 If a huddle's connection is lost (a network change, or the media relay dropping it — on Slack's
 servers that can happen about 10 minutes into a call), klack joins again by itself, as Slack's app
 does: the status line says "huddle connection lost — joining again…", then "back in the huddle", usually
-a few seconds later; mute and camera stay as they were. After three tries that do not connect, you are
-out of the huddle.
+a few seconds later; mute and camera stay as they were (also when changed meanwhile). Once you were
+connected, any trouble with the connection joins again: the media failing or staying disconnected for
+4 s, a signaling error from the server, a broken signaling socket. The call ends when you leave (also while
+it is joining again), when the server closes the signaling connection (the huddle ended, or you were
+removed), when the very first join fails, after three tries in a row that do not stay up for 30 s
+(0, 2 and 4 s apart), or after more than ten reconnects within an hour.
 
 Clicking a desktop notification (Linux desktops with an XDG notification server) opens its
 conversation in klack — a thread reply opens the thread with the reply selected — for 30

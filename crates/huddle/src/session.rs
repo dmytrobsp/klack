@@ -300,6 +300,64 @@ pub fn reconnect_delay(tries_failed: u32) -> Option<Duration> {
     (tries_failed < MAX_RECONNECT_TRIES).then(|| if tries_failed == 0 { Duration::ZERO } else { Duration::from_secs(2u64 << (tries_failed - 1)) })
 }
 
+/// A connection that stayed up this long was a success: the count of failed tries starts again.
+pub const STABLE_AFTER: Duration = Duration::from_secs(30);
+
+/// At most this many reconnects within an hour; one more ends the call (a link that keeps
+/// dropping). A long call whose relay drops every ~10 minutes stays well below it.
+pub const MAX_RECONNECTS_PER_HOUR: usize = 10;
+
+/// What to do after a connection ended.
+enum Step {
+    /// The session is over (we left, or the server ended it).
+    Done,
+    /// The session ends with this error.
+    Fail(anyhow::Error),
+    /// Join again after `delay`.
+    Retry { delay: Duration, why: String },
+}
+
+/// The try counting of [`run`]: failed tries in a row (a try that never connected, or did not
+/// stay up [`STABLE_AFTER`]) and the reconnects of the last hour.
+#[derive(Default)]
+struct Retries {
+    ever_connected: bool,
+    in_a_row: u32,
+    recent: std::collections::VecDeque<std::time::Instant>,
+}
+
+impl Retries {
+    /// After a connection ended with `result`, having been connected for `connected_for`.
+    fn next(&mut self, result: Result<Outcome>, connected_for: Option<Duration>, now: std::time::Instant) -> Step {
+        self.ever_connected |= connected_for.is_some();
+        let why = match result {
+            Ok(Outcome::Over) => return Step::Done,
+            Ok(Outcome::Lost(why)) => why,
+            // The first connection failing is an error at once, as before reconnecting existed.
+            Err(e) if !self.ever_connected => return Step::Fail(e),
+            // After that, any error of a connection or a try (signaling error, socket error,
+            // timeout) counts like a lost connection.
+            Err(e) => e.to_string(),
+        };
+        if connected_for.is_some_and(|d| d >= STABLE_AFTER) {
+            self.in_a_row = 0;
+        } else {
+            self.in_a_row += 1;
+        }
+        let Some(delay) = reconnect_delay(self.in_a_row) else {
+            return Step::Fail(anyhow!("huddle connection lost ({why}); {MAX_RECONNECT_TRIES} tries to join again did not stay up"));
+        };
+        while self.recent.front().is_some_and(|t| now.saturating_duration_since(*t) >= Duration::from_secs(3600)) {
+            self.recent.pop_front();
+        }
+        if self.recent.len() >= MAX_RECONNECTS_PER_HOUR {
+            return Step::Fail(anyhow!("huddle connection lost ({why}); more than {MAX_RECONNECTS_PER_HOUR} reconnects within an hour"));
+        }
+        self.recent.push_back(now);
+        Step::Retry { delay, why }
+    }
+}
+
 /// What a session keeps across the connections it makes (a reconnect is a new connection).
 struct Shared {
     muted: bool,
@@ -339,30 +397,16 @@ enum Outcome {
 /// webrtc-rs' TURN client (rtc-turn 0.21.1) then drops the binding instead of retrying, so the
 /// relayed media stops (docs/protocol/huddles.md, VX5).
 async fn run(creds: Credentials, mut shared: Shared) -> Result<()> {
-    let mut ever_connected = false;
-    let mut tries_failed = 0u32;
+    let mut retries = Retries::default();
     loop {
-        let mut connected = false;
-        let result = connect(&creds, &mut shared, &mut connected).await;
-        ever_connected |= connected;
-        if connected {
-            tries_failed = 0;
-        }
-        let why = match result {
-            Ok(Outcome::Over) => return Ok(()),
-            Ok(Outcome::Lost(why)) => why,
-            // The first connection failing is an error (as before); while reconnecting, a try
-            // that fails counts as one more failed try.
-            Err(e) if !ever_connected => return Err(e),
-            Err(e) => e.to_string(),
+        let mut connected_at: Option<tokio::time::Instant> = None;
+        let result = connect(&creds, &mut shared, &mut connected_at).await;
+        let (delay, why) = match retries.next(result, connected_at.map(|t| t.elapsed()), std::time::Instant::now()) {
+            Step::Done => return Ok(()),
+            Step::Fail(e) => return Err(e),
+            Step::Retry { delay, why } => (delay, why),
         };
-        if !connected && ever_connected {
-            tries_failed += 1;
-        }
-        let Some(delay) = reconnect_delay(tries_failed) else {
-            return Err(anyhow!("huddle connection lost ({why}); reconnecting failed"));
-        };
-        tracing::warn!(%why, tries_failed, "huddle connection lost; joining again");
+        tracing::warn!(%why, tries_failed = retries.in_a_row, "huddle connection lost; joining again");
         let _ = shared.events.send(SessionEvent::Reconnecting);
         // A leave asked for meanwhile ends it; nothing else waits (microphone frames are stale).
         let wait = tokio::time::sleep(delay);
@@ -389,22 +433,71 @@ fn keep_for_next_connection(shared: &mut Shared, cmd: Command) {
     }
 }
 
+/// The most a signaling connection may take to open.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// `step` (a part of joining), unless a leave comes first: Leave (or the session going away)
+/// aborts it at once (`None`); mute and camera changes meanwhile wait in `pending`, audio and
+/// video frames are dropped.
+async fn unless_left<T>(step: impl std::future::Future<Output = Result<T>>, commands: &mut mpsc::UnboundedReceiver<Command>, pending: &mut Vec<Command>) -> Result<Option<T>> {
+    tokio::pin!(step);
+    loop {
+        tokio::select! {
+            r = &mut step => return r.map(Some),
+            cmd = commands.recv() => match cmd {
+                Some(Command::Leave) | None => return Ok(None),
+                Some(Command::Pcm(_) | Command::Video(..)) => {}
+                Some(cmd) => pending.push(cmd),
+            },
+        }
+    }
+}
+
 /// One connection: signaling, JOIN, media, SUBSCRIBE, then frames until it is over or lost.
-/// `connected` is set once media flows.
-async fn connect(creds: &Credentials, shared: &mut Shared, connected: &mut bool) -> Result<Outcome> {
+/// `connected_at` is set once media flows. Whatever ends it, its peer connection and signaling
+/// are closed before it returns.
+async fn connect(creds: &Credentials, shared: &mut Shared, connected_at: &mut Option<tokio::time::Instant>) -> Result<Outcome> {
+    let mut pending = Vec::new();
+    let opening = async { tokio::time::timeout(CONNECT_TIMEOUT, Signaling::connect(creds)).await.map_err(|_| anyhow!("signaling connect timed out"))? };
+    let Some(mut sig) = unless_left(opening, &mut shared.commands, &mut pending).await? else {
+        return Ok(Outcome::Over);
+    };
+    let mut media: Option<Media> = None;
+    let result = on_signaling(creds, shared, connected_at, &mut sig, &mut media, pending).await;
+    if let Some(media) = media {
+        media.close().await;
+    }
+    sig.close().await;
+    result
+}
+
+/// [`connect`] once the signaling is open; the peer connection it makes goes into `media_slot`.
+async fn on_signaling(creds: &Credentials, shared: &mut Shared, connected_at: &mut Option<tokio::time::Instant>, sig: &mut Signaling, media_slot: &mut Option<Media>, mut pending: Vec<Command>) -> Result<Outcome> {
     let Shared { muted, send_video, receive_video, keyframe, commands, events, audio, video, drop_after } = shared;
     let receive_video = *receive_video;
-    let mut sig = Signaling::connect(creds).await?;
-    sig.send(&signaling::join_frame(audio_session_id())).await?;
-    let mut earlier = Vec::new();
-    let ack = expect_keeping(&mut sig, Type::JoinAck, &mut earlier).await?;
-    let limit = ack.joinack.as_ref().and_then(|a| a.video_subscription_limit).map_or(MAX_VIDEOS, |l| (l as usize).min(MAX_VIDEOS));
-    let turn = ack.joinack.and_then(|a| a.turn_credentials).ok_or_else(|| anyhow!("JOIN_ACK without TURN credentials"))?;
-    let (mut media, offer) = Media::offer(&turn, *send_video, keyframe.clone()).await?;
-    // One entry per video section: just the camera's, which is 0.
-    let receive = receive_ids(true, &[]);
-    sig.send(&signaling::subscribe_frame(offer, &creds.meeting.media_placement.audio_host_url, &creds.attendee.attendee_id, *muted, *send_video, receive)).await?;
-    let suback = expect_keeping(&mut sig, Type::SubscribeAck, &mut earlier).await?.suback.unwrap_or_default();
+    let (joined_muted, joined_camera) = (*muted, *send_video);
+    // Joining: a leave meanwhile aborts it at once (and says LEAVE if JOIN went out).
+    let joining = async {
+        sig.send(&signaling::join_frame(audio_session_id())).await?;
+        let mut earlier = Vec::new();
+        let ack = expect_keeping(sig, Type::JoinAck, &mut earlier).await?;
+        let limit = ack.joinack.as_ref().and_then(|a| a.video_subscription_limit).map_or(MAX_VIDEOS, |l| (l as usize).min(MAX_VIDEOS));
+        let turn = ack.joinack.and_then(|a| a.turn_credentials).ok_or_else(|| anyhow!("JOIN_ACK without TURN credentials"))?;
+        let (media, offer) = Media::offer(&turn, joined_camera, keyframe.clone()).await?;
+        let media = media_slot.insert(media);
+        // One entry per video section: just the camera's, which is 0.
+        let receive = receive_ids(true, &[]);
+        sig.send(&signaling::subscribe_frame(offer, &creds.meeting.media_placement.audio_host_url, &creds.attendee.attendee_id, joined_muted, joined_camera, receive)).await?;
+        let suback = expect_keeping(sig, Type::SubscribeAck, &mut earlier).await?.suback.unwrap_or_default();
+        let answer = suback.sdp_answer.clone().ok_or_else(|| anyhow!("SUBSCRIBE_ACK without an SDP answer"))?;
+        media.accept(answer).await?;
+        Ok((limit, earlier, suback))
+    };
+    let Some((limit, earlier, suback)) = unless_left(joining, commands, &mut pending).await? else {
+        let _ = tokio::time::timeout(Duration::from_secs(2), sig.send(&signaling::frame(Type::Leave))).await;
+        return Ok(Outcome::Over);
+    };
+    let media = media_slot.as_mut().ok_or_else(|| anyhow!("no media after joining"))?;
     // The last INDEX before SUBSCRIBE_ACK still says who is sending video.
     let mut sources = earlier.iter().rev().find_map(|f| f.index.as_ref()).map(video_sources).unwrap_or_default();
     if !sources.is_empty() {
@@ -415,8 +508,6 @@ async fn connect(creds: &Credentials, shared: &mut Shared, connected: &mut bool)
         let _ = events.send(SessionEvent::SendingVideo { stream_id });
     }
     let mut ssrc_streams: std::collections::HashMap<u32, u32> = suback.tracks.iter().filter_map(|t| Some((t.ssrc?, t.stream_id?))).collect();
-    let answer = suback.sdp_answer.ok_or_else(|| anyhow!("SUBSCRIBE_ACK without an SDP answer"))?;
-    media.accept(answer).await?;
 
     // Receiving video: one receive-only section per subscribed stream; a change means a new
     // offer in a new SUBSCRIBE (one at a time: a change meanwhile waits for its ACK).
@@ -434,15 +525,15 @@ async fn connect(creds: &Credentials, shared: &mut Shared, connected: &mut bool)
     let mut pcm = vec![0i16; FRAME_SAMPLES * 6];
     // Since when the media connection is `disconnected` (it may come back).
     let mut disconnected_since: Option<tokio::time::Instant> = None;
-    let mut connected_since: Option<tokio::time::Instant> = None;
     // Frames queued while connecting are stale: drop them, keep what they set.
     while let Ok(cmd) = commands.try_recv() {
+        pending.push(cmd);
+    }
+    for cmd in pending {
         match cmd {
             Command::Leave => {
                 sig.send(&signaling::frame(Type::Leave)).await?;
-                let _ = tokio::time::timeout(Duration::from_secs(3), expect(&mut sig, Type::LeaveAck)).await;
-                media.close().await;
-                sig.close().await;
+                let _ = tokio::time::timeout(Duration::from_secs(3), expect(sig, Type::LeaveAck)).await;
                 return Ok(Outcome::Over);
             }
             Command::Mute(m) if m != *muted => {
@@ -472,7 +563,7 @@ async fn connect(creds: &Credentials, shared: &mut Shared, connected: &mut bool)
             }
         }
         let lost_at = disconnected_since.map(|t| t + DISCONNECTED_GRACE);
-        let drop_at = connected_since.and_then(|t| Some(t + (*drop_after)?));
+        let drop_at = connected_at.and_then(|t| Some(t + (*drop_after)?));
         tokio::select! {
             Some(f) = media.frames.recv() => {
                 let stream_id = ssrc_streams.get(&f.ssrc).copied().unwrap_or_default();
@@ -486,16 +577,15 @@ async fn connect(creds: &Credentials, shared: &mut Shared, connected: &mut bool)
                 match state {
                     S::Connected => {
                         disconnected_since = None;
-                        if !*connected {
-                            *connected = true;
-                            connected_since = Some(tokio::time::Instant::now());
+                        if connected_at.is_none() {
+                            *connected_at = Some(tokio::time::Instant::now());
                             keyframe.store(true, Ordering::Relaxed);
                             let _ = events.send(SessionEvent::Connected);
                         }
                     }
                     S::Disconnected => { disconnected_since.get_or_insert_with(tokio::time::Instant::now); }
                     // Lost before it ever connected: an error (the first try) or a failed try.
-                    S::Failed | S::Closed if !*connected => return Err(anyhow!("media connection {state}")),
+                    S::Failed | S::Closed if connected_at.is_none() => return Err(anyhow!("media connection {state}")),
                     S::Failed | S::Closed => break Outcome::Lost(format!("media connection {state}")),
                     _ => {}
                 }
@@ -570,12 +660,12 @@ async fn connect(creds: &Credentials, shared: &mut Shared, connected: &mut bool)
                 }
             }
             cmd = commands.recv() => match cmd {
-                Some(Command::Pcm(frame)) if !*muted && *connected && frame.len() == FRAME_SAMPLES => {
+                Some(Command::Pcm(frame)) if !*muted && connected_at.is_some() && frame.len() == FRAME_SAMPLES => {
                     let n = encoder.encode(&frame, &mut out)?;
                     media.send_opus(out[..n].to_vec(), Duration::from_millis(20)).await?;
                 }
                 Some(Command::Pcm(_)) => {}
-                Some(Command::Video(access_unit, duration)) if *connected => media.send_h264(access_unit, duration).await?,
+                Some(Command::Video(access_unit, duration)) if connected_at.is_some() => media.send_h264(access_unit, duration).await?,
                 Some(Command::Video(..)) => {}
                 Some(Command::Camera(on)) if on != *send_video => {
                     *send_video = on;
@@ -592,14 +682,12 @@ async fn connect(creds: &Credentials, shared: &mut Shared, connected: &mut bool)
                 Some(Command::Leave) | None => {
                     sig.send(&signaling::frame(Type::Leave)).await?;
                     // Wait briefly for LEAVE_ACK so the server drops us at once.
-                    let _ = tokio::time::timeout(Duration::from_secs(3), expect(&mut sig, Type::LeaveAck)).await;
+                    let _ = tokio::time::timeout(Duration::from_secs(3), expect(sig, Type::LeaveAck)).await;
                     break Outcome::Over;
                 }
             },
         }
     };
-    media.close().await;
-    sig.close().await;
     Ok(outcome)
 }
 
@@ -695,6 +783,98 @@ mod tests {
         assert_eq!(reconnect_delay(1), Some(Duration::from_secs(2)));
         assert_eq!(reconnect_delay(2), Some(Duration::from_secs(4)));
         assert_eq!(reconnect_delay(MAX_RECONNECT_TRIES), None, "then the session ends");
+    }
+
+    /// The try counting of `run`, fed made-up connection outcomes.
+    #[test]
+    fn retries_count_tries_that_do_not_stay_up() {
+        let t0 = std::time::Instant::now();
+        let at = |s: u64| t0 + Duration::from_secs(s);
+        let lost = || Ok(Outcome::Lost("lost".into()));
+        let long = Some(STABLE_AFTER);
+        let short = Some(Duration::from_secs(5));
+        let delay = |s: Step| match s {
+            Step::Retry { delay, .. } => Some(delay),
+            _ => None,
+        };
+
+        // The first connection failing is an error at once; leaving is the end.
+        assert!(matches!(Retries::default().next(Err(anyhow!("no")), None, at(0)), Step::Fail(_)));
+        assert!(matches!(Retries::default().next(Ok(Outcome::Over), long, at(0)), Step::Done));
+
+        // A call that ran a while and lost its media: join again at once.
+        let mut r = Retries::default();
+        assert_eq!(delay(r.next(lost(), long, at(600))), Some(Duration::ZERO));
+        // Tries that never connect back off, then the call ends.
+        assert_eq!(delay(r.next(Err(anyhow!("timeout")), None, at(601))), Some(Duration::from_secs(2)));
+        assert_eq!(delay(r.next(Err(anyhow!("timeout")), None, at(603))), Some(Duration::from_secs(4)));
+        assert!(matches!(r.next(Err(anyhow!("timeout")), None, at(607)), Step::Fail(_)));
+
+        // A link that connects and drops again at once is not a success: it ends too.
+        let mut r = Retries::default();
+        assert!(delay(r.next(lost(), long, at(600))).is_some());
+        assert!(delay(r.next(lost(), short, at(610))).is_some());
+        assert!(delay(r.next(lost(), short, at(620))).is_some());
+        assert!(matches!(r.next(lost(), short, at(630)), Step::Fail(_)), "three short ones in a row");
+
+        // Staying up long enough starts the count again…
+        let mut r = Retries::default();
+        assert!(delay(r.next(lost(), long, at(600))).is_some());
+        assert!(delay(r.next(lost(), short, at(610))).is_some());
+        assert_eq!(delay(r.next(lost(), long, at(700))), Some(Duration::ZERO));
+        // …but a link that keeps dropping after each stable spell ends after MAX_RECONNECTS_PER_HOUR in an hour.
+        let mut r = Retries::default();
+        for i in 0..MAX_RECONNECTS_PER_HOUR as u64 {
+            assert!(delay(r.next(lost(), long, at(100 + i * 60))).is_some(), "reconnect {i}");
+        }
+        assert!(matches!(r.next(lost(), long, at(100 + 10 * 60)), Step::Fail(_)));
+        // Ten reconnects spread over hours are fine (a long call with the TURN refresh failing every 10 min).
+        let mut r = Retries::default();
+        for i in 0..30u64 {
+            assert!(delay(r.next(lost(), long, at(600 + i * 600))).is_some(), "reconnect {i}");
+        }
+    }
+
+    #[test]
+    fn commands_while_not_connected_keep_only_their_state() {
+        let (_tx, commands) = mpsc::unbounded_channel();
+        let mut s = Shared {
+            muted: true,
+            send_video: false,
+            receive_video: true,
+            keyframe: Arc::new(AtomicBool::new(false)),
+            commands,
+            events: mpsc::unbounded_channel().0,
+            audio: mpsc::unbounded_channel().0,
+            video: mpsc::unbounded_channel().0,
+            drop_after: None,
+        };
+        keep_for_next_connection(&mut s, Command::Mute(false));
+        keep_for_next_connection(&mut s, Command::Camera(true));
+        keep_for_next_connection(&mut s, Command::Pcm(vec![0; FRAME_SAMPLES]));
+        keep_for_next_connection(&mut s, Command::Video(vec![1, 2], Duration::from_millis(66)));
+        assert!(!s.muted && s.send_video);
+        keep_for_next_connection(&mut s, Command::Mute(true));
+        keep_for_next_connection(&mut s, Command::Camera(false));
+        assert!(s.muted && !s.send_video);
+    }
+
+    #[tokio::test]
+    async fn a_leave_aborts_joining_at_once() {
+        let (tx, mut commands) = mpsc::unbounded_channel();
+        let mut pending = Vec::new();
+        // A step that never finishes (a hanging connect): the leave ends the wait.
+        tx.send(Command::Mute(false)).unwrap();
+        tx.send(Command::Pcm(vec![0; FRAME_SAMPLES])).unwrap();
+        tx.send(Command::Leave).unwrap();
+        let r = unless_left(std::future::pending::<Result<u32>>(), &mut commands, &mut pending).await.unwrap();
+        assert_eq!(r, None);
+        // What the other commands set waits for the connection; frames are dropped.
+        assert!(matches!(pending.as_slice(), [Command::Mute(false)]));
+        // A step that finishes gives its result; the session going away aborts too.
+        assert_eq!(unless_left(async { Ok(7u32) }, &mut commands, &mut pending).await.unwrap(), Some(7));
+        drop(tx);
+        assert_eq!(unless_left(std::future::pending::<Result<u32>>(), &mut commands, &mut pending).await.unwrap(), None);
     }
 
     #[test]
