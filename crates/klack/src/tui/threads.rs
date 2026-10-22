@@ -625,7 +625,7 @@ mod tests {
         let under = |t: &mut Threads| -> Option<String> {
             drawn(t);
             let at = t.feed.lines.iter().position(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>().contains("You're up to date"))?;
-            t.feed.blocks.iter().find(|b| b.rows.end + 1 == at).map(|b| b.thread_ts.clone())
+            t.feed.blocks.iter().find(|b| b.rows.end + super::super::feed::GAP == at).map(|b| b.thread_ts.clone())
         };
         let mut t = Threads::default();
         t.add_page(three(), false);
@@ -691,16 +691,18 @@ mod tests {
         assert_eq!(rules.len(), 2, "one between each two threads: {:#?}", (0..buf.area.height).map(row).collect::<Vec<_>>());
         for &y in &rules {
             assert_eq!(buf[(t.list.x + 3, y)].fg, p.dim, "dim");
-            for y in [y, y + 1] {
+            let gap = super::super::feed::GAP as u16;
+            for y in y - gap..=y + gap {
                 assert_eq!((t.message_at(5, y), t.thread_at(5, y)), (None, None), "row {y}: neither a message nor a thread");
             }
-            assert_eq!(t.thread_at(5, y + 2), Some(("C1".into(), if y == rules[0] { "2.000100" } else { "3.000100" }.into())), "then the next thread's header");
+            assert_eq!(t.thread_at(5, y + gap + 1), Some(("C1".into(), if y == rules[0] { "2.000100" } else { "3.000100" }.into())), "then the next thread's header");
         }
         // The selection walks the messages and never lands on them.
         for _ in 0..6 {
             let terminal = drawn(&mut t);
             let buf = terminal.backend().buffer();
-            assert!(rules.iter().all(|&y| (y..y + 2).all(|y| buf[(t.list.x + 3, y)].bg != p.selection)), "at {:?}", t.selected);
+            let gap = super::super::feed::GAP as u16;
+            assert!(rules.iter().all(|&y| (y - gap..=y + gap).all(|y| buf[(t.list.x + 3, y)].bg != p.selection)), "at {:?}", t.selected);
             t.move_by(1);
         }
         assert_eq!(t.selected, Some(("C1".into(), "3.000200".into())), "six messages, rows between them skipped");
@@ -716,7 +718,7 @@ mod tests {
         let row = |y: u16| (t.list.x..t.list.right()).map(|x| buf[(x, y)].symbol()).collect::<String>();
         let screen: Vec<String> = (0..buf.area.height).map(row).collect();
         let at = (t.list.y..t.list.bottom()).find(|&y| row(y).contains("You're up to date")).unwrap_or_else(|| panic!("{screen:#?}"));
-        assert!(row(at - 1).trim().is_empty() && row(at - 2).contains("reply 1") && row(at + 2).contains("C1"), "between the unread thread and the first read one: {screen:#?}");
+        assert!(row(at - 1).trim().is_empty() && row(at - 2).trim().is_empty() && row(at - 3).contains("reply 1") && row(at + 3).contains("C1"), "between the unread thread and the first read one: {screen:#?}");
         assert_eq!(buf[(t.list.x + 1, at)].fg, p.dim, "dim");
         assert_eq!((t.message_at(5, at), t.thread_at(5, at)), (None, None), "neither a message nor a thread");
         let rules = (t.list.y..t.list.bottom()).filter(|&y| row(y) == "─".repeat(t.list.width as usize)).count();

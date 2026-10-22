@@ -69,6 +69,9 @@ pub fn layout(here: &Here, entries: &[Entry], width: u16, replies_shown: usize) 
     (feed.lines, feed.owners, feed.blocks)
 }
 
+/// Blank rows on each side of the rule between two threads.
+pub const GAP: usize = 2;
+
 /// [`layout`] with pictures (`thumb_size`, `avatars`), as the view draws it.
 pub fn build(here: &Here, entries: &[Entry], width: u16, replies_shown: usize, unread_first: usize, thumb_size: ThumbSize, avatars: Avatars) -> Feed {
     let mut feed = Feed::default();
@@ -89,20 +92,22 @@ pub fn build(here: &Here, entries: &[Entry], width: u16, replies_shown: usize, u
         }));
         feed.lines.extend(lines);
         feed.owners.extend(owners.into_iter().map(|o| o.map(|ts| (e.channel.clone(), ts))));
-        // Set apart from the next thread by a full-width rule with a blank row on each side (the last one: the blank row).
-        if n + 1 < entries.len() {
-            feed.lines.push(Line::raw(""));
-            feed.owners.push(None);
+        // Set apart from the next thread by a full-width rule with `GAP` blank rows on each side (the last one: a
+        // blank row).
+        let blank = |feed: &mut Feed, rows: usize| {
+            for _ in 0..rows {
+                feed.lines.push(Line::raw(""));
+                feed.owners.push(None);
+            }
+        };
+        if n + 1 == entries.len() {
+            blank(&mut feed, 1);
+            continue;
         }
-        if up_to_date == Some(n + 1) {
-            feed.lines.push(messages::labelled_rule(&tr(UP_TO_DATE), width as usize, dim));
-            feed.owners.push(None);
-        } else if n + 1 < entries.len() {
-            feed.lines.push(Line::styled("─".repeat(width as usize), dim));
-            feed.owners.push(None);
-        }
-        feed.lines.push(Line::raw(""));
+        blank(&mut feed, GAP);
+        feed.lines.push(if up_to_date == Some(n + 1) { messages::labelled_rule(&tr(UP_TO_DATE), width as usize, dim) } else { Line::styled("─".repeat(width as usize), dim) });
         feed.owners.push(None);
+        blank(&mut feed, GAP);
     }
     feed
 }
@@ -348,7 +353,7 @@ mod tests {
         assert_eq!(blocks, [Block { channel: "C1".into(), thread_ts: "1729440000.000100".into(), rows: 0..lines.len() - 1, unread_rows: 0..0 }]);
         // Two threads: one after the other.
         let (lines2, _, blocks) = layout(&Here::alone(&ws), &[entry(5, 0), entry(1, 0)], 60, 2);
-        assert_eq!(blocks[1].rows.start, lines.len() + 2, "the second block starts after the first one's blank row, rule and blank row");
+        assert_eq!(blocks[1].rows.start, lines.len() - 1 + 2 * GAP + 1, "the second block starts after the first one's blank rows, rule and blank rows");
         assert_eq!(blocks[1].rows.end, lines2.len() - 1);
     }
 
@@ -366,13 +371,13 @@ mod tests {
         assert_eq!(blocks.len(), 3);
         assert_eq!(blocks[0].rows.start, 0, "nothing above the first thread");
         for pair in blocks.windows(2) {
-            let rule = pair[0].rows.end + 1;
-            assert!(text[rule - 1].trim().is_empty(), "a blank row right after the thread: {text:#?}");
+            let rule = pair[0].rows.end + GAP;
+            assert!((pair[0].rows.end..rule).all(|r| text[r].trim().is_empty() && owners[r].is_none()), "blank rows right after the thread: {text:#?}");
             assert_eq!(text[rule], "─".repeat(60), "then a full-width rule: {text:#?}");
             assert!(lines[rule].spans.iter().all(|s| s.style.fg == Some(dim)) || lines[rule].style.fg == Some(dim), "dim");
-            assert!(text[rule + 1].trim().is_empty(), "then a blank row: {text:#?}");
-            assert_eq!(pair[1].rows.start, rule + 2, "then the next thread's header");
-            assert_eq!((&owners[rule - 1], &owners[rule], &owners[rule + 1]), (&None, &None, &None), "they belong to no message");
+            assert!((rule + 1..rule + 1 + GAP).all(|r| text[r].trim().is_empty() && owners[r].is_none()), "then blank rows: {text:#?}");
+            assert_eq!(pair[1].rows.start, rule + 1 + GAP, "then the next thread's header");
+            assert_eq!(owners[rule], None, "it belongs to no message");
         }
         let last = blocks[2].rows.end;
         assert_eq!((lines.len(), text[last].trim()), (last + 1, ""), "after the last thread: only the blank row");
@@ -393,14 +398,14 @@ mod tests {
         let (lines, owners, blocks) = layout(&Here::alone(&ws), &with(&[true, true, false, false]), 60, 3);
         let text: Vec<String> = lines.iter().map(plain).collect();
         let at = divider(&lines).expect("drawn");
-        assert_eq!(at, blocks[1].rows.end + 1, "in place of the rule after the last unread thread: {text:#?}");
+        assert_eq!(at, blocks[1].rows.end + GAP, "in place of the rule after the last unread thread: {text:#?}");
         assert!(text[at].starts_with('─') && text[at].ends_with('─') && text[at].chars().count() == 60, "a line across, as the \"new\" one: {:?}", text[at]);
         assert_eq!(lines[at].style.fg, Some(dim));
-        assert!(text[at + 1].trim().is_empty() && blocks[2].rows.start == at + 2, "then the blank row and the first read thread");
+        assert!(text[at + 1].trim().is_empty() && blocks[2].rows.start == at + 1 + GAP, "then the blank rows and the first read thread");
         assert_eq!((&owners[at], blocks.iter().any(|b| b.rows.contains(&at))), (&None, false), "no message's, no thread's");
         assert_eq!(text.iter().filter(|l| l.contains("You're up to date")).count(), 1, "once");
-        assert_eq!(text[blocks[0].rows.end + 1], "─".repeat(60), "the other rules stay plain");
-        assert_eq!(text[blocks[2].rows.end + 1], "─".repeat(60));
+        assert_eq!(text[blocks[0].rows.end + GAP], "─".repeat(60), "the other rules stay plain");
+        assert_eq!(text[blocks[2].rows.end + GAP], "─".repeat(60));
         // Every thread unread, or none: no line.
         for all in [[true, true, true], [false, false, false]] {
             assert_eq!(divider(&layout(&Here::alone(&ws), &with(&all), 60, 3).0), None, "{all:?}");
@@ -409,13 +414,13 @@ mod tests {
         let mut read_here = with(&[true, false]);
         read_here[0].read = true;
         let (lines, _, blocks) = layout(&Here::alone(&ws), &read_here, 60, 3);
-        assert_eq!(divider(&lines), Some(blocks[0].rows.end + 1));
+        assert_eq!(divider(&lines), Some(blocks[0].rows.end + GAP));
         // Where the load put it: a reply since then in a thread below it, or in the last one, leaves it there (that
         // block shows its own "new" line).
         let (lines, _, blocks) = layout_at(&ws, &with(&[true, false, true, false]), 1);
-        assert_eq!(divider(&lines), Some(blocks[0].rows.end + 1));
+        assert_eq!(divider(&lines), Some(blocks[0].rows.end + GAP));
         let (lines, _, blocks) = layout_at(&ws, &with(&[true, false, false, true]), 1);
-        assert_eq!(divider(&lines), Some(blocks[0].rows.end + 1), "a reply in the last thread");
+        assert_eq!(divider(&lines), Some(blocks[0].rows.end + GAP), "a reply in the last thread");
         // None at load: none after a reply either.
         assert_eq!(divider(&layout_at(&ws, &with(&[false, false, true]), 0).0), None);
     }
