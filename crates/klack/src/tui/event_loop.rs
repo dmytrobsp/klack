@@ -25,8 +25,9 @@ use super::terminal::TerminalGuard;
 
 /// Results of background API calls.
 enum Net {
-    /// Slack answered reaction `name` added (`add`) or taken off on message `ts` of `channel`: the error, if refused.
-    Reacted { channel: String, ts: String, name: String, add: bool, error: Option<String> },
+    /// Slack answered reaction `name` added (`add`) or taken off on message `ts` of `channel`: the error, if it failed,
+    /// and whether Slack answered it (`refused`) or it never got there.
+    Reacted { channel: String, ts: String, name: String, add: bool, error: Option<String>, refused: bool },
     /// Muting (`true`) or unmuting a conversation failed.
     MuteFailed { channel: String, muted: bool, error: String },
     /// Marking a conversation unread failed: Slack still has it read.
@@ -660,6 +661,7 @@ impl App {
         let me = self.ws.self_id.clone();
         let Some(had) = self.find_message(&channel, &ts).map(|m| m.reactions.iter().any(|r| r.name == name && r.users.contains(&me))) else { return };
         if !self.reacting.insert((channel.clone(), ts.clone(), name.clone())) {
+            self.status = super::i18n::tr(REACTION_WAITING).into_owned();
             return;
         }
         for msg in self.copies_mut(&channel, &ts) {
@@ -681,8 +683,9 @@ impl App {
         }
         let (client, tx) = (self.client.clone(), self.net.clone());
         tokio::spawn(async move {
-            let error = client.react(&channel, &ts, &name, !had).await.err().map(|e| e.to_string());
-            let _ = tx.send(Net::Reacted { channel, ts, name, add: !had, error });
+            let failed = client.react(&channel, &ts, &name, !had).await.err();
+            let refused = failed.as_ref().is_some_and(|e| e.downcast_ref::<slack_core::api::ApiError>().is_some());
+            let _ = tx.send(Net::Reacted { channel, ts, name, add: !had, error: failed.map(|e| e.to_string()), refused });
         });
     }
 
@@ -4481,6 +4484,10 @@ const FILE_NOT_SHOWN: &str = "klack can't show that file here";
 
 /// Slack refused a reaction (`{why}`: its reason): it is shown as before.
 pub const REACTION_REFUSED: &str = "Slack refused the reaction: {why}";
+/// A reaction that never reached Slack (the network): put back as it was.
+pub const REACTION_UNREACHED: &str = "couldn't reach Slack, the reaction is put back: {why}";
+/// The same reaction again while the last change of it is still on its way.
+pub const REACTION_WAITING: &str = "still waiting for Slack's answer to that reaction";
 
 const CHOOSE_LIVE: &str = "choose a live huddle to join";
 const RECENT_FAILED: &str = "recent huddles failed";
@@ -4501,7 +4508,7 @@ fn spawn_leave(client: slack_core::api::Client, params: Vec<(&'static str, Strin
 }
 
 /// The status notes of links into klack, for `ctl locale-template`.
-pub const LINK_NOTES: &[&str] = &[LINK_GONE, HISTORY_GONE, CONVERSATION_GONE, SEEKING, SEEK_STOPPED, FILE_NOT_SHOWN, super::applink::OPENS_IN_KLACK, REACTION_REFUSED];
+pub const LINK_NOTES: &[&str] = &[LINK_GONE, HISTORY_GONE, CONVERSATION_GONE, SEEKING, SEEK_STOPPED, FILE_NOT_SHOWN, super::applink::OPENS_IN_KLACK, REACTION_REFUSED, REACTION_UNREACHED, REACTION_WAITING];
 
 /// A history request for a conversation (`tl`) failed: it may be asked again (no longer loading). The note to show:
 /// a link's seek in it (`seeking`) ends with its not-found note, anything else says what failed.
@@ -6860,7 +6867,7 @@ fn handle_net(app: &mut App, msg: Net) {
             app.loading = false;
             app.status = e;
         }
-        Net::Reacted { channel, ts, name, add, error } => {
+        Net::Reacted { channel, ts, name, add, error, refused } => {
             app.reacting.remove(&(channel.clone(), ts.clone(), name.clone()));
             let Some(error) = error else { return };
             let me = app.ws.self_id.clone();
@@ -6874,7 +6881,7 @@ fn handle_net(app: &mut App, msg: Net) {
                 }
             }
             if !error.contains("already_reacted") && !error.contains("no_reaction") {
-                app.status = super::i18n::tr(REACTION_REFUSED).replace("{why}", &error);
+                app.status = super::i18n::tr(if refused { REACTION_REFUSED } else { REACTION_UNREACHED }).replace("{why}", &error);
             }
         }
     }
@@ -11614,5 +11621,31 @@ mod tests {
         drawn(&mut app);
         assert_eq!(app.messages.selected, picked);
         assert_ne!(app.status, super::super::i18n::tr(super::HISTORY_GONE));
+    }
+
+    #[tokio::test]
+    async fn a_reaction_that_never_reached_slack_is_undone_and_said_so() {
+        use slack_core::types::Reaction;
+        // Nothing listens at Slack's address.
+        let url = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            format!("http://{}/", l.local_addr().unwrap())
+        };
+        let (mut app, mut net) = feed_app(&url);
+        app.ws.self_id = "U0".into();
+        app.threads.entries.as_mut().unwrap()[0].latest[0].reactions = vec![Reaction { name: "eyes".into(), users: vec!["U2".into()], count: 1 }];
+        let ts = "1729440000.000200";
+        let (x, y) = cell_in(&mut app, "👀", |a| a.threads.area);
+        click(&mut app, x, y);
+        assert_eq!(reacted(&app, ts, "eyes").1, 2, "at once");
+        answered(&mut app, &mut net).await;
+        assert_eq!(reacted(&app, ts, "eyes"), (vec!["U2".to_string()], 1), "undone");
+        let said = super::super::i18n::tr(super::REACTION_UNREACHED);
+        assert!(app.status.starts_with(&*said.replace("{why}", "")), "{}", app.status);
+        assert!(!app.status.contains("refused"), "{}", app.status);
+        // The same emoji again while one is on its way: said, not silently ignored.
+        click(&mut app, x, y);
+        click(&mut app, x, y);
+        assert_eq!(app.status, super::super::i18n::tr(super::REACTION_WAITING));
     }
 }
