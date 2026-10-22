@@ -5096,8 +5096,8 @@ fn handle_dialog(app: &mut App, ev: &Event) -> bool {
         Event::Mouse(m) if m.kind == MouseEventKind::Down(MouseButton::Left) && app.prefs.is_some() && app.click_prefs(m.column, m.row) => {}
         Event::Mouse(m) if m.kind == MouseEventKind::Down(MouseButton::Left) && app.prefs.is_none() && click_row(app, m.column, m.row) => {}
         Event::Mouse(m) if m.kind == MouseEventKind::Down(MouseButton::Left) && app.profile.is_none() && app.click_details(m.column, m.row) => {}
-        // A click outside the dialog closes it; one inside does nothing.
-        Event::Mouse(m) if matches!(m.kind, MouseEventKind::Down(_)) => {
+        // A click outside the dialog closes it; one inside does nothing (the side buttons are no clicks).
+        Event::Mouse(m) if matches!(m.kind, MouseEventKind::Down(MouseButton::Left | MouseButton::Right | MouseButton::Middle)) => {
             if !app.dialog_area().is_some_and(|a| a.contains((m.column, m.row).into())) {
                 app.close_dialog();
                 app.closing_click = Some((std::time::Instant::now(), m.column, m.row));
@@ -5240,6 +5240,12 @@ fn handle_main(app: &mut App, ev: Event) -> bool {
             app.huddles.hover_at(c, r);
         }
         Event::Mouse(m) if m.kind == MouseEventKind::Down(MouseButton::Right) => app.open_menu(m.column, m.row),
+        // The mouse's side buttons, as the keys (NORMAL only; the press, not the release).
+        Event::Mouse(m) if matches!(m.kind, MouseEventKind::Down(MouseButton::Back | MouseButton::Forward)) => {
+            if app.mode() == Mode::Normal {
+                app.step_history(m.kind == MouseEventKind::Down(MouseButton::Forward));
+            }
+        }
         Event::Mouse(m) => match m.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 let picked = app.completion.as_ref().and_then(|c| c.row_at(if c.thread { app.thread_composer_area } else { app.composer_area }, m.column, m.row));
@@ -8727,6 +8733,42 @@ mod tests {
         go(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         go(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
         assert_eq!(app.current.as_deref(), Some("C1"));
+    }
+
+    #[tokio::test]
+    async fn the_mouses_side_buttons_go_back_and_forward() {
+        use crossterm::event::{Event, MouseButton, MouseEvent, MouseEventKind};
+        let (mut app, _net) = with_channels(&["C1", "C2"]);
+        app.jump_to("C2");
+        settle(&mut app, true);
+        let mouse = |app: &mut super::App, kind| {
+            super::handle_event(app, Event::Mouse(MouseEvent { kind, column: 10, row: 5, modifiers: KeyModifiers::NONE }));
+            settle(app, true);
+        };
+        // Up and Drag do nothing.
+        for kind in [MouseEventKind::Up(MouseButton::Back), MouseEventKind::Drag(MouseButton::Back)] {
+            mouse(&mut app, kind);
+            assert_eq!(app.current.as_deref(), Some("C2"));
+        }
+        // Back's press goes back; Forward's goes forward again.
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Back));
+        assert_eq!(app.current.as_deref(), Some("C1"));
+        for kind in [MouseEventKind::Up(MouseButton::Forward), MouseEventKind::Drag(MouseButton::Forward)] {
+            mouse(&mut app, kind);
+            assert_eq!(app.current.as_deref(), Some("C1"));
+        }
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Forward));
+        assert_eq!(app.current.as_deref(), Some("C2"));
+        // Not while typing.
+        app.focus = super::Focus::Composer;
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Back));
+        assert_eq!((app.current.as_deref(), app.focus), (Some("C2"), super::Focus::Composer));
+        // Nor with a dialog open: it stays.
+        app.focus = super::Focus::Messages;
+        go(&mut app, KeyCode::Char('k'), KeyModifiers::CONTROL);
+        assert!(app.overlay().is_some());
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Back));
+        assert!(app.overlay().is_some(), "the dialog stays");
     }
 
     #[tokio::test]
