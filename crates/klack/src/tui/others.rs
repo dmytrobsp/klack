@@ -205,6 +205,7 @@ async fn watch_hidden(index: usize, client: &Client, label: &str, shown: &Atomic
     for u in users? {
         ws.users.insert(u.id.clone(), u);
     }
+    ws.users_changed();
     ws.apply_boot(&boot?);
     let mut rtm = slack_core::rtm::spawn(client.clone());
     let mut check = tokio::time::interval(SHOWN_CHECK);

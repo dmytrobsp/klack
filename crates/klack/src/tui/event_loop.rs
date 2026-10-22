@@ -5586,6 +5586,7 @@ fn handle_net(app: &mut App, msg: Net) {
             for u in users {
                 app.ws.users.insert(u.id.clone(), u);
             }
+            app.ws.users_changed();
             app.ws.apply_boot(&boot);
             if let Some(c) = counts {
                 app.ws.apply_counts(&c);
@@ -5658,13 +5659,13 @@ fn handle_net(app: &mut App, msg: Net) {
             app.ws.number_emoji();
         }
         Net::UserInfo(u) => {
-            app.ws.users.insert(u.id.clone(), u);
+            app.ws.put_user(u);
             app.sidebar.rebuild(&app.ws);
         }
         Net::Profiles(users) => {
             app.lookups.busy = false;
             for u in users {
-                app.ws.users.insert(u.id.clone(), u);
+                app.ws.put_user(u);
             }
             app.sidebar.rebuild(&app.ws);
         }
@@ -8035,5 +8036,100 @@ mod tests {
         app.beat_huddle(true, at(1000));
         wait().await;
         assert_eq!(next(&mut asked), None, "pref off");
+    }
+
+    /// What a large, busy workspace costs per frame and per pass (VX4's before/after):
+    /// `cargo test -p klack busy_workspace_cost -- --ignored --nocapture` (a debug build).
+    #[test]
+    #[ignore]
+    fn busy_workspace_cost() {
+        use super::super::state::{Timeline, Workspace};
+        use slack_core::types::{Conversation, Message, User};
+        let mut ws = Workspace { self_id: "UME".into(), ..Default::default() };
+        ws.users.insert("UME".into(), User { id: "UME".into(), name: "me".into(), ..Default::default() });
+        for i in 0..20_000 {
+            let id = format!("U{i:05}");
+            ws.users.insert(id.clone(), User { id, name: format!("p{i}"), ..Default::default() });
+        }
+        // (As the user list is taken in at the start.)
+        ws.users_changed();
+        for i in 0..400 {
+            let name = format!("mpdm-me--p{}--p{}--p{}-1", i * 7, i * 11 + 3, i * 13 + 5);
+            let id = format!("G{i:04}");
+            ws.conversations.insert(id.clone(), Conversation { id, name, is_mpim: true, is_member: true, ..Default::default() });
+        }
+        for i in 0..3_000 {
+            let id = format!("C{i:04}");
+            ws.conversations.insert(id.clone(), Conversation { id, name: format!("chan{i}"), is_channel: true, is_member: true, ..Default::default() });
+        }
+        for i in 0..1_000 {
+            let id = format!("D{i:04}");
+            ws.conversations.insert(id.clone(), Conversation { id, is_im: true, is_member: true, user: Some(format!("U{:05}", i * 3)), ..Default::default() });
+        }
+        let msg = |ts: String, user: String, text: &str| Message { ts, user: Some(user), text: text.into(), ..Default::default() };
+        for c in 0..50 {
+            let t = Timeline { loaded: true, messages: (0..200).map(|n| msg(format!("{}.000100", 1_790_000_000 + n * 60), format!("U{:05}", (c * 37 + n) % 20_000), "a line of chat that is about as long as one")).collect(), ..Default::default() };
+            ws.timelines.insert(format!("C{c:04}"), t);
+        }
+        let time = |label: &str, runs: usize, f: &mut dyn FnMut()| {
+            let start = std::time::Instant::now();
+            for _ in 0..runs {
+                f();
+            }
+            let each = start.elapsed().as_secs_f64() * 1e6 / runs as f64;
+            println!("{label}: {each:.1} µs");
+            each
+        };
+        // The sidebar's group DM rows (twice per row per draw).
+        let mpims: Vec<&Conversation> = ws.conversations.values().filter(|c| c.is_mpim).collect();
+        time("400 group DM labels, twice", 5, &mut || {
+            for c in &mpims {
+                std::hint::black_box(ws.conversation_label(c));
+                std::hint::black_box(ws.conversation_label(c));
+            }
+        });
+        time("people_to_follow", 5, &mut || {
+            std::hint::black_box(ws.people_to_follow());
+        });
+        time("beat_jitter", 10_000, &mut || {
+            std::hint::black_box(super::super::call::beat_jitter());
+        });
+        let media = super::super::media::Media::with(ratatui_image::picker::Picker::halfblocks());
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 50)).unwrap();
+        // Activity: 500 items, their messages loaded.
+        let mut activity = super::super::activity::Activity::default();
+        let items: Vec<super::super::activity::Item> = (0..500)
+            .map(|n| super::super::activity::Item { key: format!("k{n}"), ty: "at_user".into(), kind: super::super::activity::Kind::Mention("at_user".into()), channel: format!("C{:04}", n % 50), ts: format!("{}.000100", 1_790_000_000 + n * 60), author: Some(format!("U{:05}", n)), unread: n % 3 == 0, when: (1_790_000_000 + n * 60) as f64, ..Default::default() })
+            .rev()
+            .collect();
+        for it in &items {
+            activity.messages.insert((it.channel.clone(), it.ts.clone()), Some(msg(it.ts.clone(), it.author.clone().unwrap(), "hey <@UME> can you look at this when you have a minute")));
+        }
+        activity.set_items(super::super::activity::Tab::All, items, None);
+        let here = super::super::applink::Here::alone(&ws);
+        time("Activity frame, first", 1, &mut || {
+            terminal.draw(|f| activity.draw(f, f.area(), &here, true, &media)).unwrap();
+        });
+        time("Activity frame, nothing changed", 20, &mut || {
+            terminal.draw(|f| activity.draw(f, f.area(), &here, true, &media)).unwrap();
+        });
+        // Threads: 50 threads, a parent and three replies each.
+        let mut threads = super::super::threads::Threads::default();
+        let entries: Vec<super::super::threads::Entry> = (0..50)
+            .map(|n| {
+                let root_ts = format!("{}.000100", 1_790_000_000 + n * 600);
+                let mut root = msg(root_ts.clone(), format!("U{:05}", n), "a thread's parent, a line or two of text to read");
+                (root.thread_ts, root.reply_count) = (Some(root_ts.clone()), 3);
+                let replies = (1..=3).map(|r| Message { thread_ts: Some(root_ts.clone()), ..msg(format!("{}.000100", 1_790_000_000 + n * 600 + r * 10), format!("U{:05}", n + r), "a reply") }).collect();
+                super::super::threads::Entry { channel: format!("C{:04}", n % 50), root, latest: replies, ..Default::default() }
+            })
+            .collect();
+        threads.add_page(entries, false);
+        time("Threads frame, first (a build)", 1, &mut || {
+            terminal.draw(|f| threads.draw(f, f.area(), &here, true, &media)).unwrap();
+        });
+        time("Threads frame, nothing changed", 20, &mut || {
+            terminal.draw(|f| threads.draw(f, f.area(), &here, true, &media)).unwrap();
+        });
     }
 }

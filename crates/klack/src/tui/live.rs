@@ -381,6 +381,8 @@ pub fn apply(ws: &mut Workspace, ev: &Value, current: Option<&str>) -> Effects {
                     u.profile = p;
                 }
             }
+            // (The name stays: only what shows them is built again.)
+            ws.look += 1;
         }
         "user_invalidated" => {
             fx.invalidated = ev["user"]["id"].as_str().filter(|id| *id != ws.self_id && ws.users.contains_key(*id)).map(str::to_string);
@@ -391,7 +393,7 @@ pub fn apply(ws: &mut Workspace, ev: &Value, current: Option<&str>) -> Effects {
                 if let Some(zone) = u.tz.as_deref().and_then(|z| z.parse().ok()).filter(|_| u.id == ws.self_id) {
                     ws.dnd.zone = Some(zone);
                 }
-                ws.users.insert(u.id.clone(), u);
+                ws.put_user(u);
             }
         }
         _ => {}

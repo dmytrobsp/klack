@@ -128,7 +128,14 @@ pub struct Workspace {
     /// The workspace's id (`T…`).
     pub team_id: String,
     pub self_id: String,
+    /// Everyone known, by id; after a change [`Workspace::users_changed`] is called.
     pub users: HashMap<String, User>,
+    /// People by their `name` (as group DMs' names spell them) → id, and how many users it was built for (see
+    /// [`Workspace::users_changed`]); out of step with the users (some added without that), they are looked through.
+    pub(crate) user_names: (usize, HashMap<String, String>),
+    /// Counts the changes to people (names, statuses, pictures) and custom emoji: lines built to show them are built
+    /// again when it moves (`messages::Look`).
+    pub look: u64,
     pub conversations: BTreeMap<String, Conversation>,
     pub unread: HashMap<String, Unread>,
     /// When each conversation last had a message (epoch seconds), for ordering direct messages
@@ -397,6 +404,12 @@ fn order_sections(mut list: Vec<Section>) -> Vec<Section> {
     out
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How often people were looked up by name through all users (not the index), on this test's thread.
+    pub static USER_SCANS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 pub fn thread_key(channel: &str, ts: &str) -> String {
     format!("{channel}/{ts}")
 }
@@ -467,11 +480,59 @@ impl Workspace {
         let core = c.name.trim_start_matches("mpdm-").trim_end_matches("-1");
         core.split("--")
             .filter(|h| Some(*h) != me)
-            .map(|h| match self.users.values().find(|u| u.name == h) {
+            .map(|h| match self.user_named(h) {
                 Some(u) => (u.display().to_string(), Some(u.id.clone())),
                 None => (h.to_string(), None),
             })
             .collect()
+    }
+
+    /// The person whose `name` is `name`: from the index while it is in step with the users, else by looking
+    /// through them all.
+    fn user_named(&self, name: &str) -> Option<&User> {
+        if self.user_names.0 == self.users.len() {
+            return self.user_names.1.get(name).and_then(|id| self.users.get(id));
+        }
+        #[cfg(test)]
+        USER_SCANS.with(|n| n.set(n.get() + 1));
+        self.users.values().find(|u| u.name == name)
+    }
+
+    /// People were added or changed (the user list, `users.info`, `user_change`, a merged profile…): the name index
+    /// is built again, and so are the lines that show people ([`Workspace::look`]).
+    pub fn users_changed(&mut self) {
+        let mut names: HashMap<String, String> = HashMap::with_capacity(self.users.len());
+        for u in self.users.values() {
+            // (Two accounts of one name, say a deleted one: the live one.)
+            if !u.deleted || !names.contains_key(&u.name) {
+                names.insert(u.name.clone(), u.id.clone());
+            }
+        }
+        self.user_names = (self.users.len(), names);
+        self.look += 1;
+    }
+
+    /// Person `u` came (`users.info`, `user_change`, `team_join`): known from now on, in the name index too (no
+    /// rebuild), and the lines that show people are built again.
+    pub fn put_user(&mut self, u: User) {
+        if self.user_names.0 != self.users.len() {
+            self.users.insert(u.id.clone(), u);
+            self.users_changed();
+            return;
+        }
+        let names = &mut self.user_names.1;
+        // Renamed: the old name is no longer theirs.
+        if let Some(old) = self.users.get(&u.id).filter(|old| old.name != u.name) {
+            if names.get(&old.name) == Some(&u.id) {
+                names.remove(&old.name);
+            }
+        }
+        if !u.deleted || names.get(&u.name).is_none_or(|id| *id == u.id) {
+            names.insert(u.name.clone(), u.id.clone());
+        }
+        self.users.insert(u.id.clone(), u);
+        self.user_names.0 = self.users.len();
+        self.look += 1;
     }
 
     /// The people whose profile changes klack asks Slack for (`user_change`): those of the DMs
@@ -1111,6 +1172,33 @@ mod tests {
         // Someone not known yet: taken as they come.
         crate::tui::live::apply(&mut ws, &serde_json::json!({"type": "user_profile_changed", "user": {"id": "U3", "name": "cy", "profile": {"status_emoji": ":x:"}}}), None);
         assert_eq!(ws.users["U3"].profile.status_emoji, ":x:");
+    }
+
+    #[test]
+    fn group_dm_names_come_from_an_index_not_a_walk_through_everyone() {
+        let mut ws = Workspace { self_id: "UME".into(), ..Default::default() };
+        for (id, name) in [("UME", "me"), ("U2", "cy"), ("U3", "dee")] {
+            ws.users.insert(id.into(), User { id: id.into(), name: name.into(), ..Default::default() });
+        }
+        ws.users_changed();
+        let g = Conversation { id: "G1".into(), is_mpim: true, name: "mpdm-me--cy--dee--eve-1".into(), ..Default::default() };
+        let scans = || USER_SCANS.with(|n| n.get());
+        let before = scans();
+        assert_eq!(ws.mpim_people(&g), [("cy".to_string(), Some("U2".to_string())), ("dee".into(), Some("U3".into())), ("eve".into(), None)]);
+        assert_eq!(ws.conversation_label(&g), "cy, dee, eve");
+        assert_eq!(scans(), before, "no walk through all users");
+        // Someone renamed (`user_change`) or joining (`team_join`): the index follows.
+        crate::tui::live::apply(&mut ws, &serde_json::json!({"type": "user_change", "user": {"id": "U3", "name": "dora"}}), None);
+        crate::tui::live::apply(&mut ws, &serde_json::json!({"type": "team_join", "user": {"id": "U4", "name": "eve"}}), None);
+        let g2 = Conversation { name: "mpdm-me--cy--dora--eve-1".into(), ..g.clone() };
+        assert_eq!(ws.mpim_people(&g2).into_iter().map(|(_, id)| id).collect::<Vec<_>>(), [Some("U2".to_string()), Some("U3".into()), Some("U4".into())]);
+        assert_eq!(ws.mpim_people(&g)[1], ("dee".to_string(), None), "the old name is gone");
+        assert_eq!(scans(), before);
+        // Someone added without telling the index: looked through, as before.
+        ws.users.insert("U5".into(), User { id: "U5".into(), name: "fay".into(), ..Default::default() });
+        let g3 = Conversation { name: "mpdm-me--fay-1".into(), ..g };
+        assert_eq!(ws.mpim_people(&g3), [("fay".to_string(), Some("U5".to_string()))]);
+        assert_eq!(scans(), before + 1);
     }
 
     #[test]
