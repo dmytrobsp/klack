@@ -335,6 +335,11 @@ impl Call {
                 }
             }
             SessionEvent::Error(e) => tracing::warn!("huddle: {e}"),
+            // Joining again: the roster settles anew once connected (no join/leave sounds for it).
+            SessionEvent::Reconnecting => {
+                tracing::info!("huddle: connection lost, joining again");
+                self.connected_at = None;
+            }
             SessionEvent::VideoSources(sources) => self.shares = screen_shares(&sources),
             SessionEvent::SendingVideo { .. } => {}
             SessionEvent::ReceiveCodecs(c) => tracing::info!("meeting receive codecs: {c:?}"),

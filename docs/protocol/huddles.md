@@ -129,6 +129,24 @@ max_bitrate_kbps 1000}`; the sender's own INDEX leaves itself out. INDEX can arr
 - Decline (web client `respondToHuddleInvite`): `rooms.inviteResponse response=decline channel_id=D…
   room_id=R…` → `{"ok":true}`, then `huddle_invite_cancel`. Other responses: `joining_soon`; accepting is
   just `rooms.join`.
+- Re-checked 2026-10-22 (VX5), web client bundles of that day + live on the test workspace:
+  - OBSERVED (code): the client still registers RTM handlers for `huddle_invite`, `huddle_invite_cancel` and
+    `huddle_recommend` (`{channel_id, talking_users}`, a "people are talking" nudge). `huddle_invite` is read as
+    `channel_id, call_id, sender_user_id, team_id, free_willy` (pre-join credentials); the client drops it for a
+    huddle it is already in or already ringing for, and suppresses its own notification for reasons such as
+    "The user is in Do Not Disturb". Inviting someone into a running huddle is the `notifyMember` fetcher
+    (`{channel_id, user_id}`, reason `huddle-notify-member`), once per invitee; starting a DM huddle needs no
+    extra call.
+  - OBSERVED (live): with A **out of** Do Not Disturb, B's DM huddle (`ctl huddle-media`) brought A
+    `huddle_thread`, `huddle_invite` (keys `call_id, channel_id, event_ts, free_willy{attendee, meeting},
+    is_guest, sender_user_id, team_id, type`, as on 2026-10-19), `sh_room_update`, `sh_room_join` within 2 s;
+    klack rang. B left after 6 s → `sh_room_leave`, `huddle_invite_cancel` (`channel_id, event_ts, team_id,
+    type`) ~8 s later, and klack's ringing note went at once (before its 30 s ring timeout).
+  - OBSERVED (live): the same with A **snoozed** (`dnd.setSnooze`, ended after): `huddle_thread` and `sh_room_*`
+    only — no `huddle_invite`, no `huddle_invite_cancel`. Slack withholds the invitation from an invitee in Do
+    Not Disturb on the server (a schedule period counts, V1/V27), so a client in DND has nothing to ring for.
+    VX2's live pass (no invitation on either connection) ran at night, inside both test accounts' 17:00–09:00
+    schedule.
 
 ## Huddle lists: live and recent (2026-10-21, VW6)
 
@@ -192,3 +210,38 @@ Research: `slack-rea/notes/huddles-list.md` §4, re-read in the web client bundl
 - klack: the same renewal while a call is connected and not leaving, with the pref from boot / `pref_change`
   (off until Slack says on); `Client::set_huddle_state` refuses any field but `huddle_state*`. A fractional
   `huddle_state_expiration_ts` (what a renewal sends) is read as whole seconds, so it cannot break a profile.
+
+## Why test huddles ended after ~10 minutes (2026-10-22, VX5)
+
+Live on the test workspace: B (`ctl huddle-media`) and A (the TUI) in a DM huddle, both muted with a microphone
+that does not exist, no camera. Shapes and log messages only.
+
+- OBSERVED (run 1, before the fix): both media connections went `disconnected` 10 min 0–2 s after connecting and
+  `failed` ~25 s later; both sessions ended, so the huddle emptied: `sh_room_leave` ×2, then `ended_huddle_update`.
+  No AUDIO_STATUS frame, no signaling ERROR, no WebSocket close came first; the signaling was fine. A's log had
+  webrtc's `handle_read error: no binding found for channel` every 20 ms from 10 min 0.7 s on: the server kept
+  relaying the meeting's audio on a TURN channel that klack's TURN client no longer knew.
+- OBSERVED (with `rtc_turn=debug`): the relay's lifetime is 600 s; the client refreshes the allocation at 300 s
+  and 600 s (`updated lifetime: 600 seconds`) and the channel binding with the first packet sent after 300 s. At
+  600 s the binding refresh was answered **438 Stale Nonce** (`bind() failed: try again`); rtc-turn 0.21.1
+  (`handle_channel_bind_response`) then deletes the binding instead of retrying with the new nonce, its next
+  ChannelBind (a new channel number for the same peer) gets **400**, and incoming ChannelData is dropped — ICE
+  consent fails a few seconds later. The 5-minute refreshes succeed (the JOIN_ACK credentials' `ttl 300` does
+  not matter for refreshes). It does not happen every time: in one of three long runs every refresh at 600 s
+  succeeded and the huddle went on (the nonce outlived that refresh); in the others it hit one or both sides.
+- Ruled out: **silence** (both silent huddles behave the same; one lasted past 11 min silent), a **free-plan
+  limit** and **Chime's idle/alone end** (that one arrives as AUDIO_STATUS 410 `MeetingEnded`, which Slack's client
+  shows as "We ended your huddle since you were the only one there for a bit"; none came), and a missing
+  **keep-alive**: Slack's client (Chime SDK 3.32) sends nothing periodic klack lacks — klack answers the server's
+  PINGs, and CLIENT_METRIC frames are optional statistics. (Slack's SDK does send audio all the time: muting
+  disables the track — the browser then sends silence — and with no microphone it uses an empty WebAudio device.)
+- OBSERVED (code, Chime SDK): on a lost connection the SDK reconnects — a new signaling connection, JOIN, a new
+  peer connection and SUBSCRIBE, with the same join token.
+- klack (VX5): the session does the same. A media connection that is `failed`, or `disconnected` for 4 s, makes it
+  join again (`SessionEvent::Reconnecting`, then `Connected`), keeping mute and camera; up to 3 tries in a row that
+  do not connect (0, 2, 4 s apart), then it ends as before. OBSERVED: with a forced drop (`KLACK_HUDDLE_DROP=40`,
+  debug builds) B was connected again 3 s later; Slack sent one more `sh_room_join` (no `sh_room_leave`) and the
+  huddle went on. In the 13-minute run after the fix, B's binding hit the 438 at 10:00, B joined again 4 s
+  after `disconnected` and was connected ~12 s after the loss; A was unaffected and the huddle lasted the whole
+  13 min 20 s. Left: the ~12 s gap itself would go with a fix in rtc-turn (retry ChannelBind on 438; the
+  allocation refresh's 438 is not retried either).

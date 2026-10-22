@@ -352,7 +352,14 @@ they speak, 🔇 in the title when muted — that shrinks as people join and scr
 "▲/▼ N more") when they no longer fit; a screen share takes the stage with everyone else in a
 strip. Arrows select a tile, Enter (or a second click) maximizes it, Esc shows all tiles again
 and then leaves the tiles; `␣hv` again, or opening a conversation, brings the messages back. Someone starting a huddle in a DM with you sends a
-desktop notification.
+desktop notification. While you are in Do Not Disturb (snoozed or in your schedule), Slack sends no
+invitation at all, so nothing rings — as in Slack's own app.
+
+If a huddle's connection is lost (a network change, or the media relay dropping it — on Slack's
+servers that can happen about 10 minutes into a call), klack joins again by itself, as Slack's app
+does: the status line says "huddle connection lost — joining again…", then "back in the huddle", usually
+a few seconds later; mute and camera stay as they were. After three tries that do not connect, you are
+out of the huddle.
 
 Clicking a desktop notification (Linux desktops with an XDG notification server) opens its
 conversation in klack — a thread reply opens the thread with the reply selected — for 30

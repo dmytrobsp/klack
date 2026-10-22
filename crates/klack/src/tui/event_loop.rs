@@ -4386,6 +4386,11 @@ async fn run_workspace(
                     let s = &app.ws.settings;
                     super::sound::play(&s.huddle.join_sound, super::settings::Settings::device(huddle::devices::OUTPUT_ENV, &s.audio.output), s.audio.sound_volume);
                 }
+                match ev {
+                    huddle::session::SessionEvent::Reconnecting => app.status = "huddle connection lost — joining again…".into(),
+                    huddle::session::SessionEvent::Connected if app.call.as_ref().is_some_and(|c| c.connected) => app.status = "back in the huddle".into(),
+                    _ => {}
+                }
                 let ended = app.call.as_mut().is_some_and(|c| c.apply(ev));
                 // Someone joined or left while we are in the huddle.
                 if let Some((joined, left)) = app.call.as_mut().map(|c| c.take_roster_changes()) {

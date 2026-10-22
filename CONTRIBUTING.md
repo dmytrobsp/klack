@@ -27,7 +27,8 @@ tone or test video …) lets a second account play the other person in tests.
 Logs: `~/.cache/klack/<profile>/klack.log` (macOS `~/Library/Caches/klack/…`, Windows
 `%LOCALAPPDATA%\klack\cache\…`); more detail with `KLACK_LOG=klack=debug`. Debug builds only: `KLACK_FAIL=chat.delete,chat.update` makes those
 Web API calls fail, to try what klack does when Slack refuses (release builds ignore it), and
-`KLACK_DAYS_LATER=31` makes the sidebar think it is 31 days later (to see quiet conversations hide). Tokens and cookies are
+`KLACK_DAYS_LATER=31` makes the sidebar think it is 31 days later (to see quiet conversations hide), and
+`KLACK_HUDDLE_DROP=40` drops a huddle's connection 40 s after it connected (once), to try the reconnect. Tokens and cookies are
 never logged — keep it that way.
 
 ## Memory
