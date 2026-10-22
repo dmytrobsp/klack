@@ -117,6 +117,9 @@ pub struct Workspace {
     pub activity_unread: usize,
     /// Slack's unread Activity items by type (`activity_v2` of `client.counts` and `badge_counts_updated`), once known.
     pub activity_counts: Option<std::collections::BTreeMap<String, u64>>,
+    /// Goes up each time Slack pushes the badge or an item is read here: a `client.counts` answer asked for before
+    /// (a slower one) is older than they are and left out.
+    pub activity_seq: u64,
     /// Custom emoji pictures are drawn in the message pane (set while drawing: the terminal
     /// draws pictures and the settings allow it).
     pub emoji_pictures: bool,
@@ -956,6 +959,19 @@ impl Workspace {
         true
     }
 
+    /// Slack pushed its Activity badge (`badge_counts_updated`): newer than any `client.counts` still on its way.
+    pub fn activity_counts_pushed(&mut self, activity_v2: &Value) -> bool {
+        let set = self.set_activity_counts(activity_v2);
+        self.activity_seq += u64::from(set);
+        set
+    }
+
+    /// `client.counts` asked for at `since` (an `activity_seq`) answered: its badge is shown unless a push or an item
+    /// read here came meanwhile (they are newer). False when it is left out or has none.
+    pub fn activity_counts_fetched(&mut self, since: u64, counts: &Value) -> bool {
+        since == self.activity_seq && self.set_activity_counts(&counts["activity_v2"])
+    }
+
     /// An unread item of type `ty` was read here: one less in the badge at once, as Slack's client does (its next
     /// count replaces it).
     pub fn activity_item_read(&mut self, ty: &str) {
@@ -963,6 +979,7 @@ impl Workspace {
         if let Some(n) = counts.get_mut(ty).filter(|n| **n > 0 && super::activity::counts_in_badge(ty)) {
             *n -= 1;
             self.activity_unread = self.activity_unread.saturating_sub(1);
+            self.activity_seq += 1;
         }
     }
 
@@ -1704,6 +1721,28 @@ mod tests {
         ws.activity_item_read("dm");
         ws.activity_item_read("dm");
         assert_eq!((ws.activity_unread, ws.activity_counts.as_ref().map(|c| c["dm"])), (1, Some(0)));
+    }
+
+    #[test]
+    fn a_slow_counts_reply_does_not_undo_a_newer_badge() {
+        let mut ws = Workspace::default();
+        ws.apply_counts(&serde_json::json!({"activity_v2": {"at_user": 1}}));
+        // Asked for again (a reconnect); before the answer comes, Slack pushes a newer badge.
+        let since = ws.activity_seq;
+        assert!(ws.activity_counts_pushed(&serde_json::json!({"at_user": 3})));
+        assert!(!ws.activity_counts_fetched(since, &serde_json::json!({"activity_v2": {"at_user": 2}})), "older than the push: dropped");
+        assert_eq!(ws.activity_unread, 3);
+        // An item read here since it was asked: also newer than the answer.
+        let since = ws.activity_seq;
+        ws.activity_item_read("at_user");
+        assert!(!ws.activity_counts_fetched(since, &serde_json::json!({"activity_v2": {"at_user": 3}})));
+        assert_eq!(ws.activity_unread, 2);
+        // Nothing newer meanwhile: it counts.
+        let since = ws.activity_seq;
+        assert!(ws.activity_counts_fetched(since, &serde_json::json!({"activity_v2": {"at_user": 5}})));
+        assert_eq!(ws.activity_unread, 5);
+        assert!(!ws.activity_counts_fetched(ws.activity_seq, &serde_json::json!({"ims": []})), "no badge in it: kept");
+        assert_eq!(ws.activity_unread, 5);
     }
 
     #[test]

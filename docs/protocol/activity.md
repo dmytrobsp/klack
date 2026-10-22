@@ -51,6 +51,39 @@ From the web client bundles and live checks on the test workspace (event types a
   loads the shown tab again. A workspace whose counts have no `activity_v2` keeps the old count (the All tab's unread
   items at start and at each load).
 
+## The badge's other item types (2026-10-22, VX3b)
+
+Probed on the test workspace (`activity.feed mode=chrono_reads_and_unreads`, each type alone first, then all
+together; answers' shapes only) and read from the web client's item parser (`bulkAddActivityItems`).
+
+- **The feed takes every type the badge counts**, alone and together: `channel`, `bot_dm_bundle`,
+  `internal_channel_invite`, `quietly_added_to_channel`, `unjoined_channel_mention`, `prejoin_dm_welcome_party_alert`,
+  `external_channel_invite`, `external_dm_invite`, `shared_workspace_invite`, `list_record_assigned`,
+  `list_record_edited`, `list_user_mentioned` (with the ones listed before). `thread_reply` and `bot_dm` still fail
+  the whole request. Only `internal_channel_invite` had an item on the test workspace; the rest are from the code.
+- Item shapes (under `item`, besides `type`):
+  - `internal_channel_invite` (seen): `message {channel, ts, author_user_id, is_broadcast}` — the `channel_join`
+    message (with `inviter`) in the channel you were added to.
+  - `channel`: `bundle_info.payload.channel_entry {latest_message {channel, ts}, unread_msg_count}`.
+  - `bot_dm_bundle`: `bundle_info.payload.message {channel, ts, thread_ts}`, `bundle_info.unread_count` — an app's DM.
+  - `unjoined_channel_mention`: `unjoined_channel_mention_payload {channel_id, message_ts}`.
+  - `quietly_added_to_channel`: `quietly_added_to_channel_payload {channel_id}`, no message (the client uses
+    `feed_ts`).
+  - `prejoin_dm_welcome_party_alert`: `prejoin_dm_welcome_party_payload {channel_id, invitee_user_id}`.
+  - `external_channel_invite` / `external_dm_invite`: `invite` (an invitation to accept; no conversation yet).
+    `shared_workspace_invite` has no case in the client's parser.
+  - lists: `linked_item_id` and `list_payload {list_id, row_id, assigned_by}` / `list_edit_payload {…, edited_by}` /
+    `list_user_mention_payload {…, mentioned_by}`.
+- The client's tabs: Mentions = the `at_*` types, `keyword`, `list_record_assigned`, `list_user_mentioned`;
+  Invitations = the invite types and `quietly_added_to_channel`; Apps = `bot_dm_bundle`; Channels = `channel`.
+- klack (VX3b): the All tab asks for every type the badge counts, so its unread items and the badge agree; Mentions
+  also lists `unjoined_channel_mention`. Enter: a channel item → the channel at its newest message; an app's item →
+  its DM (in the thread); `internal_channel_invite` → its join message; `quietly_added_to_channel` /
+  `prejoin_dm_welcome_party_alert` → the conversation; Slack Connect invitations and list items have nowhere to go
+  (marked read, the status line says to open them in Slack). `activity.markRead` gets `ts` = `feed_ts` for DMs,
+  invitations and list items. A `client.counts` answer asked for before a newer `badge_counts_updated` (or an item
+  read here) is dropped.
+
 ## Threads view: `subscriptions.thread.getView`
 
 What the Threads view (Ctrl+T, H4m) uses — Slack's own "Threads" list, found by probing (2026-10-19):

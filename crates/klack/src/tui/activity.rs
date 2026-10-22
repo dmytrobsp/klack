@@ -15,7 +15,7 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use serde_json::Value;
 use slack_core::types::{File, Message};
 
-use super::applink::{AppLink, Here};
+use super::applink::{AppLink, Here, Target};
 use super::i18n::tr;
 use super::media::Media;
 use super::messages::{self, Avatars, ImageSlot};
@@ -31,6 +31,15 @@ pub enum Kind {
     Thread { unread: u64, latest: String, first_unread: String },
     /// New messages in a direct or group message (`dm`, `mpdm`): the newest of them.
     Dm { latest_ts: String },
+    /// New messages in a channel (`channel`): how many; the item is the newest of them.
+    Channel { unread: u64 },
+    /// An app's messages to you (`bot_dm_bundle`): how many are unread; the thread the newest is in.
+    App { unread: u64, thread: Option<String> },
+    /// You were added to a channel (`internal_channel_invite`): the item is its join message.
+    Invite,
+    /// Something with no message of its own (`quietly_added_to_channel`, `prejoin_dm_welcome_party_alert`, the Slack
+    /// Connect invitations, the list items), by type; the item's channel is the conversation it is about, if any.
+    Notice(String),
     Other(String),
 }
 
@@ -74,7 +83,29 @@ impl Item {
         let ty = it["type"].as_str()?;
         let thread = &it["bundle_info"]["payload"]["thread_entry"];
         let text = |v: &Value| v.as_str().unwrap_or_default().to_string();
+        let feed_ts = v["feed_ts"].as_str().unwrap_or_default();
+        // (Shapes as Slack's web client reads them; those with no message of their own get no ts.)
+        fn notice<'a>(ty: &str, channel: &'a Value) -> (Kind, &'a str, &'a str) {
+            (Kind::Notice(ty.to_string()), channel.as_str().unwrap_or_default(), "")
+        }
         let (kind, channel, ts) = match ty {
+            "channel" => {
+                let entry = &it["bundle_info"]["payload"]["channel_entry"];
+                (Kind::Channel { unread: entry["unread_msg_count"].as_u64().unwrap_or(0) }, entry["latest_message"]["channel"].as_str()?, entry["latest_message"]["ts"].as_str().unwrap_or(feed_ts))
+            }
+            "bot_dm_bundle" => {
+                let m = &it["bundle_info"]["payload"]["message"];
+                let ts = m["ts"].as_str().unwrap_or(feed_ts);
+                (Kind::App { unread: it["bundle_info"]["unread_count"].as_u64().unwrap_or(0), thread: m["thread_ts"].as_str().filter(|t| *t != ts).map(String::from) }, m["channel"].as_str()?, ts)
+            }
+            "internal_channel_invite" => (Kind::Invite, it["message"]["channel"].as_str()?, it["message"]["ts"].as_str()?),
+            "unjoined_channel_mention" => {
+                let p = &it["unjoined_channel_mention_payload"];
+                (Kind::Mention(ty.to_string()), p["channel_id"].as_str()?, p["message_ts"].as_str().unwrap_or(feed_ts))
+            }
+            "quietly_added_to_channel" => notice(ty, &it["quietly_added_to_channel_payload"]["channel_id"]),
+            "prejoin_dm_welcome_party_alert" => notice(ty, &it["prejoin_dm_welcome_party_payload"]["channel_id"]),
+            "external_channel_invite" | "external_dm_invite" | "shared_workspace_invite" | "list_record_assigned" | "list_record_edited" | "list_user_mentioned" => notice(ty, &Value::Null),
             "thread_v2" => (
                 Kind::Thread { unread: thread["unread_msg_count"].as_u64().unwrap_or(0), latest: text(&thread["latest_ts"]), first_unread: text(&thread["min_unread_ts"]) },
                 thread["channel_id"].as_str()?,
@@ -95,13 +126,17 @@ impl Item {
         Some(Item {
             key: v["key"].as_str().unwrap_or_default().to_string(),
             ty: ty.to_string(),
-            feed_ts: v["feed_ts"].as_str().unwrap_or_default().to_string(),
+            feed_ts: feed_ts.to_string(),
             kind,
             channel: channel.to_string(),
             ts: ts.to_string(),
-            author: it["message"]["author_user_id"].as_str().map(String::from),
+            // Who: the author; who assigned, edited or mentioned you in a list item; who is new.
+            author: [&it["message"]["author_user_id"], &it["list_payload"]["assigned_by"], &it["list_edit_payload"]["edited_by"], &it["list_user_mention_payload"]["mentioned_by"], &it["prejoin_dm_welcome_party_payload"]["invitee_user_id"]]
+                .into_iter()
+                .find_map(Value::as_str)
+                .map(String::from),
             unread: v["is_unread"].as_bool().unwrap_or(false),
-            when: v["feed_ts"].as_str().and_then(|t| t.parse().ok()).unwrap_or(0.0),
+            when: feed_ts.parse().unwrap_or(0.0),
         })
     }
 
@@ -144,9 +179,9 @@ impl Tab {
     /// The item types it asks for (`bot_dm` would fail the whole request: never).
     pub fn types(self) -> &'static str {
         match self {
-            Tab::All => "at_user,at_user_group,at_channel,at_everyone,keyword,message_reaction,thread_v2,dm,mpdm",
+            Tab::All => ALL_TYPES,
             Tab::Dms => "dm,mpdm,bot_dm_bundle",
-            Tab::Mentions => "at_user,at_user_group,at_channel,at_everyone,keyword",
+            Tab::Mentions => "at_user,at_user_group,at_channel,at_everyone,keyword,unjoined_channel_mention",
             Tab::Threads => "thread_v2",
         }
     }
@@ -181,8 +216,9 @@ impl Tab {
     }
 }
 
-/// The feed's item types on the All tab (`activity.feed`; the sidebar row's count).
-pub const ALL_TYPES: &str = "at_user,at_user_group,at_channel,at_everyone,keyword,message_reaction,thread_v2,dm,mpdm";
+/// The feed's item types on the All tab (`activity.feed`; the sidebar row's count when Slack does not give its badge):
+/// every type the badge counts ([`BADGE_TYPES`]), and reactions and group DMs (the feed takes each of them).
+pub const ALL_TYPES: &str = "at_user,at_user_group,at_channel,at_everyone,keyword,message_reaction,thread_v2,dm,mpdm,channel,bot_dm_bundle,internal_channel_invite,quietly_added_to_channel,unjoined_channel_mention,prejoin_dm_welcome_party_alert,external_channel_invite,external_dm_invite,shared_workspace_invite,list_record_assigned,list_record_edited,list_user_mentioned";
 
 /// How many of `items` are unread (the sidebar's Activity row when Slack does not say).
 pub fn unread_count(items: &[Item]) -> usize {
@@ -208,14 +244,19 @@ pub fn badge_total(activity_v2: &Value) -> Option<usize> {
     Some(counts.iter().filter(|(ty, _)| counts_in_badge(ty)).map(|(_, n)| n.as_u64().unwrap_or(0) as usize).sum())
 }
 
+/// The item types `activity.markRead` is also sent `ts` (the item's `feed_ts`) for, as Slack's client does: DMs, the
+/// invitations and the list items.
+const MARKED_WITH_TS: &[&str] = &["dm", "internal_channel_invite", "quietly_added_to_channel", "external_channel_invite", "external_dm_invite", "shared_workspace_invite", "list_record_assigned", "list_record_edited", "list_user_mentioned"];
+
 /// What `activity.markRead` is sent when the unread item `it` is opened, as Slack's client does (`type`, `feed_ts`,
-/// `key`; a DM: also its `feed_ts` as `ts`); none for a reaction (never marked) or an item read already.
+/// `key`; a DM, an invitation or a list item: also its `feed_ts` as `ts`); none for a reaction (never marked) or an
+/// item read already.
 pub fn mark_read_params(it: &Item) -> Option<Vec<(&'static str, String)>> {
     if !it.unread || it.ty == "message_reaction" || it.ty.is_empty() || it.key.is_empty() || it.feed_ts.is_empty() {
         return None;
     }
     let mut params = vec![("type", it.ty.clone()), ("feed_ts", it.feed_ts.clone()), ("key", it.key.clone())];
-    if it.ty == "dm" {
+    if MARKED_WITH_TS.contains(&it.ty.as_str()) {
         params.push(("ts", it.feed_ts.clone()));
     }
     Some(params)
@@ -243,6 +284,20 @@ const GROUP_DM: &str = "Group message with {where}";
 const REACTED: &str = "Reacted {emoji} to:";
 const YOUR_MESSAGE: &str = "Your message in {where}";
 const OTHER: &str = "{what} in {where}";
+const CHANNEL_NEW: &str = "New messages in {where}";
+const APP: &str = "App message in {where}";
+const NEW: &str = "{n} new";
+const ADDED: &str = "You were added to {where}";
+const UNJOINED: &str = "Mention in {where}, a channel you are not in";
+const WELCOME: &str = "Someone new to welcome in {where}";
+const CONNECT_CHANNEL: &str = "An invitation to a Slack Connect channel (accept it in Slack)";
+const CONNECT_DM: &str = "An invitation to a Slack Connect DM (accept it in Slack)";
+const SHARED_WORKSPACE: &str = "An invitation to a shared workspace (accept it in Slack)";
+const LIST_ASSIGNED: &str = "A list item assigned to you (open it in Slack)";
+const LIST_EDITED: &str = "A list item you follow was edited (open it in Slack)";
+const LIST_MENTION: &str = "A mention in a list (open it in Slack)";
+/// Said when Enter is pressed on an item klack has nowhere to show (a list item, a Slack Connect invitation).
+pub const NOT_HERE: &str = "klack can't show this one: open it in Slack";
 const UNREAD_ONLY: &str = "unread only";
 const EMPTY: &str = "Nothing here yet: mentions, reactions to your messages, thread replies and direct messages show up here.";
 const NONE_UNREAD: &str = "Nothing unread here.";
@@ -250,7 +305,7 @@ const FAILED: &str = "The activity could not be loaded";
 
 /// The view's words, for the locale template.
 pub const WORDS: &[&str] = &[
-    TODAY, YESTERDAY, MISSING, LOADING, LOADING_MORE, MENTION, GROUP_MENTION, CHANNEL_MENTION, EVERYONE_MENTION, KEYWORD, IN_THREAD, THREAD, NEW_REPLY, NEW_REPLIES, DIRECT, GROUP_DM, REACTED, YOUR_MESSAGE, OTHER, UNREAD_ONLY, EMPTY, NONE_UNREAD, FAILED, "All", "DMs", "Mentions", "Threads",
+    TODAY, YESTERDAY, MISSING, LOADING, LOADING_MORE, MENTION, GROUP_MENTION, CHANNEL_MENTION, EVERYONE_MENTION, KEYWORD, IN_THREAD, THREAD, NEW_REPLY, NEW_REPLIES, DIRECT, GROUP_DM, REACTED, YOUR_MESSAGE, OTHER, CHANNEL_NEW, APP, NEW, ADDED, UNJOINED, WELCOME, CONNECT_CHANNEL, CONNECT_DM, SHARED_WORKSPACE, LIST_ASSIGNED, LIST_EDITED, LIST_MENTION, NOT_HERE, UNREAD_ONLY, EMPTY, NONE_UNREAD, FAILED, "All", "DMs", "Mentions", "Threads",
 ];
 
 /// A tab's list while the view is open, when another tab is shown.
@@ -503,20 +558,25 @@ impl Activity {
         self.items.as_ref()?.get(self.selected)
     }
 
-    /// Where Enter on the selected item goes: (channel, message ts, thread parent) — a thread at its first unread
-    /// reply (none unread: its newest), anything else at its message (a reply: in its thread).
-    pub fn target(&self) -> Option<(String, String, Option<String>)> {
-        let it = self.selected_item()?;
-        match &it.kind {
+    /// Where Enter on the selected item goes: a thread at its first unread reply (none unread: its newest); an app's
+    /// messages in its DM (in the thread the newest is in); something with no message of its own in its conversation;
+    /// anything else at its message (a reply: in its thread). None when it is about no conversation (a list item, a
+    /// Slack Connect invitation).
+    pub fn target(&self) -> Option<Target> {
+        let it = self.selected_item().filter(|it| !it.channel.is_empty())?;
+        let message = |ts: &str, thread_ts: Option<String>| Target::Message { channel: it.channel.clone(), ts: ts.to_string(), thread_ts };
+        Some(match &it.kind {
             Kind::Thread { unread, latest, first_unread } => {
                 let at = if *unread > 0 && !first_unread.is_empty() { first_unread } else if !latest.is_empty() { latest } else { &it.ts };
-                Some((it.channel.clone(), at.clone(), Some(it.ts.clone())))
+                message(at, Some(it.ts.clone()))
             }
+            Kind::App { thread, .. } => message(&it.ts, thread.clone()),
+            Kind::Notice(_) => Target::Conversation { channel: it.channel.clone() },
             _ => {
                 let parent = self.messages.get(&it.message_key()).and_then(|m| m.as_ref()).filter(|m| m.is_reply()).and_then(|m| m.thread_ts.clone());
-                Some((it.channel.clone(), it.ts.clone(), parent))
+                message(&it.ts, parent)
             }
-        }
+        })
     }
 
     /// The messages of the items on screen and around them (and the selection) not asked for yet.
@@ -789,7 +849,8 @@ fn item_lines(here: &Here, it: &Item, msg: Option<&Option<Message>>, parent: Opt
     let header_of = match (reaction, message) {
         (None, Some(m)) => Some(m.clone()),
         (Some((_, user)), _) if !user.is_empty() => Some(Message { user: Some(user.to_string()), ts: format!("{:.6}", it.when), ..Default::default() }),
-        (None, None) => it.author.clone().map(|u| Message { user: Some(u), ts: it.message_key().1, ..Default::default() }),
+        // (Nothing of its own to show: when it came.)
+        (None, None) => it.author.clone().map(|u| Message { user: Some(u), ts: Some(it.message_key().1).filter(|t| !t.is_empty()).unwrap_or_else(|| format!("{:.6}", it.when)), ..Default::default() }),
         _ => None,
     };
     let mut body_from = 0;
@@ -838,7 +899,8 @@ fn item_lines(here: &Here, it: &Item, msg: Option<&Option<Message>>, parent: Opt
             lines.extend(body);
         }
     }
-    if message.is_none() {
+    // (Waited for unless the item has no message of its own.)
+    if message.is_none() && !it.message_key().1.is_empty() {
         let note = if msg.is_some() { MISSING } else { LOADING };
         lines.push(Line::from(Span::styled(tr(note).into_owned(), dim.add_modifier(Modifier::ITALIC))));
         rows.push(None);
@@ -873,6 +935,7 @@ fn where_line(ws: &Workspace, it: &Item, message: Option<&Message>) -> String {
                 "at_channel" => CHANNEL_MENTION,
                 "at_everyone" => EVERYONE_MENTION,
                 "keyword" => KEYWORD,
+                "unjoined_channel_mention" => UNJOINED,
                 _ => MENTION,
             };
             tr(words).replace("{where}", &in_thread)
@@ -888,6 +951,29 @@ fn where_line(ws: &Workspace, it: &Item, message: Option<&Message>) -> String {
         }
         Kind::Dm { .. } if ws.conversations.get(&it.channel).is_some_and(|c| c.is_mpim) => tr(GROUP_DM).replace("{where}", &place),
         Kind::Dm { .. } => tr(DIRECT).into_owned(),
+        Kind::Channel { unread } | Kind::App { unread, .. } => {
+            let mut out = tr(if matches!(it.kind, Kind::Channel { .. }) { CHANNEL_NEW } else { APP }).replace("{where}", &place);
+            if *unread > 0 {
+                out += " · ";
+                out += &tr(NEW).replace("{n}", &unread.to_string());
+            }
+            out
+        }
+        Kind::Invite => tr(ADDED).replace("{where}", &place),
+        Kind::Notice(t) => {
+            let words = match t.as_str() {
+                "quietly_added_to_channel" => ADDED,
+                "prejoin_dm_welcome_party_alert" => WELCOME,
+                "external_channel_invite" => CONNECT_CHANNEL,
+                "external_dm_invite" => CONNECT_DM,
+                "shared_workspace_invite" => SHARED_WORKSPACE,
+                "list_record_assigned" => LIST_ASSIGNED,
+                "list_record_edited" => LIST_EDITED,
+                "list_user_mentioned" => LIST_MENTION,
+                _ => OTHER,
+            };
+            tr(words).replace("{what}", t).replace("{where}", &place)
+        }
         Kind::Other(t) => tr(OTHER).replace("{what}", t).replace("{where}", &in_thread),
     }
 }
@@ -966,16 +1052,126 @@ mod tests {
 
     #[test]
     fn tabs_ask_for_their_types() {
-        assert_eq!(Tab::All.types(), "at_user,at_user_group,at_channel,at_everyone,keyword,message_reaction,thread_v2,dm,mpdm");
+        assert!(Tab::All.types().starts_with("at_user,at_user_group,at_channel,at_everyone,keyword,message_reaction,thread_v2,dm,mpdm,"));
         assert_eq!(Tab::Dms.types(), "dm,mpdm,bot_dm_bundle");
-        assert_eq!(Tab::Mentions.types(), "at_user,at_user_group,at_channel,at_everyone,keyword");
+        assert_eq!(Tab::Mentions.types(), "at_user,at_user_group,at_channel,at_everyone,keyword,unjoined_channel_mention");
         assert_eq!(Tab::Threads.types(), "thread_v2");
         for t in Tab::ALL {
-            // `bot_dm` fails the whole request.
-            assert!(!t.types().contains("bot_dm,") && !t.types().ends_with("bot_dm"), "{t:?}");
+            // `bot_dm` and `thread_reply` fail the whole request.
+            assert!(!t.types().split(',').any(|ty| ty == "bot_dm" || ty == "thread_reply"), "{t:?}");
         }
         assert_eq!(ALL_TYPES, Tab::All.types(), "the sidebar's count is the All tab's");
         assert_eq!((Tab::All.next(), Tab::Threads.next(), Tab::All.prev(), Tab::Mentions.prev()), (Tab::Dms, Tab::All, Tab::Threads, Tab::Dms), "round");
+    }
+
+    #[test]
+    fn the_all_tab_lists_every_type_the_badge_counts() {
+        // (The feed took each of them alone and all together on the test workspace.)
+        for ty in BADGE_TYPES {
+            assert!(Tab::All.lists(ty), "{ty}");
+        }
+        assert!(Tab::All.lists("message_reaction") && Tab::All.lists("mpdm"), "and what it listed before");
+        let types: Vec<&str> = ALL_TYPES.split(',').collect();
+        assert_eq!(types.len(), types.iter().collect::<HashSet<_>>().len(), "each once");
+    }
+
+    /// An `activity.feed` item of type `ty` with `item` (made up, in the shapes Slack's web client reads).
+    fn feed_item(ty: &str, key: &str, feed_ts: &str, unread: bool, mut item: Value) -> Value {
+        item["type"] = ty.into();
+        serde_json::json!({"feed_ts": feed_ts, "is_unread": unread, "is_archived": false, "key": key, "version": "1", "item": item})
+    }
+
+    /// One of each type the badge counts beyond the mentions, threads and DMs (made up, in the web client's shapes).
+    fn other_types() -> Vec<Item> {
+        let v = serde_json::json!({"items": [
+            feed_item("channel", "channel-C1", "20.0", true, serde_json::json!({"bundle_info": {"payload": {"channel_entry": {"latest_message": {"channel": "C1", "ts": "20.0"}, "unread_msg_count": 3}}}})),
+            feed_item("bot_dm_bundle", "bot-D9", "19.0", true, serde_json::json!({"bundle_info": {"unread_count": 2, "payload": {"message": {"channel": "D9", "ts": "19.0", "thread_ts": "18.0"}}}})),
+            feed_item("internal_channel_invite", "inv-C1", "17.0", true, serde_json::json!({"message": {"author_user_id": "U2", "channel": "C1", "is_broadcast": false, "ts": "17.0"}})),
+            feed_item("quietly_added_to_channel", "quiet-C1", "16.0", true, serde_json::json!({"quietly_added_to_channel_payload": {"channel_id": "C1"}})),
+            feed_item("unjoined_channel_mention", "unjoined-C7", "15.0", true, serde_json::json!({"unjoined_channel_mention_payload": {"channel_id": "C7", "message_ts": "14.0"}})),
+            feed_item("prejoin_dm_welcome_party_alert", "welcome-D1", "13.0", true, serde_json::json!({"prejoin_dm_welcome_party_payload": {"channel_id": "D1", "invitee_user_id": "U3"}})),
+            feed_item("external_channel_invite", "ext-1", "12.0", true, serde_json::json!({"invite": {"id": "I1"}})),
+            feed_item("list_record_assigned", "list-1", "11.0", true, serde_json::json!({"linked_item_id": "F1", "list_payload": {"list_id": "F1", "row_id": "R1", "assigned_by": "U2"}})),
+            feed_item("list_record_edited", "list-2", "10.0", false, serde_json::json!({"linked_item_id": "F1", "list_edit_payload": {"list_id": "F1", "row_id": "R1", "edited_by": "U3"}})),
+            feed_item("list_user_mentioned", "list-3", "9.0", false, serde_json::json!({"list_user_mention_payload": {"list_id": "F1", "mentioned_by": "U2"}})),
+        ]});
+        parse(&v)
+    }
+
+    #[test]
+    fn the_badges_other_types_are_read() {
+        let items = other_types();
+        assert_eq!(items.len(), 10, "none dropped");
+        let got = |n: usize| (items[n].kind.clone(), items[n].channel.as_str(), items[n].ts.as_str(), items[n].author.as_deref());
+        assert_eq!(got(0), (Kind::Channel { unread: 3 }, "C1", "20.0", None), "a channel's new messages: its newest");
+        assert_eq!(got(1), (Kind::App { unread: 2, thread: Some("18.0".into()) }, "D9", "19.0", None), "an app's messages: its DM");
+        assert_eq!(got(2), (Kind::Invite, "C1", "17.0", Some("U2")), "added to a channel: its join message");
+        assert_eq!(got(3), (Kind::Notice("quietly_added_to_channel".into()), "C1", "", None), "no message of its own");
+        assert_eq!(got(4), (Kind::Mention("unjoined_channel_mention".into()), "C7", "14.0", None));
+        assert_eq!(got(5), (Kind::Notice("prejoin_dm_welcome_party_alert".into()), "D1", "", Some("U3")), "who to welcome");
+        assert_eq!(got(6), (Kind::Notice("external_channel_invite".into()), "", "", None), "an invitation to accept: no conversation yet");
+        assert_eq!(got(7), (Kind::Notice("list_record_assigned".into()), "", "", Some("U2")), "who assigned it");
+        assert_eq!((got(8).3, got(9).3), (Some("U3"), Some("U2")), "who edited, who mentioned");
+        assert!(items.iter().all(|it| !it.key.is_empty() && !it.feed_ts.is_empty()));
+        // Pushed the same way as listed.
+        let pushed = serde_json::json!({"type": "activity", "subtype": "activity_updated", "key": "channel-C1", "entry": feed_item("channel", "channel-C1", "20.0", true, serde_json::json!({"bundle_info": {"payload": {"channel_entry": {"latest_message": {"channel": "C1", "ts": "20.0"}, "unread_msg_count": 3}}}}))});
+        assert_eq!(Item::from_event(&pushed).as_ref(), Some(&items[0]));
+    }
+
+    #[test]
+    fn enter_on_the_badges_other_types() {
+        use super::super::applink::Target;
+        let mut a = Activity::default();
+        a.set_items(Tab::All, other_types(), None);
+        let at = |a: &mut Activity, n: usize| {
+            a.selected = n;
+            a.target()
+        };
+        let msg = |c: &str, ts: &str, thread: Option<&str>| Some(Target::Message { channel: c.into(), ts: ts.into(), thread_ts: thread.map(String::from) });
+        let conv = |c: &str| Some(Target::Conversation { channel: c.into() });
+        assert_eq!(at(&mut a, 0), msg("C1", "20.0", None), "the channel at its newest message");
+        assert_eq!(at(&mut a, 1), msg("D9", "19.0", Some("18.0")), "the app's DM, in its thread");
+        assert_eq!(at(&mut a, 2), msg("C1", "17.0", None), "the channel it adds you to");
+        assert_eq!(at(&mut a, 3), conv("C1"), "the channel you were added to");
+        assert_eq!(at(&mut a, 4), msg("C7", "14.0", None), "the mention, in a channel you are not in");
+        assert_eq!(at(&mut a, 5), conv("D1"));
+        assert_eq!((at(&mut a, 6), at(&mut a, 7)), (None, None), "nowhere in klack: an invitation to accept, a list");
+    }
+
+    #[test]
+    fn the_badges_other_types_are_laid_out() {
+        let mut ws = ws();
+        ws.conversations.insert("D9".into(), slack_core::types::Conversation { id: "D9".into(), is_im: true, user: Some("U3".into()), ..Default::default() });
+        let items = other_types();
+        let join = Message { ts: "17.0".into(), user: Some("U1".into()), subtype: Some("channel_join".into()), text: "<@U1> has joined the channel".into(), ..Default::default() };
+        let newest = Message { ts: "20.0".into(), user: Some("U2".into()), text: "newest in the channel".into(), ..Default::default() };
+        let messages = HashMap::from([(("C1".to_string(), "17.0".to_string()), Some(join)), (("C1".to_string(), "20.0".to_string()), Some(newest))]);
+        let (lines, owners) = layout(&ws, &items, &messages, 70, today());
+        let text: Vec<String> = lines.iter().map(plain).collect();
+        let of = |n: usize| (0..owners.len()).filter(|&r| owners[r] == Some(n)).map(|r| text[r].clone()).collect::<Vec<_>>();
+        let last = |n: usize| of(n).last().map(|l| l.trim_start_matches('▌').to_string()).unwrap_or_default();
+        assert!(of(0).iter().any(|l| l.contains("newest in the channel")), "{:#?}", of(0));
+        assert_eq!(last(0).trim(), "New messages in #c · 3 new", "{text:#?}");
+        assert_eq!(last(1).trim(), "App message in bob · 2 new", "{text:#?}");
+        assert_eq!(last(2).trim(), "You were added to #c", "{text:#?}");
+        assert_eq!(last(3).trim(), "You were added to #c", "{text:#?}");
+        assert_eq!(last(4).trim(), "Mention in C7, a channel you are not in", "{text:#?}");
+        assert_eq!(last(5).trim(), "Someone new to welcome in ann", "{text:#?}");
+        assert_eq!(last(6).trim(), "An invitation to a Slack Connect channel (accept it in Slack)", "{text:#?}");
+        assert_eq!(last(7).trim(), "A list item assigned to you (open it in Slack)", "{text:#?}");
+        assert_eq!(last(8).trim(), "A list item you follow was edited (open it in Slack)", "{text:#?}");
+        assert_eq!(last(9).trim(), "A mention in a list (open it in Slack)", "{text:#?}");
+        // Those with no message of their own wait for none; who is known shows.
+        for n in [3, 5, 6, 7, 8, 9] {
+            assert!(!of(n).iter().any(|l| l.contains("Loading…") || l.contains("not available")), "{n}: {:#?}", of(n));
+        }
+        assert!(of(7)[0].contains("ann") && of(7)[0].starts_with('▌'), "who assigned it, unread: {:#?}", of(7));
+        assert!(of(6)[0].starts_with('▌'), "the unread bar on its only line: {:#?}", of(6));
+        // Only the messages there are asked for.
+        let a = Activity { items: Some(items), ..Default::default() };
+        let wanted = a.wanted();
+        assert!(wanted.iter().all(|(c, ts)| !c.is_empty() && !ts.is_empty()), "{wanted:?}");
+        assert!(wanted.contains(&("C7".into(), "14.0".into())) && wanted.contains(&("D9".into(), "19.0".into())), "{wanted:?}");
     }
 
     #[test]
@@ -1059,6 +1255,14 @@ mod tests {
         assert_eq!(args(&it("dm", true)), Some(vec!["type=dm".into(), "feed_ts=9.5".into(), "key=k1".into(), "ts=9.5".into()]), "a DM: its feed ts as `ts` too");
         assert_eq!(args(&it("message_reaction", true)), None, "reactions are never marked");
         assert_eq!(args(&it("at_user", false)), None, "read already");
+        // Invitations and lists: their feed ts as `ts` too, as Slack's client sends.
+        let items = other_types();
+        let of = |ty: &str| args(items.iter().find(|i| i.ty == ty).unwrap());
+        for ty in ["internal_channel_invite", "quietly_added_to_channel", "external_channel_invite", "list_record_assigned"] {
+            assert!(of(ty).is_some_and(|a| a.last().is_some_and(|l| l.starts_with("ts="))), "{ty}: {:?}", of(ty));
+        }
+        assert_eq!(of("channel").map(|a| a.len()), Some(3));
+        assert_eq!(of("bot_dm_bundle").map(|a| a.len()), Some(3));
     }
 
     #[test]
@@ -1137,7 +1341,7 @@ mod tests {
         let text: Vec<String> = lines.iter().map(plain).collect();
         assert!(text.iter().any(|l| l.contains("ann +1")), "one more person in it besides you: {text:#?}");
         // Enter: the thread at its first unread reply.
-        assert_eq!(a.target(), Some(("C1".into(), "1729440000.000400".into(), Some("1729440000.000100".into()))));
+        assert_eq!(a.target(), Some(super::super::applink::Target::Message { channel: "C1".into(), ts: "1729440000.000400".into(), thread_ts: Some("1729440000.000100".into()) }));
     }
 
     #[test]

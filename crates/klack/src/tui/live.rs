@@ -239,7 +239,7 @@ pub fn apply(ws: &mut Workspace, ev: &Value, current: Option<&str>) -> Effects {
         "dnd_updated" => ws.dnd.set_info(&ev["dnd_status"]),
         // Slack's own Activity badge, pushed as it changes (an item came, or was read here or elsewhere).
         "badge_counts_updated" => {
-            ws.set_activity_counts(&ev["activity_v2"]);
+            ws.activity_counts_pushed(&ev["activity_v2"]);
         }
         "activity" => {
             fx.activity = match ev["subtype"].as_str() {

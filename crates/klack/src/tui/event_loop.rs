@@ -92,7 +92,8 @@ enum Net {
     /// The activity feed fetched at start, for the sidebar row's unread count (when Slack's counts have no badge).
     ActivityUnread(Result<Value, String>),
     /// `client.counts` asked again after a reconnect, for Slack's Activity badge (`activity_v2`).
-    ActivityBadge(Result<Value, String>),
+    /// `since`: the workspace's `activity_seq` when it was asked for.
+    ActivityBadge { since: u64, result: Result<Value, String> },
     /// The huddles going on now (at start, after a reconnect, when one starts, when the Huddles view opens).
     /// `since`: the workspace's `huddle_seq` when it was asked for.
     LiveHuddles { since: u64, result: Result<Vec<slack_core::types::LiveHuddle>, String> },
@@ -1624,7 +1625,7 @@ impl App {
     }
 
     /// Mark the Activity view's selected item seen (and read on Slack, as its own client does: the badge drops
-    /// at once) and leave the view for it (Enter, or a click on it).
+    /// at once) and leave the view for it (Enter, or a click on it); with nowhere in klack to show it, say so.
     fn open_activity_item(&mut self) {
         if let Some(it) = self.activity.selected_item().cloned() {
             self.seen.insert(it.key.clone(), opened_now());
@@ -1635,8 +1636,7 @@ impl App {
                         tracing::warn!("marking the activity item read failed: {e}");
                     }
                 });
-            }
-            if it.unread {
+                // (Not without the call: Slack still counts it.)
                 self.ws.activity_item_read(&it.ty);
             }
             self.activity.apply_seen(&self.seen);
@@ -1644,9 +1644,15 @@ impl App {
                 self.ws.activity_unread = super::activity::unread_count(items);
             }
         }
-        let Some((channel, ts, thread_ts)) = self.activity.target() else { return };
+        // Nowhere to show it in klack (a list item, a Slack Connect invitation): said so, the view stays.
+        let Some(target) = self.activity.target() else {
+            if self.activity.selected_item().is_some() {
+                self.status = super::i18n::tr(super::activity::NOT_HERE).into_owned();
+            }
+            return;
+        };
         self.close_view();
-        self.open_hit(super::search::Hit { channel, ts, thread_ts, user: None, text: String::new(), ..Default::default() });
+        self.open_in_app(target, false);
     }
 
     /// Show view `v` in the main pane (its sidebar row selected, the focus on it) and load it;
@@ -2962,10 +2968,10 @@ impl App {
 
     /// Slack's Activity badge asked for again (`client.counts`, as its client does at each connect).
     fn fetch_activity_badge(&self) {
-        let (client, tx) = (self.client.clone(), self.net.clone());
+        let (client, tx, since) = (self.client.clone(), self.net.clone(), self.ws.activity_seq);
         tokio::spawn(async move {
             let result = client.counts().await.map_err(|e| e.to_string());
-            let _ = tx.send(Net::ActivityBadge(result));
+            let _ = tx.send(Net::ActivityBadge { since, result });
         });
     }
 
@@ -6039,9 +6045,10 @@ fn handle_net(app: &mut App, msg: Net) {
             Ok(_) => {}
             Err(e) => tracing::warn!("activity feed for the sidebar: {e}"),
         },
-        Net::ActivityBadge(result) => match result {
+        // (A push or an item read here since it was asked is newer: it stays.)
+        Net::ActivityBadge { since, result } => match result {
             Ok(v) => {
-                app.ws.set_activity_counts(&v["activity_v2"]);
+                app.ws.activity_counts_fetched(since, &v);
             }
             Err(e) => tracing::warn!("counts after a reconnect: {e}"),
         },
@@ -7863,7 +7870,7 @@ mod tests {
         assert!(next_call(&mut asked, "client.counts").await.is_some());
         loop {
             match tokio::time::timeout(std::time::Duration::from_secs(10), net.recv()).await {
-                Ok(Some(msg @ Net::ActivityBadge(_))) => {
+                Ok(Some(msg @ Net::ActivityBadge { .. })) => {
                     super::handle_net(&mut app, msg);
                     break;
                 }
@@ -7872,6 +7879,71 @@ mod tests {
             }
         }
         assert_eq!(app.ws.activity_unread, 5);
+    }
+
+    #[tokio::test]
+    async fn the_badges_other_items_open_and_count_as_slacks_own() {
+        use super::{run_global, Action, Net, View};
+        use slack_core::rtm::RtmEvent;
+        let (url, mut asked) = fake_slack(&[("client.counts", r#"{"ok":true,"activity_v2":{"at_user":7}}"#), ("activity.feed", r#"{"ok":true,"items":[]}"#)]).await;
+        let (mut app, mut net) = test_app_at(&url);
+        app.ws.conversations.insert("C1".into(), slack_core::types::Conversation { id: "C1".into(), name: "c".into(), is_channel: true, is_member: true, ..Default::default() });
+        let counts = serde_json::json!({"activity_v2": {"at_user": 1, "channel": 1, "list_record_assigned": 1, "message_reaction": 3}});
+        super::handle_net(&mut app, Net::Boot { boot: serde_json::json!({}), users: vec![], counts: Some(counts) });
+        assert_eq!(app.ws.activity_unread, 3, "a channel's and a list's items count, as in Slack");
+        let entry = |ty: &str, key: &str, feed_ts: &str, item: serde_json::Value| {
+            let mut item = item;
+            item["type"] = ty.into();
+            serde_json::json!({"feed_ts": feed_ts, "is_unread": true, "key": key, "item": item})
+        };
+        let feed = serde_json::json!({"items": [
+            entry("channel", "channel-C1", "9.0", serde_json::json!({"bundle_info": {"payload": {"channel_entry": {"latest_message": {"channel": "C1", "ts": "9.0"}, "unread_msg_count": 1}}}})),
+            entry("list_record_assigned", "list-1", "8.0", serde_json::json!({"list_payload": {"list_id": "F1", "row_id": "R1", "assigned_by": "U2"}})),
+            entry("at_user", "", "7.0", serde_json::json!({"message": {"channel": "C1", "ts": "7.0"}})),
+        ]});
+        let show = |app: &mut super::App| {
+            run_global(app, Action::Activity);
+            super::handle_net(app, Net::ActivityFeed { tab: super::super::activity::Tab::All, more: false, result: Ok(feed.clone()) });
+        };
+        show(&mut app);
+        assert_eq!(app.activity.visible().len(), 3, "listed in All");
+        // A list: nowhere to go in klack. It is read now (on Slack too); the view stays and says where to open it.
+        app.activity.selected = 1;
+        app.open_activity_item();
+        let req = next_call(&mut asked, "activity.markRead").await.expect("activity.markRead");
+        for want in ["type=list_record_assigned", "key=list-1", "feed_ts=8.0", "ts=8.0"] {
+            assert!(req.contains(want), "{want} in {req}");
+        }
+        assert_eq!((app.view, app.ws.activity_unread), (View::Activity, 2));
+        assert!(app.status.contains("Slack"), "{}", app.status);
+        // Nothing to mark it read with on Slack (no key): no call, and the badge keeps it (Slack still counts it).
+        app.activity.selected = 2;
+        app.open_activity_item();
+        assert_eq!((app.view, app.ws.activity_unread), (View::Conversation, 2));
+        // A channel's new messages: marked read; the channel opens.
+        show(&mut app);
+        app.activity.selected = 0;
+        app.open_activity_item();
+        let req = next_call(&mut asked, "activity.markRead").await.expect("activity.markRead");
+        assert!(req.contains("type=channel") && req.contains("key=channel-C1"), "{req}");
+        assert_eq!((app.view, app.ws.activity_unread, app.ws.shown.as_deref()), (View::Conversation, 1, Some("C1")));
+        // A reconnect's counts answered after a newer push: dropped.
+        super::handle_rtm(&mut app, RtmEvent::Connected(slack_core::api::Socket::Gateway));
+        super::handle_rtm(&mut app, RtmEvent::Disconnected("gone".into()));
+        super::handle_rtm(&mut app, RtmEvent::Connected(slack_core::api::Socket::Gateway));
+        assert!(next_call(&mut asked, "client.counts").await.is_some());
+        super::handle_rtm(&mut app, RtmEvent::Event(serde_json::json!({"type": "badge_counts_updated", "event_ts": "9.9", "activity_v2": {"at_user": 4}})));
+        loop {
+            match tokio::time::timeout(std::time::Duration::from_secs(10), net.recv()).await {
+                Ok(Some(msg @ Net::ActivityBadge { .. })) => {
+                    super::handle_net(&mut app, msg);
+                    break;
+                }
+                Ok(Some(_)) => {}
+                other => panic!("no counts: {}", other.is_ok()),
+            }
+        }
+        assert_eq!(app.ws.activity_unread, 4, "the push is newer than the answer (7)");
     }
 
     #[tokio::test]
