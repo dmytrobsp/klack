@@ -147,8 +147,9 @@ fn gateway_url(base: &str, token: &str, routing_context: Option<&str>) -> Option
         .finish();
     {
         let mut q = url.query_pairs_mut();
+        // Not the web client's `sync_desync=1`: it brings `desync` events (caches of some channels to refetch),
+        // and klack keeps no such caches beyond what a reconnect fetches.
         q.append_pair("token", token)
-            .append_pair("sync_desync", "1")
             .append_pair("slack_client", "desktop")
             .append_pair("start_args", &start_args)
             .append_pair("no_query_on_subscribe", "1")
@@ -790,14 +791,23 @@ impl Client {
         self.call_field("rtm.connect", "url", &[("batch_presence_aware", "1".into()), ("presence_sub", "true".into())]).await
     }
 
-    /// The websocket to open: Slack's own gateway (`client.getWebSocketURL`), as the web client does, else —
-    /// Slack not giving one of its own addresses — `rtm.connect`'s. The gateway address carries the token: never
-    /// log or show it.
-    pub async fn socket_url(&self) -> Result<(String, Socket)> {
+    /// The websocket to open: with `gateway`, Slack's own gateway (`client.getWebSocketURL`), as the web client
+    /// does, else — or Slack not giving one of its own addresses — `rtm.connect`'s. The gateway address carries the
+    /// token: never log or show it.
+    pub async fn socket_url(&self, gateway: bool) -> Result<(String, Socket)> {
+        if !gateway {
+            return Ok((self.rtm_url().await?, Socket::Rtm));
+        }
         match self.call_raw("client.getWebSocketURL", &[]).await {
             Ok(v) => {
                 let base = v["primary_websocket_url"].as_str().unwrap_or_default();
-                if let Some(url) = gateway_url(base, &self.session.token, v["routing_context"].as_str()) {
+                // Debug builds: `KLACK_FAIL=gateway.connect` opens the gateway with a token Slack refuses.
+                #[cfg(debug_assertions)]
+                let refused = std::env::var("KLACK_FAIL").ok().and_then(|v| injected(&v, "gateway.connect")).is_some();
+                #[cfg(not(debug_assertions))]
+                let refused = false;
+                let token = if refused { "xoxc-klack-test-refused" } else { self.session.token.as_str() };
+                if let Some(url) = gateway_url(base, token, v["routing_context"].as_str()) {
                     return Ok((url, Socket::Gateway));
                 }
                 tracing::warn!("client.getWebSocketURL: no Slack wss address; using rtm.connect");
@@ -934,7 +944,9 @@ mod tests {
         let parsed = reqwest::Url::parse(&url).unwrap();
         assert_eq!((parsed.scheme(), parsed.host_str(), parsed.path()), ("wss", Some("wss-primary.slack.com"), "/"));
         let q: std::collections::HashMap<String, String> = parsed.query_pairs().into_owned().collect();
-        for (k, v) in [("token", "xoxc-1"), ("sync_desync", "1"), ("slack_client", "desktop"), ("no_query_on_subscribe", "1"), ("flannel", "3"), ("lazy_channels", "1"), ("gateway_server", "ctx 1"), ("batch_presence_aware", "1")] {
+        // Not `sync_desync`: klack has nothing to do with the `desync` events it brings.
+        assert!(!q.contains_key("sync_desync"));
+        for (k, v) in [("token", "xoxc-1"), ("slack_client", "desktop"), ("no_query_on_subscribe", "1"), ("flannel", "3"), ("lazy_channels", "1"), ("gateway_server", "ctx 1"), ("batch_presence_aware", "1")] {
             assert_eq!(q.get(k).map(String::as_str), Some(v), "{k}");
         }
         // The boot data is not wanted: the connection only.
@@ -945,6 +957,62 @@ mod tests {
         for base in ["https://wss-primary.slack.com/", "wss://evil.example/", "wss://wss-primary.slack.com@evil.example/"] {
             assert!(super::gateway_url(base, "xoxc-1", None).is_none(), "{base}");
         }
+    }
+
+    /// A Slack on a local port answering `answers` (method → body; others `ok`), passing on each method asked.
+    async fn fake_slack(answers: &'static [(&'static str, &'static str)]) -> (String, tokio::sync::mpsc::UnboundedReceiver<String>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                let mut req = Vec::new();
+                let mut buf = [0u8; 8192];
+                loop {
+                    let n = sock.read(&mut buf).await.unwrap_or(0);
+                    req.extend_from_slice(&buf[..n]);
+                    let text = String::from_utf8_lossy(&req).to_string();
+                    let done = text.find("\r\n\r\n").is_some_and(|h| {
+                        let len = text[..h].lines().find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").and_then(|v| v.trim().parse::<usize>().ok())).unwrap_or(0);
+                        req.len() >= h + 4 + len
+                    });
+                    if n == 0 || done {
+                        break;
+                    }
+                }
+                let text = String::from_utf8_lossy(&req).to_string();
+                let method = text.split_whitespace().nth(1).and_then(|p| p.strip_prefix("/api/")).unwrap_or_default().to_string();
+                let body = answers.iter().find(|(m, _)| *m == method).map_or(r#"{"ok":true}"#, |(_, b)| *b);
+                let _ = tx.send(method);
+                let reply = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                let _ = sock.write_all(reply.as_bytes()).await;
+            }
+        });
+        (url, rx)
+    }
+
+    #[tokio::test]
+    async fn a_gateway_not_on_slacks_own_wss_host_falls_back_to_rtm_connect() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        const RTM: &str = r#"{"ok":true,"url":"wss://wss-primary.slack.com/websocket/LEGACY"}"#;
+        for (base, answers) in [
+            ("https", &[("client.getWebSocketURL", r#"{"ok":true,"primary_websocket_url":"https://wss-primary.slack.com/","routing_context":"c"}"#), ("rtm.connect", RTM)]),
+            ("evil", &[("client.getWebSocketURL", r#"{"ok":true,"primary_websocket_url":"wss://evil.example/","routing_context":"c"}"#), ("rtm.connect", RTM)]),
+        ] {
+            let (url, mut asked) = fake_slack(answers).await;
+            let session = crate::session::WorkspaceSession { url, token: "xoxc-T".into(), ..Default::default() };
+            let (got, socket) = super::Client::new(session).unwrap().socket_url(true).await.unwrap();
+            assert_eq!((got.as_str(), socket), ("wss://wss-primary.slack.com/websocket/LEGACY", super::Socket::Rtm), "{base}");
+            assert!(!got.contains("xoxc"), "{base}");
+            assert_eq!((asked.recv().await.as_deref(), asked.recv().await.as_deref()), (Some("client.getWebSocketURL"), Some("rtm.connect")), "{base}");
+        }
+        // A good one; and after failed connects (gateway: false) not even asked for.
+        let (url, mut asked) = fake_slack(&[("client.getWebSocketURL", r#"{"ok":true,"primary_websocket_url":"wss://wss-primary.slack.com/"}"#), ("rtm.connect", RTM)]).await;
+        let client = super::Client::new(crate::session::WorkspaceSession { url, token: "xoxc-T".into(), ..Default::default() }).unwrap();
+        assert_eq!(client.socket_url(true).await.unwrap().1, super::Socket::Gateway);
+        assert_eq!(client.socket_url(false).await.unwrap().1, super::Socket::Rtm);
+        assert_eq!((asked.recv().await.as_deref(), asked.recv().await.as_deref()), (Some("client.getWebSocketURL"), Some("rtm.connect")));
     }
 
     #[test]

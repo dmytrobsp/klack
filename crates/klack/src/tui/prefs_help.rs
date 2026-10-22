@@ -217,7 +217,7 @@ fn build(field: Field, _ws: &Workspace, keys: &Keymap, tr: &dyn Fn(&'static str)
             b.step("off, or every 5, 10, 15, 30, 60 or 120 seconds");
         }
         Field::StatusRefresh => {
-            b.text("Slack pushes people's status changes to klack as they happen, as to its own client, and klack then looks that one person up. As a safety net — and for the rare connection without pushes (when Slack offers no gateway, klack falls back to rtm.connect) — the people shown, the direct messages and group DMs in the sidebar and the authors in the open conversation and thread, are also looked up again this often, and once after the connection was lost. An expired status goes at once either way.").blank();
+            b.text("Slack pushes people's status changes to klack as they happen, as to its own client, and klack then looks that one person up. As a safety net — and for the rare connection without pushes (when Slack offers no gateway or it fails twice in a row, klack falls back to rtm.connect for a while) — the people shown, the direct messages and group DMs in the sidebar and the authors in the open conversation and thread, are also looked up again this often, and once after the connection was lost. An expired status goes at once either way.").blank();
             b.step("off, or every 60, 300, 600 (the default), 1800 or 3600 seconds");
         }
         Field::ThreadRead => {

@@ -85,14 +85,75 @@ fn next_backoff(wait: u64) -> u64 {
     (wait * 2).min(60)
 }
 
+/// What a frame from Slack is to the loop.
+#[derive(Debug, PartialEq, Eq)]
+enum Incoming {
+    Hello,
+    Goodbye,
+    /// Not passed on: `pong`, and the gateway's `reconnect_url` (a fast-reconnect address with the token in it,
+    /// which klack does not use).
+    Skip,
+    Event,
+}
+
+fn incoming(v: &Value) -> Incoming {
+    match v["type"].as_str() {
+        Some("hello") => Incoming::Hello,
+        Some("goodbye") => Incoming::Goodbye,
+        Some("pong" | "reconnect_url") => Incoming::Skip,
+        _ => Incoming::Event,
+    }
+}
+
+/// After this many connects to the gateway in a row that Slack did not say hello on, `rtm.connect` is used.
+const GATEWAY_FAILURES: u32 = 2;
+/// How long `rtm.connect` is used then before the gateway is tried again (at the next reconnect).
+const GATEWAY_RETRY: Duration = Duration::from_secs(600);
+
+/// Which websocket the next connect opens: the gateway, unless it failed [`GATEWAY_FAILURES`] times in a row
+/// (refused, closed before Slack's hello) — then `rtm.connect`'s for [`GATEWAY_RETRY`].
+#[derive(Debug, Default)]
+struct Route {
+    failures: u32,
+    rtm_until: Option<std::time::Instant>,
+}
+
+impl Route {
+    fn gateway(&self, now: std::time::Instant) -> bool {
+        self.rtm_until.is_none_or(|until| now >= until)
+    }
+
+    /// A connection on `socket` ended, Slack having said hello on it or not.
+    fn ended(&mut self, socket: Socket, hello: bool, now: std::time::Instant) {
+        match (socket, hello) {
+            (Socket::Gateway, true) => *self = Route::default(),
+            (Socket::Gateway, false) => {
+                self.rtm_until = None;
+                self.failures += 1;
+                if self.failures >= GATEWAY_FAILURES {
+                    tracing::warn!("rtm: the gateway failed {} times; using rtm.connect for a while", self.failures);
+                    *self = Route { failures: 0, rtm_until: Some(now + GATEWAY_RETRY) };
+                }
+            }
+            (Socket::Rtm, _) => {}
+        }
+    }
+}
+
 /// Start the RTM loop on the current tokio runtime.
 pub fn spawn(client: Client) -> Rtm {
     let (ev_tx, ev_rx) = mpsc::unbounded_channel();
     let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<RtmCommand>();
     tokio::spawn(async move {
         let mut backoff = 1u64;
+        let mut route = Route::default();
         loop {
-            let result = run_once(&client, &ev_tx, &mut cmd_rx).await;
+            // (Which socket it was and whether Slack said hello; none when no address was had.)
+            let mut opened = None;
+            let result = run_once(&client, &ev_tx, &mut cmd_rx, route.gateway(std::time::Instant::now()), &mut opened).await;
+            if let Some((socket, hello)) = opened {
+                route.ended(socket, hello, std::time::Instant::now());
+            }
             let step = next_step(result.as_ref().err(), client.signed_out(), backoff);
             if let Err(e) = &result {
                 if step != Step::Stop && ev_tx.send(RtmEvent::Disconnected(e.to_string())).is_err() {
@@ -117,8 +178,16 @@ pub fn spawn(client: Client) -> Rtm {
     Rtm { events: ev_rx, commands: cmd_tx }
 }
 
-async fn run_once(client: &Client, ev_tx: &mpsc::UnboundedSender<RtmEvent>, cmd_rx: &mut mpsc::UnboundedReceiver<RtmCommand>) -> anyhow::Result<()> {
-    let (url, socket) = client.socket_url().await?;
+/// One connection, to the gateway if `gateway`; `opened` says which socket it tried and whether Slack said hello.
+async fn run_once(
+    client: &Client,
+    ev_tx: &mpsc::UnboundedSender<RtmEvent>,
+    cmd_rx: &mut mpsc::UnboundedReceiver<RtmCommand>,
+    gateway: bool,
+    opened: &mut Option<(Socket, bool)>,
+) -> anyhow::Result<()> {
+    let (url, socket) = client.socket_url(gateway).await?;
+    *opened = Some((socket, false));
     // The gateway's address carries the token: errors naming it lose it.
     let connect = async {
         let mut req = url.as_str().into_client_request()?;
@@ -146,11 +215,14 @@ async fn run_once(client: &Client, ev_tx: &mpsc::UnboundedSender<RtmEvent>, cmd_
                 match frame? {
                     WsMessage::Text(text) => {
                         let Ok(v) = serde_json::from_str::<Value>(&text) else { continue };
-                        match v["type"].as_str() {
-                            Some("hello") => { let _ = ev_tx.send(RtmEvent::Connected(socket)); }
-                            Some("pong") => {}
-                            Some("goodbye") => anyhow::bail!("server said goodbye"),
-                            _ => {
+                        match incoming(&v) {
+                            Incoming::Hello => {
+                                *opened = Some((socket, true));
+                                let _ = ev_tx.send(RtmEvent::Connected(socket));
+                            }
+                            Incoming::Skip => {}
+                            Incoming::Goodbye => anyhow::bail!("server said goodbye"),
+                            Incoming::Event => {
                                 if ev_tx.send(RtmEvent::Event(v)).is_err() {
                                     return Ok(());
                                 }
@@ -190,6 +262,39 @@ mod tests {
         let f = frame(RtmCommand::UserChangeSub { users: vec!["U2".into(), "U3".into()] }, 7);
         assert_eq!(f, json!({"id": 7, "type": "subscription_update", "subtype": "user_change_subscribe_request", "ids": ["U2", "U3"]}));
         assert_eq!(frame(RtmCommand::PresenceSub { users: vec!["U2".into()] }, 8), json!({"id": 8, "type": "presence_sub", "ids": ["U2"]}));
+    }
+
+    #[test]
+    fn the_gateways_reconnect_address_is_never_passed_on() {
+        // It carries the token (and klack does not use it): not an event for the app, ctl or logs.
+        let reconnect = json!({"type": "reconnect_url", "url": "wss://wss-primary.slack.com/?frt=x&token=xoxc-SECRET"});
+        assert_eq!(incoming(&reconnect), Incoming::Skip);
+        assert_eq!(incoming(&json!({"type": "pong", "reply_to": 3})), Incoming::Skip);
+        assert_eq!(incoming(&json!({"type": "hello"})), Incoming::Hello);
+        assert_eq!(incoming(&json!({"type": "goodbye"})), Incoming::Goodbye);
+        assert_eq!(incoming(&json!({"type": "message", "text": "hi"})), Incoming::Event);
+    }
+
+    #[test]
+    fn two_gateway_connects_without_hello_fall_back_to_rtm_connect_for_a_while() {
+        let t0 = std::time::Instant::now();
+        let mut route = Route::default();
+        assert!(route.gateway(t0), "the gateway first");
+        route.ended(Socket::Gateway, false, t0);
+        assert!(route.gateway(t0), "one failed connect: the gateway again");
+        route.ended(Socket::Gateway, false, t0);
+        assert!(!route.gateway(t0), "two: rtm.connect for the next attempt");
+        route.ended(Socket::Rtm, true, t0 + Duration::from_secs(60));
+        assert!(!route.gateway(t0 + GATEWAY_RETRY - Duration::from_secs(1)), "rtm.connect for a while");
+        assert!(route.gateway(t0 + GATEWAY_RETRY), "then the gateway again");
+        route.ended(Socket::Gateway, false, t0 + GATEWAY_RETRY);
+        assert!(route.gateway(t0 + GATEWAY_RETRY), "counted afresh");
+        // A hello in between: the failures are forgotten.
+        let mut route = Route::default();
+        route.ended(Socket::Gateway, false, t0);
+        route.ended(Socket::Gateway, true, t0);
+        route.ended(Socket::Gateway, false, t0);
+        assert!(route.gateway(t0));
     }
 
     #[test]

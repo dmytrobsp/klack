@@ -91,7 +91,8 @@ huddle already). An expired status is gone at once, without waiting for Slack. k
 own websocket gateway, as Slack's web client does, and asks it for the profile changes of the people it
 shows: when someone's status or huddle state changes, Slack says so within a second or two and klack looks
 that one person up. As a safety net — and on the older `rtm.connect` connection klack falls back to when
-Slack offers no gateway, which gets no such pushes — the people shown are also looked up again every ten
+Slack offers no gateway or it fails twice in a row (the gateway is tried again ten minutes later), which gets
+no such pushes — the people shown are also looked up again every ten
 minutes and once after the connection was lost, up to 50 at a time: first the authors in the open
 conversation and thread, then the people of the DMs and group DMs on screen in the sidebar, then the
 sidebar's other DMs and group DMs in turn, so that everyone's comes round: F6 → Messages & media → Refresh
@@ -408,7 +409,7 @@ on Windows only from an SSH session, where `gdigrab` cannot capture (no desktop)
 | Variable | |
 |---|---|
 | (F6 or `/prefs`) | preferences: availability (status, away, Notifications — on or paused until when; Enter pauses for 30 minutes or resumes, + / - change a pause's length — and the notification schedule: off, every day, weekdays or custom, with the hours you receive notifications in, per day for custom: hours, receive all day or paused all day; kept on Slack), theme, compact list, thumbnails, profile pictures, emoji as names, custom emoji as pictures, how often people's statuses are looked up again, when feed threads are marked read, 12/24 h clock, date format, time zone, language, desktop notifications and sound, microphone and speaker, volumes, microphone gain, speaking threshold, noise suppression, echo cancellation — saved in `settings.toml` next to `keys.toml` |
-| `KLACK_LOG` | log filter, e.g. `klack=debug` (log file: `~/.cache/klack/<profile>/klack.log`) |
+| `KLACK_LOG` | log filter, e.g. `klack=debug` (log file: `~/.cache/klack/<profile>/klack.log`); the websocket library's handshake and frames (`tungstenite::handshake::client`, `tungstenite::client`, `tungstenite::protocol`), which would print the token, cookie and messages, stay off unless named |
 | `KLACK_DOWNLOAD_DIR` | where `␣s` saves attachments first, over F6 → Messages & media → Save files to (default: your downloads folder) |
 | `KLACK_OPEN_WITH` | the program `␣o` opens links with, given the address (default: the system's opener — `xdg-open`, `open`, Windows' URL handler); only web and mail links are opened |
 | `KLACK_AVATARS=0` | initials instead of profile pictures next to names (as on terminals without real graphics; F6 → Messages & media → Show profile pictures turns both off, Two-row profile pictures makes them bigger) |

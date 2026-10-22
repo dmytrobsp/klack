@@ -24,6 +24,9 @@ pub struct Effects {
     /// This person's profile (status, huddle state) changed: Slack's gateway says only that
     /// (`user_invalidated`); they are to be looked up again. Not you: yours comes as `user_change`.
     pub invalidated: Option<String>,
+    /// Your DND (snooze, schedule) changed: the gateway says only that (`dnd_invalidated`, where
+    /// `rtm.connect` sends `dnd_updated` with it); it is to be asked for again.
+    pub dnd_invalidated: bool,
 }
 
 fn parse_message(v: &Value, channel: &str) -> Option<Message> {
@@ -221,6 +224,7 @@ pub fn apply(ws: &mut Workspace, ev: &Value, current: Option<&str>) -> Effects {
             }
         }
         "dnd_updated" => ws.dnd.set_info(&ev["dnd_status"]),
+        "dnd_invalidated" => fx.dnd_invalidated = ev["user"]["id"].as_str() == Some(ws.self_id.as_str()),
         // Threads you follow got replies, or were read (here or elsewhere).
         "update_global_thread_state" => ws.thread_unread = super::state::ThreadUnread::from_json(ev),
         // Someone added, removed or renamed a custom emoji.
@@ -457,6 +461,15 @@ mod tests {
         assert_eq!(apply(&mut w, &ev("UME"), None).invalidated, None);
         assert_eq!(apply(&mut w, &ev("U9"), None).invalidated, None);
         assert_eq!(apply(&mut w, &json!({"type": "user_invalidated"}), None).invalidated, None);
+    }
+
+    #[test]
+    fn your_dnd_invalidated_asks_for_it_again() {
+        let mut w = ws();
+        // The gateway's push in place of `dnd_updated`: only whose DND changed.
+        let ev = |id: &str| json!({"type": "dnd_invalidated", "event_ts": "1.5", "user": {"id": id}});
+        assert!(apply(&mut w, &ev("UME"), None).dnd_invalidated);
+        assert!(!apply(&mut w, &ev("U2"), None).dnd_invalidated, "someone else's: klack shows no one else's DND");
     }
 
     #[test]

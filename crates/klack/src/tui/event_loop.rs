@@ -2479,6 +2479,11 @@ impl App {
             return;
         }
         self.dnd_refreshing = true;
+        self.fetch_dnd();
+    }
+
+    /// Ask Slack for your DND (`dnd.info`) now: it changed elsewhere (the gateway's `dnd_invalidated`).
+    fn fetch_dnd(&mut self) {
         let (client, tx) = (self.client.clone(), self.net.clone());
         tokio::spawn(async move {
             match client.call_raw("dnd.info", &[]).await {
@@ -5473,6 +5478,9 @@ fn handle_rtm(app: &mut App, ev: slack_core::rtm::RtmEvent) {
             if let Some(id) = fx.invalidated {
                 app.profile_invalidated(id);
             }
+            if fx.dnd_invalidated {
+                app.fetch_dnd();
+            }
             // (As the official client does: an ended huddle the view shows may now be among the recent ones.)
             if app.view == View::Huddles && app.huddles.concerns(&fx.huddles_ended) {
                 let generation = app.huddles.refresh();
@@ -5858,6 +5866,7 @@ fn handle_net(app: &mut App, msg: Net) {
             app.ws.dnd.set_info(&v);
             // An answer that is already out of date is not asked again.
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64();
+            tracing::debug!(paused = app.ws.dnd_active(now), "dnd.info");
             app.dnd_refreshing = app.ws.dnd.stale(now);
         }
         Net::DndSchedule { error, prefs, info } => {
@@ -7673,6 +7682,25 @@ mod tests {
         with_dm(&mut app, "U3");
         app.follow_profiles(std::time::Instant::now() + std::time::Duration::from_secs(5));
         assert!(app.lookups.due.contains("U3") && app.lookups.stale.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_pushed_dnd_change_of_yours_is_fetched() {
+        use super::Net;
+        let (url, _asked) = fake_slack(&[("dnd.info", r#"{"ok":true,"dnd_enabled":false,"snooze_enabled":true,"snooze_endtime":4102444800,"snooze_remaining":60}"#)]).await;
+        let (mut app, mut net) = test_app_at(&url);
+        app.ws.self_id = "U0".into();
+        assert!(app.ws.dnd.snooze_until.is_none());
+        super::handle_rtm(&mut app, slack_core::rtm::RtmEvent::Event(serde_json::json!({"type": "dnd_invalidated", "event_ts": "1.5", "user": {"id": "U0"}})));
+        let info = loop {
+            match tokio::time::timeout(std::time::Duration::from_secs(10), net.recv()).await {
+                Ok(Some(Net::Dnd(v))) => break v,
+                Ok(Some(_)) => {}
+                other => panic!("dnd.info not asked: {}", other.is_ok()),
+            }
+        };
+        super::handle_net(&mut app, Net::Dnd(info));
+        assert_eq!(app.ws.dnd.snooze_until, Some(4102444800.0), "paused, as set elsewhere");
     }
 
     #[tokio::test]

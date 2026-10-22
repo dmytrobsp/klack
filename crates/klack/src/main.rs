@@ -109,13 +109,30 @@ enum ProfileCmd {
     },
 }
 
+/// Log targets of the websocket library that print secrets: the handshake request (the token in its address, the
+/// session cookie) and, at trace, every frame (the gateway's `reconnect_url` carries the token; messages their
+/// text). Off unless `KLACK_LOG` names them itself.
+const SECRET_LOG_TARGETS: &[&str] = &["tungstenite::handshake::client", "tungstenite::client", "tungstenite::protocol"];
+
+/// The log filter: `KLACK_LOG`'s (`env`), else klack's info, with [`SECRET_LOG_TARGETS`] off.
+fn log_filter(env: Option<&str>) -> String {
+    let base = env.map(str::trim).filter(|e| !e.is_empty()).unwrap_or("klack=info,slack_core=info,huddle=info");
+    let mut filter = base.to_string();
+    for target in SECRET_LOG_TARGETS.iter().filter(|t| !base.split(',').any(|d| d.trim().starts_with(&format!("{t}=")) || d.trim() == **t)) {
+        filter += &format!(",{target}=off");
+    }
+    filter
+}
+
 fn init_logging(profile: &str) -> Result<()> {
     let dir = session::cache_dir(profile)?;
     std::fs::create_dir_all(&dir)?;
     let file = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("klack.log"))?;
     let _ = tui::terminal::STDERR_LOG.set(dir.join("klack.log"));
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::try_from_env("KLACK_LOG").unwrap_or_else(|_| "klack=info,slack_core=info,huddle=info".into()))
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_new(log_filter(std::env::var("KLACK_LOG").ok().as_deref())).unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(log_filter(None))),
+        )
         .with_writer(std::sync::Mutex::new(file))
         .with_ansi(false)
         .init();
@@ -306,5 +323,26 @@ fn profile_command(dirs: &Dirs, cmd: ProfileCmd) -> Result<()> {
             }
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_websocket_handshake_is_never_logged_unless_asked_for() {
+        let directives = |f: &str| f.split(',').map(str::to_string).collect::<Vec<_>>();
+        for env in [None, Some(""), Some("trace"), Some("klack=debug,tungstenite=trace")] {
+            let f = super::log_filter(env);
+            assert!(directives(&f).contains(&"tungstenite::handshake::client=off".to_string()), "{env:?}: {f}");
+            assert!(directives(&f).contains(&"tungstenite::client=off".to_string()), "{env:?}: {f}");
+            // Every frame, at trace: the gateway's `reconnect_url` carries the token, messages their text.
+            assert!(directives(&f).contains(&"tungstenite::protocol=off".to_string()), "{env:?}: {f}");
+            assert!(tracing_subscriber::EnvFilter::try_new(&f).is_ok(), "{f}");
+        }
+        assert!(super::log_filter(None).starts_with("klack=info,slack_core=info,huddle=info"));
+        assert!(super::log_filter(Some("trace")).starts_with("trace,"));
+        // Named on purpose: as asked.
+        let f = super::log_filter(Some("tungstenite::handshake::client=trace"));
+        assert!(!f.contains("tungstenite::handshake::client=off") && f.contains("tungstenite::client=off"), "{f}");
     }
 }
