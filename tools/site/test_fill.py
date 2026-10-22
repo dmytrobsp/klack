@@ -114,17 +114,11 @@ class FillTests(unittest.TestCase):
                 + [{"name": "SHA256SUMS", "browser_download_url": base + "SHA256SUMS", "size": 1}]}
         return base, F.release_from_api("o/r", None, urlopen=self._api(200, body))
 
-    def test_assets_of_old_name_still_link(self):
-        # releases up to 0.9.0 shipped under the old name; their lines carry the name guard's marker
-        base, r = self._release_of("0.9.0", ["klack-0.9.0-x86_64-linux.zip",  # old-name-ok
-                                             "klack-0.9.0-x86_64-windows.zip"])  # old-name-ok
-        self.assertEqual([a["platform"] for a in r["assets"]], ["x86_64-linux", "x86_64-windows"])
-        button, table = F.render_download_button(r), F.render_downloads(r, {})
-        self.assertIn(f'href="{base}klack-0.9.0-x86_64-linux.zip">DOWNLOAD FOR LINUX</a>', button)  # old-name-ok
-        self.assertIn(f'href="{base}klack-0.9.0-x86_64-windows.zip">Windows</a>', table)  # old-name-ok
-        for h in (button, table):
-            self.assertTrue(h.endswith(F.OLD_NAME_OK), h)
-            self.assertIn("old-name-ok", F.OLD_NAME_OK)
+    def test_assets_of_the_old_name_do_not_link(self):
+        # only ttyak-<version>-<platform>.zip counts; a release with nothing else has no downloads
+        old = "k" + "lack"
+        with self.assertRaises(F.ReleaseFetchError):
+            self._release_of("0.9.0", [f"{old}-0.9.0-x86_64-linux.zip", f"{old}-0.9.0-x86_64-windows.zip"])
 
     def test_assets_of_new_name_link(self):
         base, r = self._release_of("0.10.0", ["ttyak-0.10.0-x86_64-linux.zip", "ttyak-0.10.0-aarch64-linux.zip",
@@ -133,7 +127,7 @@ class FillTests(unittest.TestCase):
         button, table = F.render_download_button(r), F.render_downloads(r, {})
         self.assertIn(f'href="{base}ttyak-0.10.0-x86_64-linux.zip">DOWNLOAD FOR LINUX</a>', button)
         self.assertIn(f'href="{base}ttyak-0.10.0-aarch64-linux.zip">aarch64-linux</a>', table)
-        self.assertNotIn("old-name-ok", button + table)
+        self.assertNotIn("old-name", button + table)
 
     def test_fill_page(self):
         with tempfile.TemporaryDirectory() as d:
@@ -426,17 +420,17 @@ class SheetTests(unittest.TestCase):
         for s in ("Linux", "measured on Linux", "9.9.9", "1.2.3", "2026-01-02", "Some CPU (8 cores)",
                   "App against app", "the terminal ttyak runs in isn't counted",
                   "https://github.com/dmytrobsp/ttyak/blob/master/tools/site/MEASURING.md",
-                  "ttyak 9.9.9 against Slack's desktop app 1.2.3", "Slack's RAM figures are a lower bound"):
+                  "ttyak (version 9.9.9) against Slack's desktop app 1.2.3", "Slack's RAM figures are a lower bound"):
             self.assertIn(s, n, s)
         self.assertNotRegex(n.lower(), r"workspace|\bteam\b|channel")
-        self.assertNotIn("old-name-ok", n)
+        self.assertNotIn("old-name", n)
 
-    def test_note_of_a_build_from_before_the_rename(self):
+    def test_note_of_an_older_build_names_no_old_name(self):
         n = F.render_measured_note({**NUMBERS, "versions": {"ttyak": "0.8.0", "slack": "1.2.3"}})
-        self.assertIn("ttyak 0.8.0 (released as klack) against Slack's desktop app 1.2.3", n)  # old-name-ok
-        self.assertTrue(n.endswith(F.OLD_NAME_OK), n)
-        self.assertNotIn("released as", F.render_measured_note({**NUMBERS, "versions": {"ttyak": "0.10.0",
-                                                                                         "slack": "1.2.3"}}))
+        self.assertIn("ttyak (version 0.8.0) against Slack's desktop app 1.2.3", n)
+        self.assertNotIn("released as", n)
+        self.assertNotRegex(n.lower(), "k" + "lack|old-name")
+        self.assertFalse(n.endswith("-->"), n)
 
     def test_real_numbers_render(self):
         real = json.loads((ROOT / "site/data/numbers.json").read_text())

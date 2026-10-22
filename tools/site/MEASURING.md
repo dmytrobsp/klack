@@ -1,7 +1,7 @@
 # How the numbers on the page were measured
 
 Measured 2026-10-21 on one machine: AMD Ryzen 9 9950X (16 cores), 64 GB RAM, an AMD Radeon GPU, Pop!_OS 24.04
-(Linux 7.2), Hyprland (Wayland). ttyak 0.8.0, released as klack — the release download (`klack-0.8.0-x86_64-linux.zip`, <!-- old-name-ok -->
+(Linux 7.2), Hyprland (Wayland). ttyak 0.8.0 — the release download for Linux (the x86_64-linux zip,
 checked against SHA256SUMS), not a development build. The official app: Slack 4.52.178 for Linux (flatpak `com.slack.Slack`).
 
 App against app: the terminal ttyak runs in is not counted (every terminal costs something different; a stock

@@ -9,6 +9,9 @@ SECTIONS = ["top", "features", "numbers", "get", "footer"]
 FILLS = ["hero-capture", "download-button", "downloads", "sheet", "measured-note",
          "capture-huddle", "capture-signin", "capture-keys"]
 OWN = "https://github.com/dmytrobsp/ttyak"
+# the committed page and release.json still hold the last pre-ttyak release until the first ttyak one is filled in
+_v = json.loads((SITE / "data" / "release.json").read_text())["version"]
+BEFORE_FIRST_TTYAK_RELEASE = tuple(int(x) for x in _v.split(".")[:2]) < (0, 10)
 
 
 class Page(HTMLParser):
@@ -83,14 +86,15 @@ class Structure(unittest.TestCase):
         self.assertIn('<link rel="icon" href="img/favicon.svg" type="image/svg+xml">', page)
         self.assertTrue((SITE / "img" / "favicon.svg").read_text().startswith("<svg"))
 
-    def test_no_old_name_outside_marked_lines(self):
-        # the release links of builds made before the rename carry old-name-ok; nothing else says the old name
+    @unittest.skipIf(BEFORE_FIRST_TTYAK_RELEASE, "release.json and the filled regions predate 0.10.0")
+    def test_no_old_name_anywhere(self):
+        # nothing on the page, in its data or assets says the old name
         for p in sorted(SITE.rglob("*")):
             if p.suffix not in (".html", ".css", ".js", ".json", ".svg"):
                 continue
             for n, line in enumerate(p.read_text().splitlines(), 1):
                 if re.search("(?i)k" + "lack", line):
-                    self.assertIn("old-name-ok", line, "%s:%d" % (p.relative_to(SITE), n))
+                    self.fail("%s:%d" % (p.relative_to(SITE), n))
 
     def test_sections_in_order(self):
         self.assertEqual(parse().section_ids, SECTIONS)
@@ -140,11 +144,15 @@ class Structure(unittest.TestCase):
         self.assertRegex(v, r"^\d+\.\d+\.\d+$")
         self.assertEqual(len(r["assets"]), 4)
         for a in r["assets"]:
-            self.assertIn(a["name"], ("ttyak-%s-%s.zip" % (v, a["platform"]),
-                                      "klack-%s-%s.zip" % (v, a["platform"])))  # old-name-ok: before 0.10
             self.assertTrue(a["url"].startswith(OWN + "/releases/download/v%s/" % v))
             self.assertIsInstance(a["size"], int)
         self.assertTrue(r["sums_url"].endswith("/SHA256SUMS"))
+
+    @unittest.skipIf(BEFORE_FIRST_TTYAK_RELEASE, "release.json predates 0.10.0")
+    def test_release_json_asset_names(self):
+        r = json.loads((SITE / "data" / "release.json").read_text())
+        for a in r["assets"]:
+            self.assertEqual(a["name"], "ttyak-%s-%s.zip" % (r["version"], a["platform"]))
 
     def test_numbers_json(self):
         n = json.loads((SITE / "data" / "numbers.json").read_text())

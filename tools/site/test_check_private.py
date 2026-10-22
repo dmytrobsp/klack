@@ -94,7 +94,7 @@ class RepoAddress(unittest.TestCase):
             self.assertEqual(sorted({h[1] for h in scan(d, ["Yaksh"], allow=allowed_forms(None))}), [3, 4])
 
     def test_the_old_repo_address_is_not_allowed(self):
-        self.assertEqual(self.hits("https://github.com/alicesmith/klack\n"), [1])  # old-name-ok
+        self.assertEqual(self.hits("https://github.com/alicesmith/" + "k" + "lack\n"), [1])
 
     def test_nothing_is_allowed_without_an_owner(self):
         self.assertEqual(self.hits("https://github.com/alicesmith/ttyak\n", owner=None), [1])

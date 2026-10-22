@@ -16,8 +16,6 @@ REPO = "dmytrobsp/ttyak"
 ORDER = ["x86_64-linux", "aarch64-macos", "x86_64-macos", "x86_64-windows"]
 NAMES = {"x86_64-linux": "Linux", "aarch64-macos": "macOS · Apple Silicon",
          "x86_64-macos": "macOS · Intel", "x86_64-windows": "Windows"}
-# builds released before the rename (up to 0.9.0) carry the old name: the lines that link them say so to the name guard
-OLD_NAME_OK = "<!-- old-name-ok: released before the rename -->"
 
 
 class ReleaseFetchError(Exception):
@@ -45,10 +43,6 @@ def _find(release, platform):
     return next((a for a in release["assets"] if a["platform"] == platform), None)
 
 
-def _old_names(release):
-    return OLD_NAME_OK if any(not a["name"].startswith("ttyak-") for a in release["assets"]) else ""
-
-
 def render_download_button(release):
     lin = _find(release, "x86_64-linux") or release["assets"][0]
     mac = _find(release, "aarch64-macos")
@@ -57,7 +51,7 @@ def render_download_button(release):
     return (f'<a class="dl" data-os="linux" href="{esc(lin["url"])}">DOWNLOAD FOR LINUX</a>'
             f'<span class="dl-meta">v{esc(release["version"])} · {fmt_size(lin["size"])} · '
             f'<span class="dl-others">{link(mac, "macOS")} · {link(win, "Windows")} · '
-            f'<a href="#get">all downloads</a></span></span>{_old_names(release)}')
+            f'<a href="#get">all downloads</a></span></span>')
 
 
 def _plain(s):
@@ -93,7 +87,7 @@ def render_downloads(release, needs):
     return ('<table class="downloads"><thead><tr><th>Download</th><th>Size</th><th>Runs on</th><th>Needs</th></tr></thead>'
             f'<tbody>{"".join(rows)}</tbody></table>'
             f'<p class="sums"><a href="{esc(release["sums_url"])}">SHA256SUMS</a> · '
-            f'<a href="{esc(release["url"])}">release v{esc(release["version"])}</a></p>{_old_names(release)}')
+            f'<a href="{esc(release["url"])}">release v{esc(release["version"])}</a></p>')
 
 
 def release_from_api(repo, token, urlopen=urllib.request.urlopen):
@@ -113,7 +107,7 @@ def release_from_api(repo, token, urlopen=urllib.request.urlopen):
             if a["name"] == "SHA256SUMS":
                 sums = a["browser_download_url"]
                 continue
-            m = re.fullmatch(rf"(?:ttyak|klack)-{re.escape(version)}-(.+)\.zip", a["name"])  # old-name-ok: up to 0.9.0
+            m = re.fullmatch(rf"ttyak-{re.escape(version)}-(.+)\.zip", a["name"])
             if m:
                 assets.append({"name": a["name"], "platform": m.group(1),
                                "url": a["browser_download_url"], "size": a["size"]})
@@ -207,14 +201,11 @@ def render_measured_note(numbers):
     if not numbers.get("rows"):
         return ""
     v = numbers["versions"]
-    old = tuple(int(x) for x in v["ttyak"].split(".")[:2]) < (0, 10)
-    was = " (released as klack)" if old else ""  # old-name-ok: measured on a build from before the rename
-    return (f'<p class="measured">ttyak {txt(v["ttyak"])}{was} against Slack\'s desktop app {txt(v["slack"])}, '
+    return (f'<p class="measured">ttyak (version {txt(v["ttyak"])}) against Slack\'s desktop app {txt(v["slack"])}, '
             f'measured on Linux on {txt(numbers["measured_on"])}: {txt(numbers["machine"])}. '
             "App against app — the terminal ttyak runs in isn't counted. "
             "Slack's RAM figures are a lower bound: one of its helper processes couldn't be read. "
-            f'<a href="https://github.com/{REPO}/blob/master/tools/site/MEASURING.md">How it was measured</a>.</p>'
-            + (OLD_NAME_OK if old else ""))
+            f'<a href="https://github.com/{REPO}/blob/master/tools/site/MEASURING.md">How it was measured</a>.</p>')
 
 
 # fill region -> site/captures/<name>.html (Task 7); a region whose capture is missing keeps what it has
