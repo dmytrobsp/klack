@@ -84,6 +84,11 @@ fn huddle_state_params(fields: &Value) -> Result<Params<'static>> {
     Ok(vec![("profile", fields.to_string()), ("_x_reason", "increment-huddle-state-expiration-ts".into())])
 }
 
+/// `search.messages`'s arguments: a page of `count` matches, the newest first (Slack's default is by score).
+fn search_params(query: &str, count: u32, page: u32) -> Vec<(&'static str, String)> {
+    vec![("query", query.into()), ("count", count.to_string()), ("page", page.to_string()), ("highlight", "false".into()), ("sort", "timestamp".into()), ("sort_dir", "desc".into())]
+}
+
 /// `huddles.history`'s arguments: a page of `limit` (1–30, the most Slack's client asks for) from `cursor` on.
 fn history_params(cursor: Option<&str>, limit: u32) -> Params<'static> {
     let mut params: Params = vec![("limit", limit.clamp(1, 30).to_string())];
@@ -623,9 +628,9 @@ impl Client {
         self.call_raw("pins.list", &[("channel", channel.into())]).await
     }
 
-    /// One page (1-based) of `count` matches; `messages.paging.pages` says how many there are.
+    /// One page (1-based) of `count` matches, the newest first; `messages.paging.pages` says how many there are.
     pub async fn search_messages(&self, query: &str, count: u32, page: u32) -> Result<Value> {
-        self.call_raw("search.messages", &[("query", query.into()), ("count", count.to_string()), ("page", page.to_string()), ("highlight", "false".into())]).await
+        self.call_raw("search.messages", &search_params(query, count, page)).await
     }
 
     /// The workspace's slash commands — Slack's own and its apps' (`commands.list`).
@@ -863,6 +868,13 @@ fn read_chunks(file: tokio::fs::File, offset: u64, total: u64, progress: std::sy
 #[cfg(test)]
 mod tests {
     use futures_util::StreamExt;
+
+    #[test]
+    fn a_search_asks_for_the_newest_first() {
+        let params = super::search_params("hello", 20, 2);
+        assert!(params.contains(&("sort", "timestamp".to_string())) && params.contains(&("sort_dir", "desc".to_string())), "{params:?}");
+        assert!(params.contains(&("page", "2".to_string())) && params.contains(&("query", "hello".to_string())));
+    }
 
     #[test]
     fn the_activity_feed_asks_for_the_types_given() {
