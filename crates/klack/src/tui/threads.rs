@@ -93,6 +93,8 @@ pub const WORDS: &[&str] = &[LOADING, LOADING_MORE, EMPTY, FAILED];
 pub struct Threads {
     pub entries: Option<Vec<Entry>>,
     pub has_more: bool,
+    /// How many threads on top had new replies when loaded ("You're up to date" goes under them; it stays there).
+    unread_first: usize,
     /// A page is being loaded.
     pub loading: bool,
     /// Why the first page could not be loaded (said in the view).
@@ -138,9 +140,16 @@ pub struct Threads {
 impl Threads {
     /// Add a page, leaving out threads already listed.
     pub fn add_page(&mut self, page: Vec<Entry>, has_more: bool) {
+        if self.entries.is_none() {
+            self.unread_first = 0;
+        }
         let entries = self.entries.get_or_insert_with(Vec::new);
+        // Counted on only while every thread so far had new replies.
+        let mut counting = self.unread_first == entries.len();
         for e in page {
             if !entries.iter().any(|o| o.channel == e.channel && o.root.ts == e.root.ts) {
+                counting &= !e.unread.is_empty();
+                self.unread_first += counting as usize;
                 entries.push(e);
             }
         }
@@ -241,11 +250,15 @@ impl Threads {
         if e.unread.iter().chain(&e.latest).any(|r| r.ts == m.ts) {
             return true;
         }
-        e.root.reply_count += 1;
+        // The parent's own update may already have brought Slack's count for this reply (as in a timeline).
+        let counted = e.root.latest_reply.as_deref().and_then(|l| l.parse::<f64>().ok()).is_some_and(|l| l >= m.time());
+        if !counted {
+            e.root.reply_count += 1;
+            e.root.latest_reply = Some(m.ts.clone());
+        }
         if let Some(u) = m.user.as_ref().filter(|u| !e.root.reply_users.contains(u)) {
             e.root.reply_users.push(u.clone());
         }
-        e.root.latest_reply = Some(m.ts.clone());
         if unread {
             // Read here already: what is new starts at this one.
             if e.read {
@@ -277,21 +290,27 @@ impl Threads {
         let Some(e) = entries.iter_mut().find(|e| e.channel == channel && (e.root.ts == ts || e.unread.iter().chain(&e.latest).any(|r| r.ts == ts))) else { return false };
         if ev["subtype"] == "message_deleted" {
             if e.root.ts == ts {
-                // Its thread stays: its parent says it is not available.
+                // Its thread stays (its row too): its parent says it is not available.
                 let root = std::mem::take(&mut e.root);
-                e.root = Message { ts: root.ts, thread_ts: root.thread_ts, reply_count: root.reply_count, reply_users: root.reply_users, latest_reply: root.latest_reply, ..Default::default() };
+                e.root = Message { ts: root.ts, thread_ts: root.thread_ts, user: root.user, reply_count: root.reply_count, reply_users: root.reply_users, latest_reply: root.latest_reply, ..Default::default() };
             } else {
                 e.unread.retain(|r| r.ts != ts);
                 e.latest.retain(|r| r.ts != ts);
-                e.root.reply_count = e.root.reply_count.saturating_sub(1);
-            }
-            // The selection goes to the message above it.
-            let key = (channel.to_string(), ts.to_string());
-            if self.selected.as_ref() == Some(&key) {
-                self.selected = self.order.iter().position(|o| *o == key).and_then(|n| n.checked_sub(1)).map(|n| self.order[n].clone());
-            }
-            if self.hover.as_ref() == Some(&key) {
-                self.hover = None;
+                // Not when the parent's update came first (its newest reply is already an older one); who replied
+                // is left to that update.
+                let gone = ts.parse::<f64>().unwrap_or(f64::INFINITY);
+                if e.root.latest_reply.as_deref().and_then(|l| l.parse::<f64>().ok()).is_none_or(|l| l >= gone) {
+                    e.root.reply_count = e.root.reply_count.saturating_sub(1);
+                    e.root.latest_reply = e.unread.iter().chain(&e.latest).max_by(|a, b| a.time().total_cmp(&b.time())).map(|r| r.ts.clone());
+                }
+                // The selection goes to the message above it.
+                let key = (channel.to_string(), ts.to_string());
+                if self.selected.as_ref() == Some(&key) {
+                    self.selected = self.order.iter().position(|o| *o == key).and_then(|n| n.checked_sub(1)).map(|n| self.order[n].clone());
+                }
+                if self.hover.as_ref() == Some(&key) {
+                    self.hover = None;
+                }
             }
         } else {
             for m in std::iter::once(&mut e.root).chain(&mut e.unread).chain(&mut e.latest).filter(|m| m.ts == ts) {
@@ -402,7 +421,7 @@ impl Threads {
         let stale = self.dirty || self.built.as_ref().is_none_or(|(look, at)| look.width() != inner.width || (!look.holds(here, inner.width, avatars) && at.elapsed() >= REBUILD));
         if stale {
             let thumb_size = |file: &File, max_cols: u16| media.thumb_size(file, max_cols).filter(|_| ws.settings.messages.inline_images);
-            self.feed = super::feed::build(here, entries, inner.width, super::feed::REPLIES_SHOWN, &thumb_size, avatars);
+            self.feed = super::feed::build(here, entries, inner.width, super::feed::REPLIES_SHOWN, self.unread_first, &thumb_size, avatars);
             let messages: Vec<Message> = entries.iter().flat_map(|e| std::iter::once(&e.root).chain(&e.unread).chain(&e.latest)).cloned().collect();
             let owners: Vec<Option<String>> = self.feed.owners.iter().map(|o| o.as_ref().map(|(_, ts)| ts.clone())).collect();
             self.feed_links = super::messages::link_spots(here, &messages, &self.feed.lines, &owners);
@@ -582,18 +601,79 @@ mod tests {
         assert_eq!(t.hover, None, "the header");
     }
 
+    /// Reply `k` (by U2) in thread `n` of C1.
+    fn reply(n: usize, k: usize) -> Message {
+        Message { ts: format!("{n}.000{k}00"), thread_ts: Some(format!("{n}.000100")), user: Some("U2".into()), text: format!("reply {n}"), ..Default::default() }
+    }
+
+    /// Thread `n` in C1: parent `n.000100` by U1, one reply `n.000200` by U2 (`unread` or not).
+    fn thread(n: usize, unread: bool) -> Entry {
+        let parent = format!("{n}.000100");
+        let root = Message { ts: parent.clone(), thread_ts: Some(parent), user: Some("U1".into()), text: format!("parent {n}"), reply_count: 1, ..Default::default() };
+        let (unread, latest) = if unread { (vec![reply(n, 2)], vec![]) } else { (vec![], vec![reply(n, 2)]) };
+        Entry { channel: "C1".into(), root, unread, latest, ..Default::default() }
+    }
+
     /// Three threads in C1, one reply each (the first unread), parents `1.0`, `2.0`, `3.0`.
     fn three() -> Vec<Entry> {
-        let m = |ts: &str, parent: &str, user: &str, text: &str| Message { ts: ts.into(), thread_ts: Some(parent.into()), user: Some(user.into()), text: text.into(), ..Default::default() };
-        (1..=3)
-            .map(|n| {
-                let parent = format!("{n}.000100");
-                let reply = m(&format!("{n}.000200"), &parent, "U2", &format!("reply {n}"));
-                let root = Message { reply_count: 1, ..m(&parent, &parent, "U1", &format!("parent {n}")) };
-                let (unread, latest) = if n == 1 { (vec![reply], vec![]) } else { (vec![], vec![reply]) };
-                Entry { channel: "C1".into(), root, unread, latest, ..Default::default() }
-            })
-            .collect()
+        vec![thread(1, true), thread(2, false), thread(3, false)]
+    }
+
+    #[test]
+    fn the_up_to_date_line_stays_where_the_load_put_it() {
+        // The thread whose block the line is under.
+        let under = |t: &mut Threads| -> Option<String> {
+            drawn(t);
+            let at = t.feed.lines.iter().position(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>().contains("You're up to date"))?;
+            t.feed.blocks.iter().find(|b| b.rows.end == at).map(|b| b.thread_ts.clone())
+        };
+        let mut t = Threads::default();
+        t.add_page(three(), false);
+        assert_eq!(under(&mut t).as_deref(), Some("1.000100"));
+        // New replies in the last thread and in one below it, reading the one above: it stays.
+        assert!(t.add_reply("C1", &reply(3, 3), true));
+        assert_eq!(under(&mut t).as_deref(), Some("1.000100"), "a reply in the last thread");
+        assert!(t.add_reply("C1", &reply(2, 3), true));
+        assert_eq!(under(&mut t).as_deref(), Some("1.000100"), "a reply below it");
+        t.mark_read("C1", "1.000100");
+        assert_eq!(under(&mut t).as_deref(), Some("1.000100"), "read here");
+        // Loaded again with nothing new: none, and a reply then brings none.
+        t.entries = None;
+        t.add_page(vec![thread(1, false), thread(2, false), thread(3, false)], false);
+        assert_eq!(under(&mut t), None);
+        t.add_reply("C1", &reply(2, 3), true);
+        assert_eq!(under(&mut t), None, "none at load stays none");
+        // Pages: while every thread so far has new replies, the next page goes on counting; after that, never.
+        t.entries = None;
+        t.add_page(vec![thread(1, true), thread(2, true)], true);
+        assert_eq!(under(&mut t), None, "all of them so far");
+        t.add_page(vec![thread(3, true), thread(4, false)], true);
+        assert_eq!(under(&mut t).as_deref(), Some("3.000100"));
+        t.add_page(vec![thread(5, true)], false);
+        assert_eq!(under(&mut t).as_deref(), Some("3.000100"), "a later page's thread with new replies stays below it");
+    }
+
+    #[test]
+    fn a_reply_slack_already_counted_is_not_counted_again() {
+        let mut t = Threads::default();
+        t.add_page(three(), false);
+        let parent = |count: u64, latest: &str| serde_json::json!({"type": "message", "subtype": "message_changed", "channel": "C1", "message": {"type": "message", "user": "U1", "text": "parent 2", "ts": "2.000100", "thread_ts": "2.000100", "reply_count": count, "latest_reply": latest, "reply_users": ["U2"]}});
+        let root = |t: &Threads| t.entries.as_ref().unwrap()[1].root.clone();
+        // The parent's new count comes before the reply.
+        assert!(t.apply_live(&parent(2, "2.000300")));
+        t.add_reply("C1", &reply(2, 3), true);
+        assert_eq!(root(&t).reply_count, 2, "counted once");
+        // Deleted, then the parent's count (as Slack sends them): one fewer, the newest reply the one before.
+        assert!(t.apply_live(&serde_json::json!({"type": "message", "subtype": "message_deleted", "channel": "C1", "deleted_ts": "2.000300"})));
+        assert_eq!((root(&t).reply_count, root(&t).latest_reply.as_deref()), (1, Some("2.000200")));
+        t.apply_live(&parent(1, "2.000200"));
+        assert_eq!(root(&t).reply_count, 1);
+        // The other way round: the parent's count first, then the deletion it already counts.
+        t.add_reply("C1", &reply(2, 4), true);
+        assert_eq!(root(&t).reply_count, 2);
+        t.apply_live(&parent(1, "2.000200"));
+        t.apply_live(&serde_json::json!({"type": "message", "subtype": "message_deleted", "channel": "C1", "deleted_ts": "2.000400"}));
+        assert_eq!(root(&t).reply_count, 1, "not counted off twice");
     }
 
     #[test]
@@ -665,6 +745,7 @@ mod tests {
         assert!(t.apply_live(&edit));
         let shown = text(&mut t);
         assert!(shown.contains("parent 2, edited (edited)") && shown.contains("👀"), "{shown}");
+        assert_eq!(t.entries.as_ref().unwrap()[1].root.reactions[0].count, 1);
         assert_eq!(t.builds, builds + 1, "built again once, at the draw");
         assert_eq!(t.entries.as_ref().unwrap()[1].root.reply_count, 1, "the thread's fields kept");
         // Removed again.
@@ -677,10 +758,19 @@ mod tests {
         assert!(!shown.contains("reply 1") && !shown.contains(" 1 new ") && !shown.contains("1 more reply"), "{shown}");
         assert_eq!(t.entries.as_ref().unwrap()[0].root.reply_count, 0);
         assert_eq!(t.selected, Some(("C1".into(), "1.000100".into())));
-        // A parent deleted: its thread stays, saying so.
+        // A read reply deleted.
+        assert!(t.apply_live(&serde_json::json!({"type": "message", "subtype": "message_deleted", "channel": "C1", "deleted_ts": "2.000200"})));
+        assert!(!text(&mut t).contains("reply 2"));
+        assert_eq!((t.entries.as_ref().unwrap()[1].latest.len(), t.entries.as_ref().unwrap()[1].root.reply_count), (0, 0));
+        // A parent deleted while selected and under the pointer: its thread stays, saying so, its row and author too.
+        let parent = ("C1".to_string(), "3.000100".to_string());
+        (t.selected, t.hover) = (Some(parent.clone()), Some(parent.clone()));
         assert!(t.apply_live(&serde_json::json!({"type": "message", "subtype": "message_deleted", "channel": "C1", "deleted_ts": "3.000100"})));
         let shown = text(&mut t);
         assert!(shown.contains("message not available") && shown.contains("reply 3") && !shown.contains("parent 3"), "{shown}");
+        assert_eq!((t.selected.as_ref(), t.hover.as_ref()), (Some(&parent), Some(&parent)), "the selection and the pointer stay on it");
+        let header = t.feed.blocks.iter().find(|b| b.thread_ts == "3.000100").map(|b| t.feed.lines[b.rows.start].spans.iter().map(|s| s.content.to_string()).collect::<String>()).unwrap();
+        assert!(header.contains("U1"), "its author still among who is in it: {header:?}");
         assert_eq!(order(&t), ["1.000100", "2.000100", "3.000100"], "nothing moved");
         // Not in the feed (another channel, another message): nothing to build again.
         let builds = t.builds;

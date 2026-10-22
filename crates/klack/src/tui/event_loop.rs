@@ -7649,6 +7649,15 @@ mod tests {
         super::handle_rtm(&mut app, RtmEvent::Event(serde_json::json!({"type": "message", "subtype": "message_changed", "channel": "C1", "message": {"type": "message", "user": "U1", "text": "a reply, better", "ts": "1729440000.000200", "thread_ts": "1729440000.000100", "edited": {"user": "U1", "ts": "1729440100.000000"}}})));
         let now = shown(&mut app);
         assert!(now.contains("a reply, better (edited)") && now.contains("👀"), "{now}");
+        // Your own reaction comes back from Slack the same way, once (an echo twice counts once).
+        let me = app.ws.self_id.clone();
+        for _ in 0..2 {
+            super::handle_rtm(&mut app, RtmEvent::Event(serde_json::json!({"type": "reaction_added", "user": me, "reaction": "eyes", "item": {"type": "message", "channel": "C1", "ts": "1729440000.000200"}})));
+        }
+        let pill = |app: &super::App| app.threads.entries.as_ref().unwrap()[0].latest[0].reactions.iter().map(|r| (r.name.clone(), r.count)).collect::<Vec<_>>();
+        assert_eq!(pill(&app), [("eyes".to_string(), 2)]);
+        super::handle_rtm(&mut app, RtmEvent::Event(serde_json::json!({"type": "reaction_removed", "user": me, "reaction": "eyes", "item": {"type": "message", "channel": "C1", "ts": "1729440000.000200"}})));
+        assert_eq!(pill(&app), [("eyes".to_string(), 1)]);
         // T2's parent is deleted: its block says so, in its place.
         super::handle_rtm(&mut app, RtmEvent::Event(serde_json::json!({"type": "message", "subtype": "message_deleted", "channel": "C3", "deleted_ts": "1729440500.000100", "previous_message": {"ts": "1729440500.000100"}})));
         let now = shown(&mut app);

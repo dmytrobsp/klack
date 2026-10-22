@@ -64,17 +64,19 @@ pub struct Feed {
 /// line belongs to, the blocks (the view draws [`build`]'s, with pictures).
 #[cfg(test)]
 pub fn layout(here: &Here, entries: &[Entry], width: u16, replies_shown: usize) -> (Vec<Line<'static>>, Vec<Option<(String, String)>>, Vec<Block>) {
-    let feed = build(here, entries, width, replies_shown, &|_, _| None, Avatars::Off);
+    let unread_first = entries.iter().take_while(|e| !e.unread.is_empty()).count();
+    let feed = build(here, entries, width, replies_shown, unread_first, &|_, _| None, Avatars::Off);
     (feed.lines, feed.owners, feed.blocks)
 }
 
 /// [`layout`] with pictures (`thumb_size`, `avatars`), as the view draws it.
-pub fn build(here: &Here, entries: &[Entry], width: u16, replies_shown: usize, thumb_size: ThumbSize, avatars: Avatars) -> Feed {
+pub fn build(here: &Here, entries: &[Entry], width: u16, replies_shown: usize, unread_first: usize, thumb_size: ThumbSize, avatars: Avatars) -> Feed {
     let mut feed = Feed::default();
     // As wide as a conversation's text in a pane this wide (the gutter goes before it).
     let body = (width as usize).saturating_sub(1 + messages::GUTTER as usize);
-    // "You're up to date" after the last thread with new replies, when read ones follow it (unread ones come first).
-    let up_to_date = entries.iter().rposition(|e| !e.unread.is_empty()).map(|n| n + 1).filter(|&n| n < entries.len());
+    // "You're up to date" under the `unread_first` threads that had new replies when loaded (they come first), when
+    // others follow them.
+    let up_to_date = Some(unread_first).filter(|&n| n > 0 && n < entries.len());
     let dim = Style::default().fg(super::theme::p().dim);
     for (n, e) in entries.iter().enumerate() {
         let start = feed.lines.len();
@@ -89,7 +91,7 @@ pub fn build(here: &Here, entries: &[Entry], width: u16, replies_shown: usize, t
         feed.owners.extend(owners.into_iter().map(|o| o.map(|ts| (e.channel.clone(), ts))));
         // Set apart from the next thread by a full-width rule and a blank row (the last one: the blank row).
         if up_to_date == Some(n + 1) {
-            feed.lines.push(divider(&tr(UP_TO_DATE), width as usize, dim));
+            feed.lines.push(messages::labelled_rule(&tr(UP_TO_DATE), width as usize, dim));
             feed.owners.push(None);
         } else if n + 1 < entries.len() {
             feed.lines.push(Line::styled("─".repeat(width as usize), dim));
@@ -99,13 +101,6 @@ pub fn build(here: &Here, entries: &[Entry], width: u16, replies_shown: usize, t
         feed.owners.push(None);
     }
     feed
-}
-
-/// "──── label ────" across `width` columns.
-fn divider(label: &str, width: usize, style: Style) -> Line<'static> {
-    let label = format!(" {label} ");
-    let side = width.saturating_sub(label.chars().count());
-    Line::styled(format!("{}{label}{}", "─".repeat(side / 2), "─".repeat(side - side / 2)), style)
 }
 
 /// The replies known of a thread, oldest first.
@@ -410,9 +405,20 @@ mod tests {
         read_here[0].read = true;
         let (lines, _, blocks) = layout(&Here::alone(&ws), &read_here, 60, 3);
         assert_eq!(divider(&lines), Some(blocks[0].rows.end));
-        // A new reply in a thread below it: it moves below that one (below it, none has anything new).
-        let (lines, _, blocks) = layout(&Here::alone(&ws), &with(&[true, false, true, false]), 60, 3);
-        assert_eq!(divider(&lines), Some(blocks[2].rows.end));
+        // Where the load put it: a reply since then in a thread below it, or in the last one, leaves it there (that
+        // block shows its own "new" line).
+        let (lines, _, blocks) = layout_at(&ws, &with(&[true, false, true, false]), 1);
+        assert_eq!(divider(&lines), Some(blocks[0].rows.end));
+        let (lines, _, blocks) = layout_at(&ws, &with(&[true, false, false, true]), 1);
+        assert_eq!(divider(&lines), Some(blocks[0].rows.end), "a reply in the last thread");
+        // None at load: none after a reply either.
+        assert_eq!(divider(&layout_at(&ws, &with(&[false, false, true]), 0).0), None);
+    }
+
+    /// [`layout`] with the load's count of threads with new replies on top.
+    fn layout_at(ws: &super::super::state::Workspace, entries: &[Entry], unread_first: usize) -> (Vec<Line<'static>>, Vec<Option<(String, String)>>, Vec<Block>) {
+        let feed = build(&Here::alone(ws), entries, 60, 3, unread_first, &|_, _| None, Avatars::Off);
+        (feed.lines, feed.owners, feed.blocks)
     }
 
     #[test]

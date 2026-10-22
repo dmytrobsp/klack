@@ -514,10 +514,15 @@ impl MessagePane {
 }
 
 /// The "— new —" rule `width` wide, above the first unread message.
+/// "──── label ────" across `width` columns (measured as drawn: wide characters count twice).
+pub fn labelled_rule(label: &str, width: usize, style: Style) -> Line<'static> {
+    let label = format!(" {label} ");
+    let side = width.saturating_sub(unicode_width::UnicodeWidthStr::width(label.as_str()));
+    Line::styled(format!("{}{label}{}", "─".repeat(side / 2), "─".repeat(side - side / 2)), style)
+}
+
 pub fn new_rule(width: usize) -> Line<'static> {
-    let label = " new ";
-    let side = width.saturating_sub(label.len()) / 2;
-    Line::styled(format!("{}{label}{}", "─".repeat(side), "─".repeat(side)), Style::default().fg(super::theme::p().danger))
+    labelled_rule("new", width, Style::default().fg(super::theme::p().danger))
 }
 
 /// Fill the rows of a message list drawn in `inner` (`rows`: the message owning each row) from edge to edge: those of
@@ -884,9 +889,7 @@ pub fn build_shown(here: &Here, shown: &[&Message], from: usize, to: usize, widt
         // A day separator where the day changes; in a thread not above the parent.
         if last_day.is_none_or(|d| !same_day(d, ts)) && !(thread && n == 0) {
             last_day = Some(ts);
-            let label = format!(" {} ", day_label(ws, ts));
-            let side = width.saturating_sub(label.chars().count()) / 2;
-            out.push(Line::styled(format!("{}{}{}", "─".repeat(side), label, "─".repeat(side)), Style::default().fg(super::theme::p().dim)));
+            out.push(labelled_rule(&day_label(ws, ts), width, Style::default().fg(super::theme::p().dim)));
             owners.resize(out.len(), None);
             prev = None;
         }
@@ -1065,6 +1068,17 @@ pub fn message_body(here: &Here, m: &Message, width: usize, summary: bool, thumb
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_labelled_rule_is_as_wide_as_asked_whatever_its_label() {
+        let dim = ratatui::style::Style::default();
+        for label in ["new", "日本語のラベル", "x"] {
+            let line = super::labelled_rule(label, 30, dim);
+            let text: String = line.spans.iter().map(|s| s.content.to_string()).collect();
+            assert_eq!(unicode_width::UnicodeWidthStr::width(text.as_str()), 30, "{text:?}");
+            assert!(text.starts_with('─') && text.ends_with('─') && text.contains(&format!(" {label} ")), "{text:?}");
+        }
+    }
+
     use super::*;
     use slack_core::types::Reaction;
 

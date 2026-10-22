@@ -812,10 +812,8 @@ pub fn build(here: &Here, items: &[&Item], messages: &HashMap<(String, String), 
         // A date header above the first item of each day (after the blank row that ends the one before).
         if day != last_day {
             last_day = day;
-            let label = format!(" {} ", day_name(here.ws, it.when, today));
-            let side = (width as usize).saturating_sub(label.chars().count()) / 2;
             out.headers.push(out.lines.len());
-            out.lines.push(Line::styled(format!("{}{label}{}", "─".repeat(side), "─".repeat(side)), dim));
+            out.lines.push(super::messages::labelled_rule(&day_name(here.ws, it.when, today), width as usize, dim));
             out.owners.push(None);
             out.message_rows.push(None);
         }
