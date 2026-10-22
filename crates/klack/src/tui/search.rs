@@ -278,6 +278,16 @@ mod tests {
     }
 
     #[test]
+    fn pages_keep_the_order_slack_gave() {
+        let texts = |s: &Search| s.hits.iter().map(|h| h.text.clone()).collect::<Vec<_>>();
+        let mut s = Search::default();
+        // Not sorted by timestamp on purpose: the order is Slack's, never re-sorted here.
+        s.add_page("q".into(), 1, &page(1, &[("20.0", "b"), ("30.0", "a"), ("10.0", "c")]));
+        s.add_page("q".into(), 2, &page(2, &[("15.0", "e"), ("40.0", "d")]));
+        assert_eq!(texts(&s), ["b", "a", "c", "e", "d"]);
+    }
+
+    #[test]
     fn a_click_maps_to_the_hit_drawn_there() {
         // Two rows per hit; hit 7 is the first shown, three are.
         let s = Search { list: Rect::new(5, 10, 80, 20), first: 7, shown: 3, ..Default::default() };

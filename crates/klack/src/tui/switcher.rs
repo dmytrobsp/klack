@@ -116,10 +116,11 @@ pub fn entries(ws: &Workspace, query: &str) -> Vec<Entry> {
         }
         let label = if c.is_dm() { ws.conversation_label(c) } else { format!("#{}", c.name) };
         let handle = c.user.as_deref().and_then(|u| ws.users.get(u)).map(|u| u.name.clone()).unwrap_or_default();
+        let real = c.user.as_deref().and_then(|u| ws.users.get(u)).and_then(|u| u.real_name.clone()).unwrap_or_default();
         let unread = ws.unread.get(id).is_some_and(|u| u.has_unreads || u.mentions > 0);
-        let Some(r) = (if q.is_empty() { Some(if unread { 0 } else { 1 }) } else { rank(&q, &[label.trim_start_matches('#'), &handle]) }) else { continue };
+        let Some(r) = (if q.is_empty() { Some(if unread { 0 } else { 1 }) } else { rank(&q, &[label.trim_start_matches('#'), &handle]).or_else(|| exact(&[&real]).then_some(0)) }) else { continue };
         let detail = if c.is_im { "direct message".into() } else if c.is_mpim { "group message".into() } else if c.is_private { "private channel".into() } else { String::new() };
-        out.push((!exact(&[label.trim_start_matches('#'), &handle]), r, Entry { label, detail, target: Target::Conversation(id.clone()), unread }));
+        out.push((!exact(&[label.trim_start_matches('#'), &handle, &real]), r, Entry { label, detail, target: Target::Conversation(id.clone()), unread }));
     }
     if !q.is_empty() || channels_only {
         for c in ws.conversations.values().filter(|c| !c.is_dm() && !c.is_member && !c.is_archived && !channels.contains(&c.id)) {
@@ -194,6 +195,23 @@ mod tests {
         }
         assert_eq!(labels("random-123")[0], "#random-123");
         assert_eq!(labels("rand")[0], "#random-123", "no exact name: ranked by activity as before");
+    }
+
+    #[test]
+    fn exact_names_beat_prefixes_for_people_with_a_dm_and_channels_we_are_not_in() {
+        let mut w = ws();
+        w.unread.clear();
+        { let u = w.users.get_mut("U2").unwrap(); u.real_name = Some("Bob Marley".into()); u.profile.display_name = "bobby".into(); }
+        w.conversations.insert("C3".into(), Conversation { id: "C3".into(), name: "bob-marley-fans".into(), is_channel: true, is_member: true, ..Default::default() });
+        w.conversations.insert("C4".into(), Conversation { id: "C4".into(), name: "straße".into(), is_channel: true, ..Default::default() });
+        w.conversations.insert("C5".into(), Conversation { id: "C5".into(), name: "straße-extra".into(), is_channel: true, is_member: true, ..Default::default() });
+        w.note_activity("C3", 900.0);
+        w.note_activity("C5", 900.0);
+        let first = |q: &str| entries(&w, q).into_iter().next().map(|e| e.target);
+        assert_eq!(first("Bob Marley"), Some(Target::Conversation("D1".into())), "a DM by the person's real name");
+        assert_eq!(first("bob"), Some(Target::Conversation("D1".into())), "by handle");
+        assert_eq!(first("STRASSE".replace("SS", "ß").as_str()), Some(Target::Conversation("C4".into())), "a channel we are not in, non-ASCII, over a more active member channel");
+        assert_eq!(first("#straße-ex"), Some(Target::Conversation("C5".into())), "no exact name: as before");
     }
 
     #[test]
