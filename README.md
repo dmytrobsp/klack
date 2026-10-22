@@ -355,8 +355,7 @@ and then leaves the tiles; `␣hv` again, or opening a conversation, brings the 
 desktop notification. While you are in Do Not Disturb (snoozed or in your schedule), Slack sends no
 invitation at all, so nothing rings — as in Slack's own app.
 
-If a huddle's connection is lost (a network change, or the media relay dropping it — on Slack's
-servers that can happen about 10 minutes into a call), klack joins again by itself, as Slack's app
+If a huddle's connection is lost (a network change, say), klack joins again by itself, as Slack's app
 does: the status line says "huddle connection lost — joining again…", then "back in the huddle", usually
 a few seconds later; mute and camera stay as they were (also when changed meanwhile). Once you were
 connected, any trouble with the connection joins again: the media failing or staying disconnected for
@@ -458,6 +457,8 @@ and a few research probes (`api`, `get`, `huddle-*`, `huddles --shape`) that red
 - `crates/slack-core` — session/auth, Web API client, RTM websocket, message formatting.
 - `crates/huddle` — Chime signaling (protobuf), WebRTC audio, Opus, audio devices.
 - `crates/klack` — the TUI and the `ctl` CLI.
+- `vendor/rtc-turn` — webrtc-rs' TURN client 0.21.1 with a fix for "438 Stale Nonce" answers, which
+  dropped a huddle's audio about 10 minutes in (why, what changed, when to drop it: `vendor/rtc-turn/KLACK-PATCH.md`).
 
 Status and verification notes: `PROGRESS.md`. Design: `DESIGN.md`.
 
@@ -466,3 +467,4 @@ Status and verification notes: `PROGRESS.md`. Design: `DESIGN.md`.
 klack is licensed under either of the [Apache License, Version 2.0](LICENSE-APACHE) or the
 [MIT licence](LICENSE-MIT), at your option. Unless you say otherwise, any contribution you submit
 for inclusion in klack is licensed the same way, without any additional terms or conditions.
+`vendor/rtc-turn` is webrtc-rs' code (MIT or Apache-2.0, its licence files are in that folder).

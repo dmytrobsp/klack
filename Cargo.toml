@@ -27,3 +27,8 @@ strip = true
 # which makes debug builds useless for video tests.
 [profile.dev.package.openh264-sys2]
 opt-level = 3
+
+# klack: rtc-turn 0.21.1 with a fix for TURN "438 Stale Nonce" answers (VX5b) — see
+# vendor/rtc-turn/KLACK-PATCH.md for what changed and when to drop this.
+[patch.crates-io]
+rtc-turn = { path = "vendor/rtc-turn" }
