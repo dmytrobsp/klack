@@ -48,7 +48,7 @@ pub enum Avatars {
 }
 
 /// Counts the changes to what built lines show that live outside the workspace: the theme, the time zone, the open
-/// key's name (see [`Look`]). (Tests: each test's thread its own, so tests running alongside do not rebuild its lines.)
+/// key's name, the language (see [`Look`]). (Tests: each test's thread its own, so tests running alongside do not rebuild its lines.)
 #[cfg(not(test))]
 static LOOK_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 #[cfg(test)]
@@ -56,7 +56,7 @@ thread_local! {
     static LOOK_EPOCH: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-/// The theme, the time zone or the open key changed: lines built before are built again.
+/// The theme, the time zone, the open key or the language changed: lines built before are built again.
 pub fn looks_changed() {
     #[cfg(not(test))]
     LOOK_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1457,6 +1457,17 @@ mod tests {
         // Plain text (notifications, search) never gets a placeholder.
         let plain_text = format::plain_text(&format::message_blocks(&m.text, &m.blocks), &|i| text::inline_plain(&ws, i));
         assert_eq!(plain_text, "so :piggy: much ✅");
+    }
+
+    #[test]
+    fn a_language_applied_again_builds_the_lines_again() {
+        let ws = Workspace::default();
+        let here = Here::alone(&ws);
+        let look = super::Look::new(&here, 80, Avatars::Off, []);
+        assert!(look.holds(&here, 80, Avatars::Off));
+        // (Its file may have been edited: the words may differ.)
+        super::super::i18n::set("en").unwrap();
+        assert!(!look.holds(&here, 80, Avatars::Off));
     }
 
     #[test]

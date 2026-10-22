@@ -32,6 +32,7 @@ pub fn set(lang: &str) -> Result<usize, String> {
     let lang = lang.trim();
     if lang.is_empty() || lang == "en" {
         *TABLE.write().unwrap_or_else(|e| e.into_inner()) = None;
+        super::messages::looks_changed();
         return Ok(0);
     }
     let path = locale_path(lang).ok_or("no config directory")?;
@@ -39,6 +40,8 @@ pub fn set(lang: &str) -> Result<usize, String> {
     let table = parse(&text).map_err(|e| format!("{}: {e}", path.display()))?;
     let n = table.len();
     *TABLE.write().unwrap_or_else(|e| e.into_inner()) = Some(table);
+    // (Lines built in the old words are built again.)
+    super::messages::looks_changed();
     Ok(n)
 }
 

@@ -594,12 +594,12 @@ impl Activity {
             Some(items) if none_shown => Some(Line::styled(tr(if items.is_empty() { EMPTY } else { NONE_UNREAD }).into_owned(), Style::default().fg(p.dim))),
             Some(_) => None,
         };
-        let Some(cache) = self.cache.take().filter(|_| note.is_none()) else {
-            if let Some(note) = note {
-                f.render_widget(Paragraph::new(note).wrap(ratatui::widgets::Wrap { trim: true }), list);
-            }
+        // (A note in its place keeps the list as built.)
+        if let Some(note) = note {
+            f.render_widget(Paragraph::new(note).wrap(ratatui::widgets::Wrap { trim: true }), list);
             return;
-        };
+        }
+        let Some(cache) = self.cache.take() else { return };
         let (built, owners, shown) = (&cache.built, &cache.owners, &cache.visible);
         let height = list.height as usize;
         // Bring a selection moved by the keys into view (with its date header, when it is the first of its day).
@@ -1350,6 +1350,40 @@ mod tests {
         a.apply_seen(&seen);
         draw(&mut a, &ws, 100);
         assert_eq!(a.builds, 10, "an item read");
+    }
+
+    #[test]
+    fn a_conversation_joined_again_under_a_new_name_shows_it() {
+        let mut ws = ws();
+        let media = super::super::media::Media::with(ratatui_image::picker::Picker::halfblocks());
+        let mut a = Activity::default();
+        a.set_items(Tab::All, vec![item("1.0", Kind::Mention("at_user".into()), "C1", "1.0", Some("U2"), false, noon(0))], None);
+        let draw = |a: &mut Activity, ws: &Workspace| {
+            let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 20)).unwrap();
+            terminal.draw(|f| a.draw(f, f.area(), &Here::alone(ws), true, &media)).unwrap();
+            let buf = terminal.backend().buffer().clone();
+            (0..buf.area.height).map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect::<String>()).collect::<Vec<_>>().join("\n")
+        };
+        assert!(draw(&mut a, &ws).contains("Mention in #c"));
+        // The same conversation again (as many as before), under another name.
+        crate::tui::live::apply(&mut ws, &serde_json::json!({"type": "channel_joined", "channel": {"id": "C1", "name": "renamed", "is_channel": true}}), None);
+        assert!(draw(&mut a, &ws).contains("Mention in #renamed"));
+    }
+
+    #[test]
+    fn a_note_in_place_of_the_list_keeps_it_built() {
+        let ws = ws();
+        let media = super::super::media::Media::with(ratatui_image::picker::Picker::halfblocks());
+        let mut a = Activity::default();
+        a.set_items(Tab::All, vec![item("1.0", Kind::Mention("at_user".into()), "C1", "1.0", Some("U2"), false, noon(0))], None);
+        a.toggle_unread();
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 20)).unwrap();
+        for _ in 0..3 {
+            terminal.draw(|f| a.draw(f, f.area(), &Here::alone(&ws), true, &media)).unwrap();
+        }
+        let buf = terminal.backend().buffer();
+        assert!((0..buf.area.height).any(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect::<String>().contains("Nothing unread here.")));
+        assert_eq!(a.builds, 1, "\"Nothing unread\" frames do not build it again");
     }
 
     #[test]

@@ -499,6 +499,13 @@ impl Workspace {
             .collect()
     }
 
+    /// Conversation `c` came (joined, opened, looked up for a link…): known from now on (in place of what was known of
+    /// it), and the lines that show conversations' names are built again.
+    pub fn put_conversation(&mut self, c: Conversation) {
+        self.conversations.insert(c.id.clone(), c);
+        self.look += 1;
+    }
+
     /// The person whose `name` is `name`: from the index while it is in step with the users, else by looking
     /// through them all.
     fn user_named(&self, name: &str) -> Option<&User> {
@@ -533,10 +540,15 @@ impl Workspace {
             return;
         }
         let names = &mut self.user_names.1;
-        // Renamed: the old name is no longer theirs.
+        // Renamed: the old name is no longer theirs — another account of that name has it now, if there is one (a
+        // live one first; only on a rename, so the walk is rare).
         if let Some(old) = self.users.get(&u.id).filter(|old| old.name != u.name) {
             if names.get(&old.name) == Some(&u.id) {
                 names.remove(&old.name);
+                let others = || self.users.values().filter(|o| o.id != u.id && o.name == old.name);
+                if let Some(other) = others().find(|o| !o.deleted).or_else(|| others().next()) {
+                    names.insert(other.name.clone(), other.id.clone());
+                }
             }
         }
         if !u.deleted || names.get(&u.name).is_none_or(|id| *id == u.id) {
@@ -820,7 +832,7 @@ impl Workspace {
                     if key == "channels" && c.get("is_member").is_none() {
                         conv.is_member = true;
                     }
-                    self.conversations.insert(conv.id.clone(), conv);
+                    self.put_conversation(conv);
                 }
             }
         }
@@ -892,9 +904,7 @@ impl Workspace {
         for c in list.into_iter().filter(|c| !c.is_dm()) {
             match self.conversations.get_mut(&c.id) {
                 Some(known) => known.num_members = known.num_members.or(c.num_members),
-                None => {
-                    self.conversations.insert(c.id.clone(), c);
-                }
+                None => self.put_conversation(c),
             }
         }
     }
@@ -1250,6 +1260,22 @@ mod tests {
         let g3 = Conversation { name: "mpdm-me--fay-1".into(), ..g };
         assert_eq!(ws.mpim_people(&g3), [("fay".to_string(), Some("U5".to_string()))]);
         assert_eq!(scans(), before + 1);
+    }
+
+    #[test]
+    fn two_accounts_of_one_name_one_renamed_the_other_is_found() {
+        let mut ws = Workspace { self_id: "UME".into(), ..Default::default() };
+        for (id, name, deleted) in [("UME", "me", false), ("U2", "bob", true), ("U3", "bob", false)] {
+            ws.users.insert(id.into(), User { id: id.into(), name: name.into(), deleted, ..Default::default() });
+        }
+        ws.users_changed();
+        let g = Conversation { id: "G1".into(), is_mpim: true, name: "mpdm-me--bob-1".into(), ..Default::default() };
+        assert_eq!(ws.mpim_people(&g)[0].1.as_deref(), Some("U3"), "the live one");
+        // The live one renamed: the other account still has the name.
+        ws.put_user(User { id: "U3".into(), name: "rob".into(), ..Default::default() });
+        let scans = USER_SCANS.with(|n| n.get());
+        assert_eq!(ws.mpim_people(&g)[0].1.as_deref(), Some("U2"));
+        assert_eq!(USER_SCANS.with(|n| n.get()), scans, "from the index");
     }
 
     #[test]

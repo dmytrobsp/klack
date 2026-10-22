@@ -5686,7 +5686,7 @@ fn handle_net(app: &mut App, msg: Net) {
             channel.is_member = true;
             let id = channel.id.clone();
             app.status = format!("{} #{}", if created { "created" } else { "joined" }, channel.name);
-            app.ws.conversations.insert(id.clone(), channel);
+            app.ws.put_conversation(channel);
             if app.ws.preview.as_deref() == Some(id.as_str()) {
                 app.ws.preview = None;
             }
@@ -5786,7 +5786,7 @@ fn handle_net(app: &mut App, msg: Net) {
         Net::LinkConversation { result, target } => match result {
             // Known now: opened as any other (the same one only, so this is asked once).
             Ok(c) if target.channel() == Some(c.id.as_str()) => {
-                app.ws.conversations.insert(c.id.clone(), c);
+                app.ws.put_conversation(c);
                 app.sidebar.rebuild(&app.ws);
                 app.open_in_app(target, true);
             }
@@ -7748,6 +7748,17 @@ mod tests {
         with_dm(&mut app, "U3");
         app.follow_profiles(std::time::Instant::now() + std::time::Duration::from_secs(5));
         assert!(app.lookups.due.contains("U3") && app.lookups.stale.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_conversation_learned_for_a_link_builds_the_views_again() {
+        let (mut app, _net) = test_app();
+        app.ws.conversations.insert("C1".into(), slack_core::types::Conversation { id: "C1".into(), name: "old".into(), is_channel: true, is_member: true, ..Default::default() });
+        let look = app.ws.look;
+        let c = slack_core::types::Conversation { id: "C1".into(), name: "new".into(), is_channel: true, is_member: true, ..Default::default() };
+        super::handle_net(&mut app, super::Net::LinkConversation { result: Ok(c), target: super::super::applink::Target::Conversation { channel: "C1".into() } });
+        assert_eq!(app.ws.conversations["C1"].name, "new");
+        assert!(app.ws.look > look, "what shows its name is built again");
     }
 
     #[tokio::test]

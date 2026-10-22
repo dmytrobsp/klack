@@ -308,10 +308,12 @@ pub fn apply(ws: &mut Workspace, ev: &Value, current: Option<&str>) -> Effects {
                 }
                 if ev["type"] == "channel_created" {
                     // Only news if we did not know it: our own create may have been applied already.
-                    ws.conversations.entry(c.id.clone()).or_insert(c);
+                    if !ws.conversations.contains_key(&c.id) {
+                        ws.put_conversation(c);
+                    }
                 } else {
                     c.is_member = true;
-                    ws.conversations.insert(c.id.clone(), c);
+                    ws.put_conversation(c);
                 }
                 fx.rebuild_sidebar = true;
             }
