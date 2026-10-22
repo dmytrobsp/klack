@@ -625,7 +625,7 @@ mod tests {
         let under = |t: &mut Threads| -> Option<String> {
             drawn(t);
             let at = t.feed.lines.iter().position(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>().contains("You're up to date"))?;
-            t.feed.blocks.iter().find(|b| b.rows.end == at).map(|b| b.thread_ts.clone())
+            t.feed.blocks.iter().find(|b| b.rows.end + 1 == at).map(|b| b.thread_ts.clone())
         };
         let mut t = Threads::default();
         t.add_page(three(), false);
@@ -716,7 +716,7 @@ mod tests {
         let row = |y: u16| (t.list.x..t.list.right()).map(|x| buf[(x, y)].symbol()).collect::<String>();
         let screen: Vec<String> = (0..buf.area.height).map(row).collect();
         let at = (t.list.y..t.list.bottom()).find(|&y| row(y).contains("You're up to date")).unwrap_or_else(|| panic!("{screen:#?}"));
-        assert!(row(at - 1).contains("reply 1") && row(at + 2).contains("C1"), "between the unread thread and the first read one: {screen:#?}");
+        assert!(row(at - 1).trim().is_empty() && row(at - 2).contains("reply 1") && row(at + 2).contains("C1"), "between the unread thread and the first read one: {screen:#?}");
         assert_eq!(buf[(t.list.x + 1, at)].fg, p.dim, "dim");
         assert_eq!((t.message_at(5, at), t.thread_at(5, at)), (None, None), "neither a message nor a thread");
         let rules = (t.list.y..t.list.bottom()).filter(|&y| row(y) == "─".repeat(t.list.width as usize)).count();
