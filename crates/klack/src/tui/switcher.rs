@@ -99,13 +99,14 @@ impl Switcher {
 }
 
 /// Conversations in the sidebar, plus channels we are not in and people without a DM when
-/// searching; ranked against `query` (unread first when the query is empty), then by activity. A query
+/// searching; a name equal to `query` first, then ranked against it (unread first when the query is empty), then by activity. A query
 /// starting with `#` lists channels only, so `#` alone browses every channel.
 pub fn entries(ws: &Workspace, query: &str) -> Vec<Entry> {
     let channels_only = query.trim_start().starts_with('#');
     let q = query.trim().trim_start_matches(['#', '@']).to_lowercase();
     let (channels, dms) = ws.listed();
-    let mut out: Vec<(u8, Entry)> = Vec::new();
+    let mut out: Vec<(bool, u8, Entry)> = Vec::new();
+    let exact = |names: &[&str]| !q.is_empty() && names.iter().any(|n| n.to_lowercase() == q);
     let mut dm_users = std::collections::HashSet::new();
     let dms = if channels_only { vec![] } else { dms };
     for id in channels.iter().chain(&dms) {
@@ -118,20 +119,20 @@ pub fn entries(ws: &Workspace, query: &str) -> Vec<Entry> {
         let unread = ws.unread.get(id).is_some_and(|u| u.has_unreads || u.mentions > 0);
         let Some(r) = (if q.is_empty() { Some(if unread { 0 } else { 1 }) } else { rank(&q, &[label.trim_start_matches('#'), &handle]) }) else { continue };
         let detail = if c.is_im { "direct message".into() } else if c.is_mpim { "group message".into() } else if c.is_private { "private channel".into() } else { String::new() };
-        out.push((r, Entry { label, detail, target: Target::Conversation(id.clone()), unread }));
+        out.push((!exact(&[label.trim_start_matches('#'), &handle]), r, Entry { label, detail, target: Target::Conversation(id.clone()), unread }));
     }
     if !q.is_empty() || channels_only {
         for c in ws.conversations.values().filter(|c| !c.is_dm() && !c.is_member && !c.is_archived && !channels.contains(&c.id)) {
             let Some(r) = (if q.is_empty() { Some(2) } else { rank(&q, &[&c.name]) }) else { continue };
             let members = c.num_members.map(|n| format!(" · {n} member{}", if n == 1 { "" } else { "s" })).unwrap_or_default();
-            out.push((r + 2, Entry { label: format!("#{}", c.name), detail: format!("not a member{members}"), target: Target::Conversation(c.id.clone()), unread: false }));
+            out.push((!exact(&[&c.name]), r + 2, Entry { label: format!("#{}", c.name), detail: format!("not a member{members}"), target: Target::Conversation(c.id.clone()), unread: false }));
         }
     }
     if !q.is_empty() && !channels_only {
         for u in ws.users.values().filter(|u| !u.deleted && !u.is_bot && u.id != ws.self_id && !dm_users.contains(&u.id)) {
             let real = u.real_name.clone().unwrap_or_default();
             if let Some(r) = rank(&q, &[u.display(), &u.name, &real]) {
-                out.push((r + 3, Entry { label: u.display().to_string(), detail: format!("{} · new direct message", u.name), target: Target::User(u.id.clone()), unread: false }));
+                out.push((!exact(&[u.display(), &u.name, &real]), r + 3, Entry { label: u.display().to_string(), detail: format!("{} · new direct message", u.name), target: Target::User(u.id.clone()), unread: false }));
             }
         }
     }
@@ -140,8 +141,8 @@ pub fn entries(ws: &Workspace, query: &str) -> Vec<Entry> {
         Target::Conversation(id) => ws.activity(id),
         Target::User(_) => 0.0,
     };
-    out.sort_by(|a, b| a.0.cmp(&b.0).then(active(&b.1).total_cmp(&active(&a.1))).then(a.1.label.to_lowercase().cmp(&b.1.label.to_lowercase())));
-    out.into_iter().map(|(_, e)| e).take(MAX).collect()
+    out.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(active(&b.2).total_cmp(&active(&a.2))).then(a.2.label.to_lowercase().cmp(&b.2.label.to_lowercase())));
+    out.into_iter().map(|(_, _, e)| e).take(MAX).collect()
 }
 
 #[cfg(test)]
@@ -174,6 +175,25 @@ mod tests {
         assert_eq!(labels(&w, "gen"), ["#general-chat", "#general"], "as good a match: the more recent first");
         w.unread.insert("C2".into(), super::super::state::Unread { has_unreads: true, mentions: 0 });
         assert_eq!(labels(&w, "")[0], "#random", "unread still first");
+    }
+
+    #[test]
+    fn a_name_equal_to_the_query_comes_first() {
+        let mut w = ws();
+        w.unread.clear();
+        w.conversations.insert("C3".into(), Conversation { id: "C3".into(), name: "random-123".into(), is_channel: true, is_member: true, ..Default::default() });
+        w.conversations.insert("C4".into(), Conversation { id: "C4".into(), name: "random-old".into(), is_channel: true, ..Default::default() });
+        w.users.insert("U4".into(), User { id: "U4".into(), name: "random".into(), real_name: Some("Rand Om".into()), ..Default::default() });
+        w.users.insert("U5".into(), User { id: "U5".into(), name: "randomly".into(), ..Default::default() });
+        w.note_activity("C2", 100.0);
+        w.note_activity("C3", 900.0);
+        let labels = |q: &str| entries(&w, q).into_iter().map(|e| e.label).collect::<Vec<_>>();
+        assert_eq!(labels("random"), ["#random", "Rand Om", "#random-123", "#random-old", "randomly"], "the exact names (a person by handle too), then those starting with it as before");
+        for q in ["#random", "@Random", "  RANDOM "] {
+            assert_eq!(labels(q)[0], "#random", "{q}");
+        }
+        assert_eq!(labels("random-123")[0], "#random-123");
+        assert_eq!(labels("rand")[0], "#random-123", "no exact name: ranked by activity as before");
     }
 
     #[test]
