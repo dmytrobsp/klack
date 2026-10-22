@@ -201,14 +201,14 @@ mod tests {
     fn exact_names_beat_prefixes_for_people_with_a_dm_and_channels_we_are_not_in() {
         let mut w = ws();
         w.unread.clear();
-        { let u = w.users.get_mut("U2").unwrap(); u.real_name = Some("Bob Marley".into()); u.profile.display_name = "bobby".into(); }
-        w.conversations.insert("C3".into(), Conversation { id: "C3".into(), name: "bob-marley-fans".into(), is_channel: true, is_member: true, ..Default::default() });
+        { let u = w.users.get_mut("U2").unwrap(); u.real_name = Some("Bob Quuxley".into()); u.profile.display_name = "bobby".into(); }
+        w.conversations.insert("C3".into(), Conversation { id: "C3".into(), name: "bob-quuxley-fans".into(), is_channel: true, is_member: true, ..Default::default() });
         w.conversations.insert("C4".into(), Conversation { id: "C4".into(), name: "straße".into(), is_channel: true, ..Default::default() });
         w.conversations.insert("C5".into(), Conversation { id: "C5".into(), name: "straße-extra".into(), is_channel: true, is_member: true, ..Default::default() });
         w.note_activity("C3", 900.0);
         w.note_activity("C5", 900.0);
         let first = |q: &str| entries(&w, q).into_iter().next().map(|e| e.target);
-        assert_eq!(first("Bob Marley"), Some(Target::Conversation("D1".into())), "a DM by the person's real name");
+        assert_eq!(first("Bob Quuxley"), Some(Target::Conversation("D1".into())), "a DM by the person's real name");
         assert_eq!(first("bob"), Some(Target::Conversation("D1".into())), "by handle");
         assert_eq!(first("STRASSE".replace("SS", "ß").as_str()), Some(Target::Conversation("C4".into())), "a channel we are not in, non-ASCII, over a more active member channel");
         assert_eq!(first("#straße-ex"), Some(Target::Conversation("C5".into())), "no exact name: as before");

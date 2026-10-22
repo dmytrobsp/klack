@@ -262,6 +262,9 @@ pub fn mark_read_params(it: &Item) -> Option<Vec<(&'static str, String)>> {
     Some(params)
 }
 
+/// Pages the list loads by itself (filtered with none shown, or its end on screen) before it waits for you to act.
+const AUTO_PAGES: usize = 5;
+
 /// Lines of a message an item shows; a longer one is cut with "…" (Enter shows it all).
 pub const EXCERPT_LINES: usize = 3;
 
@@ -301,11 +304,13 @@ pub const NOT_HERE: &str = "klack can't show this one: open it in Slack";
 const UNREAD_ONLY: &str = "unread only";
 const EMPTY: &str = "Nothing here yet: mentions, reactions to your messages, thread replies and direct messages show up here.";
 const NONE_UNREAD: &str = "Nothing unread here.";
+/// Said at the list's end when it stopped loading by itself (after [`AUTO_PAGES`], or a page with nothing new).
+const MORE_HELD: &str = "There is more: move down to load it";
 const FAILED: &str = "The activity could not be loaded";
 
 /// The view's words, for the locale template.
 pub const WORDS: &[&str] = &[
-    TODAY, YESTERDAY, MISSING, LOADING, LOADING_MORE, MENTION, GROUP_MENTION, CHANNEL_MENTION, EVERYONE_MENTION, KEYWORD, IN_THREAD, THREAD, NEW_REPLY, NEW_REPLIES, DIRECT, GROUP_DM, REACTED, YOUR_MESSAGE, OTHER, CHANNEL_NEW, APP, NEW, ADDED, UNJOINED, WELCOME, CONNECT_CHANNEL, CONNECT_DM, SHARED_WORKSPACE, LIST_ASSIGNED, LIST_EDITED, LIST_MENTION, NOT_HERE, UNREAD_ONLY, EMPTY, NONE_UNREAD, FAILED, "All", "DMs", "Mentions", "Threads",
+    TODAY, YESTERDAY, MISSING, LOADING, LOADING_MORE, MENTION, GROUP_MENTION, CHANNEL_MENTION, EVERYONE_MENTION, KEYWORD, IN_THREAD, THREAD, NEW_REPLY, NEW_REPLIES, DIRECT, GROUP_DM, REACTED, YOUR_MESSAGE, OTHER, CHANNEL_NEW, APP, NEW, ADDED, UNJOINED, WELCOME, CONNECT_CHANNEL, CONNECT_DM, SHARED_WORKSPACE, LIST_ASSIGNED, LIST_EDITED, LIST_MENTION, NOT_HERE, UNREAD_ONLY, EMPTY, NONE_UNREAD, MORE_HELD, FAILED, "All", "DMs", "Mentions", "Threads",
 ];
 
 /// A tab's list while the view is open, when another tab is shown.
@@ -335,6 +340,13 @@ pub struct Activity {
     /// Why the next page could not be loaded (said at the list's end): not asked for again until you move in the list,
     /// filter it, show another tab or open the view again.
     page_error: Option<String>,
+    /// Pages asked for since you last acted in the view (moved in it, filtered it, showed a tab, opened it): at
+    /// [`AUTO_PAGES`] it waits for you.
+    auto_pages: usize,
+    /// A page brought nothing new, or said to go on where one already started: no more by itself until you act.
+    stuck: bool,
+    /// Where the pages asked for in this list started.
+    cursors: HashSet<String>,
     /// The end of the list was on screen at the last draw.
     at_end: bool,
     /// The other tabs' lists, kept while the view is open.
@@ -405,7 +417,7 @@ impl Activity {
 
     /// Move the selection by `delta` shown items.
     pub fn move_by(&mut self, delta: isize) {
-        self.page_error = None;
+        self.acted();
         let shown = self.visible();
         if shown.is_empty() {
             return;
@@ -424,8 +436,19 @@ impl Activity {
     pub fn toggle_unread(&mut self) {
         self.dirty = true;
         self.unread_only = !self.unread_only;
-        self.page_error = None;
+        self.acted();
         self.keep_selection_shown();
+    }
+
+    /// You acted in the view: what stopped the list loading by itself (a failed page, [`AUTO_PAGES`], a page with nothing
+    /// new) holds no more.
+    fn acted(&mut self) {
+        (self.page_error, self.auto_pages, self.stuck) = (None, 0, false);
+    }
+
+    /// The list stopped loading by itself with more to load, until you act.
+    fn held(&self) -> bool {
+        self.cursor.is_some() && (self.auto_pages >= AUTO_PAGES || self.stuck)
     }
 
     fn keep_selection_shown(&mut self) {
@@ -446,7 +469,9 @@ impl Activity {
         self.kept.insert(self.tab, here);
         let there = self.kept.remove(&tab).unwrap_or_default();
         (self.tab, self.items, self.selected, self.scroll, self.cursor, self.loading) = (tab, there.items, there.selected, there.scroll, there.cursor, there.loading);
-        (self.failed, self.page_error, self.hover, self.at_end) = (None, None, None, false);
+        (self.failed, self.hover, self.at_end) = (None, None, false);
+        self.acted();
+        self.cursors.clear();
         self.keep_selection_shown();
     }
 
@@ -461,7 +486,8 @@ impl Activity {
         }
         let key = self.selected_item().map(|it| it.key.clone());
         self.selected = key.and_then(|k| items.iter().position(|it| it.key == k)).unwrap_or(0);
-        (self.items, self.failed, self.page_error, self.cursor, self.loading) = (Some(items), None, None, cursor, false);
+        (self.items, self.failed, self.page_error, self.cursor, self.loading, self.stuck) = (Some(items), None, None, cursor, false, false);
+        self.cursors.clear();
         self.keep_selection_shown();
     }
 
@@ -479,12 +505,18 @@ impl Activity {
             return;
         }
         let items = items.get_or_insert_with(Vec::new);
+        let before = items.len();
         for it in page {
             if !items.iter().any(|o| o.key == it.key) {
                 items.push(it);
             }
         }
+        let added = items.len() > before;
         (*at, *loading) = (cursor, false);
+        // (Nothing new, or a start asked for before — Slack going round —: no more by itself.)
+        if tab == self.tab && (!added || self.cursor.as_ref().is_some_and(|c| self.cursors.contains(c))) {
+            self.stuck = true;
+        }
         // (Filtered with none shown before: the selection onto the first one shown now.)
         if tab == self.tab && !self.visible().contains(&self.selected) {
             self.keep_selection_shown();
@@ -533,10 +565,13 @@ impl Activity {
         }
     }
 
-    /// Where the next page starts, when the end of the list was on screen and there is more (once: it is loading then).
+    /// Where the next page starts, when the end of the list was on screen and there is more (once: it is loading then;
+    /// not while it waits for you to act).
     pub fn next_page(&mut self) -> Option<String> {
-        let cursor = self.cursor.clone().filter(|_| self.at_end && !self.loading && self.page_error.is_none() && self.items.is_some())?;
+        let cursor = self.cursor.clone().filter(|_| self.at_end && !self.loading && self.page_error.is_none() && !self.held() && self.items.is_some())?;
         self.loading = true;
+        self.auto_pages += 1;
+        self.cursors.insert(cursor.clone());
         Some(cursor)
     }
 
@@ -666,6 +701,7 @@ impl Activity {
             None if self.failed.is_some() => Some(Line::styled(format!("{}: {}", tr(FAILED), self.failed.as_deref().unwrap_or_default()), Style::default().fg(p.danger))),
             None => Some(Line::styled(tr(LOADING).into_owned(), Style::default().fg(p.dim))),
             Some(_) if none_shown && self.page_error.is_some() => Some(Line::styled(format!("{}: {}", tr(FAILED), self.page_error.as_deref().unwrap_or_default()), Style::default().fg(p.danger))),
+            Some(_) if none_shown && self.held() && !self.loading => Some(Line::styled(tr(MORE_HELD).into_owned(), Style::default().fg(p.dim))),
             Some(_) if self.at_end => Some(Line::styled(tr(LOADING_MORE).into_owned(), Style::default().fg(p.dim))),
             Some(items) if none_shown => Some(Line::styled(tr(if items.is_empty() { EMPTY } else { NONE_UNREAD }).into_owned(), Style::default().fg(p.dim))),
             Some(_) => None,
@@ -685,7 +721,7 @@ impl Activity {
                 self.scroll = super::threads::bring_into_view(self.scroll, height, first, last);
             }
         }
-        let more = usize::from(self.loading || self.page_error.is_some());
+        let more = usize::from(self.loading || self.page_error.is_some() || self.held());
         let total = built.lines.len() + more;
         self.scroll = self.scroll.min(total.saturating_sub(height));
         // (The last item on screen: the line under the list too — loading, or why the next page failed.)
@@ -702,6 +738,9 @@ impl Activity {
             rows.push(None);
         } else if let Some(e) = self.page_error.as_deref().filter(|_| lines.len() < height) {
             lines.push(Line::styled(format!("{}: {e}", tr(FAILED)), Style::default().fg(p.danger)));
+            rows.push(None);
+        } else if self.held() && lines.len() < height {
+            lines.push(Line::styled(tr(MORE_HELD).into_owned(), Style::default().fg(p.dim)));
             rows.push(None);
         }
         // (The last item's rows, or the selection on the last item: time for the next page.)
@@ -1642,6 +1681,93 @@ mod tests {
         a.dirty = true;
         assert!(draw(&mut a).contains(NONE_UNREAD));
         assert_eq!(a.next_page(), None);
+    }
+
+    #[test]
+    fn pages_loaded_by_themselves_stop_after_a_few_until_you_act() {
+        let ws = ws();
+        let media = super::super::media::Media::with(ratatui_image::picker::Picker::halfblocks());
+        let it = |key: String| item(&key, Kind::Mention("at_user".into()), "C1", &key, Some("U2"), false, noon(0));
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 20)).unwrap();
+        let mut draw = |a: &mut Activity| {
+            terminal.draw(|f| a.draw(f, f.area(), &Here::alone(&ws), true, &media)).unwrap();
+            let buf = terminal.backend().buffer();
+            (0..buf.area.height).map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect::<String>()).collect::<Vec<_>>().join("\n")
+        };
+        let mut a = Activity::default();
+        a.toggle_unread();
+        a.set_items(Tab::All, (0..50).map(|n| it(format!("p0-{n}"))).collect(), Some("c1".into()));
+        // Filtered, every item read: five pages by themselves, then it waits and says so.
+        let mut page = 1;
+        let mut more = |a: &mut Activity, draw: &mut dyn FnMut(&mut Activity) -> String| {
+            draw(a);
+            let asked = a.next_page();
+            if let Some(c) = &asked {
+                assert_eq!(c, &format!("c{page}"));
+                page += 1;
+                a.add_page(Tab::All, (0..50).map(|n| it(format!("p{page}-{n}"))).collect(), Some(format!("c{page}")));
+            }
+            asked.is_some()
+        };
+        for n in 0..AUTO_PAGES {
+            assert!(more(&mut a, &mut draw), "page {n} by itself");
+        }
+        assert!(!more(&mut a, &mut draw), "no more by itself");
+        let screen = draw(&mut a);
+        assert!(screen.contains(MORE_HELD) && !screen.contains(LOADING_MORE) && !screen.contains(NONE_UNREAD), "{screen}");
+        assert!(!more(&mut a, &mut draw), "not on the next wake either");
+        // Moving down (a key, the wheel) goes on; so do `u`, another tab, the view loaded again.
+        a.move_by(1);
+        assert!(more(&mut a, &mut draw));
+        for _ in 1..AUTO_PAGES {
+            assert!(more(&mut a, &mut draw));
+        }
+        assert!(!more(&mut a, &mut draw));
+        a.toggle_unread();
+        a.toggle_unread();
+        assert!(more(&mut a, &mut draw), "the filter toggled");
+        a.set_tab(Tab::Dms);
+        a.set_tab(Tab::All);
+        for _ in 0..AUTO_PAGES {
+            assert!(more(&mut a, &mut draw), "another tab and back");
+        }
+        assert!(!more(&mut a, &mut draw));
+        // Under a short list of unread ones, its end on screen: the same.
+        a.items.as_mut().unwrap()[0].unread = true;
+        a.dirty = true;
+        let screen = draw(&mut a);
+        assert!(screen.contains(MORE_HELD), "{screen}");
+        a.move_by(1);
+        assert!(more(&mut a, &mut draw), "down at the end goes on");
+    }
+
+    #[test]
+    fn a_page_with_nothing_new_or_its_cursor_again_stops_the_loading() {
+        let ws = ws();
+        let media = super::super::media::Media::with(ratatui_image::picker::Picker::halfblocks());
+        let it = |key: &str| item(key, Kind::Mention("at_user".into()), "C1", key, Some("U2"), false, noon(0));
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 20)).unwrap();
+        let mut draw = |a: &mut Activity| {
+            terminal.draw(|f| a.draw(f, f.area(), &Here::alone(&ws), true, &media)).unwrap();
+            let buf = terminal.backend().buffer();
+            (0..buf.area.height).map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect::<String>()).collect::<Vec<_>>().join("\n")
+        };
+        let mut a = Activity::default();
+        a.toggle_unread();
+        a.set_items(Tab::All, vec![it("1"), it("2")], Some("c1".into()));
+        draw(&mut a);
+        assert_eq!(a.next_page().as_deref(), Some("c1"));
+        // Only items listed already, and more said to come: it stops there.
+        a.add_page(Tab::All, vec![it("2")], Some("c2".into()));
+        assert!(draw(&mut a).contains(MORE_HELD));
+        assert_eq!(a.next_page(), None, "a page with nothing new: no more by itself");
+        a.move_by(1);
+        draw(&mut a);
+        assert_eq!(a.next_page().as_deref(), Some("c2"), "you moved: on");
+        // New items, but the next page said to start where one already did: it stops there.
+        a.add_page(Tab::All, vec![it("3")], Some("c1".into()));
+        assert!(draw(&mut a).contains(MORE_HELD));
+        assert_eq!(a.next_page(), None, "a cursor asked for before: no more by itself");
     }
 
     #[test]

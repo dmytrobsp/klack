@@ -1636,6 +1636,10 @@ impl App {
     /// Mark the Activity view's selected item seen (and read on Slack, as its own client does: the badge drops
     /// at once) and leave the view for it (Enter, or a click on it); with nowhere in klack to show it, say so.
     fn open_activity_item(&mut self) {
+        // (None shown — filtered, every item read —: nothing to open.)
+        if !self.activity.visible().contains(&self.activity.selected) {
+            return;
+        }
         if let Some(it) = self.activity.selected_item().cloned() {
             self.seen.insert(it.key.clone(), opened_now());
             if let Some(params) = super::activity::mark_read_params(&it) {
@@ -8370,6 +8374,14 @@ mod tests {
         screen(&mut app);
         next_page(&mut app, &mut asked, &next).await;
         assert_eq!(app.activity.visible().len(), 1, "asked for again after a key: the thread");
+        // Nothing shown (every item read): Enter opens nothing hidden.
+        while tokio::time::timeout(std::time::Duration::from_millis(300), asked.recv()).await.is_ok_and(|r| r.is_some()) {}
+        run_global(&mut app, Action::Activity);
+        super::handle_net(&mut app, Net::ActivityFeed { tab: Tab::All, more: false, result: Ok(serde_json::json!({"items": [mention("90.0", false)]})) });
+        assert!(screen(&mut app).contains("Nothing unread here."));
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.view, View::Activity, "the view stays");
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(300), next_call(&mut asked, "activity.markRead")).await.is_err(), "nothing marked read");
     }
 
     #[tokio::test]
