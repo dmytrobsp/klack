@@ -162,8 +162,6 @@ async fn run() -> Result<()> {
     // ring, as webrtc uses, is the one for every TLS connection.
     let _ = rustls::crypto::ring::default_provider().install_default();
     let cli = Cli::parse();
-    // Folders of the old name (slacktui) become klack's.
-    let adopted = session::adopt_old_dirs();
     let dirs = Dirs::system()?;
     let profile = match cli.profile {
         Some(name) => name,
@@ -176,9 +174,6 @@ async fn run() -> Result<()> {
     let logging = logs && session_file.is_file();
     if logging {
         init_logging(&profile)?;
-        for line in adopted {
-            tracing::info!("{line}");
-        }
     }
     match cli.command {
         Some(Command::Auth { cmd }) => match cmd {
@@ -235,8 +230,8 @@ fn purge_command(dirs: &Dirs, yes: bool) -> Result<()> {
     if !running.is_empty() {
         bail!("klack is running (profile {}) — quit it first", running.join(", "));
     }
-    // Windows' roaming data folder (where an old one was moved) and the folders of the former name.
-    let more: Vec<std::path::PathBuf> = Dirs::roaming_data().into_iter().chain(Dirs::old_system()).collect();
+    // Windows' roaming data folder.
+    let more: Vec<std::path::PathBuf> = Dirs::roaming_data().into_iter().collect();
     // Only this user's leftovers in a shared temporary folder.
     #[cfg(unix)]
     // SAFETY: getuid only returns the real user id of this process; it cannot fail.

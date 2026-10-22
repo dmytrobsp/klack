@@ -86,29 +86,6 @@ pub fn project_dirs() -> Option<directories::ProjectDirs> {
     directories::ProjectDirs::from_path(PathBuf::from("klack"))
 }
 
-/// Move the folders of the old name ("slacktui", under the `io.github.rslack` qualifier on
-/// macOS and Windows) to klack's, where klack has none yet; returns what was moved, for the log.
-pub fn adopt_old_dirs() -> Vec<String> {
-    let (Some(old), Some(new)) = (directories::ProjectDirs::from("io.github", "rslack", "slacktui"), project_dirs()) else { return vec![] };
-    adopt(&[(old.config_dir(), new.config_dir()), (old.cache_dir(), new.cache_dir()), (old.data_local_dir(), new.data_local_dir()), (old.data_dir(), new.data_dir())])
-}
-
-/// Rename each existing `old` folder to its `new` one when that does not exist yet.
-fn adopt(pairs: &[(&Path, &Path)]) -> Vec<String> {
-    let mut moved = Vec::new();
-    for (old, new) in pairs {
-        if !old.is_dir() || new.exists() {
-            continue;
-        }
-        let result = new.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| std::fs::rename(old, new));
-        moved.push(match result {
-            Ok(()) => format!("moved {} to {}", old.display(), new.display()),
-            Err(e) => format!("could not move {} to {}: {e}", old.display(), new.display()),
-        });
-    }
-    moved
-}
-
 pub fn config_dir(profile: &str) -> Result<PathBuf> {
     let dirs = project_dirs().ok_or_else(|| anyhow!("no home directory"))?;
     Ok(dirs.config_dir().join(profile))
@@ -417,23 +394,6 @@ mod tests {
     fn an_old_window_session_still_loads() {
         let source: SessionSource = serde_json::from_str(r#"{"kind":"window"}"#).unwrap();
         assert_eq!(source, SessionSource::Window);
-    }
-
-    #[test]
-    fn old_folders_are_adopted_once() {
-        let base = std::env::temp_dir().join(format!("klack-adopt-test-{}", std::process::id()));
-        let (old, new) = (base.join("old/slacktui"), base.join("new/klack"));
-        std::fs::create_dir_all(old.join("default")).unwrap();
-        std::fs::write(old.join("default/session.json"), "{}").unwrap();
-        let moved = adopt(&[(old.as_path(), new.as_path())]);
-        assert_eq!(moved.len(), 1, "{moved:?}");
-        assert!(new.join("default/session.json").is_file() && !old.exists());
-        // Nothing left to move, and an existing new folder is never overwritten.
-        assert!(adopt(&[(old.as_path(), new.as_path())]).is_empty());
-        std::fs::create_dir_all(&old).unwrap();
-        assert!(adopt(&[(old.as_path(), new.as_path())]).is_empty());
-        assert!(new.join("default/session.json").is_file());
-        std::fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]

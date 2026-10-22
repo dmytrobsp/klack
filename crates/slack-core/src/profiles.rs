@@ -28,17 +28,8 @@ impl Dirs {
         Ok(Dirs { config: dirs.config_dir().to_path_buf(), cache: dirs.cache_dir().to_path_buf(), data: dirs.data_local_dir().to_path_buf() })
     }
 
-    /// The folders of the former name (`slacktui`) that still exist (`session::adopt_old_dirs`).
-    pub fn old_system() -> Vec<PathBuf> {
-        let Some(old) = directories::ProjectDirs::from("io.github", "rslack", "slacktui") else { return vec![] };
-        let mut all = vec![old.config_dir().to_path_buf(), old.cache_dir().to_path_buf(), old.data_local_dir().to_path_buf(), old.data_dir().to_path_buf()];
-        all.dedup();
-        all.retain(|p| p.symlink_metadata().is_ok());
-        all
-    }
-
-    /// The roaming data folder when it is not `data`: on Windows `%APPDATA%\klack\data`, where an old roaming
-    /// folder of the former name is moved (`session::adopt_old_dirs`); elsewhere it is `data` itself, so None.
+    /// The roaming data folder when it is not `data`: on Windows `%APPDATA%\klack\data`; elsewhere it is `data`
+    /// itself, so None.
     pub fn roaming_data() -> Option<PathBuf> {
         let dirs = crate::session::project_dirs()?;
         (dirs.data_dir() != dirs.data_local_dir()).then(|| dirs.data_dir().to_path_buf())
@@ -54,7 +45,7 @@ const RESERVED: &[&str] = &[DEFAULT_FILE, "settings.toml", "settings.tmp", "keys
 const DEVICES: &[&str] = &["con", "nul", "aux", "prn", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9"];
 
 /// What klack writes into a profile's cache folder.
-const CACHE_FILES: &[&str] = &["klack.log", "slacktui.log", LOCK_FILE];
+const CACHE_FILES: &[&str] = &["klack.log", LOCK_FILE];
 
 /// Why `name` cannot be a profile name, or None when it can. A profile name is a folder name: letters, digits, `-`
 /// and `_`, and `.` or `@` inside it (`john.doe`, `me@work`; never first or last, never two dots together, so it can
@@ -513,13 +504,13 @@ mod tests {
         let t = Temp::new("purge-list");
         three(&t);
         touch(&t.1.config.join("settings.toml"));
-        let old = t.0.join("old-config");
-        touch(&old.join("default/session.json"));
-        let gone_old = t.0.join("old-cache-missing");
+        let roaming = t.0.join("roaming");
+        touch(&roaming.join("default/session.json"));
+        let gone = t.0.join("roaming-missing");
         let temp = t.0.join("tmp");
         std::fs::create_dir_all(&temp).unwrap();
-        let got = purge_targets(&t.1, &[old.clone(), gone_old], &temp, None);
-        assert_eq!(got, [t.1.config.clone(), t.1.cache.clone(), t.1.data.clone(), old]);
+        let got = purge_targets(&t.1, &[roaming.clone(), gone], &temp, None);
+        assert_eq!(got, [t.1.config.clone(), t.1.cache.clone(), t.1.data.clone(), roaming]);
         // A folder that does not exist is not listed.
         std::fs::remove_dir_all(&t.1.data).unwrap();
         assert!(!purge_targets(&t.1, &[], &temp, None).contains(&t.1.data));
@@ -547,7 +538,7 @@ mod tests {
     fn purge_lists_a_repeated_folder_once() {
         let mut t = Temp::new("purge-dup");
         three(&t);
-        // As on macOS: config and data are one folder, and an old folder repeats a new one.
+        // As on macOS: config and data are one folder, and an extra folder repeats a listed one.
         t.1.data = t.1.config.clone();
         let temp = t.0.join("tmp");
         let got = purge_targets(&t.1, &[t.1.cache.clone(), t.1.config.clone()], &temp, None);
