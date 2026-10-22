@@ -228,6 +228,14 @@ impl MessagePane {
         self.top
     }
 
+    /// The selection as where you are in the pane (what the history keeps): none when it is the newest message
+    /// (`newest`), or when the pane follows the newest and it was not on screen at the last draw.
+    pub fn kept_selection(&self, newest: Option<&str>) -> Option<String> {
+        let selected = self.selected.as_ref()?;
+        let left = self.anchor.is_none() && !self.rows.iter().flatten().any(|r| r == selected);
+        (newest != Some(selected.as_str()) && !left).then(|| selected.clone())
+    }
+
     /// Select message `ts`, brought into view at the next draw (even when it was the one last brought into view).
     pub fn select(&mut self, ts: Option<String>) {
         (self.selected, self.shown) = (ts, None);

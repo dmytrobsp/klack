@@ -21,8 +21,8 @@ pub enum Place {
     /// A conversation, with the thread (its parent's ts) open in it; `member`: you were in it (not a preview); `at`:
     /// the message selected in it, `reply`: the reply selected in its thread.
     Conversation { channel: String, thread: Option<String>, member: bool, at: Option<String>, reply: Option<String> },
-    /// The Threads view, at the message (channel, ts) selected in it.
-    Threads(Option<(String, String)>),
+    /// The Threads view, at the message (channel, ts, its thread's parent's ts) selected in it.
+    Threads(Option<(String, String, String)>),
     /// The Activity view on its tab, at the item (its key) selected in it.
     Activity(Tab, Option<String>),
     Huddles,
@@ -343,19 +343,19 @@ mod tests {
         h.arrive(Some(conv_at("C1", "2.0")), Went::No);
         h.arrive(Some(conv_at("C1", "2.0")), Went::Yes);
         h.arrive(Some(Place::Threads(None)), Went::Yes);
-        h.arrive(Some(Place::Threads(Some(("C2".into(), "7.0".into())))), Went::Yes);
+        h.arrive(Some(Place::Threads(Some(("C2".into(), "7.0".into(), "7.0".into())))), Went::Yes);
         h.arrive(Some(Place::Activity(Tab::Dms, Some("k1".into()))), Went::Yes);
-        assert_eq!(h.back(|_| false), Some(Place::Threads(Some(("C2".into(), "7.0".into())))), "at the message selected last");
-        h.arrive(Some(Place::Threads(Some(("C2".into(), "7.0".into())))), Went::Yes);
+        assert_eq!(h.back(|_| false), Some(Place::Threads(Some(("C2".into(), "7.0".into(), "7.0".into())))), "at the message selected last");
+        h.arrive(Some(Place::Threads(Some(("C2".into(), "7.0".into(), "7.0".into())))), Went::Yes);
         assert_eq!(h.back(|_| false), Some(conv_at("C1", "2.0")));
         h.arrive(Some(conv_at("C1", "2.0")), Went::Yes);
         assert_eq!(h.back(|_| false), None, "one step each");
         h.arrive(Some(conv_at("C1", "3.0")), Went::Yes);
-        assert_eq!(h.forward(|_| false), Some(Place::Threads(Some(("C2".into(), "7.0".into())))));
-        h.arrive(Some(Place::Threads(Some(("C2".into(), "7.0".into())))), Went::Yes);
+        assert_eq!(h.forward(|_| false), Some(Place::Threads(Some(("C2".into(), "7.0".into(), "7.0".into())))));
+        h.arrive(Some(Place::Threads(Some(("C2".into(), "7.0".into(), "7.0".into())))), Went::Yes);
         assert_eq!(h.forward(|_| false), Some(Place::Activity(Tab::Dms, Some("k1".into()))));
         h.arrive(Some(Place::Activity(Tab::Dms, Some("k1".into()))), Went::Yes);
-        assert_eq!(h.back(|_| false), Some(Place::Threads(Some(("C2".into(), "7.0".into())))));
+        assert_eq!(h.back(|_| false), Some(Place::Threads(Some(("C2".into(), "7.0".into(), "7.0".into())))));
         h.arrive(Some(Place::Threads(None)), Went::Yes);
         assert_eq!(h.back(|_| false), Some(conv_at("C1", "3.0")), "where you were when you went forward");
     }

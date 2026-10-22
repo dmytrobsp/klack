@@ -263,7 +263,7 @@ pub fn mark_read_params(it: &Item) -> Option<Vec<(&'static str, String)>> {
 }
 
 /// Pages the list loads by itself (filtered with none shown, or its end on screen) before it waits for you to act.
-const AUTO_PAGES: usize = 5;
+pub const AUTO_PAGES: usize = 5;
 
 /// Lines of a message an item shows; a longer one is cut with "…" (Enter shows it all).
 pub const EXCERPT_LINES: usize = 3;
@@ -545,8 +545,11 @@ impl Activity {
             (kept.items, kept.cursor, kept.loading) = (Some(items), cursor, false);
             return;
         }
-        let key = self.selected_item().map(|it| it.key.clone()).or(self.want.take());
+        let key = self.selected_item().map(|it| it.key.clone()).or(self.want.clone());
         self.selected = key.and_then(|k| items.iter().position(|it| it.key == k)).unwrap_or(0);
+        if self.want.as_ref().is_some_and(|w| items.iter().any(|it| it.key == *w)) {
+            self.want = None;
+        }
         (self.items, self.failed, self.page_error, self.cursor, self.loading, self.stuck) = (Some(items), None, None, cursor, false, false);
         self.cursors.clear();
         self.keep_selection_shown();
@@ -582,6 +585,29 @@ impl Activity {
         if tab == self.tab && !self.visible().contains(&self.selected) {
             self.keep_selection_shown();
         }
+        // The item a step lands on, on this page.
+        let found = self.want.as_ref().filter(|_| tab == self.tab).and_then(|w| self.items.as_ref()?.iter().position(|it| it.key == *w));
+        if let Some(n) = found {
+            (self.selected, self.want) = (n, None);
+            self.keep_selection_shown();
+        }
+    }
+
+    /// The next page while the item a step lands on is not listed yet (up to [`AUTO_PAGES`], as by itself); none to
+    /// ask for: it is given up, the selection stays.
+    pub fn want_page(&mut self) -> Option<String> {
+        self.want.as_ref()?;
+        if self.items.is_none() || self.loading {
+            return None;
+        }
+        let Some(cursor) = self.cursor.clone().filter(|_| self.page_error.is_none() && !self.held()) else {
+            self.want = None;
+            return None;
+        };
+        self.loading = true;
+        self.auto_pages += 1;
+        self.cursors.insert(cursor.clone());
+        Some(cursor)
     }
 
     /// An item Slack pushed (new, or changed: read, a newer reply): into each loaded list it belongs to, in its place

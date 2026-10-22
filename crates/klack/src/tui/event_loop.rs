@@ -1993,15 +1993,24 @@ impl App {
     fn place(&self) -> Option<Place> {
         match self.view {
             // (Loading afresh: where a step lands.)
-            View::Threads => Some(Place::Threads(self.threads.selected.clone().or_else(|| self.threads.want.clone()))),
+            View::Threads => {
+                let at = self.threads.selected.clone().map(|(c, ts)| {
+                    let parent = self.threads.thread_of(&c, &ts).map_or_else(|| ts.clone(), |(_, p)| p);
+                    (c, ts, parent)
+                });
+                Some(Place::Threads(at.or_else(|| self.threads.want.clone())))
+            }
             View::Activity => Some(Place::Activity(self.activity.tab, self.activity.selected_item().map(|it| it.key.clone()).or_else(|| self.activity.want.clone()))),
             View::Huddles => Some(Place::Huddles),
             View::Conversation => {
                 let channel = self.current.clone()?;
                 let thread = self.thread.as_ref().filter(|(c, _)| *c == channel).map(|(_, ts)| ts.clone());
                 let member = !self.ws.is_outside(&channel);
-                let reply = thread.as_ref().and(self.thread_pane.selected.clone());
-                Some(Place::Conversation { channel, thread, member, at: self.messages.selected.clone(), reply })
+                // (Where you are: not a selection left behind, nor the newest message.)
+                let newest = |t: Option<&super::state::Timeline>, thread| t.and_then(|t| super::messages::shown_messages(t, thread).last()).map(|m| m.ts.clone());
+                let at = self.messages.kept_selection(newest(self.ws.timelines.get(&channel), false).as_deref());
+                let reply = thread.as_ref().and_then(|p| self.thread_pane.kept_selection(newest(self.ws.threads.get(&super::state::thread_key(&channel, p)), true).as_deref()));
+                Some(Place::Conversation { channel, thread, member, at, reply })
             }
         }
     }
@@ -2039,6 +2048,8 @@ impl App {
         if self.loading {
             return;
         }
+        // (The place left as the last draw shows it: a selection made by the event before is on screen by now.)
+        self.note_place();
         let ws = &self.ws;
         let gone = |p: &Place| place_gone(ws, p);
         let to = if forward { self.history.forward(gone) } else { self.history.back(gone) };
@@ -2069,7 +2080,7 @@ impl App {
             self.close_thread();
         }
         let (hit, landing) = match (thread, at) {
-            (Some(parent), behind) => (super::search::Hit { channel, ts: parent.clone(), thread_ts: Some(parent), ..Default::default() }, Landing { behind, reply }),
+            (Some(parent), behind) => (super::search::Hit { channel, ts: parent.clone(), thread_ts: Some(parent), ..Default::default() }, Landing { behind, reply, gone: false }),
             (None, Some(ts)) => (super::search::Hit { channel, ts, ..Default::default() }, Landing::default()),
             (None, None) => {
                 if !here {
@@ -2433,8 +2444,7 @@ impl App {
         if self.current.as_deref() != Some(channel.as_str()) {
             // Not shown yet (the conversation is being switched to) or left: wait, or drop it.
             if self.pending_hit.is_none() {
-                self.seeking = None;
-                self.seek_hit = None;
+                (self.seeking, self.seek_hit, self.seek_back) = (None, None, None);
             }
             return None;
         }
@@ -2457,9 +2467,12 @@ impl App {
                 if let Some(hit) = self.seek_hit.take() {
                     self.select_hit(hit);
                 }
-                if self.seek_back.is_some() && !found {
-                    self.land_nearest(&channel, &ts);
+                match &self.seek_back {
+                    Some(_) if !found => self.land_nearest(&channel, &ts),
+                    Some(l) if l.gone => self.status = super::i18n::tr(HISTORY_GONE).into_owned(),
+                    _ => {}
                 }
+                self.end_seek_back();
             }
             Seek::More => {
                 self.status = super::i18n::tr(SEEKING).replace("{}", &n.to_string());
@@ -2472,14 +2485,25 @@ impl App {
             }
             Seek::Missing(note) => {
                 // A link's message was never selected: the conversation stays as it is.
-                (self.seeking, self.seek_hit, self.link_reply) = (None, None, None);
+                (self.seeking, self.seek_hit) = (None, None);
                 if self.seek_back.is_some() {
+                    // (Its thread's reply is still looked for.)
                     self.land_nearest(&channel, &ts);
+                } else {
+                    self.link_reply = None;
                 }
                 self.status = super::i18n::tr(note).into_owned();
+                self.end_seek_back();
             }
         }
         Some(step)
+    }
+
+    /// A step's seek and its reply's check are both over: its rules end (see [`App::seek_back`]).
+    fn end_seek_back(&mut self) {
+        if self.seeking.is_none() && self.link_reply.is_none() {
+            self.seek_back = None;
+        }
     }
 
     /// A step back or forward finds its message `ts` of `channel` gone: the nearest one is selected, said so.
@@ -2510,7 +2534,7 @@ impl App {
     /// Esc in the messages pane: stop paging back for a message.
     fn stop_seek(&mut self) {
         if self.seeking.take().is_some() {
-            (self.pending_hit, self.seek_hit, self.link_reply) = (None, None, None);
+            (self.pending_hit, self.seek_hit, self.link_reply, self.seek_back) = (None, None, None, None);
             self.status = super::i18n::tr(SEEK_STOPPED).into_owned();
         }
     }
@@ -2528,7 +2552,11 @@ impl App {
             };
             self.thread_pane.select(selected);
             self.status = super::i18n::tr(note).into_owned();
+            if let Some(l) = self.seek_back.as_mut() {
+                l.gone = true;
+            }
         }
+        self.end_seek_back();
     }
 
     /// A plain click on a link into the profile's workspaces: open where it goes, in klack (another workspace is
@@ -3425,7 +3453,7 @@ impl App {
         if self.view != View::Activity {
             return;
         }
-        if let Some(cursor) = self.activity.next_page() {
+        if let Some(cursor) = self.activity.next_page().or_else(|| self.activity.want_page()) {
             self.fetch_activity(self.activity.tab, Some(cursor));
         }
     }
@@ -4467,6 +4495,8 @@ struct Landing {
     behind: Option<String>,
     /// The reply selected in the thread (None: none, at its newest).
     reply: Option<String>,
+    /// That reply is no longer there: said again once the seek is done.
+    gone: bool,
 }
 
 /// The message nearest `ts` among `order` (oldest first): the last one before it, else the first.
@@ -6681,6 +6711,10 @@ fn handle_net(app: &mut App, msg: Net) {
                     t.entries = None;
                 }
                 t.add_page(page, has_more);
+                // (A step back or forward to a message further down the feed.)
+                if t.want_more() {
+                    app.load_threads(true);
+                }
             }
             Err(e) => {
                 app.status = format!("threads failed: {e}");
@@ -6743,7 +6777,7 @@ fn handle_net(app: &mut App, msg: Net) {
             app.status = history_failed(app.ws.timelines.get_mut(&channel), seeking, app.seek_from_link, &error);
             if seeking {
                 // The seek ends here (a link's message never selected), as when the message is missing.
-                (app.seeking, app.seek_hit, app.link_reply) = (None, None, None);
+                (app.seeking, app.seek_hit, app.link_reply, app.seek_back) = (None, None, None, None);
             }
         }
         Net::Error(e) => {
@@ -10343,8 +10377,10 @@ mod tests {
         app.focus = super::Focus::Messages;
         app.messages.selected = Some(top_ts(10));
         settle(&mut app, false);
+        drawn(&mut app);
         app.jump_to("C2");
         settle(&mut app, true);
+        drawn(&mut app);
         // C1's history is fetched afresh (as after a workspace switch): the newest page first, then older ones.
         let all = app.ws.timelines.remove("C1").unwrap().messages;
         go(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
@@ -10360,6 +10396,12 @@ mod tests {
         assert_eq!(app.messages.selected, Some(top_ts(10)), "the message you were on");
         let shown = drawn(&mut app);
         assert!(shown.iter().any(|l| l.contains("message number 010")), "on screen:\n{}", shown.join("\n"));
+        // Forward and back again at once: still there.
+        go(&mut app, KeyCode::Right, KeyModifiers::ALT);
+        assert_eq!(app.current.as_deref(), Some("C2"));
+        drawn(&mut app);
+        go(&mut app, KeyCode::Left, KeyModifiers::ALT);
+        assert_eq!((app.current.as_deref(), app.messages.selected.clone()), (Some("C1"), Some(top_ts(10))));
     }
 
     #[test]
@@ -10379,6 +10421,7 @@ mod tests {
         app.focus = super::Focus::Messages;
         app.messages.selected = Some(top_ts(15));
         settle(&mut app, false);
+        drawn(&mut app);
         app.jump_to("C2");
         settle(&mut app, true);
         app.ws.timelines.get_mut("C1").unwrap().messages.retain(|m| m.ts != top_ts(15));
@@ -10388,6 +10431,7 @@ mod tests {
         // A reply deleted meanwhile: the reply before it, said so too.
         app.open_in_app(Target::Message { channel: "C1".into(), ts: reply_ts(30), thread_ts: Some(top_ts(1)) }, true);
         settle(&mut app, true);
+        drawn(&mut app);
         app.jump_to("C2");
         settle(&mut app, true);
         app.status.clear();
@@ -10441,5 +10485,143 @@ mod tests {
         super::handle_net(&mut app, Net::ActivityFeed { tab: Tab::All, more: false, result: Ok(feed) });
         settle(&mut app, false);
         assert_eq!((app.view, app.activity.selected_item().map(|it| it.key.as_str())), (View::Activity, Some("dm-b")), "at the item clicked");
+    }
+
+    /// Type `text` and send it (`i` first), as the keys do.
+    fn send(app: &mut super::App, text: &str) {
+        go(app, KeyCode::Char('i'), KeyModifiers::NONE);
+        for c in text.chars() {
+            go(app, KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        go(app, KeyCode::Enter, KeyModifiers::NONE);
+    }
+
+    #[tokio::test]
+    async fn back_after_sending_at_the_bottom_is_at_the_newest() {
+        let (mut app, _net) = with_channels(&["C1", "C2"]);
+        long_c1(&mut app, 120, 60);
+        // The review's case: a message far up selected, then a message sent: the pane is back at its newest.
+        app.focus = super::Focus::Messages;
+        drawn(&mut app);
+        for _ in 0..40 {
+            go(&mut app, KeyCode::Char('k'), KeyModifiers::NONE);
+        }
+        drawn(&mut app);
+        send(&mut app, "hello");
+        assert!(drawn(&mut app).iter().any(|l| l.contains("message number 120")));
+        app.jump_to("C2");
+        settle(&mut app, true);
+        drawn(&mut app);
+        go(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
+        assert_eq!((app.current.as_deref(), app.messages.selected.clone()), (Some("C1"), None), "no stale selection");
+        let shown = drawn(&mut app);
+        assert!(shown.iter().any(|l| l.contains("message number 120")), "back at the newest:\n{}", shown.join("\n"));
+        // The newest message selected: back at the newest, following new ones.
+        app.focus = super::Focus::Messages;
+        go(&mut app, KeyCode::Char('k'), KeyModifiers::NONE);
+        assert_eq!(app.messages.selected, Some(top_ts(120)));
+        drawn(&mut app);
+        app.jump_to("C2");
+        settle(&mut app, true);
+        go(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
+        assert_eq!(app.messages.selected, None);
+        // The thread pane: a reply far up selected, then a reply sent there.
+        app.open_in_app(super::super::applink::Target::Message { channel: "C1".into(), ts: reply_ts(20), thread_ts: Some(top_ts(1)) }, true);
+        settle(&mut app, true);
+        drawn(&mut app);
+        assert_eq!(app.focus, super::Focus::Thread);
+        send(&mut app, "a reply");
+        assert!(drawn(&mut app).iter().any(|l| l.contains("reply number 060")));
+        app.jump_to("C2");
+        settle(&mut app, true);
+        drawn(&mut app);
+        go(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
+        assert_eq!((app.thread.is_some(), app.thread_pane.selected.clone()), (true, None), "the thread at its newest");
+        assert!(drawn(&mut app).iter().any(|l| l.contains("reply number 060")));
+    }
+
+    #[tokio::test]
+    async fn the_note_for_a_reply_gone_stays_while_the_conversation_pages() {
+        use slack_core::types::{HistoryPage, Message};
+        let (mut app, _net) = with_channels(&["C1", "C2"]);
+        long_c1(&mut app, 120, 40);
+        app.open_in_app(super::super::applink::Target::Message { channel: "C1".into(), ts: reply_ts(30), thread_ts: Some(top_ts(1)) }, true);
+        settle(&mut app, true);
+        drawn(&mut app);
+        app.jump_to("C2");
+        settle(&mut app, true);
+        // C1 fetched afresh (its parent several pages up); reply 30 deleted meanwhile.
+        let all = app.ws.timelines.remove("C1").unwrap().messages;
+        app.ws.threads.get_mut(&super::super::state::thread_key("C1", &top_ts(1))).unwrap().messages.retain(|m| m.ts != reply_ts(30));
+        go(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
+        assert_eq!(app.thread_pane.selected, Some(reply_ts(29)));
+        let page = |from: usize, to: usize, has_more: bool| HistoryPage { messages: all[from - 1..to].iter().rev().cloned().collect::<Vec<Message>>(), has_more, ..Default::default() };
+        super::handle_net(&mut app, super::Net::History { channel: "C1".into(), page: page(71, 120, true), older: false });
+        settle(&mut app, false);
+        super::handle_net(&mut app, super::Net::History { channel: "C1".into(), page: page(1, 70, false), older: true });
+        settle(&mut app, false);
+        assert_eq!(app.status, super::HISTORY_GONE, "said once the seek is done");
+        assert!(app.seek_back.is_none(), "the step's rules end with its seek");
+    }
+
+    /// The Threads view's page JSON: `threads` as (channel, parent ts, its replies' ts).
+    fn feed_page(threads: &[(&str, &str, &[&str])], has_more: bool) -> serde_json::Value {
+        let msg = |c: &str, ts: &str, parent: &str| serde_json::json!({"channel": c, "ts": ts, "thread_ts": parent, "user": "U2", "text": format!("feed {ts}"), "reply_count": 1});
+        let threads: Vec<serde_json::Value> = threads.iter().map(|(c, p, rs)| serde_json::json!({"root_msg": msg(c, p, p), "latest_replies": rs.iter().map(|r| msg(c, r, p)).collect::<Vec<_>>()})).collect();
+        serde_json::json!({"threads": threads, "has_more": has_more})
+    }
+
+    #[tokio::test]
+    async fn back_pages_the_feed_and_activity_to_their_items() {
+        use super::super::activity::Tab;
+        use super::{Net, View};
+        let (mut app, _net) = with_channels(&["C1", "C3"]);
+        let one = feed_page(&[("C1", "50.000000", &["51.000000"])], true);
+        let two = feed_page(&[("C3", "40.000000", &["41.000000", "42.000000"])], false);
+        super::run_global(&mut app, super::Action::Threads);
+        settle(&mut app, true);
+        super::handle_net(&mut app, Net::ThreadView { result: Ok(one.clone()), more: false });
+        super::handle_net(&mut app, Net::ThreadView { result: Ok(two.clone()), more: true });
+        drawn(&mut app);
+        app.threads.selected = Some(("C3".into(), "42.000000".into()));
+        settle(&mut app, false);
+        app.jump_to("C1");
+        settle(&mut app, true);
+        go(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
+        assert_eq!(app.view, View::Threads);
+        super::handle_net(&mut app, Net::ThreadView { result: Ok(one.clone()), more: false });
+        settle(&mut app, false);
+        assert!(app.threads.loading, "the next page is asked for");
+        super::handle_net(&mut app, Net::ThreadView { result: Ok(two), more: true });
+        drawn(&mut app);
+        assert_eq!(app.threads.selected, Some(("C3".into(), "42.000000".into())), "the reply on the second page");
+        // Only the reply gone from the feed (its thread's newest replies moved on): its thread, not the top.
+        app.jump_to("C1");
+        settle(&mut app, true);
+        go(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
+        super::handle_net(&mut app, Net::ThreadView { result: Ok(one), more: false });
+        super::handle_net(&mut app, Net::ThreadView { result: Ok(feed_page(&[("C3", "40.000000", &["43.000000"])], false)), more: true });
+        drawn(&mut app);
+        assert_eq!(app.threads.selected, Some(("C3".into(), "40.000000".into())), "at its thread's parent");
+        // Activity: the item on its second page.
+        let dm = |key: &str, feed_ts: &str| serde_json::json!({"feed_ts": feed_ts, "is_unread": true, "key": key, "item": {"type": "dm", "bundle_info": {"payload": {"dm_entry": {"latest_message": {"channel": "DU2", "ts": "1.0"}}}}}});
+        let first = serde_json::json!({"items": [dm("a1", "9.0"), dm("a2", "8.0")], "response_metadata": {"next_cursor": "p2"}});
+        let second = serde_json::json!({"items": [dm("b1", "7.0"), dm("b2", "6.0")]});
+        go(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
+        super::handle_net(&mut app, Net::ActivityFeed { tab: Tab::All, more: false, result: Ok(first.clone()) });
+        app.activity.loading = true;
+        super::handle_net(&mut app, Net::ActivityFeed { tab: Tab::All, more: true, result: Ok(second.clone()) });
+        app.activity.selected = 3;
+        settle(&mut app, false);
+        go(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.view, View::Conversation);
+        go(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
+        super::handle_net(&mut app, Net::ActivityFeed { tab: Tab::All, more: false, result: Ok(first) });
+        settle(&mut app, false);
+        app.request_activity_page();
+        assert!(app.activity.loading, "the next page is asked for");
+        super::handle_net(&mut app, Net::ActivityFeed { tab: Tab::All, more: true, result: Ok(second) });
+        settle(&mut app, false);
+        assert_eq!(app.activity.selected_item().map(|it| it.key.as_str()), Some("b2"));
     }
 }

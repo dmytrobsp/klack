@@ -101,8 +101,11 @@ pub struct Threads {
     pub failed: Option<String>,
     /// The selected message (channel, ts); none: the first one.
     pub selected: Option<(String, String)>,
-    /// The message a step back or forward lands on: selected once its page is in (not in it: the first one).
-    pub want: Option<(String, String)>,
+    /// The message (channel, ts, its thread's parent's ts) a step back or forward lands on: selected once its page is
+    /// in (see [`Threads::want_more`]).
+    pub want: Option<(String, String, String)>,
+    /// Pages asked for to find `want`.
+    want_pages: usize,
     /// Lines of the feed above the view.
     pub scroll: usize,
     /// Bring the selection into view at the next draw (it moved by the keys).
@@ -160,9 +163,26 @@ impl Threads {
         self.has_more = has_more;
         self.loading = false;
         self.dirty = true;
-        if self.want.as_ref().is_some_and(|(c, ts)| self.thread_of(c, ts).is_none()) {
-            self.want = None;
+    }
+
+    /// A page is in while a step lands on `want`: listed (selected at the next draw), or only its thread (its parent
+    /// then, the reply gone from the block); else true when the next page is to be asked for (up to
+    /// [`AUTO_PAGES`](super::activity::AUTO_PAGES)), and given up otherwise (the first message).
+    pub fn want_more(&mut self) -> bool {
+        let Some((channel, ts, parent)) = self.want.clone() else { return false };
+        if self.thread_of(&channel, &ts).is_some() {
+            return false;
         }
+        if self.thread_of(&channel, &parent).is_some() {
+            self.want = Some((channel, parent.clone(), parent));
+            return false;
+        }
+        if self.has_more && self.want_pages < super::activity::AUTO_PAGES {
+            self.want_pages += 1;
+            return true;
+        }
+        self.want = None;
+        false
     }
 
     /// Where the next page starts: before the oldest latest reply listed.
@@ -489,8 +509,8 @@ impl Threads {
             (self.built, self.dirty) = (Some((look, Instant::now())), false);
             self.builds += 1;
         }
-        if let Some(want) = self.want.take_if(|w| self.order.contains(w)) {
-            (self.selected, self.follow) = (Some(want), true);
+        if let Some((channel, ts, _)) = self.want.take_if(|w| self.order.iter().any(|(c, t)| *c == w.0 && *t == w.1)) {
+            (self.selected, self.follow) = (Some((channel, ts)), true);
         }
         if self.selected.as_ref().is_none_or(|s| !self.order.contains(s)) {
             self.selected = self.order.first().cloned();
