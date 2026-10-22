@@ -5114,11 +5114,12 @@ fn swallowed(ev: &Event, which_key: Option<Rect>, closing_click: Option<(std::ti
     }
 }
 
-/// A terminal event that is not you doing something: the pointer moving, the focus, a resize, a key let go.
+/// A terminal event that is not you doing something: the pointer moving, the focus, a resize, a key or a mouse
+/// button let go.
 fn passive(ev: &Event) -> bool {
     match ev {
         Event::Key(k) => k.kind == KeyEventKind::Release,
-        Event::Mouse(m) => m.kind == MouseEventKind::Moved,
+        Event::Mouse(m) => matches!(m.kind, MouseEventKind::Moved | MouseEventKind::Up(_)),
         Event::FocusGained | Event::FocusLost | Event::Resize(..) => true,
         Event::Paste(_) => false,
     }
@@ -11609,6 +11610,11 @@ mod tests {
         settle(&mut app, false);
         drawn(&mut app);
         assert!(app.seeking.is_some(), "looking further back");
+        // Letting go of a mouse button (the back button's release, after its press) is not doing something.
+        for b in [crossterm::event::MouseButton::Back, crossterm::event::MouseButton::Left] {
+            super::handle_event(&mut app, crossterm::event::Event::Mouse(crossterm::event::MouseEvent { kind: crossterm::event::MouseEventKind::Up(b), column: 5, row: 5, modifiers: KeyModifiers::NONE }));
+            assert!(app.seeking.is_some(), "still looking after a {b:?} release");
+        }
         // You pick a message meanwhile.
         go(&mut app, KeyCode::Char('k'), KeyModifiers::NONE);
         go(&mut app, KeyCode::Char('k'), KeyModifiers::NONE);
