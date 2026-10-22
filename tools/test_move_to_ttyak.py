@@ -12,18 +12,28 @@ SHELLS = ["/usr/bin/dash", "/usr/bin/bash"]
 
 class MoveToTtyak(unittest.TestCase):
     def setUp(self):
+        self.new_home()
+
+    def new_home(self):
         self.home = tempfile.mkdtemp(prefix="move-to-ttyak-test-")
         self.bin = os.path.join(self.home, "fake-bin")
         os.mkdir(self.bin)
-        self.fake_pgrep(running=False)
+        self.fake_pgrep("none")
 
     def tearDown(self):
         shutil.rmtree(self.home)
 
-    def fake_pgrep(self, running):
+    def fake_pgrep(self, mode):
+        """mode: none (nothing runs), all, ttyak (only ttyak runs), error (exit 2)."""
+        body = {
+            "none": "exit 1\n",
+            "all": "echo 4242\nexit 0\n",
+            "ttyak": 'for last; do :; done\n[ "$last" = ttyak ] && { echo 4242; exit 0; }\nexit 1\n',
+            "error": "echo oops >&2\nexit 2\n",
+        }[mode]
         path = os.path.join(self.bin, "pgrep")
         with open(path, "w") as f:
-            f.write("#!/bin/sh\n" + ("echo 4242\nexit 0\n" if running else "exit 1\n"))
+            f.write("#!/bin/sh\n" + body)
         os.chmod(path, 0o755)
 
     def p(self, *parts):
@@ -48,8 +58,10 @@ class MoveToTtyak(unittest.TestCase):
         self.write(".local/share/klack/data", "d")
         self.write(".config/klack-site/site.toml", "t")
 
-    def run_script(self, shell, *args):
-        env = {"HOME": self.home, "PATH": self.bin + ":/usr/bin:/bin"}
+    def run_script(self, shell, *args, env=None):
+        if env is None:
+            env = {"HOME": self.home}
+        env = {**env, "PATH": self.bin + ":/usr/bin:/bin"}
         r = subprocess.run([shell, SCRIPT, *args], env=env, capture_output=True, text=True)
         return r.returncode, r.stdout + r.stderr
 
@@ -57,14 +69,8 @@ class MoveToTtyak(unittest.TestCase):
         for shell in SHELLS:
             with self.subTest(shell=shell):
                 shutil.rmtree(self.home)
-                self.setUp_again()
+                self.new_home()
                 body(shell)
-
-    def setUp_again(self):
-        self.home = tempfile.mkdtemp(prefix="move-to-ttyak-test-")
-        self.bin = os.path.join(self.home, "fake-bin")
-        os.mkdir(self.bin)
-        self.fake_pgrep(running=False)
 
     def test_moves_every_folder(self):
         def body(shell):
@@ -88,7 +94,7 @@ class MoveToTtyak(unittest.TestCase):
             self.write(".cache/klack/b/klack.log", "old b")
             self.write(".cache/klack/b/ttyak.log", "new b")
             code, out = self.run_script(shell)
-            self.assertEqual(code, 0, out)
+            self.assertEqual(code, 1, out)
             self.assertEqual(self.read(".cache/ttyak/a/ttyak.log"), "log a")
             self.assertFalse(os.path.exists(self.p(".cache/ttyak/a/klack.log")))
             self.assertEqual(self.read(".cache/ttyak/b/ttyak.log"), "new b")
@@ -140,12 +146,91 @@ class MoveToTtyak(unittest.TestCase):
     def test_refuses_while_klack_runs(self):
         def body(shell):
             self.make_old()
-            self.fake_pgrep(running=True)
+            self.fake_pgrep("all")
             before = self.snapshot()
             code, out = self.run_script(shell)
             self.assertEqual(code, 1, out)
             self.assertEqual(self.snapshot(), before)
             self.assertIn("running", out)
+        self.each_shell(body)
+
+    def test_refuses_while_ttyak_runs(self):
+        def body(shell):
+            self.make_old()
+            self.fake_pgrep("ttyak")
+            before = self.snapshot()
+            code, out = self.run_script(shell)
+            self.assertEqual(code, 1, out)
+            self.assertEqual(self.snapshot(), before)
+            self.assertIn("ttyak is running", out)
+        self.each_shell(body)
+
+    def test_stops_when_pgrep_cannot_tell(self):
+        def body(shell):
+            self.make_old()
+            self.fake_pgrep("error")
+            before = self.snapshot()
+            code, out = self.run_script(shell)
+            self.assertEqual(code, 1, out)
+            self.assertEqual(self.snapshot(), before)
+            self.assertIn("cannot tell", out)
+        self.each_shell(body)
+
+    def test_dangling_symlink_target_is_not_free(self):
+        def body(shell):
+            self.make_old()
+            self.write(".cache/klack/a/klack.log", "l")
+            os.symlink(self.p("nowhere"), self.p(".config/ttyak"))
+            os.makedirs(self.p(".cache/klack/b"))
+            os.symlink(self.p("nowhere"), self.p(".cache/klack/b/ttyak.log"))
+            self.write(".cache/klack/b/klack.log", "old")
+            code, out = self.run_script(shell)
+            self.assertEqual(code, 1, out)
+            self.assertTrue(os.path.isdir(self.p(".config/klack")))
+            self.assertTrue(os.path.islink(self.p(".config/ttyak")))
+            self.assertTrue(os.path.islink(self.p(".cache/ttyak/b/ttyak.log")))
+            self.assertEqual(self.read(".cache/ttyak/b/klack.log"), "old")
+        self.each_shell(body)
+
+    def test_target_that_is_a_file_is_refused(self):
+        def body(shell):
+            self.make_old()
+            self.write(".local/share/ttyak", "a file")
+            code, out = self.run_script(shell)
+            self.assertEqual(code, 1, out)
+            self.assertEqual(self.read(".local/share/ttyak"), "a file")
+            self.assertTrue(os.path.isfile(self.p(".local/share/klack/data")))
+            self.assertTrue(os.path.isdir(self.p(".config/ttyak")))
+        self.each_shell(body)
+
+    def test_existing_ttyak_cache_is_left_alone(self):
+        def body(shell):
+            self.write(".cache/ttyak/a/klack.log", "l")
+            self.write(".cache/klack/a/klack.log", "l2")
+            before = self.snapshot()
+            code, out = self.run_script(shell)
+            self.assertEqual(code, 1, out)
+            self.assertEqual(self.snapshot(), before)
+        self.each_shell(body)
+
+    def test_bad_home(self):
+        def body(shell):
+            for env in [{}, {"HOME": ""}, {"HOME": self.p("no-such-dir")}]:
+                code, out = self.run_script(shell, env=env)
+                self.assertEqual(code, 1, (env, out))
+            self.write("afile", "x")
+            code, out = self.run_script(shell, env={"HOME": self.p("afile")})
+            self.assertEqual(code, 1, out)
+        self.each_shell(body)
+
+    def test_bad_arguments(self):
+        def body(shell):
+            self.make_old()
+            before = self.snapshot()
+            for args in [("--force",), ("--dry-run", "--dry-run"), ("",)]:
+                code, out = self.run_script(shell, *args)
+                self.assertEqual(code, 1, (args, out))
+                self.assertEqual(self.snapshot(), before)
         self.each_shell(body)
 
     def test_reports_old_names(self):
