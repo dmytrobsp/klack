@@ -22,5 +22,5 @@ tokio.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-# The tests that build an HTTP client install ring, as klack's `main` does.
+# The tests that build an HTTP client install ring, as ttyak's `main` does.
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "logging", "tls12"] }

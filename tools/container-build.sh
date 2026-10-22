@@ -20,7 +20,7 @@ case "$distro" in
 esac
 repo=$(cd "$(dirname "$0")/.." && pwd)
 cmd=${*:-"build --locked && cargo test --locked"}
-exec podman run --rm -v "$repo:/src:ro,Z" -v klack-cargo-registry:/root/.cargo/registry "$image" sh -ec "
+exec podman run --rm -v "$repo:/src:ro,Z" -v ttyak-cargo-registry:/root/.cargo/registry "$image" sh -ec "
   $setup
   curl -sSf https://sh.rustup.rs | sh -s -- -y -q --profile minimal >/dev/null
   . /root/.cargo/env

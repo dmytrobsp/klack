@@ -1,12 +1,12 @@
 [workspace]
 resolver = "3"
-members = ["crates/slack-core", "crates/huddle", "crates/klack"]
+members = ["crates/slack-core", "crates/huddle", "crates/ttyak"]
 
 [workspace.package]
 version = "0.9.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/dmytrobsp/klack"
+repository = "https://github.com/dmytrobsp/ttyak"
 
 [workspace.dependencies]
 anyhow = "1"
@@ -28,9 +28,9 @@ strip = true
 [profile.dev.package.openh264-sys2]
 opt-level = 3
 
-# klack: rtc-turn 0.21.1 with a fix for TURN "438 Stale Nonce" answers (VX5b) — see
-# vendor/rtc-turn/KLACK-PATCH.md for what changed and when to drop this.
-# klack: crossterm 0.29.0 that decodes the mouse's side buttons (VY9) — see vendor/crossterm/KLACK-PATCH.md.
+# ttyak: rtc-turn 0.21.1 with a fix for TURN "438 Stale Nonce" answers (VX5b) — see
+# vendor/rtc-turn/TTYAK-PATCH.md for what changed and when to drop this.
+# ttyak: crossterm 0.29.0 that decodes the mouse's side buttons (VY9) — see vendor/crossterm/TTYAK-PATCH.md.
 [patch.crates-io]
 rtc-turn = { path = "vendor/rtc-turn" }
 crossterm = { path = "vendor/crossterm" }

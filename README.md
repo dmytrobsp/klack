@@ -467,7 +467,7 @@ and a few research probes (`api`, `get`, `huddle-*`, `huddles --shape`) that red
 - `crates/huddle` — Chime signaling (protobuf), WebRTC audio, Opus, audio devices.
 - `crates/klack` — the TUI and the `ctl` CLI.
 - `vendor/rtc-turn` — webrtc-rs' TURN client 0.21.1 with a fix for "438 Stale Nonce" answers, which
-  dropped a huddle's audio about 10 minutes in (why, what changed, when to drop it: `vendor/rtc-turn/KLACK-PATCH.md`).
+  dropped a huddle's audio about 10 minutes in (why, what changed, when to drop it: `vendor/rtc-turn/TTYAK-PATCH.md`).
 
 Status and verification notes: `PROGRESS.md`. Design: `DESIGN.md`.
 

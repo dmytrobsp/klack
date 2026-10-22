@@ -368,15 +368,15 @@ struct Shared {
     events: mpsc::UnboundedSender<SessionEvent>,
     audio: mpsc::UnboundedSender<Vec<i16>>,
     video: mpsc::UnboundedSender<VideoFrame>,
-    /// Debug builds only, for tests: `KLACK_HUDDLE_DROP=SECS` drops the first connection this
+    /// Debug builds only, for tests: `TTYAK_HUDDLE_DROP=SECS` drops the first connection this
     /// long after it connected, as if its media were lost.
     drop_after: Option<Duration>,
 }
 
-/// `KLACK_HUDDLE_DROP` (seconds), in debug builds.
+/// `TTYAK_HUDDLE_DROP` (seconds), in debug builds.
 fn test_drop() -> Option<Duration> {
     #[cfg(debug_assertions)]
-    if let Some(secs) = std::env::var("KLACK_HUDDLE_DROP").ok().and_then(|v| v.trim().parse::<u64>().ok()) {
+    if let Some(secs) = std::env::var("TTYAK_HUDDLE_DROP").ok().and_then(|v| v.trim().parse::<u64>().ok()) {
         return Some(Duration::from_secs(secs));
     }
     None
@@ -596,8 +596,8 @@ async fn on_signaling(creds: &Credentials, shared: &mut Shared, connected_at: &m
             }
             _ = tokio::time::sleep_until(drop_at.unwrap_or_else(tokio::time::Instant::now)), if drop_at.is_some() => {
                 *drop_after = None;
-                tracing::warn!("KLACK_HUDDLE_DROP: dropping the connection");
-                break Outcome::Lost("KLACK_HUDDLE_DROP".into());
+                tracing::warn!("TTYAK_HUDDLE_DROP: dropping the connection");
+                break Outcome::Lost("TTYAK_HUDDLE_DROP".into());
             }
             _ = tokio::time::sleep_until(lost_at.unwrap_or_else(tokio::time::Instant::now)), if lost_at.is_some() => {
                 if media_lost(false, disconnected_since.map(|t| t.elapsed())) {

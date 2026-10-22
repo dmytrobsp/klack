@@ -21,7 +21,7 @@ pub enum ScheduleDays {
     Weekdays,
     /// Each day its own hours (`Schedule::per_day`).
     Custom,
-    /// Slack's value is one klack doesn't know: shown, never written.
+    /// Slack's value is one ttyak doesn't know: shown, never written.
     Unknown,
 }
 
@@ -34,7 +34,7 @@ pub enum DayHours {
     AllDay,
     /// Never: paused all day (Slack's "all_day").
     Never,
-    /// A state klack doesn't know (Slack's value): shown, never written.
+    /// A state ttyak doesn't know (Slack's value): shown, never written.
     Unknown(String),
 }
 
@@ -58,7 +58,7 @@ pub struct Schedule {
     /// Custom: Monday … Sunday.
     pub per_day: [DayHours; 7],
     /// Slack's `dnd_weekdays_off_allday`: with it on, Slack doesn't apply the weekday hours
-    /// (see the spec's research). Only read: klack never writes it.
+    /// (see the spec's research). Only read: ttyak never writes it.
     pub weekdays_off_allday: bool,
 }
 
@@ -81,7 +81,7 @@ impl Schedule {
     /// From the `prefs` object of `users.prefs.get`.
     pub fn from_prefs(prefs: &Value) -> Schedule {
         let text = |k: &str, or: &str| prefs[k].as_str().unwrap_or(or).to_string();
-        // A value Slack has that klack doesn't know is kept as unknown (missing ones get defaults).
+        // A value Slack has that ttyak doesn't know is kept as unknown (missing ones get defaults).
         let days = match (&prefs["dnd_enabled"], prefs["dnd_days"].as_str()) {
             (Value::Bool(false) | Value::Null, _) => ScheduleDays::Off,
             (Value::Bool(true), Some("weekdays")) => ScheduleDays::Weekdays,
@@ -101,10 +101,10 @@ impl Schedule {
     }
 
     /// This schedule with `edits` made, the rest as it is (times as Slack writes them); an error
-    /// for an edit klack can't write: on an unknown schedule or day, with a bad time, or hours
+    /// for an edit ttyak can't write: on an unknown schedule or day, with a bad time, or hours
     /// for a form the schedule doesn't use (a day's while it isn't custom).
     pub fn edited(&self, edits: &[ScheduleEdit]) -> Result<Schedule, String> {
-        const UNKNOWN: &str = "Slack has a schedule klack doesn't know: change it in Slack";
+        const UNKNOWN: &str = "Slack has a schedule ttyak doesn't know: change it in Slack";
         let time = |t: &str| slack_time(t).ok_or_else(|| format!("{t:?} is not a time of day (H:MM)"));
         if self.days == ScheduleDays::Unknown {
             return Err(UNKNOWN.into());
@@ -118,7 +118,7 @@ impl Schedule {
                 ScheduleEdit::Day(i, hours) => {
                     let day = out.per_day.get_mut(*i).ok_or("no such day")?;
                     if let DayHours::Unknown(_) = day {
-                        return Err(format!("Slack has hours for {} klack doesn't know: change them in Slack", DAYS[*i]));
+                        return Err(format!("Slack has hours for {} ttyak doesn't know: change them in Slack", DAYS[*i]));
                     }
                     *day = match hours {
                         DayHours::Between(from, to) => DayHours::Between(time(from)?, time(to)?),
@@ -150,8 +150,8 @@ impl Schedule {
 
     /// The `prefs` JSON for `users.prefs.set` writing this schedule: only the form `days`
     /// selects. Slack accepts "off" only together with "every day" (it ignores the whole
-    /// write otherwise), so off is written that way; a day klack doesn't know is left out. None
-    /// if a time isn't a time of day, or for a schedule klack doesn't know.
+    /// write otherwise), so off is written that way; a day ttyak doesn't know is left out. None
+    /// if a time isn't a time of day, or for a schedule ttyak doesn't know.
     pub fn to_prefs(&self) -> Option<Value> {
         let days = match self.days {
             ScheduleDays::Unknown => return None,
@@ -354,7 +354,7 @@ mod tests {
         p["dnd_days"] = "custom".into();
         p["dnd_enabled"] = "yes".into();
         assert_eq!(Schedule::from_prefs(&p).days, ScheduleDays::Unknown, "dnd_enabled not a bool");
-        // A day's state klack doesn't know: kept as Slack has it (its keys are not written).
+        // A day's state ttyak doesn't know: kept as Slack has it (its keys are not written).
         p["dnd_enabled"] = true.into();
         p["dnd_enabled_tuesday"] = "sometimes".into();
         let s = Schedule::from_prefs(&p);

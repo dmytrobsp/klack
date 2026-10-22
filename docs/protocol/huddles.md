@@ -255,7 +255,7 @@ that does not exist, no camera. Shapes and log messages only.
   after `disconnected` and was connected ~12 s after the loss; A was unaffected and the huddle lasted the whole
   13 min 20 s. Left: the ~12 s gap itself would go with a fix in rtc-turn (retry ChannelBind on 438; the
   allocation refresh's 438 is not retried either).
-- klack (VX5b): rtc-turn 0.21.1 is vendored with that fix (`vendor/rtc-turn`, `KLACK-PATCH.md`). A 438 to a
+- klack (VX5b): rtc-turn 0.21.1 is vendored with that fix (`vendor/rtc-turn`, `TTYAK-PATCH.md`). A 438 to a
   ChannelBind, a CreatePermission or an allocation Refresh is sent again at once with the new nonce, once,
   and the binding and permission stay meanwhile (a Refresh keeps the lifetime it asked for). OBSERVED (11:30
   run, A and B both `ctl huddle-media`, B sending a tone): at 10:00 A's ChannelBind refresh got the 438

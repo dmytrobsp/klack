@@ -25,7 +25,7 @@ pub struct WorkspaceSession {
     /// Raw value of the `d` cookie as sent by browsers (already URL-encoded).
     pub cookie_d: String,
     /// Where the session came from, to offer it first when signing in again (none in files
-    /// written before klack remembered it).
+    /// written before ttyak remembered it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<SessionSource>,
 }
@@ -37,11 +37,11 @@ pub enum SessionSource {
     /// Taken from a browser profile the user is signed in with: `browser` is `firefox` or
     /// `chrome`, `profile` the profile's folder, `label` how it is shown ("Chrome · Work").
     Browser { browser: String, profile: PathBuf, label: String },
-    /// Signed in in klack's former temporary browser window (no longer offered; old files still load).
+    /// Signed in in ttyak's former temporary browser window (no longer offered; old files still load).
     Window,
     /// The `d` cookie given by hand (flag, environment or prompt).
     Cookie,
-    /// An emailed sign-in code, confirmed by klack (`email` is where Slack sent it).
+    /// An emailed sign-in code, confirmed by ttyak (`email` is where Slack sent it).
     Code { email: String },
 }
 
@@ -79,11 +79,11 @@ pub struct Profile {
     pub default_team: Option<String>,
 }
 
-/// klack's folders, plain "klack" on every platform: `~/.config/klack`, `~/.cache/klack` and
-/// `~/.local/share/klack` on Linux, `~/Library/{Application Support,Caches}/klack` on macOS,
-/// `%APPDATA%\klack` and `%LOCALAPPDATA%\klack` on Windows.
+/// ttyak's folders, plain "ttyak" on every platform: `~/.config/ttyak`, `~/.cache/ttyak` and
+/// `~/.local/share/ttyak` on Linux, `~/Library/{Application Support,Caches}/ttyak` on macOS,
+/// `%APPDATA%\ttyak` and `%LOCALAPPDATA%\ttyak` on Windows.
 pub fn project_dirs() -> Option<directories::ProjectDirs> {
-    directories::ProjectDirs::from_path(PathBuf::from("klack"))
+    directories::ProjectDirs::from_path(PathBuf::from("ttyak"))
 }
 
 pub fn config_dir(profile: &str) -> Result<PathBuf> {
@@ -107,7 +107,7 @@ impl Profile {
 
     /// [`Profile::load`] from the file `path`: a file that cannot be read names itself.
     fn load_at(profile: &str, path: &Path) -> Result<Self> {
-        let text = std::fs::read_to_string(path).with_context(|| format!("no session for profile '{profile}' — run `klack auth login`"))?;
+        let text = std::fs::read_to_string(path).with_context(|| format!("no session for profile '{profile}' — run `ttyak auth login`"))?;
         serde_json::from_str(&text).with_context(|| format!("cannot read {}", path.display()))
     }
 
@@ -120,7 +120,7 @@ impl Profile {
         Self::read(path).with_context(|| format!("cannot read {}", path.display()))
     }
 
-    /// Read a session file (another profile's, for `klack profile list`).
+    /// Read a session file (another profile's, for `ttyak profile list`).
     pub fn read(path: &Path) -> Result<Self> {
         Ok(serde_json::from_str(&std::fs::read_to_string(path)?)?)
     }
@@ -470,7 +470,7 @@ mod tests {
 
     #[test]
     fn a_broken_session_file_is_not_replaced() {
-        let dir = std::env::temp_dir().join(format!("klack-session-read-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("ttyak-session-read-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         // No file: a new, empty profile.
         assert!(Profile::read_or_new(&dir.join("session.json")).unwrap().workspaces.is_empty());
@@ -544,7 +544,7 @@ mod tests {
 
     #[test]
     fn a_broken_session_file_is_named() {
-        let dir = std::env::temp_dir().join(format!("klack-session-load-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("ttyak-session-load-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("session.json");
         std::fs::write(&path, "{ 7 }").unwrap();

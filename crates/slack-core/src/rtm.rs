@@ -91,7 +91,7 @@ enum Incoming {
     Hello,
     Goodbye,
     /// Not passed on: `pong`, and the gateway's `reconnect_url` (a fast-reconnect address with the token in it,
-    /// which klack does not use).
+    /// which ttyak does not use).
     Skip,
     Event,
 }
@@ -309,7 +309,7 @@ mod tests {
 
     #[test]
     fn the_gateways_reconnect_address_is_never_passed_on() {
-        // It carries the token (and klack does not use it): not an event for the app, ctl or logs.
+        // It carries the token (and ttyak does not use it): not an event for the app, ctl or logs.
         let reconnect = json!({"type": "reconnect_url", "url": "wss://wss-primary.slack.com/?frt=x&token=xoxc-SECRET"});
         assert_eq!(incoming(&reconnect), Incoming::Skip);
         assert_eq!(incoming(&json!({"type": "pong", "reply_to": 3})), Incoming::Skip);

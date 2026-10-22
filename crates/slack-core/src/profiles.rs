@@ -1,6 +1,6 @@
-//! Profiles: the folders `<config>/klack/<name>/` (sign-ins) and `<cache>/klack/<name>/` (log,
-//! caches) that keep accounts apart, which of them plain `klack` uses (`<config>/klack/default-profile`),
-//! and the lock a running klack holds on its profile so it is not removed under it.
+//! Profiles: the folders `<config>/ttyak/<name>/` (sign-ins) and `<cache>/ttyak/<name>/` (log,
+//! caches) that keep accounts apart, which of them plain `ttyak` uses (`<config>/ttyak/default-profile`),
+//! and the lock a running ttyak holds on its profile so it is not removed under it.
 //! Every function takes the folders as `Dirs`, so tests work in a temporary folder.
 
 use std::path::{Path, PathBuf};
@@ -9,10 +9,10 @@ use anyhow::{Result, anyhow, bail};
 
 /// The file in the config folder naming the default profile.
 const DEFAULT_FILE: &str = "default-profile";
-/// The file in a profile's cache folder a running klack holds locked.
+/// The file in a profile's cache folder a running ttyak holds locked.
 const LOCK_FILE: &str = "running.lock";
 
-/// klack's three folders: `config` holds a folder per profile and `default-profile`, `cache` a
+/// ttyak's three folders: `config` holds a folder per profile and `default-profile`, `cache` a
 /// folder per profile, `data` the drafts and sidebar layout (kept per workspace + user).
 #[derive(Clone, Debug)]
 pub struct Dirs {
@@ -22,13 +22,13 @@ pub struct Dirs {
 }
 
 impl Dirs {
-    /// The folders klack uses on this system (`session::project_dirs`).
+    /// The folders ttyak uses on this system (`session::project_dirs`).
     pub fn system() -> Result<Dirs> {
         let dirs = crate::session::project_dirs().ok_or_else(|| anyhow!("no home directory"))?;
         Ok(Dirs { config: dirs.config_dir().to_path_buf(), cache: dirs.cache_dir().to_path_buf(), data: dirs.data_local_dir().to_path_buf() })
     }
 
-    /// The roaming data folder when it is not `data`: on Windows `%APPDATA%\klack\data`; elsewhere it is `data`
+    /// The roaming data folder when it is not `data`: on Windows `%APPDATA%\ttyak\data`; elsewhere it is `data`
     /// itself, so None.
     pub fn roaming_data() -> Option<PathBuf> {
         let dirs = crate::session::project_dirs()?;
@@ -36,7 +36,7 @@ impl Dirs {
     }
 }
 
-/// Names next to the profiles that are klack's own: the default-profile file, `settings.toml` and `keys.toml` (and the
+/// Names next to the profiles that are ttyak's own: the default-profile file, `settings.toml` and `keys.toml` (and the
 /// `.tmp` files they are written through), `themes/` and `locales/` in the config folder, `login-browser/` in the cache
 /// folder.
 const RESERVED: &[&str] = &[DEFAULT_FILE, "settings.toml", "settings.tmp", "keys.toml", "keys.tmp", "themes", "locales", "login-browser"];
@@ -44,12 +44,12 @@ const RESERVED: &[&str] = &[DEFAULT_FILE, "settings.toml", "settings.tmp", "keys
 /// Windows' device names: a file named so, with any extension after it (`con.txt`), is the device there.
 const DEVICES: &[&str] = &["con", "nul", "aux", "prn", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9"];
 
-/// What klack writes into a profile's cache folder.
-const CACHE_FILES: &[&str] = &["klack.log", LOCK_FILE];
+/// What ttyak writes into a profile's cache folder.
+const CACHE_FILES: &[&str] = &["ttyak.log", LOCK_FILE];
 
 /// Why `name` cannot be a profile name, or None when it can. A profile name is a folder name: letters, digits, `-`
 /// and `_`, and `.` or `@` inside it (`john.doe`, `me@work`; never first or last, never two dots together, so it can
-/// never point outside klack's folders); none of klack's own names next to the profiles nor a Windows device name, in
+/// never point outside ttyak's folders); none of ttyak's own names next to the profiles nor a Windows device name, in
 /// any case (file systems may ignore case).
 fn name_problem(name: &str) -> Option<&'static str> {
     let allowed = |c: char| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '@');
@@ -61,7 +61,7 @@ fn name_problem(name: &str) -> Option<&'static str> {
     }
     let lower = name.to_ascii_lowercase();
     if RESERVED.contains(&lower.as_str()) {
-        return Some("klack's own name for a file next to the profiles");
+        return Some("ttyak's own name for a file next to the profiles");
     }
     if lower.split('.').next().is_some_and(|stem| DEVICES.contains(&stem)) {
         return Some("a device name on Windows");
@@ -92,7 +92,7 @@ pub fn list(d: &Dirs) -> Vec<String> {
 }
 
 /// The folders of `d.config` holding `session.json` that `list` leaves out because their names cannot be a profile's,
-/// each with why (sorted): sign-ins of an earlier klack under a name it no longer takes.
+/// each with why (sorted): sign-ins of an earlier ttyak under a name it no longer takes.
 pub fn skipped(d: &Dirs) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = std::fs::read_dir(&d.config)
         .into_iter()
@@ -101,14 +101,14 @@ pub fn skipped(d: &Dirs) -> Vec<(String, String)> {
         .filter(|e| e.path().join("session.json").is_file())
         .filter_map(|e| match e.file_name().into_string() {
             Ok(name) => name_problem(&name).map(|why| (name, why.to_string())),
-            Err(raw) => Some((raw.to_string_lossy().into_owned(), "not a name klack can read".to_string())),
+            Err(raw) => Some((raw.to_string_lossy().into_owned(), "not a name ttyak can read".to_string())),
         })
         .collect();
     out.sort();
     out
 }
 
-/// The profile plain `klack` uses: the first line of `default-profile`, else `default`.
+/// The profile plain `ttyak` uses: the first line of `default-profile`, else `default`.
 pub fn default_name(d: &Dirs) -> String {
     std::fs::read_to_string(d.config.join(DEFAULT_FILE))
         .ok()
@@ -139,8 +139,8 @@ pub fn paths(d: &Dirs, name: &str) -> Vec<PathBuf> {
 
 /// The folders `remove` would delete, or why it refuses. Only a profile is removed: its config
 /// folder holds `session.json`, or it has no config folder and its cache folder holds nothing but
-/// what klack writes there (the log, the lock) — left behind by a profile that never signed in.
-/// Refused while a klack runs on it.
+/// what ttyak writes there (the log, the lock) — left behind by a profile that never signed in.
+/// Refused while a ttyak runs on it.
 pub fn removable(d: &Dirs, name: &str) -> Result<Vec<PathBuf>> {
     valid_name(name)?;
     let gone = paths(d, name);
@@ -160,7 +160,7 @@ pub fn removable(d: &Dirs, name: &str) -> Result<Vec<PathBuf>> {
         bail!("'{name}' is not a profile (no sign-ins in {})", config.display());
     }
     if is_running(d, name) {
-        bail!("profile '{name}' is in use by a running klack — quit it first");
+        bail!("profile '{name}' is in use by a running ttyak — quit it first");
     }
     Ok(gone)
 }
@@ -184,8 +184,8 @@ pub fn remove(d: &Dirs, name: &str) -> Result<Vec<PathBuf>> {
     Ok(gone)
 }
 
-/// Take the lock a running klack holds on profile `name` (`<cache>/<name>/running.lock`): None
-/// when another klack holds it.
+/// Take the lock a running ttyak holds on profile `name` (`<cache>/<name>/running.lock`): None
+/// when another ttyak holds it.
 pub fn lock(d: &Dirs, name: &str) -> Result<Option<std::fs::File>> {
     valid_name(name)?;
     let dir = d.cache.join(name);
@@ -198,12 +198,12 @@ pub fn lock(d: &Dirs, name: &str) -> Result<Option<std::fs::File>> {
     }
 }
 
-/// Whether a klack holds profile `name`'s lock.
+/// Whether a ttyak holds profile `name`'s lock.
 pub fn is_running(d: &Dirs, name: &str) -> bool {
     valid_name(name).is_ok() && d.cache.join(name).join(LOCK_FILE).is_file() && matches!(lock(d, name), Ok(None))
 }
 
-/// Every folder of the cache that a running klack holds locked: a profile that never signed in
+/// Every folder of the cache that a running ttyak holds locked: a profile that never signed in
 /// has no config folder, so `list` would miss it. Sorted.
 pub fn running_profiles(d: &Dirs) -> Vec<String> {
     let mut names: Vec<String> = std::fs::read_dir(&d.cache)
@@ -217,19 +217,19 @@ pub fn running_profiles(d: &Dirs) -> Vec<String> {
     names
 }
 
-/// Whether `name` is a file klack leaves in the temporary folder: `klack-cookies-…` (a copy of a
-/// browser's cookie database) or `klack-<pid>-…` (a video made for the player).
+/// Whether `name` is a file ttyak leaves in the temporary folder: `ttyak-cookies-…` (a copy of a
+/// browser's cookie database) or `ttyak-<pid>-…` (a video made for the player).
 fn is_temp_leftover(name: &str) -> bool {
-    if name.starts_with("klack-cookies-") {
+    if name.starts_with("ttyak-cookies-") {
         return true;
     }
-    let Some(rest) = name.strip_prefix("klack-") else { return false };
+    let Some(rest) = name.strip_prefix("ttyak-") else { return false };
     let digits = rest.chars().take_while(char::is_ascii_digit).count();
     digits > 0 && rest[digits..].strip_prefix('-').is_some_and(|tail| !tail.is_empty())
 }
 
-/// What `purge` deletes, existing paths only: klack's config, cache and data folders, the `more` folders (the
-/// roaming data folder, those of the former name), and in `temp` only the entries klack makes (`is_temp_leftover`) —
+/// What `purge` deletes, existing paths only: ttyak's config, cache and data folders, the `more` folders (the
+/// roaming data folder), and in `temp` only the entries ttyak makes (`is_temp_leftover`) —
 /// on Unix only those of the user `owner` (a shared /tmp holds other users' too; None: any).
 pub fn purge_targets(d: &Dirs, more: &[PathBuf], temp: &Path, owner: Option<u32>) -> Vec<PathBuf> {
     let mut targets: Vec<PathBuf> = [&d.config, &d.cache, &d.data].into_iter().chain(more).cloned().collect();
@@ -295,7 +295,7 @@ mod tests {
 
     impl Temp {
         fn new(test: &str) -> Temp {
-            let base = std::env::temp_dir().join(format!("klack-profiles-{test}-{}", std::process::id()));
+            let base = std::env::temp_dir().join(format!("ttyak-profiles-{test}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&base);
             let d = Dirs { config: base.join("config"), cache: base.join("cache"), data: base.join("data") };
             Temp(base, d)
@@ -334,8 +334,8 @@ mod tests {
         touch(&t.1.config.join("a/session.json"));
         touch(&t.1.config.join("b/session.json"));
         std::fs::create_dir_all(t.1.config.join("c")).unwrap();
-        touch(&t.1.cache.join("a/klack.log"));
-        touch(&t.1.cache.join("b/klack.log"));
+        touch(&t.1.cache.join("a/ttyak.log"));
+        touch(&t.1.cache.join("b/ttyak.log"));
         touch(&t.1.data.join("drafts/x.json"));
     }
 
@@ -345,16 +345,16 @@ mod tests {
         three(&t);
         // A file next to the base that a bad name could reach.
         touch(&t.0.join("x/session.json"));
-        // klack's own folders and files next to the profiles, also in other cases (case-insensitive
+        // ttyak's own folders and files next to the profiles, also in other cases (case-insensitive
         // file systems), and Windows' device names.
         touch(&t.1.config.join("themes/sunset.toml"));
         touch(&t.1.config.join("locales/de.toml"));
-        touch(&t.1.cache.join("login-browser/klack-login-1/Cookies"));
+        touch(&t.1.cache.join("login-browser/ttyak-login-1/Cookies"));
         touch(&t.1.config.join("settings.toml"));
         let before = tree(&t.0);
         for name in [
             "", ".", "..", "../x", "a/b", "a\\b", "default-profile", "Default-Profile", "a b", "../config/a", "themes", "Themes", "locales", "login-browser", "con", "NUL", "aux", "prn", "com1", "COM9", "lpt1", "lpt9",
-            // A dot or @ only inside a name, never two dots; klack's files next to the profiles; a device name with an
+            // A dot or @ only inside a name, never two dots; ttyak's files next to the profiles; a device name with an
             // extension is still the device on Windows.
             ".a", "a.", "..a", "a..b", ".hidden", "@a", "a@", "settings.toml", "Keys.toml", "settings.tmp", "con.txt", "NUL.json", "com1.x", "lpt9.tar.gz", "Aux.a.b",
         ] {
@@ -371,7 +371,7 @@ mod tests {
 
     #[test]
     fn names_of_earlier_versions_still_work() {
-        // klack 0.6 took any folder name: a dot or @ inside one is still a profile.
+        // ttyak 0.6 took any folder name: a dot or @ inside one is still a profile.
         for name in ["john.doe", "work.acme", "me@work", "a.b.c", "first.last@work.example", "com10.x", "console.app", "themes.old", "x.con"] {
             assert!(valid_name(name).is_ok(), "{name:?}");
         }
@@ -434,7 +434,7 @@ mod tests {
         assert_eq!(remove(&t.1, "a").unwrap(), want);
         assert!(!t.1.config.join("a").exists() && !t.1.cache.join("a").exists());
         assert!(t.1.data.join("drafts/x.json").is_file());
-        assert!(t.1.config.join("b/session.json").is_file() && t.1.cache.join("b/klack.log").is_file());
+        assert!(t.1.config.join("b/session.json").is_file() && t.1.cache.join("b/ttyak.log").is_file());
         assert_eq!(list(&t.1), ["b"]);
         // Nothing left of it: refused, and no folder is made for it.
         assert!(remove(&t.1, "a").is_err());
@@ -446,10 +446,10 @@ mod tests {
     fn only_profiles_are_removed() {
         let t = Temp::new("notprofile");
         three(&t);
-        // A config folder without sign-ins, and a cache folder holding something klack's profiles
+        // A config folder without sign-ins, and a cache folder holding something ttyak's profiles
         // never write, are not profiles.
         touch(&t.1.cache.join("stuff/picture.png"));
-        touch(&t.1.cache.join("c/klack.log"));
+        touch(&t.1.cache.join("c/ttyak.log"));
         let before = tree(&t.0);
         for name in ["c", "stuff"] {
             let e = remove(&t.1, name).unwrap_err().to_string();
@@ -457,7 +457,7 @@ mod tests {
         }
         assert_eq!(tree(&t.0), before);
         // What a profile without sign-ins left behind in the cache (its log, its lock) goes.
-        touch(&t.1.cache.join("old/klack.log"));
+        touch(&t.1.cache.join("old/ttyak.log"));
         touch(&t.1.cache.join("old/running.lock"));
         assert_eq!(remove(&t.1, "old").unwrap(), [t.1.cache.join("old")]);
         assert!(!t.1.cache.join("old").exists());
@@ -486,7 +486,7 @@ mod tests {
         let held = lock(&t.1, "a").unwrap();
         assert!(held.is_some());
         assert!(is_running(&t.1, "a"));
-        // A second klack does not get it.
+        // A second ttyak does not get it.
         assert!(lock(&t.1, "a").unwrap().is_none());
         let e = remove(&t.1, "a").unwrap_err().to_string();
         assert!(e.contains("running"), "{e}");
@@ -500,7 +500,7 @@ mod tests {
     }
 
     #[test]
-    fn purge_lists_every_klack_folder() {
+    fn purge_lists_every_ttyak_folder() {
         let t = Temp::new("purge-list");
         three(&t);
         touch(&t.1.config.join("settings.toml"));
@@ -525,7 +525,7 @@ mod tests {
 
     #[test]
     fn the_roaming_data_folder_is_listed_only_where_it_is_another() {
-        // Windows keeps `%APPDATA%\klack\data` apart from `%LOCALAPPDATA%\klack\data`; elsewhere they are one folder.
+        // Windows keeps `%APPDATA%\ttyak\data` apart from `%LOCALAPPDATA%\ttyak\data`; elsewhere they are one folder.
         let Some(roaming) = Dirs::roaming_data() else {
             assert!(!cfg!(windows));
             return;
@@ -570,15 +570,15 @@ mod tests {
     fn purge_keeps_unrelated_temp_files() {
         let t = Temp::new("purge-temp");
         let temp = t.0.join("tmp");
-        for name in ["klack-cookies-12-34", "klack-777-F1.mp4", "klackery", "klack-notes.txt", "other", "klack-12", "klack--x", "klack-1a-x", "xklack-1-x"] {
+        for name in ["ttyak-cookies-12-34", "ttyak-777-F1.mp4", "ttyakery", "ttyak-notes.txt", "other", "ttyak-12", "ttyak--x", "ttyak-1a-x", "xttyak-1-x"] {
             touch(&temp.join(name));
         }
-        std::fs::create_dir_all(temp.join("klack-cookies-5-6")).unwrap();
+        std::fs::create_dir_all(temp.join("ttyak-cookies-5-6")).unwrap();
         let got = purge_targets(&t.1, &[], &temp, None);
-        assert_eq!(got, [temp.join("klack-777-F1.mp4"), temp.join("klack-cookies-12-34"), temp.join("klack-cookies-5-6")]);
+        assert_eq!(got, [temp.join("ttyak-777-F1.mp4"), temp.join("ttyak-cookies-12-34"), temp.join("ttyak-cookies-5-6")]);
         assert!(purge(&got).iter().all(|(_, r)| r.is_ok()));
         assert_eq!(tree(&temp).len(), 7);
-        assert!(temp.join("klack-notes.txt").is_file() && temp.join("other").is_file() && !temp.join("klack-cookies-5-6").exists());
+        assert!(temp.join("ttyak-notes.txt").is_file() && temp.join("other").is_file() && !temp.join("ttyak-cookies-5-6").exists());
     }
 
     #[cfg(unix)]
@@ -587,10 +587,10 @@ mod tests {
         use std::os::unix::fs::MetadataExt;
         let t = Temp::new("purge-owner");
         let temp = t.0.join("tmp");
-        touch(&temp.join("klack-777-F1.mp4"));
-        touch(&temp.join("klack-cookies-1-2"));
-        let me = std::fs::metadata(temp.join("klack-777-F1.mp4")).unwrap().uid();
-        assert_eq!(purge_targets(&t.1, &[], &temp, Some(me)), [temp.join("klack-777-F1.mp4"), temp.join("klack-cookies-1-2")]);
+        touch(&temp.join("ttyak-777-F1.mp4"));
+        touch(&temp.join("ttyak-cookies-1-2"));
+        let me = std::fs::metadata(temp.join("ttyak-777-F1.mp4")).unwrap().uid();
+        assert_eq!(purge_targets(&t.1, &[], &temp, Some(me)), [temp.join("ttyak-777-F1.mp4"), temp.join("ttyak-cookies-1-2")]);
         // Another user's (a shared /tmp): not listed, so not deleted.
         assert!(purge_targets(&t.1, &[], &temp, Some(me + 1)).is_empty());
     }
@@ -612,7 +612,7 @@ mod tests {
         assert!(t.1.config.symlink_metadata().is_err());
         assert!(real.join("a/session.json").is_file());
         // A folder that is not a link says so too.
-        touch(&t.1.cache.join("a/klack.log"));
+        touch(&t.1.cache.join("a/ttyak.log"));
         assert_eq!(purge(&[t.1.cache.clone()])[0].1.as_ref().ok(), Some(&None));
     }
 

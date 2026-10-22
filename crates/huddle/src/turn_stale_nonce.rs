@@ -1,4 +1,4 @@
-//! The vendored rtc-turn's answer to a TURN "438 Stale Nonce" (VX5b, `vendor/rtc-turn/KLACK-PATCH.md`).
+//! The vendored rtc-turn's answer to a TURN "438 Stale Nonce" (VX5b, `vendor/rtc-turn/TTYAK-PATCH.md`).
 //!
 //! Chime's TURN server can answer a refresh with 438 about ten minutes into a huddle. Upstream
 //! rtc-turn 0.21.1 then deletes the channel binding, so the meeting's audio, still relayed on that

@@ -208,13 +208,13 @@ mod tests {
     use super::*;
 
     fn cams() -> Vec<CameraInfo> {
-        vec![CameraInfo { id: "/dev/video0".into(), name: "Integrated Webcam".into() }, CameraInfo { id: "/dev/video42".into(), name: "klack test camera".into() }]
+        vec![CameraInfo { id: "/dev/video0".into(), name: "Integrated Webcam".into() }, CameraInfo { id: "/dev/video42".into(), name: "ttyak test camera".into() }]
     }
 
     #[test]
     fn choosing_a_camera() {
         assert_eq!(find_camera(&cams(), "test camera").unwrap().id, "/dev/video42");
-        assert_eq!(find_camera(&cams(), "/dev/video42").unwrap().name, "klack test camera");
+        assert_eq!(find_camera(&cams(), "/dev/video42").unwrap().name, "ttyak test camera");
         assert_eq!(find_camera(&cams(), "video0").unwrap().name, "Integrated Webcam");
         if cfg!(target_os = "linux") {
             assert!(find_camera(&cams(), "usb cam").is_err(), "no fallback to another camera");

@@ -53,14 +53,14 @@ impl SignedOutFlag {
     }
 }
 
-/// The failure `KLACK_FAIL` (`spec`: `method` or `method=error` items, comma separated) makes
+/// The failure `TTYAK_FAIL` (`spec`: `method` or `method=error` items, comma separated) makes
 /// `method`'s call answer with: Slack's `error` (an [`ApiError`]) or, for a plain `method`,
 /// `injected_failure`. Debug builds only.
 #[cfg(debug_assertions)]
 fn injected(spec: &str, method: &str) -> Option<anyhow::Error> {
     spec.split(',').find_map(|item| match item.trim().split_once('=') {
         Some((m, error)) if m.trim() == method => Some(ApiError { method: method.to_string(), error: error.trim().to_string() }.into()),
-        None if item.trim() == method => Some(anyhow!("{method}: injected_failure (KLACK_FAIL)")),
+        None if item.trim() == method => Some(anyhow!("{method}: injected_failure (TTYAK_FAIL)")),
         _ => None,
     })
 }
@@ -153,7 +153,7 @@ fn gateway_url(base: &str, token: &str, routing_context: Option<&str>) -> Option
     {
         let mut q = url.query_pairs_mut();
         // Not the web client's `sync_desync=1`: it brings `desync` events (caches of some channels to refetch),
-        // and klack keeps no such caches beyond what a reconnect fetches.
+        // and ttyak keeps no such caches beyond what a reconnect fetches.
         q.append_pair("token", token)
             .append_pair("slack_client", "desktop")
             .append_pair("start_args", &start_args)
@@ -177,7 +177,7 @@ pub(crate) fn scrub(e: &anyhow::Error, url: &str, token: &str) -> String {
     text
 }
 
-/// Which websocket klack is on.
+/// Which websocket ttyak is on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Socket {
     /// Slack's own gateway, as the web client's: profile changes of the people asked for are pushed.
@@ -205,7 +205,7 @@ pub struct Client {
 pub type Params<'a> = Vec<(&'a str, String)>;
 
 /// An HTTP client checking certificates against the system's store or — where the system has
-/// none (a minimal container without ca-certificates) — against Mozilla's roots bundled in klack.
+/// none (a minimal container without ca-certificates) — against Mozilla's roots bundled in ttyak.
 pub fn http_client(builder: impl Fn() -> reqwest::ClientBuilder) -> Result<reqwest::Client> {
     match builder().build() {
         Ok(client) => Ok(client),
@@ -240,11 +240,11 @@ impl Client {
     }
 
     async fn ask(&self, method: &str, params: &[(&str, String)]) -> Result<Value> {
-        // Debug builds only: `KLACK_FAIL=chat.delete,conversations.history=invalid_auth` makes
+        // Debug builds only: `TTYAK_FAIL=chat.delete,conversations.history=invalid_auth` makes
         // those calls fail (the second with Slack's `invalid_auth`), to test what the app does
         // when Slack refuses.
         #[cfg(debug_assertions)]
-        if let Some(e) = std::env::var("KLACK_FAIL").ok().and_then(|v| injected(&v, method)) {
+        if let Some(e) = std::env::var("TTYAK_FAIL").ok().and_then(|v| injected(&v, method)) {
             return Err(e);
         }
         let url = format!("{}{}", self.session.api_base(), method);
@@ -551,7 +551,7 @@ impl Client {
     async fn write_dnd_schedule(&self, schedule: &Schedule) -> Result<Value> {
         let prefs = match schedule.to_prefs() {
             Some(prefs) => prefs,
-            None if schedule.days == ScheduleDays::Unknown => return Err(anyhow!("a schedule klack doesn't know is not written")),
+            None if schedule.days == ScheduleDays::Unknown => return Err(anyhow!("a schedule ttyak doesn't know is not written")),
             None => return Err(anyhow!("not a time of day (H:MM)")),
         };
         self.call_raw("users.prefs.set", &[("prefs", prefs.to_string())]).await?;
@@ -769,7 +769,7 @@ impl Client {
 
     async fn ask_flannel(&self, method: &str, body: Value) -> Result<Value> {
         #[cfg(debug_assertions)]
-        if let Some(e) = std::env::var("KLACK_FAIL").ok().and_then(|v| injected(&v, method)) {
+        if let Some(e) = std::env::var("TTYAK_FAIL").ok().and_then(|v| injected(&v, method)) {
             return Err(e);
         }
         let mut body = match body {
@@ -812,12 +812,12 @@ impl Client {
         match self.call_raw("client.getWebSocketURL", &[]).await {
             Ok(v) => {
                 let base = v["primary_websocket_url"].as_str().unwrap_or_default();
-                // Debug builds: `KLACK_FAIL=gateway.connect` opens the gateway with a token Slack refuses.
+                // Debug builds: `TTYAK_FAIL=gateway.connect` opens the gateway with a token Slack refuses.
                 #[cfg(debug_assertions)]
-                let refused = std::env::var("KLACK_FAIL").ok().and_then(|v| injected(&v, "gateway.connect")).is_some();
+                let refused = std::env::var("TTYAK_FAIL").ok().and_then(|v| injected(&v, "gateway.connect")).is_some();
                 #[cfg(not(debug_assertions))]
                 let refused = false;
-                let token = if refused { "xoxc-klack-test-refused" } else { self.session.token.as_str() };
+                let token = if refused { "xoxc-ttyak-test-refused" } else { self.session.token.as_str() };
                 if let Some(url) = gateway_url(base, token, v["routing_context"].as_str()) {
                     return Ok((url, Socket::Gateway));
                 }
@@ -962,7 +962,7 @@ mod tests {
         let parsed = reqwest::Url::parse(&url).unwrap();
         assert_eq!((parsed.scheme(), parsed.host_str(), parsed.path()), ("wss", Some("wss-primary.slack.com"), "/"));
         let q: std::collections::HashMap<String, String> = parsed.query_pairs().into_owned().collect();
-        // Not `sync_desync`: klack has nothing to do with the `desync` events it brings.
+        // Not `sync_desync`: ttyak has nothing to do with the `desync` events it brings.
         assert!(!q.contains_key("sync_desync"));
         for (k, v) in [("token", "xoxc-1"), ("slack_client", "desktop"), ("no_query_on_subscribe", "1"), ("flannel", "3"), ("lazy_channels", "1"), ("gateway_server", "ctx 1"), ("batch_presence_aware", "1")] {
             assert_eq!(q.get(k).map(String::as_str), Some(v), "{k}");
@@ -1108,10 +1108,10 @@ mod tests {
 
     #[cfg(debug_assertions)]
     #[test]
-    fn klack_fail_takes_methods_and_errors() {
+    fn ttyak_fail_takes_methods_and_errors() {
         let spec = "chat.delete, conversations.history=invalid_auth";
         let plain = super::injected(spec, "chat.delete").unwrap();
-        assert_eq!(plain.to_string(), "chat.delete: injected_failure (KLACK_FAIL)");
+        assert_eq!(plain.to_string(), "chat.delete: injected_failure (TTYAK_FAIL)");
         assert!(!super::is_signed_out(&plain));
         let api = super::injected(spec, "conversations.history").unwrap();
         assert_eq!(api.to_string(), "conversations.history: invalid_auth");
@@ -1122,7 +1122,7 @@ mod tests {
 
     #[tokio::test]
     async fn chunks_report_progress_across_files() {
-        let dir = std::env::temp_dir().join(format!("klack-chunks-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("ttyak-chunks-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("f.bin");
         std::fs::write(&path, vec![7u8; 100_000]).unwrap();

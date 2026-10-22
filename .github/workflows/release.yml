@@ -17,11 +17,11 @@ jobs:
       matrix:
         include:
           # 22.04: an older glibc, so the binary runs on more distributions.
-          - { name: x86_64-linux, os: ubuntu-22.04, target: x86_64-unknown-linux-gnu, exe: klack }
-          - { name: aarch64-macos, os: macos-14, target: aarch64-apple-darwin, exe: klack }
-          - { name: x86_64-macos, os: macos-14, target: x86_64-apple-darwin, exe: klack }
+          - { name: x86_64-linux, os: ubuntu-22.04, target: x86_64-unknown-linux-gnu, exe: ttyak }
+          - { name: aarch64-macos, os: macos-14, target: aarch64-apple-darwin, exe: ttyak }
+          - { name: x86_64-macos, os: macos-14, target: x86_64-apple-darwin, exe: ttyak }
           # 22.04's MinGW (gcc 10) lacks what Opus and the static C runtime need; CI builds on 24.04 too.
-          - { name: x86_64-windows, os: ubuntu-24.04, target: x86_64-pc-windows-gnu, exe: klack.exe }
+          - { name: x86_64-windows, os: ubuntu-24.04, target: x86_64-pc-windows-gnu, exe: ttyak.exe }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -45,7 +45,7 @@ jobs:
           ls -l stage
       - uses: actions/upload-artifact@v4
         with:
-          name: klack-${{ matrix.name }}
+          name: ttyak-${{ matrix.name }}
           path: stage/*
 
   release:
@@ -69,15 +69,15 @@ jobs:
         run: |
           version=${GITHUB_REF_NAME#v}
           mkdir dist
-          for d in staged/klack-*; do
-            name=${d#staged/klack-}
-            [ -f "$d/klack" ] && chmod 755 "$d/klack"
-            (cd "$d" && zip -q -X "../../dist/klack-$version-$name.zip" *)
-            unzip -l "dist/klack-$version-$name.zip"
+          for d in staged/ttyak-*; do
+            name=${d#staged/ttyak-}
+            [ -f "$d/ttyak" ] && chmod 755 "$d/ttyak"
+            (cd "$d" && zip -q -X "../../dist/ttyak-$version-$name.zip" *)
+            unzip -l "dist/ttyak-$version-$name.zip"
           done
       - name: Checksums
-        run: cd dist && sha256sum klack-* > SHA256SUMS && cat SHA256SUMS
+        run: cd dist && sha256sum ttyak-* > SHA256SUMS && cat SHA256SUMS
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --title "klack $GITHUB_REF_NAME" --generate-notes
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "ttyak $GITHUB_REF_NAME" --generate-notes

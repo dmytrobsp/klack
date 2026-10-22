@@ -1,0 +1,62 @@
+[package]
+name = "ttyak"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+clap = { version = "4.6.7", features = ["derive"] }
+slack-core = { version = "0.9.0", path = "../slack-core" }
+huddle = { path = "../huddle" }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+ratatui-image = { version = "12.0.0-rc.3", default-features = false, features = ["crossterm"] }
+# Only the formats Slack's pictures come in (and PNG for pasted ones): every other codec (AVIF
+# encoding above all) made the binary megabytes bigger.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
+futures-util = "0.3.34"
+notify-rust = "4.18.2"
+unicode-width = "0.2.2"
+qrcode = { version = "0.14", default-features = false }
+arboard = { version = "3.7.0", features = ["wayland-data-control"] }
+ratatui = "0.30"
+crossterm = { version = "0.29", features = ["event-stream"] }
+emojis = "0.9.1"
+chrono = "0.4.45"
+directories = "6.0.0"
+cpal = "0.18.2"
+# ring is installed as the provider in `main`; rustls' default (aws-lc) would be a second one.
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "logging", "tls12"] }
+# Oniguruma (C, built by the crate) rather than the pure-Rust fancy-regex: the grammars' compiled
+# patterns took ~19 MB of memory with fancy-regex, ~2 MB with it (measured 2026-10-19).
+syntect = { version = "5.3.0", default-features = false, features = ["parsing", "default-syntaxes", "default-themes", "regex-onig"] }
+toml = "1.1.8"
+toml_edit = "0.25"
+chrono-tz = "0.10.4"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+aes = "0.8"
+hmac = "0.12"
+sha1 = "0.10"
+cbc = "0.1"
+
+# Heap profiling (`--features dhat-heap`): every allocation with where it was made, written to
+# dhat-heap.json when ttyak quits (CONTRIBUTING: "Memory").
+dhat = { version = "0.3", optional = true }
+
+[features]
+dhat-heap = ["dep:dhat"]
+
+[target.'cfg(unix)'.dependencies]
+# Reading the terminal's device attributes with a timeout (pictures in sixel terminals).
+rustix = { version = "1.1.5", features = ["event", "stdio"] }
+# glibc's mallopt: fewer malloc arenas (`main`, Linux only); the terminal's echo off for a typed secret (`auth`, every Unix).
+libc = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# The keyring holding Chrome's cookie key (Secret Service, for `auth login --from-browser chrome`).
+zbus = { version = "5.19", default-features = false, features = ["tokio"] }

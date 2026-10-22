@@ -86,7 +86,7 @@ mod tests {
         // Slack also sends null (one person's null must not lose the whole user list).
         let p: super::UserProfile = serde_json::from_value(serde_json::json!({"huddle_state": null, "huddle_state_expiration_ts": null, "display_name": "bob"})).unwrap();
         assert_eq!((p.huddle_state.as_str(), p.huddle_state_expiration_ts, p.display_name.as_str()), ("", 0, "bob"));
-        // Slack's client (and klack) renew it with a fraction of a second: not a lost profile.
+        // Slack's client (and ttyak) renew it with a fraction of a second: not a lost profile.
         let p: super::UserProfile = serde_json::from_value(serde_json::json!({"huddle_state": "in_a_huddle", "huddle_state_expiration_ts": 1792616700.75, "display_name": "bob"})).unwrap();
         assert_eq!((p.huddle_state_expiration_ts, p.display_name.as_str()), (1792616700, "bob"));
         assert!(serde_json::from_value::<super::UserProfile>(serde_json::json!({"huddle_state_expiration_ts": "soon"})).is_err(), "not a number");
@@ -149,7 +149,7 @@ mod tests {
         let list = serde_json::json!({"ok": true, "huddles": [live_object("C0000000001", "R0000000001", &["U0000000001"], &[]), live_object("C0000000001", "R0000000001", &["U0000000001"], &[]), live_object("D0000000001", "R0000000002", &["U0000000004"], &[])]});
         let live = LiveHuddle::parse(&list);
         assert_eq!(live.iter().map(|h| (h.channel.as_str(), h.members.len())).collect::<Vec<_>>(), [("C0000000001", 1), ("D0000000001", 1)]);
-        assert_eq!(LiveHuddle::listed_channels(&list), ["C0000000001", "D0000000001"], "(for `klack ctl huddles --shape`)");
+        assert_eq!(LiveHuddle::listed_channels(&list), ["C0000000001", "D0000000001"], "(for `ttyak ctl huddles --shape`)");
         // An object without a channel or a room says nothing usable.
         let odd = serde_json::json!({"ok": true, "huddles": [{"channel_id": "C0000000001"}, {"call_id": "R0000000001", "active_members": ["U0000000001"]}]});
         assert!(LiveHuddle::parse(&odd).is_empty());
@@ -420,7 +420,7 @@ pub struct LiveHuddle {
 }
 
 impl LiveHuddle {
-    /// The channels with a huddle in a `huddles/list` answer (for `klack ctl huddles --shape`, which shows
+    /// The channels with a huddle in a `huddles/list` answer (for `ttyak ctl huddles --shape`, which shows
     /// `huddles/info`'s answer for them too).
     pub fn listed_channels(v: &Value) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
