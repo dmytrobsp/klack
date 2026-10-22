@@ -11,6 +11,9 @@ pub struct Effects {
     pub rebuild_sidebar: bool,
     /// A new message from someone else arrived in this channel.
     pub incoming: Option<(String, Message)>,
+    /// A reply of yours that came from elsewhere (another client acting as you): it joins the Threads feed
+    /// as read, with no notification.
+    pub own_reply: Option<(String, Message)>,
     /// Someone else started a huddle: (channel, user).
     pub huddle_started: Option<(String, String)>,
     /// A huddle invitation (rings): (channel, room, who invites).
@@ -121,6 +124,8 @@ pub fn apply(ws: &mut Workspace, ev: &Value, current: Option<&str>) -> Effects {
                         }
                     }
                     fx.incoming = Some((channel, m));
+                } else if m.is_reply() {
+                    fx.own_reply = Some((channel, m));
                 }
             }
         },
@@ -565,6 +570,18 @@ mod tests {
         // Viewing the channel: no unread bump.
         apply(&mut w, &json!({"type":"message","channel":"C1","user":"U2","text":"again","ts":"11.0"}), Some("C1"));
         assert_eq!(w.unread["C1"].mentions, 1);
+    }
+
+    #[test]
+    fn your_reply_from_elsewhere_goes_to_the_feed_only() {
+        let mut w = ws();
+        let fx = apply(&mut w, &json!({"type":"message","channel":"C1","user":"UME","text":"r","ts":"11.0","thread_ts":"10.0"}), None);
+        assert!(fx.incoming.is_none(), "no notification");
+        assert!(!w.unread.get("C1").is_some_and(|u| u.has_unreads));
+        assert_eq!(fx.own_reply.as_ref().map(|(c, m)| (c.as_str(), m.ts.as_str())), Some(("C1", "11.0")));
+        // Not a reply: nothing for the feed.
+        let fx = apply(&mut w, &json!({"type":"message","channel":"C1","user":"UME","text":"p","ts":"12.0"}), None);
+        assert!(fx.own_reply.is_none());
     }
 
     #[test]

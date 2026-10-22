@@ -6072,10 +6072,13 @@ fn handle_rtm(app: &mut App, ev: slack_core::rtm::RtmEvent) {
                     app.ringing = None;
                 }
             }
+            if let Some((channel, m)) = fx.own_reply {
+                // Yours from another client: read, once (klack's own come through Net::Posted).
+                app.threads.add_reply(&channel, &m, false);
+            }
             if let Some((channel, m)) = fx.incoming {
-                // A reply in a thread of the Threads feed: into its block, unread when someone else's.
-                let mine = m.user.as_deref() == Some(app.ws.self_id.as_str());
-                app.threads.add_reply(&channel, &m, !mine);
+                // A reply in a thread of the Threads feed: into its block, unread.
+                app.threads.add_reply(&channel, &m, true);
                 let in_view = if m.is_reply() {
                     app.thread.as_ref().is_some_and(|(c, t)| *c == channel && m.thread_ts.as_ref() == Some(t))
                 } else {
