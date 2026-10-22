@@ -175,8 +175,6 @@ pub struct MessagePane {
     shown: Option<String>,
     /// The size (width of the text, rows) the view was last drawn at.
     size: (usize, usize),
-    /// The selection a re-wrap left off screen in a pane following the newest: left there until you scroll or move.
-    left: Option<String>,
     /// Back at the newest since the last draw ([`MessagePane::to_bottom`]).
     newest: bool,
     /// Scrolled by the keys or the wheel since the last draw.
@@ -462,7 +460,7 @@ impl MessagePane {
         let (newest, scrolled) = (std::mem::take(&mut self.newest), std::mem::take(&mut self.scrolled));
         let keeps_selection = focused || self.editing.is_none();
         let keep = if keeps_selection { self.selected.clone() } else { self.editing.clone() };
-        if keep != self.shown || (rewrap && !following && !scrolled) {
+        if keep != self.shown || (rewrap && !following && !scrolled && keeps_selection) {
             self.shown = None;
         }
         if let Some(sel) = keep.as_ref().filter(|_| self.shown.is_none()) {
@@ -485,9 +483,10 @@ impl MessagePane {
         // A selection off screen (not one put there and still on its way):
         // - scrolled off by you (the keys, the wheel), it follows onto the screen and the view stays; back at the
         //   newest, onto the newest; with nothing selected (it stands for the newest), the focused pane's bottom message;
-        // - left by a re-wrap of a pane following the newest, it stays where it is until you scroll or move it;
-        // - pushed off a pane following the newest by new messages (not a scroll), it is dropped: none, the newest;
-        // - in a pane scrolled up, anything else (a message above grew) brings it back into view.
+        // - put off a pane following the newest by anything else (a re-wrap, new messages: not a scroll), it is left
+        //   where it is — not moved, not dropped — until you scroll or move it ([`MessagePane::kept_selection`] counts it
+        //   as left behind); the pane goes on following;
+        // - in a pane scrolled up, anything else (a re-wrap, a message above grew) brings it back into view.
         let off = self.selected.as_ref().filter(|_| !self.put).and_then(|sel| super::threads::follow_view(&owners, start, end, sel).map(|next| (sel.clone(), next)));
         match off {
             Some((_, next)) if scrolled || newest => {
@@ -495,11 +494,9 @@ impl MessagePane {
                 if keeps_selection {
                     self.shown = Some(next.clone());
                 }
-                (self.selected, self.left) = (Some(next), None);
+                self.selected = Some(next);
             }
-            Some((sel, _)) if self.left.as_ref() == Some(&sel) => {}
-            Some((sel, _)) if following && rewrap => self.left = Some(sel),
-            Some(_) if following => self.selected = None,
+            Some(_) if following => {}
             Some((sel, _)) if keeps_selection => {
                 if let (Some(first), Some(last)) = (owners.iter().position(|o| o.as_ref() == Some(&sel)), owners.iter().rposition(|o| o.as_ref() == Some(&sel))) {
                     self.scroll = keep_in_view(total, height, self.scroll, first, last).min(total.saturating_sub(height));
@@ -509,7 +506,7 @@ impl MessagePane {
             }
             Some(_) => {}
             None if self.selected.is_none() && scrolled && focused && (to < order.len() || end < total) => self.selected = super::threads::view_edge(&owners, start, end, false),
-            None => self.left = None,
+            None => {}
         }
         let highlight = Style::default().bg(super::theme::p().selection);
         if focused {
@@ -1799,13 +1796,13 @@ mod tests {
         assert_eq!(pane.selected, kept, "the arrival leaves it");
         assert_eq!(on_screen(&pane).last().map(String::as_str), Some("1700000201.000000"), "and shows");
         assert_eq!(pane.kept_selection(order(&t).last().map(String::as_str)), kept, "on screen: where you are");
-        // Enough of them to push it off: not moved onto a message nobody picked, but dropped (none: the newest), so the
-        // history keeps the newest too (VY16 I1); still following.
+        // Enough of them to push it off: left where it is (never moved onto a message nobody picked, nor dropped); the
+        // history keeps the newest even so (VY16 I1: left behind); still following.
         for k in 202..=240 {
             t.upsert(msg(&format!("{}.000000", 1_700_000_000 + k), "U1", &format!("message {k}")));
         }
         draw(&mut pane, &t);
-        assert_eq!(pane.selected, None, "dropped");
+        assert_eq!(pane.selected, kept, "left where it is");
         assert_eq!(pane.kept_selection(order(&t).last().map(String::as_str)), None);
         assert_eq!(on_screen(&pane).last().map(String::as_str), Some("1700000240.000000"), "following the newest");
     }
@@ -1934,23 +1931,23 @@ mod tests {
     fn scrolling_while_editing_stays() {
         // Editing message 198 from the composer (the pane without the focus): selected and being edited.
         let (ws, t) = numbered(200, "");
-        let media = Media::with(ratatui_image::picker::Picker::halfblocks());
-        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 22)).unwrap();
+        let draw = |pane: &mut MessagePane, height: u16| draw_at(pane, &ws, &t, 60, height, false);
         let mut pane = MessagePane::default();
-        let mut draw = |pane: &mut MessagePane| {
-            terminal.draw(|f| pane.draw(f, f.area(), &Here::alone(&ws), "t", Some(&t), false, &media)).unwrap();
-        };
-        draw(&mut pane);
+        draw(&mut pane, 22);
         let x = "1700000198.000000".to_string();
         (pane.selected, pane.editing) = (Some(x.clone()), Some(x.clone()));
-        draw(&mut pane);
+        draw(&mut pane, 22);
         // PgUp from the composer, to look something up; then any redraw (a tick, the next key).
         pane.scroll_up(40);
-        draw(&mut pane);
+        draw(&mut pane, 22);
         let after = pane.rows.clone();
-        draw(&mut pane);
+        draw(&mut pane, 22);
         assert_eq!(pane.rows, after, "the view stays where PgUp put it");
         assert_eq!(pane.editing.as_ref(), Some(&x), "still editing it");
+        // The composer gains a row while you type (a re-wrap): the edit does not pull the view back either.
+        draw(&mut pane, 21);
+        assert!(!pane.rows.contains(&Some(x.clone())), "the edited message still off screen");
+        assert_eq!(pane.rows.last(), after.last(), "the view where it was");
     }
 
     #[test]

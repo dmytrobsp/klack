@@ -11068,20 +11068,24 @@ mod tests {
         let before = app.messages.area.width;
         drawn(&mut app);
         assert!(app.thread.is_some() && app.messages.area.width < before, "the thread beside, the conversation narrower");
-        // B posts in the conversation: it shows beside the thread; the conversation's selection is the parent still, or
-        // none once the arrival pushed it off (never another message).
-        arrives(&mut app, "1900000000.000000", "a brand new arrival");
-        assert!(drawn(&mut app).iter().any(|l| l.contains("a brand new arrival")), "the new message shows");
-        assert!(app.messages.selected.as_ref().is_none_or(|s| *s == parent), "{:?}", app.messages.selected);
-        // The thread closed: still at the newest.
+        // B posts in the conversation: it shows beside the thread; the parent stays the conversation's selection.
+        for k in 0..30 {
+            arrives(&mut app, &format!("19000000{k:02}.000000"), &format!("a brand new arrival {k:02}"));
+            drawn(&mut app);
+        }
+        assert!(drawn(&mut app).iter().any(|l| l.contains("a brand new arrival 29")), "the new messages show");
+        assert_eq!(app.messages.selected.as_ref(), Some(&parent), "the parent still selected");
+        // The thread closed: still at the newest, the parent still selected.
         go(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         drawn(&mut app);
-        arrives(&mut app, "1900000001.000000", "a second arrival");
+        arrives(&mut app, "1900000100.000000", "a second arrival");
         assert!(drawn(&mut app).iter().any(|l| l.contains("a second arrival")));
+        assert_eq!(app.messages.selected.as_ref(), Some(&parent));
     }
 
-    #[tokio::test]
-    async fn a_reaction_goes_to_the_message_picked_even_when_messages_arrive_meanwhile() {
+    /// C1 at its newest, the top message on screen clicked (the view still following), then a message arriving: the
+    /// app and the message clicked.
+    fn clicked_then_an_arrival() -> (super::App, String) {
         use super::Focus;
         let (mut app, _net) = with_channels(&["C1"]);
         long_c1(&mut app, 120, 0);
@@ -11089,24 +11093,38 @@ mod tests {
         settle(&mut app, true);
         app.focus = Focus::Messages;
         drawn(&mut app);
-        // The top message on screen picked, the view still at the newest.
-        go(&mut app, KeyCode::Char('k'), KeyModifiers::NONE);
-        for _ in 0..on_screen(&app.messages).len() - 1 {
-            go(&mut app, KeyCode::Char('k'), KeyModifiers::NONE);
-        }
+        let first = on_screen(&app.messages)[0].clone();
+        let a = app.messages.area;
+        let y = (a.y..a.bottom()).find(|&y| app.messages.message_at(a.x + 2, y).as_ref() == Some(&first)).unwrap();
+        click(&mut app, a.x + 3, y);
+        settle(&mut app, true);
         drawn(&mut app);
-        let picked = app.messages.selected.clone().unwrap();
-        assert_eq!(on_screen(&app.messages).first(), Some(&picked));
-        // ␣, then messages arrive (which-key is drawn meanwhile), then r.
-        go(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
+        assert_eq!(app.messages.selected.as_ref(), Some(&first), "clicked");
+        arrives(&mut app, "1900000000.000000", "one arrival");
         drawn(&mut app);
-        for k in 0..3 {
+        assert!(!on_screen(&app.messages).contains(&first), "pushed off the top");
+        assert!(drawn(&mut app).iter().any(|l| l.contains("one arrival")), "the pane still at the newest");
+        (app, first)
+    }
+
+    #[tokio::test]
+    async fn the_keys_act_on_the_message_clicked_even_when_messages_arrive_meanwhile() {
+        use crossterm::event::{Event, KeyEvent};
+        // ␣, more messages (which-key drawn meanwhile), r: the picker for the message clicked.
+        let (mut app, first) = clicked_then_an_arrival();
+        assert!(super::handle_terminal(&mut app, Event::Key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE))));
+        drawn(&mut app);
+        for k in 1..4 {
             arrives(&mut app, &format!("190000000{k}.000000"), &format!("arrival {k}"));
             drawn(&mut app);
         }
-        assert_ne!(app.messages.selected.as_deref().map(|s| s != picked.as_str()), Some(true), "never another message");
-        go(&mut app, KeyCode::Char('r'), KeyModifiers::NONE);
-        let target = app.picker.as_ref().map(|p| p.2.clone());
-        assert!(target.is_none() || target == Some(picked.clone()), "the reaction is for {picked} or nothing: {target:?}");
+        assert!(super::handle_terminal(&mut app, Event::Key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE))));
+        assert_eq!(app.picker.as_ref().map(|p| p.2.clone()), Some(first), "the reaction picker for the message clicked");
+        // ␣U: marked unread from the message clicked (from the one before it).
+        let (mut app, first) = clicked_then_an_arrival();
+        leader(&mut app, "U");
+        let order: Vec<String> = super::super::messages::shown_messages(&app.ws.timelines["C1"], false).map(|m| m.ts.clone()).collect();
+        let at = order.iter().position(|o| *o == first).unwrap();
+        assert_eq!(app.messages.new_since.as_deref(), Some(order[at - 1].as_str()), "unread from the message clicked");
     }
 }
