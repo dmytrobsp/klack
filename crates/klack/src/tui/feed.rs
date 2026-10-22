@@ -29,13 +29,15 @@ const MORE_ONE: &str = "1 more reply";
 const MORE: &str = "{n} more replies";
 const OTHERS: &str = "and {n} others";
 const NEW: &str = "{n} new";
+/// The line between the threads with new replies (first) and the rest.
+const UP_TO_DATE: &str = "You're up to date";
 /// The composer's title under the feed (`{where}`: the thread's conversation).
 pub const REPLY_IN: &str = "Reply in {where} thread";
 /// The composer's placeholder under the feed (`{key}`: the Type key).
 pub const PRESS_TO_REPLY: &str = "Press {key} to reply";
 
 /// The feed's words, for the locale template.
-pub const WORDS: &[&str] = &[MISSING, CUT, MORE_ONE, MORE, OTHERS, NEW, REPLY_IN, PRESS_TO_REPLY];
+pub const WORDS: &[&str] = &[MISSING, CUT, MORE_ONE, MORE, OTHERS, NEW, UP_TO_DATE, REPLY_IN, PRESS_TO_REPLY];
 
 /// A thread's place in the feed: `rows` are its lines (header to its last reply, not the rule and
 /// blank row after it), `unread_rows` those of its unread replies with the "new" rule (empty: none).
@@ -71,6 +73,9 @@ pub fn build(here: &Here, entries: &[Entry], width: u16, replies_shown: usize, t
     let mut feed = Feed::default();
     // As wide as a conversation's text in a pane this wide (the gutter goes before it).
     let body = (width as usize).saturating_sub(1 + messages::GUTTER as usize);
+    // "You're up to date" after the last thread with new replies, when read ones follow it (unread ones come first).
+    let up_to_date = entries.iter().rposition(|e| !e.unread.is_empty()).map(|n| n + 1).filter(|&n| n < entries.len());
+    let dim = Style::default().fg(super::theme::p().dim);
     for (n, e) in entries.iter().enumerate() {
         let start = feed.lines.len();
         let (lines, owners, slots, unread) = block(here, e, body, replies_shown, thumb_size, avatars);
@@ -83,14 +88,24 @@ pub fn build(here: &Here, entries: &[Entry], width: u16, replies_shown: usize, t
         feed.lines.extend(lines);
         feed.owners.extend(owners.into_iter().map(|o| o.map(|ts| (e.channel.clone(), ts))));
         // Set apart from the next thread by a full-width rule and a blank row (the last one: the blank row).
-        if n + 1 < entries.len() {
-            feed.lines.push(Line::styled("─".repeat(width as usize), Style::default().fg(super::theme::p().dim)));
+        if up_to_date == Some(n + 1) {
+            feed.lines.push(divider(&tr(UP_TO_DATE), width as usize, dim));
+            feed.owners.push(None);
+        } else if n + 1 < entries.len() {
+            feed.lines.push(Line::styled("─".repeat(width as usize), dim));
             feed.owners.push(None);
         }
         feed.lines.push(Line::raw(""));
         feed.owners.push(None);
     }
     feed
+}
+
+/// "──── label ────" across `width` columns.
+fn divider(label: &str, width: usize, style: Style) -> Line<'static> {
+    let label = format!(" {label} ");
+    let side = width.saturating_sub(label.chars().count());
+    Line::styled(format!("{}{label}{}", "─".repeat(side / 2), "─".repeat(side - side / 2)), style)
 }
 
 /// The replies known of a thread, oldest first.
@@ -367,6 +382,37 @@ mod tests {
         let (place, who) = (&header.spans[1], &header.spans[2]);
         assert!(place.style.add_modifier.contains(Modifier::BOLD) && who.style.add_modifier.contains(Modifier::BOLD), "{header:?}");
         assert_ne!(who.style.fg, Some(dim), "{header:?}");
+    }
+
+    #[test]
+    fn up_to_date_sits_between_the_unread_threads_and_the_read_ones() {
+        let ws = ws();
+        let dim = super::super::theme::p().dim;
+        let with = |unread: &[bool]| -> Vec<Entry> { unread.iter().enumerate().map(|(n, &u)| Entry { channel: format!("C{n}"), ..entry(2, if u { 1 } else { 0 }) }).collect() };
+        let divider = |lines: &[Line]| lines.iter().map(plain).position(|l| l.contains("You're up to date"));
+        let (lines, owners, blocks) = layout(&Here::alone(&ws), &with(&[true, true, false, false]), 60, 3);
+        let text: Vec<String> = lines.iter().map(plain).collect();
+        let at = divider(&lines).expect("drawn");
+        assert_eq!(at, blocks[1].rows.end, "in place of the rule after the last unread thread: {text:#?}");
+        assert!(text[at].starts_with('─') && text[at].ends_with('─') && text[at].chars().count() == 60, "a line across, as the \"new\" one: {:?}", text[at]);
+        assert_eq!(lines[at].style.fg, Some(dim));
+        assert!(text[at + 1].trim().is_empty() && blocks[2].rows.start == at + 2, "then the blank row and the first read thread");
+        assert_eq!((&owners[at], blocks.iter().any(|b| b.rows.contains(&at))), (&None, false), "no message's, no thread's");
+        assert_eq!(text.iter().filter(|l| l.contains("You're up to date")).count(), 1, "once");
+        assert_eq!(text[blocks[0].rows.end], "─".repeat(60), "the other rules stay plain");
+        assert_eq!(text[blocks[2].rows.end], "─".repeat(60));
+        // Every thread unread, or none: no line.
+        for all in [[true, true, true], [false, false, false]] {
+            assert_eq!(divider(&layout(&Here::alone(&ws), &with(&all), 60, 3).0), None, "{all:?}");
+        }
+        // Read here: still above it (its "new" line stays until the view loads again).
+        let mut read_here = with(&[true, false]);
+        read_here[0].read = true;
+        let (lines, _, blocks) = layout(&Here::alone(&ws), &read_here, 60, 3);
+        assert_eq!(divider(&lines), Some(blocks[0].rows.end));
+        // A new reply in a thread below it: it moves below that one (below it, none has anything new).
+        let (lines, _, blocks) = layout(&Here::alone(&ws), &with(&[true, false, true, false]), 60, 3);
+        assert_eq!(divider(&lines), Some(blocks[2].rows.end));
     }
 
     #[test]

@@ -554,7 +554,10 @@ mod tests {
     #[test]
     fn the_rows_between_threads_belong_to_nothing() {
         let mut t = Threads::default();
-        t.add_page(three(), false);
+        // All read (no "You're up to date" line).
+        let mut read = three();
+        read[0].latest = std::mem::take(&mut read[0].unread);
+        t.add_page(read, false);
         let terminal = drawn(&mut t);
         let buf = terminal.backend().buffer().clone();
         let p = super::super::theme::p();
@@ -576,6 +579,27 @@ mod tests {
             t.move_by(1);
         }
         assert_eq!(t.selected, Some(("C1".into(), "3.000200".into())), "six messages, rows between them skipped");
+    }
+
+    #[test]
+    fn up_to_date_is_drawn_under_the_unread_threads_and_belongs_to_nothing() {
+        let mut t = Threads::default();
+        t.add_page(three(), false);
+        let terminal = drawn(&mut t);
+        let buf = terminal.backend().buffer().clone();
+        let p = super::super::theme::p();
+        let row = |y: u16| (t.list.x..t.list.right()).map(|x| buf[(x, y)].symbol()).collect::<String>();
+        let screen: Vec<String> = (0..buf.area.height).map(row).collect();
+        let at = (t.list.y..t.list.bottom()).find(|&y| row(y).contains("You're up to date")).unwrap_or_else(|| panic!("{screen:#?}"));
+        assert!(row(at - 1).contains("reply 1") && row(at + 2).contains("C1"), "between the unread thread and the first read one: {screen:#?}");
+        assert_eq!(buf[(t.list.x + 1, at)].fg, p.dim, "dim");
+        assert_eq!((t.message_at(5, at), t.thread_at(5, at)), (None, None), "neither a message nor a thread");
+        let rules = (t.list.y..t.list.bottom()).filter(|&y| row(y) == "─".repeat(t.list.width as usize)).count();
+        assert_eq!(rules, 1, "the rule between the two read threads stays: {screen:#?}");
+        // The selection goes from the unread reply straight to the next parent.
+        t.selected = Some(("C1".into(), "1.000200".into()));
+        t.move_by(1);
+        assert_eq!(t.selected, Some(("C1".into(), "2.000100".into())));
     }
 
     #[test]
