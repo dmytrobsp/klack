@@ -14,6 +14,7 @@ pub mod event_loop;
 pub mod feed;
 pub mod files;
 pub mod help;
+pub mod history;
 pub mod highlight;
 pub mod huddle_view;
 pub mod huddles;

@@ -327,6 +327,8 @@ pub enum Action {
     NextConversation,
     PrevUnread,
     NextUnread,
+    GoBack,
+    GoForward,
     ScrollUp,
     ScrollDown,
     HalfPageUp,
@@ -488,6 +490,8 @@ actions! {
         NextConversation "next_conversation" "next conversation" "next" "🔽" ["alt+down"]
         PrevUnread "previous_unread" "previous unread conversation" "previous unread" "🔼" ["alt+shift+up"]
         NextUnread "next_unread" "next unread conversation" "next unread" "🔽" ["alt+shift+down"]
+        GoBack "go_back" "back to where you were: the conversation (its thread open), Threads, Activity (its tab) or Huddles you came from (the last 20)" "back" "🔙" ["ctrl+o", "alt+left"]
+        GoForward "go_forward" "forward again, after going back" "forward" "🔜" ["alt+right"]
         ScrollUp "scroll_up" "scroll the focused pane up" "scroll up" "⏫" ["pageup"]
         ScrollDown "scroll_down" "scroll the focused pane down" "scroll down" "⏬" ["pagedown"]
         FocusNext "focus_next" "next pane" "next pane" "⏩" ["tab"]
@@ -861,7 +865,12 @@ pub fn short(k: Key) -> String {
 /// sequence that starts with text is left out; in a dialog only `[global]` leader sequences
 /// and quit count.
 fn counts(context: Context, mode: Mode, seq: &[Key], action: Action) -> bool {
-    context != Context::Global || mode == Mode::Normal || !seq[0].is_text() && (mode == Mode::Insert || seq[0] == LEADER || action == Action::Quit)
+    context != Context::Global || mode == Mode::Normal || !seq[0].is_text() && !normal_only(action) && (mode == Mode::Insert || seq[0] == LEADER || action == Action::Quit)
+}
+
+/// A `[global]` action that acts only in NORMAL, whatever its key (never while typing).
+fn normal_only(action: Action) -> bool {
+    matches!(action, Action::GoBack | Action::GoForward)
 }
 
 /// The icon of a group that has none of its own.

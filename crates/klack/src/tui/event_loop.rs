@@ -13,6 +13,7 @@ use slack_core::types::{HistoryPage, User};
 use tokio::sync::mpsc;
 
 use super::composer::{Composer, KeyOutcome};
+use super::history::Place;
 use super::keymap::{Action, Context, Key, Keymap, LEADER, Mode, Pending, Resolved};
 use super::keys_file::Change;
 use super::messages::MessagePane;
@@ -226,6 +227,8 @@ struct App {
     call_bar_wanted: Option<(slack_core::types::File, (u16, u16))>,
     /// What the main pane shows.
     view: View,
+    /// Where the main pane was, for back and forward (this workspace's, kept across switches).
+    history: super::history::History,
     /// The Activity view (Ctrl+A), shown while `view` is Activity.
     activity: super::activity::Activity,
     /// The save dialog (`␣s`).
@@ -1662,6 +1665,11 @@ impl App {
     /// Show view `v` in the main pane (its sidebar row selected, the focus on it) and load it;
     /// already shown, it is loaded again.
     fn open_view(&mut self, v: View) {
+        self.show_view(v, None);
+    }
+
+    /// [`App::open_view`], the Activity view on tab `tab` (None: the one it is on when shown already, else the first).
+    fn show_view(&mut self, v: View, tab: Option<super::activity::Tab>) {
         if let Some(row) = row_of_view(v) {
             self.sidebar.select_view(&row);
         }
@@ -1670,7 +1678,7 @@ impl App {
         self.focus = Focus::Messages;
         match v {
             View::Threads => self.load_threads(false),
-            View::Activity => self.open_activity(again),
+            View::Activity => self.open_activity(tab.or(again.then_some(self.activity.tab))),
             View::Huddles => self.load_huddles(),
             View::Conversation => {}
         }
@@ -1743,6 +1751,50 @@ impl App {
                 }
             }
             None => {}
+        }
+    }
+
+    /// Where the main pane is, as the history keeps it (None: no conversation yet).
+    fn place(&self) -> Option<Place> {
+        match self.view {
+            View::Threads => Some(Place::Threads),
+            View::Activity => Some(Place::Activity(self.activity.tab)),
+            View::Huddles => Some(Place::Huddles),
+            View::Conversation => {
+                let channel = self.current.clone()?;
+                let thread = self.thread.as_ref().filter(|(c, _)| *c == channel).map(|(_, ts)| ts.clone());
+                let member = !self.ws.is_outside(&channel);
+                Some(Place::Conversation { channel, thread, member })
+            }
+        }
+    }
+
+    /// After an event: the place shown now goes into the history (`went`: by your doing, see [`goes_somewhere`]).
+    fn track_place(&mut self, went: bool) {
+        let place = self.place();
+        self.history.arrive(place, went);
+    }
+
+    /// Back to the place left last (`forward`: forward to the one gone back from), as opening it does; with
+    /// nowhere to go, say so.
+    fn step_history(&mut self, forward: bool) {
+        let ws = &self.ws;
+        let gone = |p: &Place| place_gone(ws, p);
+        let to = if forward { self.history.forward(gone) } else { self.history.back(gone) };
+        let Some(to) = to else {
+            self.status = super::i18n::tr(if forward { super::history::NOTHING_FORWARD } else { super::history::NOTHING_BACK }).into_owned();
+            return;
+        };
+        match to {
+            Place::Threads => self.open_view(View::Threads),
+            Place::Huddles => self.open_view(View::Huddles),
+            Place::Activity(tab) => self.show_view(View::Activity, Some(tab)),
+            Place::Conversation { channel, thread: Some(ts), .. } => self.open_hit(super::search::Hit { channel, ts: ts.clone(), thread_ts: Some(ts), ..Default::default() }),
+            Place::Conversation { channel, thread: None, .. } if self.current.as_deref() == Some(channel.as_str()) => {
+                self.close_view();
+                self.close_thread();
+            }
+            Place::Conversation { channel, thread: None, .. } => self.jump_to(&channel),
         }
     }
 
@@ -2960,11 +3012,10 @@ impl App {
         });
     }
 
-    /// Load the Activity view afresh: opened, on its All tab (whose unread count is the sidebar row's); `again` (it is
-    /// shown already), the tab shown. Filtered as it was (the filter is kept for the run).
-    fn open_activity(&mut self, again: bool) {
-        let a = &self.activity;
-        let (tab, unread_only) = (if again { a.tab } else { Default::default() }, a.unread_only);
+    /// Load the Activity view afresh on `tab` (None: its All tab, whose unread count is the sidebar row's). Filtered
+    /// as it was (the filter is kept for the run).
+    fn open_activity(&mut self, tab: Option<super::activity::Tab>) {
+        let (tab, unread_only) = (tab.unwrap_or_default(), self.activity.unread_only);
         self.activity = super::activity::Activity::default();
         (self.activity.tab, self.activity.unread_only) = (tab, unread_only);
         self.fetch_activity(tab, None);
@@ -4192,6 +4243,8 @@ pub async fn run(profile: slack_core::session::Profile, account: Option<(&str, &
     let mut media = super::media::Media::detect(&super::settings::load().0.messages.graphics);
     let mut clipboard = super::clipboard::Clipboard::default();
     let mut events = EventStream::new();
+    // Each workspace's back and forward, kept while another is shown.
+    let mut histories: std::collections::HashMap<usize, super::history::History> = std::collections::HashMap::new();
     loop {
         let client = Client::new(sessions[index].clone())?;
         shown.store(index, std::sync::atomic::Ordering::Relaxed);
@@ -4216,7 +4269,7 @@ pub async fn run(profile: slack_core::session::Profile, account: Option<(&str, &
         // A graphics mode this terminal cannot draw: said once, at the first workspace.
         keymap.1.extend(media.note.take());
         super::messages::set_open_key(keymap.0.first_shown(Context::Messages, Action::Open).unwrap_or_default());
-        let (next, kept_media, kept_clipboard) = run_workspace(client, (labels.clone(), index, badges.clone(), open_after.clone(), logos.clone(), signed_out.clone(), addresses.clone()), &mut clicks, &keymap, &settings, &mut terminal, &mut events, media, clipboard).await?;
+        let (next, kept_media, kept_clipboard) = run_workspace(client, (labels.clone(), index, badges.clone(), open_after.clone(), logos.clone(), signed_out.clone(), addresses.clone()), &mut clicks, &keymap, &settings, &mut terminal, &mut events, media, clipboard, histories.entry(index).or_default()).await?;
         (media, clipboard) = (kept_media, kept_clipboard);
         match next {
             Some(i) => index = i,
@@ -4343,6 +4396,7 @@ impl App {
             pointer: None,
             status_shown: (String::new(), std::time::Instant::now()),
             loading: true,
+            history: Default::default(),
         }
     }
 }
@@ -4358,6 +4412,7 @@ async fn run_workspace(
     events: &mut EventStream,
     mut media: super::media::Media,
     clipboard: super::clipboard::Clipboard,
+    history: &mut super::history::History,
 ) -> Result<(Option<usize>, super::media::Media, super::clipboard::Clipboard)> {
     let (net_tx, mut net_rx) = mpsc::unbounded_channel();
     spawn_boot(client.clone(), net_tx.clone());
@@ -4370,6 +4425,7 @@ async fn run_workspace(
     app.drafts = super::drafts::load(&client.session.team_id, &client.session.user_id);
     app.ws = Workspace { team_name, team_id: client.session.team_id.clone(), self_id: client.session.user_id.clone(), settings: settings.clone(), ..Default::default() };
     app.sidebar = Sidebar::for_account(&client.session.team_id, &client.session.user_id);
+    app.history = std::mem::take(history);
 
     let mut tick = tokio::time::interval(Duration::from_millis(500));
     let mut video_tick = tokio::time::interval(Duration::from_millis(40));
@@ -4405,16 +4461,23 @@ async fn run_workspace(
         app.refresh_dnd();
         let which_key_due = app.which_key_due();
         let recording_due = app.recording_due();
+        // You went somewhere (a key, a click, a notification): a step in the history.
+        let mut went = false;
         tokio::select! {
             ev = events.next() => {
                 let Some(ev) = ev else { break };
+                went = true;
                 if !handle_terminal(&mut app, ev?) {
                     break;
                 }
                 app.refresh_completion();
             }
-            Some(msg) = net_rx.recv() => handle_net(&mut app, msg),
+            Some(msg) = net_rx.recv() => {
+                went = goes_somewhere(&msg);
+                handle_net(&mut app, msg);
+            }
             Some((index, target)) = clicks.recv() => {
+                went = true;
                 if index == app.workspace {
                     app.open_target(target);
                 } else {
@@ -4472,6 +4535,7 @@ async fn run_workspace(
             app.mark_signed_out();
         }
         app.sync_current();
+        app.track_place(went);
         app.autosave_drafts();
         // Not while a view hides it: what comes meanwhile stays unread.
         if app.view == View::Conversation && app.current.as_ref().and_then(|c| app.ws.timelines.get(c)).is_some_and(|t| t.loaded) {
@@ -4490,7 +4554,8 @@ async fn run_workspace(
         let _ = tokio::time::timeout(Duration::from_secs(1), app.client.call_raw("rooms.leave", &params)).await;
     }
     app.save_drafts();
-    let App { switch_to, media, clipboard, .. } = app;
+    let App { switch_to, media, clipboard, history: kept, .. } = app;
+    *history = kept;
     Ok((switch_to, media, clipboard))
 }
 
@@ -4521,6 +4586,19 @@ fn swallowed(ev: &Event, which_key: Option<Rect>, closing_click: Option<(std::ti
         MouseEventKind::Down(MouseButton::Left) | MouseEventKind::Up(MouseButton::Left) => closing_click.is_some_and(|(at, c, r)| (c, r) == (column, row) && now.duration_since(at) < DOUBLE_CLICK),
         _ => false,
     }
+}
+
+/// Whether a reply goes somewhere you asked to go (a notification clicked, a link's conversation looked up, a DM
+/// opened, a channel joined or created): a step in the history, as a key or a click is.
+fn goes_somewhere(msg: &Net) -> bool {
+    matches!(msg, Net::NotificationClicked(_) | Net::LinkConversation { .. } | Net::DmOpened(_) | Net::Joined { .. })
+}
+
+/// Whether a place in the history is no longer there: a conversation unknown now, archived, or left (a DM is
+/// never left; a channel previewed stays one to preview).
+fn place_gone(ws: &Workspace, place: &Place) -> bool {
+    let Place::Conversation { channel, member, .. } = place else { return false };
+    ws.conversations.get(channel).is_none_or(|c| c.is_archived || *member && ws.is_outside(channel))
 }
 
 /// Returns false to quit.
@@ -5465,6 +5543,8 @@ fn run_global(app: &mut App, action: Action) -> bool {
         Action::Workspace7 => app.switch_workspace(6),
         Action::Workspace8 => app.switch_workspace(7),
         Action::Workspace9 => app.switch_workspace(8),
+        Action::GoBack => app.step_history(false),
+        Action::GoForward => app.step_history(true),
         Action::PrevConversation => app.sidebar.move_by_conversation(-1),
         Action::NextConversation => app.sidebar.move_by_conversation(1),
         Action::PrevUnread | Action::NextUnread => {
@@ -5581,7 +5661,7 @@ fn handle_rtm(app: &mut App, ev: slack_core::rtm::RtmEvent) {
                 }
                 Some(super::live::ActivityPush::Deleted(key)) => app.activity.remove_key(&key),
                 // (As Slack's client does: its lists are dropped and the one shown is loaded again.)
-                Some(super::live::ActivityPush::Invalidated) if app.view == View::Activity => app.open_activity(true),
+                Some(super::live::ActivityPush::Invalidated) if app.view == View::Activity => app.open_activity(Some(app.activity.tab)),
                 _ => {}
             }
             // (As the official client does: an ended huddle the view shows may now be among the recent ones.)
@@ -8522,5 +8602,127 @@ mod tests {
         time("Threads frame, nothing changed", 20, &mut || {
             terminal.draw(|f| threads.draw(f, f.area(), &here, true, &media)).unwrap();
         });
+    }
+
+    use crossterm::event::{KeyCode, KeyModifiers};
+
+    /// After an event, as the event loop does: the sidebar's selection followed, and the place kept (`went`: by your doing).
+    fn settle(app: &mut super::App, went: bool) {
+        app.sync_current();
+        app.track_place(went);
+    }
+
+    /// [`press`], then [`settle`].
+    fn go(app: &mut super::App, code: KeyCode, mods: KeyModifiers) {
+        press(app, code, mods);
+        settle(app, true);
+    }
+
+    /// An app with channels `ids` (A in each) and a DM `DU2` with U2, on the first channel.
+    fn with_channels(ids: &[&str]) -> (super::App, tokio::sync::mpsc::UnboundedReceiver<super::Net>) {
+        let (mut app, net) = test_app();
+        for id in ids {
+            app.ws.conversations.insert(id.to_string(), slack_core::types::Conversation { id: id.to_string(), name: format!("chan{id}"), is_channel: true, is_member: true, ..Default::default() });
+        }
+        with_dm(&mut app, "U2");
+        app.jump_to(ids[0]);
+        settle(&mut app, false);
+        app.status.clear();
+        (app, net)
+    }
+
+    #[tokio::test]
+    async fn back_from_a_dm_opened_in_activity_is_activity_on_its_tab_and_forward_the_dm() {
+        use super::super::activity::Tab;
+        use super::{Net, View};
+        let (mut app, _net) = with_channels(&["C1"]);
+        assert_eq!(app.current.as_deref(), Some("C1"));
+        // Activity, its DMs tab, Enter on the DM.
+        go(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
+        go(&mut app, KeyCode::Char('2'), KeyModifiers::NONE);
+        assert_eq!((app.view, app.activity.tab), (View::Activity, Tab::Dms));
+        let feed = serde_json::json!({"items": [{"feed_ts": "2.0", "is_unread": true, "key": "dm-DU2", "item": {"type": "dm", "bundle_info": {"payload": {"dm_entry": {"latest_message": {"channel": "DU2", "ts": "1.0"}}}}}}]});
+        super::handle_net(&mut app, Net::ActivityFeed { tab: Tab::Dms, more: false, result: Ok(feed) });
+        settle(&mut app, false);
+        go(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!((app.view, app.current.as_deref()), (View::Conversation, Some("DU2")));
+        // Back (Ctrl+O): Activity, on the DMs tab. Forward (Alt+→): the DM.
+        go(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
+        assert_eq!((app.view, app.activity.tab), (View::Activity, Tab::Dms));
+        go(&mut app, KeyCode::Right, KeyModifiers::ALT);
+        assert_eq!((app.view, app.current.as_deref()), (View::Conversation, Some("DU2")));
+        // Back twice (Alt+←): Activity, then the channel before it.
+        go(&mut app, KeyCode::Left, KeyModifiers::ALT);
+        assert_eq!(app.view, View::Activity);
+        go(&mut app, KeyCode::Left, KeyModifiers::ALT);
+        assert_eq!((app.view, app.current.as_deref()), (View::Conversation, Some("C1")));
+    }
+
+    #[tokio::test]
+    async fn back_with_nowhere_to_go_says_so() {
+        use super::super::history::{NOTHING_BACK, NOTHING_FORWARD};
+        let (mut app, _net) = with_channels(&["C1"]);
+        go(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
+        assert_eq!((app.current.as_deref(), app.view, app.status.as_str()), (Some("C1"), super::View::Conversation, NOTHING_BACK));
+        go(&mut app, KeyCode::Right, KeyModifiers::ALT);
+        assert_eq!((app.current.as_deref(), app.status.as_str()), (Some("C1"), NOTHING_FORWARD));
+    }
+
+    #[tokio::test]
+    async fn the_history_keys_do_nothing_while_typing() {
+        let (mut app, _net) = with_channels(&["C1", "C2"]);
+        app.jump_to("C2");
+        settle(&mut app, true);
+        app.focus = super::Focus::Composer;
+        for (code, mods) in [(KeyCode::Char('o'), KeyModifiers::CONTROL), (KeyCode::Left, KeyModifiers::ALT), (KeyCode::Right, KeyModifiers::ALT)] {
+            go(&mut app, code, mods);
+            assert_eq!((app.current.as_deref(), app.focus), (Some("C2"), super::Focus::Composer));
+        }
+        assert!(app.status.is_empty() && app.composer.is_empty(), "{:?}", app.status);
+        // In NORMAL again: back.
+        go(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        go(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
+        assert_eq!(app.current.as_deref(), Some("C1"));
+    }
+
+    #[tokio::test]
+    async fn back_skips_a_channel_left_or_archived_and_opens_a_thread_again() {
+        use super::super::history::NOTHING_BACK;
+        let (mut app, _net) = with_channels(&["C0", "C1", "C2", "C3"]);
+        app.open_thread_at("C0".into(), "5.0".into());
+        settle(&mut app, true);
+        for id in ["C1", "C2", "C3"] {
+            app.jump_to(id);
+            settle(&mut app, true);
+        }
+        // C1 left, C2 archived meanwhile.
+        app.ws.conversations.get_mut("C1").unwrap().is_member = false;
+        app.ws.conversations.get_mut("C2").unwrap().is_archived = true;
+        go(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
+        assert_eq!((app.current.as_deref(), app.thread.clone()), (Some("C0"), Some(("C0".into(), "5.0".into()))), "C0, its thread open again");
+        // Before the thread was opened: C0 alone; before that, nowhere.
+        go(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
+        assert_eq!((app.current.as_deref(), app.thread.clone()), (Some("C0"), None));
+        go(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
+        assert_eq!(app.status, NOTHING_BACK);
+        go(&mut app, KeyCode::Right, KeyModifiers::ALT);
+        go(&mut app, KeyCode::Right, KeyModifiers::ALT);
+        assert_eq!((app.current.as_deref(), app.thread.clone()), (Some("C3"), None), "forward skips them too");
+    }
+
+    #[tokio::test]
+    async fn a_reply_that_takes_you_somewhere_is_a_step() {
+        use super::{goes_somewhere, Net};
+        let (mut app, _net) = with_channels(&["C1"]);
+        // Ctrl+K on someone without a DM yet: the DM opens when Slack answers.
+        let dm = slack_core::types::Conversation { id: "D9".into(), is_im: true, is_member: true, user: Some("U9".into()), ..Default::default() };
+        let msg = Net::DmOpened(dm);
+        let went = goes_somewhere(&msg);
+        super::handle_net(&mut app, msg);
+        settle(&mut app, went);
+        assert_eq!(app.current.as_deref(), Some("D9"));
+        go(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
+        assert_eq!(app.current.as_deref(), Some("C1"));
+        assert!(!goes_somewhere(&Net::Error("x".into())));
     }
 }
