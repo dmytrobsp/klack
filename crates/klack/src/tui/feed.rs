@@ -1,7 +1,7 @@
-//! The Threads view's feed: one block per thread — where it is and who is in it, its parent in full,
-//! "N more replies", its last replies in full with the "new" rule where the unread ones start — built
-//! with the conversation's own message lines, so they look the same; and when a block has been on
-//! screen long enough to count as read.
+//! The Threads view's feed: one block per thread — a heading saying where it is and who is in it, its
+//! parent in full, "N more replies", its last replies in full with the "new" rule where the unread ones
+//! start, a rule between it and the next — built with the conversation's own message lines, so they
+//! look the same; and when a block has been on screen long enough to count as read.
 
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
@@ -37,8 +37,8 @@ pub const PRESS_TO_REPLY: &str = "Press {key} to reply";
 /// The feed's words, for the locale template.
 pub const WORDS: &[&str] = &[MISSING, CUT, MORE_ONE, MORE, OTHERS, NEW, REPLY_IN, PRESS_TO_REPLY];
 
-/// A thread's place in the feed: `rows` are its lines (header to its last reply, not the blank
-/// row after it), `unread_rows` those of its unread replies with the "new" rule (empty: none).
+/// A thread's place in the feed: `rows` are its lines (header to its last reply, not the rule and
+/// blank row after it), `unread_rows` those of its unread replies with the "new" rule (empty: none).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Block {
     pub channel: String,
@@ -71,7 +71,7 @@ pub fn build(here: &Here, entries: &[Entry], width: u16, replies_shown: usize, t
     let mut feed = Feed::default();
     // As wide as a conversation's text in a pane this wide (the gutter goes before it).
     let body = (width as usize).saturating_sub(1 + messages::GUTTER as usize);
-    for e in entries {
+    for (n, e) in entries.iter().enumerate() {
         let start = feed.lines.len();
         let (lines, owners, slots, unread) = block(here, e, body, replies_shown, thumb_size, avatars);
         let shift = |r: Range<usize>| if r.is_empty() { 0..0 } else { r.start + start..r.end + start };
@@ -82,7 +82,11 @@ pub fn build(here: &Here, entries: &[Entry], width: u16, replies_shown: usize, t
         }));
         feed.lines.extend(lines);
         feed.owners.extend(owners.into_iter().map(|o| o.map(|ts| (e.channel.clone(), ts))));
-        // A blank row between threads.
+        // Set apart from the next thread by a full-width rule and a blank row (the last one: the blank row).
+        if n + 1 < entries.len() {
+            feed.lines.push(Line::styled("─".repeat(width as usize), Style::default().fg(super::theme::p().dim)));
+            feed.owners.push(None);
+        }
         feed.lines.push(Line::raw(""));
         feed.owners.push(None);
     }
@@ -200,11 +204,12 @@ fn people(ws: &super::state::Workspace, e: &Entry) -> String {
 fn header(ws: &super::state::Workspace, e: &Entry) -> Line<'static> {
     let p = super::theme::p();
     let unread = !e.unread.is_empty() && !e.read;
+    // A heading: where and who in bold.
     let style = if unread { Style::default().add_modifier(Modifier::BOLD).fg(p.strong) } else { Style::default().add_modifier(Modifier::BOLD) };
     let mut spans = vec![super::sidebar::unread_mark(unread), Span::styled(place(ws, &e.channel), style)];
     let who = people(ws, e);
     if !who.is_empty() {
-        spans.push(Span::styled(format!(" · {who}"), Style::default().fg(p.dim)));
+        spans.push(Span::styled(format!(" · {who}"), Style::default().add_modifier(Modifier::BOLD)));
     }
     let today = super::clock::now().date_naive();
     if super::clock::at(e.root.time() as i64).is_some_and(|d| d.date_naive() != today) {
@@ -329,8 +334,39 @@ mod tests {
         assert_eq!(blocks, [Block { channel: "C1".into(), thread_ts: "1729440000.000100".into(), rows: 0..lines.len() - 1, unread_rows: 0..0 }]);
         // Two threads: one after the other.
         let (lines2, _, blocks) = layout(&Here::alone(&ws), &[entry(5, 0), entry(1, 0)], 60, 2);
-        assert_eq!(blocks[1].rows.start, lines.len(), "the second block starts after the first one's blank row");
+        assert_eq!(blocks[1].rows.start, lines.len() + 1, "the second block starts after the first one's rule and blank row");
         assert_eq!(blocks[1].rows.end, lines2.len() - 1);
+    }
+
+    /// Three threads (in C1, C2, C3) with 2, 1 and 3 replies.
+    fn three() -> Vec<Entry> {
+        [("C1", 2), ("C2", 1), ("C3", 3)].into_iter().map(|(c, n)| Entry { channel: c.into(), ..entry(n, 0) }).collect()
+    }
+
+    #[test]
+    fn threads_are_set_apart_by_a_rule_and_a_blank_row() {
+        let ws = ws();
+        let dim = super::super::theme::p().dim;
+        let (lines, owners, blocks) = layout(&Here::alone(&ws), &three(), 60, 3);
+        let text: Vec<String> = lines.iter().map(plain).collect();
+        assert_eq!(blocks.len(), 3);
+        assert_eq!(blocks[0].rows.start, 0, "nothing above the first thread");
+        for pair in blocks.windows(2) {
+            let rule = pair[0].rows.end;
+            assert_eq!(text[rule], "─".repeat(60), "a full-width rule right after the thread: {text:#?}");
+            assert!(lines[rule].spans.iter().all(|s| s.style.fg == Some(dim)) || lines[rule].style.fg == Some(dim), "dim");
+            assert!(text[rule + 1].trim().is_empty(), "then a blank row: {text:#?}");
+            assert_eq!(pair[1].rows.start, rule + 2, "then the next thread's header");
+            assert_eq!((&owners[rule], &owners[rule + 1]), (&None, &None), "they belong to no message");
+        }
+        let last = blocks[2].rows.end;
+        assert_eq!((lines.len(), text[last].trim()), (last + 1, ""), "after the last thread: only the blank row");
+        // The header reads as a heading: where and who in bold, who no longer dim.
+        let header = &lines[blocks[1].rows.start];
+        assert!(plain(header).contains("C2") && plain(header).contains("U1"), "{:?}", plain(header));
+        let (place, who) = (&header.spans[1], &header.spans[2]);
+        assert!(place.style.add_modifier.contains(Modifier::BOLD) && who.style.add_modifier.contains(Modifier::BOLD), "{header:?}");
+        assert_ne!(who.style.fg, Some(dim), "{header:?}");
     }
 
     #[test]

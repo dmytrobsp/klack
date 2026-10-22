@@ -537,6 +537,47 @@ mod tests {
         assert_eq!(t.hover, None, "the header");
     }
 
+    /// Three threads in C1, one reply each (the first unread), parents `1.0`, `2.0`, `3.0`.
+    fn three() -> Vec<Entry> {
+        let m = |ts: &str, parent: &str, user: &str, text: &str| Message { ts: ts.into(), thread_ts: Some(parent.into()), user: Some(user.into()), text: text.into(), ..Default::default() };
+        (1..=3)
+            .map(|n| {
+                let parent = format!("{n}.000100");
+                let reply = m(&format!("{n}.000200"), &parent, "U2", &format!("reply {n}"));
+                let root = Message { reply_count: 1, ..m(&parent, &parent, "U1", &format!("parent {n}")) };
+                let (unread, latest) = if n == 1 { (vec![reply], vec![]) } else { (vec![], vec![reply]) };
+                Entry { channel: "C1".into(), root, unread, latest, ..Default::default() }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_rows_between_threads_belong_to_nothing() {
+        let mut t = Threads::default();
+        t.add_page(three(), false);
+        let terminal = drawn(&mut t);
+        let buf = terminal.backend().buffer().clone();
+        let p = super::super::theme::p();
+        let row = |y: u16| (t.list.x..t.list.right()).map(|x| buf[(x, y)].symbol()).collect::<String>();
+        let rules: Vec<u16> = (t.list.y..t.list.bottom()).filter(|&y| row(y) == "─".repeat(t.list.width as usize)).collect();
+        assert_eq!(rules.len(), 2, "one between each two threads: {:#?}", (0..buf.area.height).map(row).collect::<Vec<_>>());
+        for &y in &rules {
+            assert_eq!(buf[(t.list.x + 3, y)].fg, p.dim, "dim");
+            for y in [y, y + 1] {
+                assert_eq!((t.message_at(5, y), t.thread_at(5, y)), (None, None), "row {y}: neither a message nor a thread");
+            }
+            assert_eq!(t.thread_at(5, y + 2), Some(("C1".into(), if y == rules[0] { "2.000100" } else { "3.000100" }.into())), "then the next thread's header");
+        }
+        // The selection walks the messages and never lands on them.
+        for _ in 0..6 {
+            let terminal = drawn(&mut t);
+            let buf = terminal.backend().buffer();
+            assert!(rules.iter().all(|&y| (y..y + 2).all(|y| buf[(t.list.x + 3, y)].bg != p.selection)), "at {:?}", t.selected);
+            t.move_by(1);
+        }
+        assert_eq!(t.selected, Some(("C1".into(), "3.000200".into())), "six messages, rows between them skipped");
+    }
+
     #[test]
     fn the_selection_fills_the_whole_row() {
         let mut t = Threads::default();
