@@ -77,9 +77,10 @@ Claude's scripts never print a secret. They pipe it straight into `gh secret set
 without a USB token.
 
 **Price (2026-10-23).** IV code signing: $129 for 1 year (longer terms are cheaper per year, down to $96.75/year for 5
-years). eSigner "Tier 1": $180/year billed yearly (240 signings a year), or $20/month billed monthly (20 signings a
-month). The first 30 days of eSigner are free. ttyak signs one file per release. Expedited validation (+$599) is not
-needed.
+years). eSigner "Tier 1": $15/month with 240 signings, which SSL.com's pricing guide explains as the yearly plan,
+$180/year. Billed monthly it is $20/month with 20 signings a month (verify: from the 2024 guide). SSL.com's eSigner
+page says: "New certificates will receive 30-days free of eSigner cloud signing." ttyak signs one file per release.
+Expedited validation (+$599, 2 business days) is not needed.
 
 **What you need.** A government photo ID that shows your full name, address, year of birth and photo. A camera for a
 photo of you holding that ID next to your face (at least 5 megapixels). If your ID does not show your address, SSL.com
@@ -123,8 +124,7 @@ may ask for another document (verify).
 **Remember.** With these four values anyone can sign programs in your name. Keep them only in GitHub secrets, your
 password manager and the authenticator app. If you change your SSL.com password, set `ES_PASSWORD` again.
 
-**Claude then:** signs `ttyak.exe` in the release workflow with SSL.com's GitHub action `sslcom/esigner-codesign`
-(Task 20).
+**Claude then:** signs `ttyak.exe` in the release workflow with SSL.com's GitHub action `sslcom/esigner-codesign`.
 
 ---
 
@@ -159,7 +159,7 @@ regions). A payment card in your name (a card in another person's name may cause
 9. Sign in to App Store Connect: <https://appstoreconnect.apple.com/> → **Users and Access** → **Integrations**.
 10. If it shows **Request Access**: click it, tick the box, **Submit**. Apple approves it "case by case" (verify how
     long; often at once).
-11. Click **Team Keys** → **Generate API Key** (or **+**).
+11. Click **Team Keys** → **Generate API Key** (or **+**) (verify the wording in App Store Connect).
 12. Name: `ttyak notary`. Access: **Developer** (verify: reports say Developer is enough for notarization; if Claude's
     first run says "unauthorized", make a new key with **App Manager** and revoke the old one).
 13. Click **Generate**. Then download the key file (the **Download** link in the key's row; verify the label). You can
@@ -188,7 +188,7 @@ certificate, on the website. Claude found no way to make it with the API key.
 **Remember.** Certificates from Apple's G2 authority are **valid for one year**. Each year: steps 17–22 again (about 10
 minutes). Builds signed before then stay valid.
 
-**Claude then:** signs and notarizes both macOS binaries in the release workflow (Task 19).
+**Claude then:** signs and notarizes both macOS binaries in the release workflow.
 
 ---
 
@@ -210,7 +210,7 @@ registry said `ttyak.sh` was not registered.
    → turn **API Access** on.
 5. Make the key: **ACCOUNT** → **API Access**.
    - Title: `ttyak dns`.
-   - Permissions: **Manage, but no purchases** (verify the label). It must be able to change DNS records.
+   - Permissions: **Manage, but no purchases**. It must be able to change DNS records.
    - Limit it to the domain `ttyak.sh`. Do not limit it to an IP address (your home IP can change).
    - Click **Create API Key**.
 6. A box shows the **API Key** and the **Secret Key**. The Secret Key is shown **only this one time**. Do not close the
@@ -235,7 +235,7 @@ registry said `ttyak.sh` was not registered.
 10. Tell Claude the domain and the key file are ready.
 
 **Claude then:** checks the file's mode, sets the records for GitHub Pages, sets the custom domain and HTTPS
-(Task 21). The script only reads the file; it never prints the keys.
+(the domain setup). The script only reads the file; it never prints the keys.
 
 ---
 
@@ -251,7 +251,8 @@ registry said `ttyak.sh` was not registered.
 2. Fill in **Username** and **Email Address**. You may tick **Hide Email Address**. Leave **SSH Public Key** empty for
    now.
 3. The form shows a captcha: a command that starts with `LC_ALL=C pacman -V`. It needs `pacman`, which only Arch has.
-   Either ask Claude to run it for you in a throwaway Arch container (the answer is not secret), or run it yourself:
+   Easiest: paste the command to Claude and ask Claude to run it in a throwaway Arch container (the answer is not
+   secret). Or run it yourself; this needs `podman` installed:
    `podman run --rm docker.io/library/archlinux:latest sh -c 'PASTE_THE_COMMAND_HERE'`. Type the 6 characters into
    **Answer**.
 4. Click **Create**. The form has no password field: the AUR emails you a link to set your password.
@@ -262,7 +263,8 @@ registry said `ttyak.sh` was not registered.
    password** → **Update**.
 7. Tell Claude it is done.
 
-**Claude then:** makes the package and pushes it on each release (Task 18). On 2026-10-23 the name `ttyak-bin` was
+**Claude then:** makes the package, and the release workflow pushes it on each release. On 2026-10-23 the name
+`ttyak-bin` was
 free.
 
 ---
@@ -282,7 +284,7 @@ every version before it is public (automatic checks start about 30 minutes after
 4. In your terminal: `gh secret set CHOCOLATEY_API_KEY -R dmytrobsp/ttyak`, and paste the key.
 5. Tell Claude it is done.
 
-**Claude then:** makes the package and pushes it on each release (Task 18). Chocolatey sends review emails to you:
+**Claude then:** makes the package, and the release workflow pushes it on each release. Chocolatey sends review emails to you:
 if a review asks for a change, forward the request (not any key) to Claude. On 2026-10-23 the id `ttyak` was free.
 
 ---
@@ -336,8 +338,8 @@ that exist.
 **When a token expires**, the publishing jobs fail with an error about authentication. Make a new token the same way
 and set the secret again.
 
-**Claude then:** creates the tap and bucket repositories (with your OK), and the workflow jobs that push to them and to
-winget (Task 18).
+**Claude then:** creates the tap and bucket repositories (with your OK), and the release workflow jobs that push to them and to
+winget.
 
 ---
 
