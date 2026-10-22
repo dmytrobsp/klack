@@ -2514,6 +2514,20 @@ impl App {
         Some(step)
     }
 
+    /// A step back or forward still paging its conversation back to its message: given up (you did something), the
+    /// selection left as it is and nothing said when its pages come.
+    fn give_up_step_seek(&mut self) {
+        if self.seek_back.is_none() || self.seeking.is_none() {
+            return;
+        }
+        (self.seeking, self.seek_hit) = (None, None);
+        let seeking = super::i18n::tr(SEEKING);
+        if seeking.split("{}").next().is_some_and(|p| !p.is_empty() && self.status.starts_with(p)) {
+            self.status.clear();
+        }
+        self.end_seek_back();
+    }
+
     /// A step's seek and its reply's check are both over: its rules end (see [`App::seek_back`]).
     fn end_seek_back(&mut self) {
         if self.seeking.is_none() && self.link_reply.is_none() {
@@ -5133,9 +5147,11 @@ fn handle_terminal(app: &mut App, ev: Event) -> bool {
 }
 
 fn handle_event(app: &mut App, ev: Event) -> bool {
-    // Anything you do gives up the item a step back or forward still looks for in a view.
+    // Anything you do gives up the item a step back or forward still looks for in a view, or the message it pages back
+    // to in a conversation (so it never moves the selection off what you picked meanwhile).
     if !passive(&ev) {
         (app.activity.want, app.threads.want) = (None, None);
+        app.give_up_step_seek();
     }
     match &ev {
         Event::Mouse(m) => app.pointer = Some((m.column, m.row)),
@@ -11563,5 +11579,40 @@ mod tests {
         c.restore(app.drafts.get("C1/1729440000.000100").cloned().expect("kept as its thread's draft"));
         assert_eq!((c.text(), c.editing.as_deref()), ("a reply FIXED".to_string(), Some("1729440000.000200")));
         assert_eq!(app.status, "the unsaved edit is kept as a draft where the message is");
+    }
+
+    #[tokio::test]
+    async fn what_you_do_in_the_conversation_gives_up_a_steps_seek() {
+        use slack_core::types::{HistoryPage, Message};
+        let (mut app, _net) = with_channels(&["C1", "C2"]);
+        long_c1(&mut app, 120, 0);
+        app.focus = super::Focus::Messages;
+        app.messages.selected = Some(top_ts(10));
+        settle(&mut app, false);
+        drawn(&mut app);
+        app.jump_to("C2");
+        settle(&mut app, true);
+        drawn(&mut app);
+        // Back to C1, its history fetched afresh; message 10 deleted meanwhile.
+        let mut all = app.ws.timelines.remove("C1").unwrap().messages;
+        all.retain(|m| m.ts != top_ts(10));
+        go(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
+        let page = |from: usize, to: usize, has_more: bool| HistoryPage { messages: all.iter().filter(|m| (top_ts(from)..=top_ts(to)).contains(&m.ts)).rev().cloned().collect::<Vec<Message>>(), has_more, ..Default::default() };
+        super::handle_net(&mut app, super::Net::History { channel: "C1".into(), page: page(71, 120, true), older: false });
+        settle(&mut app, false);
+        drawn(&mut app);
+        assert!(app.seeking.is_some(), "looking further back");
+        // You pick a message meanwhile.
+        go(&mut app, KeyCode::Char('k'), KeyModifiers::NONE);
+        go(&mut app, KeyCode::Char('k'), KeyModifiers::NONE);
+        drawn(&mut app);
+        let picked = app.messages.selected.clone();
+        assert!(picked.is_some() && app.seeking.is_none(), "the seek given up");
+        // The older page that was on its way comes: the selection stays on what you picked, nothing said.
+        super::handle_net(&mut app, super::Net::History { channel: "C1".into(), page: page(1, 70, false), older: true });
+        settle(&mut app, false);
+        drawn(&mut app);
+        assert_eq!(app.messages.selected, picked);
+        assert_ne!(app.status, super::super::i18n::tr(super::HISTORY_GONE));
     }
 }
