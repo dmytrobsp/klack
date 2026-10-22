@@ -4732,6 +4732,8 @@ fn handle_dialog(app: &mut App, ev: &Event) -> bool {
             }
         }
         // The reaction picker: a click on an emoji reacts with it, a click outside closes it.
+        // The side buttons are no clicks: over the picker, the menu or the save dialog they do nothing.
+        Event::Mouse(m) if matches!(m.kind, MouseEventKind::Down(MouseButton::Back | MouseButton::Forward)) && (app.picker.is_some() || app.menu.is_some() || app.save.is_some()) => {}
         Event::Mouse(m) if app.picker.is_some() && matches!(m.kind, MouseEventKind::Down(_)) => {
             let Some((picker, _, _)) = app.picker.as_mut() else { return true };
             let len = picker.candidates(&app.ws.custom_emoji).len();
@@ -8769,6 +8771,32 @@ mod tests {
         assert!(app.overlay().is_some());
         mouse(&mut app, MouseEventKind::Down(MouseButton::Back));
         assert!(app.overlay().is_some(), "the dialog stays");
+    }
+
+    #[tokio::test]
+    async fn the_mouses_side_buttons_leave_the_picker_and_the_menu_open() {
+        use crossterm::event::{Event, MouseButton, MouseEvent, MouseEventKind};
+        let (mut app, _net) = with_channels(&["C1", "C2"]);
+        app.jump_to("C2");
+        settle(&mut app, true);
+        let side = |app: &mut super::App, b| {
+            super::handle_event(app, Event::Mouse(MouseEvent { kind: MouseEventKind::Down(b), column: 70, row: 20, modifiers: KeyModifiers::NONE }));
+            settle(app, true);
+        };
+        let none = super::super::menu::Offers { own: false, open: false, save: false, text: false };
+        app.menu = Some(super::super::menu::Menu::new(super::super::menu::Target::Conversation, (70, 20), &app.keys, none, true, false, false));
+        for b in [MouseButton::Back, MouseButton::Forward] {
+            side(&mut app, b);
+            assert!(app.menu.is_some(), "the menu stays");
+            assert_eq!(app.current.as_deref(), Some("C2"));
+        }
+        app.menu = None;
+        app.picker = Some((super::super::picker::EmojiPicker::default(), "C2".into(), "1.0".into()));
+        for b in [MouseButton::Back, MouseButton::Forward] {
+            side(&mut app, b);
+            assert!(app.picker.is_some(), "the picker stays");
+            assert_eq!(app.current.as_deref(), Some("C2"));
+        }
     }
 
     #[tokio::test]

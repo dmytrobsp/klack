@@ -17,6 +17,11 @@ and button 9 forward.
 - `parse_cb` (`src/event/sys/unix/parse.rs`) decodes buttons 8 and 9 as `Down`, and as `Drag` with the motion
   bit; the release (`m`) turns `Down` into `Up` as for the other buttons. Buttons 10 and 11 still fail.
 - A unit test for the SGR sequences: `test_parse_csi_sgr_mouse_side_buttons`.
+- `#![allow(unused_parens)]` in `src/lib.rs`: upstream has one needless pair of parentheses
+  (`terminal/sys/unix.rs`). cargo hides warnings of registry crates but shows those of path crates, so
+  without it every klack build would warn. Left the code as published.
+- Files: `.cargo-ok`, `.github/` and `.travis.yml` of the registry copy are left out, as for rtc-turn.
+  `src/event.rs` and `parse.rs` keep their CRLF line endings, so a diff shows only the patch.
 - Nothing else. The Windows backend never builds the new variants (its console events carry no side
   buttons), so it compiles unchanged. klack's own test is `the_mouses_side_buttons_go_back_and_forward`.
 
