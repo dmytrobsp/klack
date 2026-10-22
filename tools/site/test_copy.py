@@ -212,7 +212,7 @@ class Copy(unittest.TestCase):
         hrefs = [e.attrs.get("href", "") for e in self.root.elements() if e.tag == "a"]
         self.assertTrue(any(h.endswith("-x86_64-linux.zip") for h in hrefs))
         dl = [e for e in self.root.elements() if e.tag == "a" and "dl" in e.classes]
-        self.assertTrue(dl and dl[0].attrs["href"].startswith("https://github.com/dmytrobsp/klack/releases/download/"))
+        self.assertTrue(dl and dl[0].attrs["href"].startswith("https://github.com/dmytrobsp/ttyak/releases/download/"))
 
     def test_keyboard_sticker(self):
         f = by_id(self.root, "features")
@@ -228,7 +228,7 @@ class Copy(unittest.TestCase):
 
     def test_ctl_boasts_with_its_commands(self):
         f = flat(by_id(self.root, "features").text())
-        for c in ("klack ctl", "whoami", "channels", "history", "post", "react", "upload", "search", "listen"):
+        for c in ("ttyak ctl", "whoami", "channels", "history", "post", "react", "upload", "search", "listen"):
             self.assertIn(c, f, c)
         cool = [e for e in by_id(self.root, "features").elements() if "cool-kids" in e.classes]
         self.assertEqual(len(cool), 1)
@@ -249,7 +249,7 @@ class Copy(unittest.TestCase):
 
     def test_get_section(self):
         g = flat(by_id(self.root, "get").text())
-        for s in ("klack auth login", "SHA256SUMS", "quarantine", "SmartScreen", "Linux", "macOS", "Windows",
+        for s in ("ttyak auth login", "SHA256SUMS", "quarantine", "SmartScreen", "Linux", "macOS", "Windows",
                   "screen sharing", "camera"):
             self.assertIn(s, g, s)
 
@@ -261,7 +261,7 @@ class Copy(unittest.TestCase):
             self.assertIn(s, t, s)
         self.assertNotIn("NO CHROMIUM", t)  # the hero has it; the footer has the stamp
         self.assertTrue([e for e in f.elements() if "stamp" in e.classes])
-        self.assertIn("https://github.com/dmytrobsp/klack", [e.attrs.get("href") for e in f.elements()])
+        self.assertIn("https://github.com/dmytrobsp/ttyak", [e.attrs.get("href") for e in f.elements()])
 
     def test_no_draft_comments(self):  # the copy is approved and published
         for parent in [self.root, *self.root.elements()]:

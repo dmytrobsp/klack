@@ -3,8 +3,11 @@
 `site/captures/{hero,keys,huddle,signin}.html` are fragments that `python3 tools/site/fill.py site` puts into
 the page's `hero-capture` and `capture-<name>` regions (a region without its file keeps what it has). They are
 built by `python3 tools/site/captures.py RAW_DIR site/captures` from raw kitty captures (`<name>.ansi`, never
-committed), `~/.config/klack-site/rename.json` and `~/.config/klack-site/fixes.json` (both outside the repo, 0600,
+committed), `~/.config/ttyak-site/rename.json` and `~/.config/ttyak-site/fixes.json` (both outside the repo, 0600,
 never printed or committed) and styled by the "terminal captures" block of `site/css/site.css`.
+
+The captures were taken before the rename, from the app's old name; the rename (TY5) changed by hand only the
+words around them — the window titles, the labels and the sign-in's typed command line — until they are re-captured.
 
 ## Drawn like a terminal (LP7b)
 
@@ -15,7 +18,7 @@ Each fragment is a `<div class="term capture">` holding one SVG of the screen on
   (JetBrains Mono 12 pt at 1.25×). Every cell of every row is kept, blank ones included; EL (`CSI K`) would clear
   with the current background (kitty's `get-text` writes cells out, so the captures have none).
 - **Backgrounds** are whole cells, one path a colour, so rows are solid and nothing shows between them. What kitty
-  holds is what is drawn: klack's selection background covers the selected message's text (ratatui paints a
+  holds is what is drawn: ttyak's selection background covers the selected message's text (ratatui paints a
   line's style on its characters), the code block's covers its padded box.
 - **Box drawing** (U+2500–257F) and **block elements** (U+2580–259F) are geometry, the way kitty draws them
   itself: lines from the cell's edge through its centre (light 1.33, heavy 2.67 units — kitty's 1 pt and 2 pt),
@@ -43,12 +46,12 @@ ends in two Slackbot "A huddle started" notes from earlier test huddles, which c
 conversation (same messages, authors, reactions, thread and link) was posted again in a fresh channel, `#prod-deploys`,
 that has never had a huddle; the captures show it under its own name (no rename).
 
-What klack draws from the workspace itself — people, the workspace, its other channels — is replaced at conversion
-time with `~/.config/klack-site/rename.json` (outside the repo, 0600). Its made-up values are exactly as wide as
-the real strings; it also covers the two-letter initials drawn before a name and names klack cut short with `…`.
-`~/.config/klack-site/forbidden.txt` (0600) lists the real strings: both accounts' names, display names, handles,
+What ttyak draws from the workspace itself — people, the workspace, its other channels — is replaced at conversion
+time with `~/.config/ttyak-site/rename.json` (outside the repo, 0600). Its made-up values are exactly as wide as
+the real strings; it also covers the two-letter initials drawn before a name and names ttyak cut short with `…`.
+`~/.config/ttyak-site/forbidden.txt` (0600) lists the real strings: both accounts' names, display names, handles,
 emails and user ids, the other members', the team id, the workspace name and domain, and every channel name except
-the two demo channels. Both files were written by a script straight from `klack ctl whoami`, `team.info`,
+the two demo channels. Both files were written by a script straight from `ttyak ctl whoami`, `team.info`,
 `users.list`, `channels` and the profiles' session files; nothing from them is printed. `python3
 tools/site/check_private.py site` checks the result, and each capture was also checked for any 5-character piece
 of a listed string (only generic words share one: "channel", "search", "staging", Slack's own address).
@@ -56,12 +59,12 @@ of a listed string (only generic words share one: "channel", "search", "staging"
 ## The live captures (hero, keys, huddle)
 
 Re-captured in LP12a so that the person A talks to shows online and has the camera off, and again in LP12b
-(windows `lp-c3`, `lp-c3b`) in `#prod-deploys`, so that no Slackbot huddle note shows. klack (debug build) as A
+(windows `lp-c3`, `lp-c3b`) in `#prod-deploys`, so that no Slackbot huddle note shows. ttyak (debug build) as A
 in its own kitty window (`--class lp-c2`, remote control on its own socket, floating, on a hidden special
-workspace) and, at the same time, B's own klack in a second one (`lp-c2b`), so that B's presence is active and A's
+workspace) and, at the same time, B's own ttyak in a second one (`lp-c2b`), so that B's presence is active and A's
 sidebar draws B's dot green. Each had its own fake HOME: a copy of that account's session file, sounds off,
-`[audio] input` and `KLACK_AUDIO_INPUT` naming a microphone that does not exist (klack never falls back to another
-one), huddle volume 0, `KLACK_AVATARS=0` (initials instead of profile pictures). A's window was sized to 110 × 32
+`[audio] input` and `TTYAK_AUDIO_INPUT` naming a microphone that does not exist (ttyak never falls back to another
+one), huddle volume 0, `TTYAK_AVATARS=0` (initials instead of profile pictures). A's window was sized to 110 × 32
 cells and each screen taken with `kitty @ get-text --extent screen --ansi`. The parsed grid
 was checked against kitty's plain `get-text` of the same screen, row by row: equal (the picture's placeholder cells
 aside). B's window was never captured.
@@ -70,13 +73,13 @@ aside). B's window was never captured.
   selected. The channel starts on screen ("beginning of conversation"), and nothing follows the link message.
 - **keys** — then Space: the which-key panel.
 - **huddle** — held in `#coffee`, never in the channel the other captures show, so it gets no note. B ran
-  `klack ctl --profile b huddle-media coffee 300 --share-test` (a synthetic screen share only: no `--video-test`,
+  `ttyak ctl --profile b huddle-media coffee 300 --share-test` (a synthetic screen share only: no `--video-test`,
   so B's camera is off, and no microphone); A joined with `␣hh` (muted, as always) and opened the huddle view with
   `␣hv`; afterwards `␣hh` left. In LP12b B's ctl ran for a fixed 150 s and left the huddle by itself (its LEAVE),
 nobody was killed, and the sidebar showed no huddle in `#coffee` afterwards. No other key was pressed in the huddle.
   The shared screen is a kitty picture, so the text capture has placeholder cells there: they are blanked and the
   page puts the Swan Lake still over them. Both tiles show a letter instead of a picture: the first letter of the
-  real name. `~/.config/klack-site/fixes.json` (0600, next to `rename.json`) puts the made-up names' letters into
+  real name. `~/.config/ttyak-site/fixes.json` (0600, next to `rename.json`) puts the made-up names' letters into
   those two cells (`{"huddle": {"row,col": letter}}`); it was written by a script that finds the lone letter in
   each tile (A's is the one labelled "(You)") and prints only the positions. `captures.py` refuses to build the
   huddle without it, refuses a fix whose cell is blank (the layout moved), and refuses a screen with more or fewer
@@ -98,8 +101,8 @@ looks like old television) and saved as webp with ffmpeg — `site/captures/swan
 
 ## The sign-in screen (signin)
 
-Not a live run: `klack auth login --email …` asks Slack for its sign-in page (`CodeSignIn::start`, "Asking
-Slack…") before it draws the code screen, and this capture was to send nothing to Slack. So the screen is klack's
+Not a live run: `ttyak auth login --email …` asks Slack for its sign-in page (`CodeSignIn::start`, "Asking
+Slack…") before it draws the code screen, and this capture was to send nothing to Slack. So the screen is ttyak's
 own layout function, `qr::code_screen("demo@example.com", 120, 30)` (the "beside" layout), written to a file by a
 throwaway test that was not committed, with the command line above it and the guide's hint line and
 `Code: ___-___` prompt below, as `auth.rs` prints them. That file was printed in a second kitty window

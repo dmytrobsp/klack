@@ -23,14 +23,15 @@ def owner_from_remote(url):
 
 
 def allowed_forms(owner):
-    """Patterns of the allowed addresses, the bare prefixes only (whatever follows is scanned): github.com/<owner>/klack,
-    <owner>.github.io/klack and <owner>.github.io. Case-insensitive."""
-    if not owner:
-        return ()
-    o = re.escape(owner)
+    """Patterns of the allowed addresses, the bare prefixes only (whatever follows is scanned): ttyak.sh, and with an
+    owner github.com/<owner>/ttyak, <owner>.github.io/ttyak and <owner>.github.io. Case-insensitive."""
     end = r"(?![\w.-])"
-    return (re.compile(rf"(?<![\w.-])github\.com/{o}/klack{end}", re.I),
-            re.compile(rf"(?<![\w-]){o}\.github\.io(?:/klack{end})?{end}", re.I))
+    site = re.compile(rf"(?<![\w.-])ttyak\.sh{end}", re.I)
+    if not owner:
+        return (site,)
+    o = re.escape(owner)
+    return (site, re.compile(rf"(?<![\w.-])github\.com/{o}/ttyak{end}", re.I),
+            re.compile(rf"(?<![\w-]){o}\.github\.io(?:/ttyak{end})?{end}", re.I))
 
 
 def _allow(line, allow):
@@ -117,7 +118,7 @@ def main(argv=None, remote=_origin):
         print("usage: check_private.py <dir> [--allow-owner NAME]", file=sys.stderr)
         return 2
     allow = allowed_forms(owner_from_remote(remote()) or arg_owner)
-    lst = os.environ.get("KLACK_SITE_FORBIDDEN") or os.path.expanduser("~/.config/klack-site/forbidden.txt")
+    lst = os.environ.get("TTYAK_SITE_FORBIDDEN") or os.path.expanduser("~/.config/ttyak-site/forbidden.txt")
     if not os.path.isfile(lst):
         print("forbidden list missing: expected at " + lst, file=sys.stderr)
         return 2

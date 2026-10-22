@@ -1,5 +1,8 @@
+import html
+import os
 import re
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -98,6 +101,30 @@ class Build(unittest.TestCase):
         for s in ("public domain", "Mikhail Bocharov", "Henrich Levogt", "Legnani", "stamp of 1970"):
             self.assertNotIn(s, foot, s)  # the pictures that were removed are not credited
 
+
+
+class Names(unittest.TestCase):
+    def test_frames_and_labels_say_ttyak(self):
+        for name, c in C.CAPTURES.items():
+            self.assertTrue(c["title"].startswith("ttyak"), name)
+            self.assertTrue(c["label"].startswith("ttyak"), name)
+
+    def test_the_committed_fragments_carry_them(self):
+        for name, c in C.CAPTURES.items():
+            t = (ROOT / "site/captures" / f"{name}.html").read_text()
+            self.assertIn(f'aria-label="{html.escape(c["label"])}"', t, name)
+            self.assertIn(f'<div class="dots">● ● ●  {html.escape(c["title"], quote=False)}</div>', t, name)
+
+    def test_the_private_files_live_in_the_ttyak_config(self):
+        with tempfile.TemporaryDirectory() as d:
+            old = os.environ.get("HOME")
+            os.environ["HOME"] = d
+            try:
+                with self.assertRaises(FileNotFoundError) as e:
+                    C.main([d, d])
+            finally:
+                os.environ["HOME"] = old
+            self.assertEqual(e.exception.filename, str(Path(d) / ".config/ttyak-site/rename.json"))
 
 if __name__ == "__main__":
     unittest.main()

@@ -12,10 +12,12 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-REPO = "dmytrobsp/klack"
+REPO = "dmytrobsp/ttyak"
 ORDER = ["x86_64-linux", "aarch64-macos", "x86_64-macos", "x86_64-windows"]
 NAMES = {"x86_64-linux": "Linux", "aarch64-macos": "macOS · Apple Silicon",
          "x86_64-macos": "macOS · Intel", "x86_64-windows": "Windows"}
+# builds released before the rename (up to 0.9.0) carry the old name: the lines that link them say so to the name guard
+OLD_NAME_OK = "<!-- old-name-ok: released before the rename -->"
 
 
 class ReleaseFetchError(Exception):
@@ -43,6 +45,10 @@ def _find(release, platform):
     return next((a for a in release["assets"] if a["platform"] == platform), None)
 
 
+def _old_names(release):
+    return OLD_NAME_OK if any(not a["name"].startswith("ttyak-") for a in release["assets"]) else ""
+
+
 def render_download_button(release):
     lin = _find(release, "x86_64-linux") or release["assets"][0]
     mac = _find(release, "aarch64-macos")
@@ -51,7 +57,7 @@ def render_download_button(release):
     return (f'<a class="dl" data-os="linux" href="{esc(lin["url"])}">DOWNLOAD FOR LINUX</a>'
             f'<span class="dl-meta">v{esc(release["version"])} · {fmt_size(lin["size"])} · '
             f'<span class="dl-others">{link(mac, "macOS")} · {link(win, "Windows")} · '
-            f'<a href="#get">all downloads</a></span></span>')
+            f'<a href="#get">all downloads</a></span></span>{_old_names(release)}')
 
 
 def _plain(s):
@@ -87,12 +93,12 @@ def render_downloads(release, needs):
     return ('<table class="downloads"><thead><tr><th>Download</th><th>Size</th><th>Runs on</th><th>Needs</th></tr></thead>'
             f'<tbody>{"".join(rows)}</tbody></table>'
             f'<p class="sums"><a href="{esc(release["sums_url"])}">SHA256SUMS</a> · '
-            f'<a href="{esc(release["url"])}">release v{esc(release["version"])}</a></p>')
+            f'<a href="{esc(release["url"])}">release v{esc(release["version"])}</a></p>{_old_names(release)}')
 
 
 def release_from_api(repo, token, urlopen=urllib.request.urlopen):
     req = urllib.request.Request(f"https://api.github.com/repos/{repo}/releases/latest",
-                                 headers={"Accept": "application/vnd.github+json", "User-Agent": "klack-site"})
+                                 headers={"Accept": "application/vnd.github+json", "User-Agent": "ttyak-site"})
     if token:
         req.add_header("Authorization", f"Bearer {token}")
     try:
@@ -107,7 +113,7 @@ def release_from_api(repo, token, urlopen=urllib.request.urlopen):
             if a["name"] == "SHA256SUMS":
                 sums = a["browser_download_url"]
                 continue
-            m = re.fullmatch(rf"klack-{re.escape(version)}-(.+)\.zip", a["name"])
+            m = re.fullmatch(rf"(?:ttyak|klack)-{re.escape(version)}-(.+)\.zip", a["name"])  # old-name-ok: up to 0.9.0
             if m:
                 assets.append({"name": a["name"], "platform": m.group(1),
                                "url": a["browser_download_url"], "size": a["size"]})
@@ -118,7 +124,7 @@ def release_from_api(repo, token, urlopen=urllib.request.urlopen):
         raise ReleaseFetchError(f"unexpected reply: {e!r}") from e
 
 
-# --- the spec sheet (LP10): the official app's numbers crossed out only where klack wins by WIN or more
+# --- the spec sheet (LP10): the official app's numbers crossed out only where ttyak wins by WIN or more
 WIN = 1.5
 PLACEHOLDER = ('<p class="standin-note">measuring… no number goes up here until '
                "it's been measured.</p>")
@@ -155,7 +161,7 @@ def fmt_ratio(r):
 
 
 def classify(r):
-    k, o = r["klack"], r["slack"]
+    k, o = r["ttyak"], r["slack"]
     if k == 0:
         return "zero" if o > 0 else "tie"
     if o / k >= WIN:
@@ -164,7 +170,7 @@ def classify(r):
 
 
 def _row(r):
-    k, o, unit = r["klack"], r["slack"], r["unit"]
+    k, o, unit = r["ttyak"], r["slack"], r["unit"]
     cpu = unit == "percent"  # CPU share depends on the machine; the ratio between the apps carries over
     small = cpu and min(k, o) < 1  # both cells of the row share one precision
     kv, ov = txt(fmt_value(k, unit, small)), txt(fmt_value(o, unit, small))
@@ -184,7 +190,7 @@ def _row(r):
     ev = " evidence" if cpu else ""  # the raw percentages sit small beside the ratio
     return (f'<tr class="row" data-id="{esc(r["id"])}"><th scope="row">{txt(r["label"])}</th>'
             f'<td class="them{ev}" data-side="the official app">{them}</td>'
-            f'<td class="us{ev}" data-side="klack">{us}</td><td class="remark">{scrawl}</td></tr>')
+            f'<td class="us{ev}" data-side="ttyak">{us}</td><td class="remark">{scrawl}</td></tr>')
 
 
 def render_sheet(numbers):
@@ -192,7 +198,7 @@ def render_sheet(numbers):
     if not rows:
         return PLACEHOLDER
     return ('<div class="sheet paper"><table><thead><tr><th scope="col"><span>lower is better</span></th>'
-            '<th scope="col" class="them">the official app</th><th scope="col" class="us">klack</th>'
+            '<th scope="col" class="them">the official app</th><th scope="col" class="us">ttyak</th>'
             '<td></td></tr></thead>'
             f'<tbody>{"".join(_row(r) for r in rows)}</tbody></table></div>')
 
@@ -201,11 +207,14 @@ def render_measured_note(numbers):
     if not numbers.get("rows"):
         return ""
     v = numbers["versions"]
-    return (f'<p class="measured">klack {txt(v["klack"])} against Slack\'s desktop app {txt(v["slack"])}, '
+    old = tuple(int(x) for x in v["ttyak"].split(".")[:2]) < (0, 10)
+    was = " (released as klack)" if old else ""  # old-name-ok: measured on a build from before the rename
+    return (f'<p class="measured">ttyak {txt(v["ttyak"])}{was} against Slack\'s desktop app {txt(v["slack"])}, '
             f'measured on Linux on {txt(numbers["measured_on"])}: {txt(numbers["machine"])}. '
-            "App against app — the terminal klack runs in isn't counted. "
+            "App against app — the terminal ttyak runs in isn't counted. "
             "Slack's RAM figures are a lower bound: one of its helper processes couldn't be read. "
-            f'<a href="https://github.com/{REPO}/blob/master/tools/site/MEASURING.md">How it was measured</a>.</p>')
+            f'<a href="https://github.com/{REPO}/blob/master/tools/site/MEASURING.md">How it was measured</a>.</p>'
+            + (OLD_NAME_OK if old else ""))
 
 
 # fill region -> site/captures/<name>.html (Task 7); a region whose capture is missing keeps what it has

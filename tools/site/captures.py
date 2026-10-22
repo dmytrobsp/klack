@@ -4,7 +4,7 @@
     python3 tools/site/captures.py RAW_DIR site/captures
 
 RAW_DIR holds <name>.ansi (`kitty @ get-text --extent screen --ansi`). Outside the repo (0600, never printed or
-committed): ~/.config/klack-site/rename.json, the made-up names, and ~/.config/klack-site/fixes.json, single cells
+committed): ~/.config/ttyak-site/rename.json, the made-up names, and ~/.config/ttyak-site/fixes.json, single cells
 to overwrite after renaming ({"huddle": {"row,col": "letter"}} — the tiles' letters drawn from real names). See
 CAPTURES.md for how the raw captures were made.
 """
@@ -16,21 +16,21 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from ansi2html import convert, render_svg  # noqa: E402
 
-HUDDLE_LABEL = ("klack's huddle view: the other person's shared screen on the stage (on this page it shows Swan "
+HUDDLE_LABEL = ("ttyak's huddle view: the other person's shared screen on the stage (on this page it shows Swan "
                 "Lake, like Soviet television in August 1991), their tile and yours with the cameras off, the call "
                 "bar at the bottom")
 
 CAPTURES = {
-    "hero": dict(cols=110, rows=32, title="klack", label=(
-        "klack's main view: the sidebar of channels and direct messages, a channel with a short conversation, "
+    "hero": dict(cols=110, rows=32, title="ttyak", label=(
+        "ttyak's main view: the sidebar of channels and direct messages, a channel with a short conversation, "
         "a code block, reactions, a thread and a link to another channel's message")),
-    "keys": dict(cols=110, rows=32, title="klack", label=(
-        "klack after pressing Space on a message: the which-key panel lists what each next key does")),
+    "keys": dict(cols=110, rows=32, title="ttyak", label=(
+        "ttyak after pressing Space on a message: the which-key panel lists what each next key does")),
     # the tiles show the first letters of the real names: the capture is not built without its fixes
-    "huddle": dict(cols=110, rows=32, title="klack — huddle", label=HUDDLE_LABEL, pictures=("tv",),
+    "huddle": dict(cols=110, rows=32, title="ttyak — huddle", label=HUDDLE_LABEL, pictures=("tv",),
                    needs_fixes=True),
-    "signin": dict(cols=120, rows=29, title="klack auth login", label=(
-        "klack's sign-in guide, the code way: a QR code for the phone, the link, and the ___-___ prompt for "
+    "signin": dict(cols=120, rows=29, title="ttyak auth login", label=(
+        "ttyak's sign-in guide, the code way: a QR code for the phone, the link, and the ___-___ prompt for "
         "the emailed code, for demo@example.com")),
 }
 
@@ -60,7 +60,7 @@ def build(name, ansi, rename=None, fixes=None):
     drawn from a real name, say)."""
     c = CAPTURES[name]
     if c.get("needs_fixes") and not fixes:
-        raise ValueError(f"{name}: needs its cell fixes (~/.config/klack-site/fixes.json) and has none")
+        raise ValueError(f"{name}: needs its cell fixes (~/.config/ttyak-site/fixes.json) and has none")
     _, screen = convert(ansi, rename, c["cols"], c["rows"])
     for (r, col), ch in (fixes or {}).items():
         if not (0 <= r < screen.rows and 0 <= col < screen.cols) or not screen.cells[r][col][0].strip():
@@ -75,8 +75,8 @@ def build(name, ansi, rename=None, fixes=None):
 
 def main(argv):
     raw, out = Path(argv[0]), Path(argv[1])
-    rename = json.loads((Path.home() / ".config/klack-site/rename.json").read_text())
-    fx = Path.home() / ".config/klack-site/fixes.json"
+    rename = json.loads((Path.home() / ".config/ttyak-site/rename.json").read_text())
+    fx = Path.home() / ".config/ttyak-site/fixes.json"
     fixes = json.loads(fx.read_text()) if fx.is_file() else {}
     for name in CAPTURES:
         src = raw / f"{name}.ansi"

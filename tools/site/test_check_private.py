@@ -64,40 +64,51 @@ class RepoAddress(unittest.TestCase):
             return sorted({h[1] for h in scan(d, self.LIST, allow=allowed_forms(owner) if owner else ())})
 
     def test_the_repo_address_passes(self):
-        text = ("https://github.com/alicesmith/klack/releases/download/v1.0.0/klack-1.0.0-x86_64-linux.zip\n"
-                "<a href=\"https://github.com/alicesmith/klack\">github.com/alicesmith/klack</a>\n"
-                "https://GitHub.com/AliceSmith/klack/issues?q=x#top\n"
-                "https://alicesmith.github.io/klack/\nalicesmith.github.io\n")
+        text = ("https://github.com/alicesmith/ttyak/releases/download/v1.0.0/ttyak-1.0.0-x86_64-linux.zip\n"
+                "<a href=\"https://github.com/alicesmith/ttyak\">github.com/alicesmith/ttyak</a>\n"
+                "https://GitHub.com/AliceSmith/ttyak/issues?q=x#top\n"
+                "https://alicesmith.github.io/ttyak/\nalicesmith.github.io\n")
         self.assertEqual(self.hits(text), [])
 
     def test_the_owner_elsewhere_is_a_hit(self):
-        text = ("by alicesmith\nhttps://github.com/alicesmith/other\ngithub.com/alicesmith/klackfoo\n"
-                "https://github.com/alicesmith/klack and Alice\nxalicesmith.github.io\n"
+        text = ("by alicesmith\nhttps://github.com/alicesmith/other\ngithub.com/alicesmith/ttyakfoo\n"
+                "https://github.com/alicesmith/ttyak and Alice\nxalicesmith.github.io\n"
                 "alicesmith.github.io.evil.example\n")
         self.assertEqual(self.hits(text), [1, 2, 3, 4, 5, 6])
 
     def test_what_follows_the_address_is_still_scanned(self):
-        text = ("https://github.com/alicesmith/klack/tree/Alice\n"
-                "https://github.com/alicesmith/klack?x=alicesmith\n"
-                "https://github.com/alicesmith/klack#alicesmith\n"
-                "<a href=\"https://github.com/alicesmith/klack/issues/1&amp;by=alicesmith\">x</a>\n"
-                "https://github.com/alicesmith/klack/blob/main/Alice%20Smith.md\n"
-                "https://alicesmith.github.io/klack/Alice\n")
+        text = ("https://github.com/alicesmith/ttyak/tree/Alice\n"
+                "https://github.com/alicesmith/ttyak?x=alicesmith\n"
+                "https://github.com/alicesmith/ttyak#alicesmith\n"
+                "<a href=\"https://github.com/alicesmith/ttyak/issues/1&amp;by=alicesmith\">x</a>\n"
+                "https://github.com/alicesmith/ttyak/blob/main/Alice%20Smith.md\n"
+                "https://alicesmith.github.io/ttyak/Alice\n")
         self.assertEqual(self.hits(text), [1, 2, 3, 4, 5, 6])
 
+    def test_the_site_address_passes(self):
+        # without its dot "ttyak.sh" runs into other words ("ttyaksh"): the address itself is allowed, owner or not
+        text = ("https://ttyak.sh/latest.json\n<a href=\"https://ttyak.sh\">ttyak.sh</a>\nttyak.shx\n"
+                "https://ttyak.sh/Yaksh\n")
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "a.html").write_text(text)
+            self.assertEqual(sorted({h[1] for h in scan(d, ["Yaksh"], allow=allowed_forms(None))}), [3, 4])
+
+    def test_the_old_repo_address_is_not_allowed(self):
+        self.assertEqual(self.hits("https://github.com/alicesmith/klack\n"), [1])  # old-name-ok
+
     def test_nothing_is_allowed_without_an_owner(self):
-        self.assertEqual(self.hits("https://github.com/alicesmith/klack\n", owner=None), [1])
+        self.assertEqual(self.hits("https://github.com/alicesmith/ttyak\n", owner=None), [1])
 
     def test_removing_the_address_joins_nothing(self):
         # "Ali" + address + "ce" must not become "Alice" once the address is taken out
-        self.assertEqual(self.hits("Ali https://github.com/alicesmith/klack ce\n"), [])
-        self.assertEqual(self.hits("Ali github.com/alicesmith/klack ce\n"), [])
+        self.assertEqual(self.hits("Ali https://github.com/alicesmith/ttyak ce\n"), [])
+        self.assertEqual(self.hits("Ali github.com/alicesmith/ttyak ce\n"), [])
 
     def test_owner_from_remote(self):
-        for url in ("git@github.com:alicesmith/klack.git", "https://github.com/alicesmith/klack.git",
-                    "https://github.com/alicesmith/klack", "ssh://git@github.com/alicesmith/klack.git\n"):
+        for url in ("git@github.com:alicesmith/ttyak.git", "https://github.com/alicesmith/ttyak.git",
+                    "https://github.com/alicesmith/ttyak", "ssh://git@github.com/alicesmith/ttyak.git\n"):
             self.assertEqual(owner_from_remote(url), "alicesmith", url)
-        for url in (None, "", "https://gitlab.com/alicesmith/klack.git", "/srv/git/klack.git"):
+        for url in (None, "", "https://gitlab.com/alicesmith/ttyak.git", "/srv/git/ttyak.git"):
             self.assertIsNone(owner_from_remote(url), url)
 
     def run_main(self, text, argv=(), remote=None):
@@ -106,28 +117,28 @@ class RepoAddress(unittest.TestCase):
             (Path(d) / "s" / "i.html").write_text(text)
             (Path(d) / "l").write_text("\n".join(self.LIST) + "\n")
             out = io.StringIO()
-            old = os.environ.get("KLACK_SITE_FORBIDDEN")
-            os.environ["KLACK_SITE_FORBIDDEN"] = str(Path(d) / "l")
+            old = os.environ.get("TTYAK_SITE_FORBIDDEN")
+            os.environ["TTYAK_SITE_FORBIDDEN"] = str(Path(d) / "l")
             try:
                 with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
                     code = main([str(Path(d) / "s"), *argv], remote=lambda: remote)
             finally:
                 if old is None:
-                    os.environ.pop("KLACK_SITE_FORBIDDEN")
+                    os.environ.pop("TTYAK_SITE_FORBIDDEN")
                 else:
-                    os.environ["KLACK_SITE_FORBIDDEN"] = old
+                    os.environ["TTYAK_SITE_FORBIDDEN"] = old
             return code, out.getvalue()
 
     def test_cli_reads_the_owner_from_origin(self):
-        code, out = self.run_main("https://github.com/alicesmith/klack\n", remote="git@github.com:alicesmith/klack.git")
+        code, out = self.run_main("https://github.com/alicesmith/ttyak\n", remote="git@github.com:alicesmith/ttyak.git")
         self.assertEqual(code, 0)
-        code, out = self.run_main("alicesmith\n", remote="git@github.com:alicesmith/klack.git")
+        code, out = self.run_main("alicesmith\n", remote="git@github.com:alicesmith/ttyak.git")
         self.assertEqual(code, 1)
         self.assertNotIn("alicesmith", out.lower())
 
     def test_cli_falls_back_to_allow_owner(self):
-        self.assertEqual(self.run_main("https://github.com/alicesmith/klack\n", ["--allow-owner", "alicesmith"])[0], 0)
-        self.assertEqual(self.run_main("https://github.com/alicesmith/klack\n")[0], 1)
+        self.assertEqual(self.run_main("https://github.com/alicesmith/ttyak\n", ["--allow-owner", "alicesmith"])[0], 0)
+        self.assertEqual(self.run_main("https://github.com/alicesmith/ttyak\n")[0], 1)
         code, out = self.run_main("x\n", ["--allow-owner"])
         self.assertEqual(code, 2)
 
@@ -138,7 +149,7 @@ class Cli(unittest.TestCase):
             root = Path(d) / "site"
             root.mkdir()
             (root / "i.html").write_text(text)
-            env = dict(os.environ, KLACK_SITE_FORBIDDEN=str(Path(d) / listfile))
+            env = dict(os.environ, TTYAK_SITE_FORBIDDEN=str(Path(d) / listfile))
             if listfile == "list.txt":
                 (Path(d) / listfile).write_text("# c\n\nAlice Smith\nzed.q\n")
             return subprocess.run([sys.executable, str(HERE / "check_private.py"), str(root)],
@@ -160,7 +171,7 @@ class Cli(unittest.TestCase):
             lst = Path(d) / "list.txt"
             lst.write_text("Alice Smith\n")
             root = make(Path(d))
-            env = dict(os.environ, KLACK_SITE_FORBIDDEN=str(lst))
+            env = dict(os.environ, TTYAK_SITE_FORBIDDEN=str(lst))
             return subprocess.run([sys.executable, str(HERE / "check_private.py"), str(root)],
                                   capture_output=True, text=True, env=env)
 
@@ -188,10 +199,26 @@ class Cli(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             (Path(d) / "s").mkdir(); (Path(d) / "s" / "a.txt").write_text("x")
             (Path(d) / "l").write_bytes(b"\xff\xfe\x80")
-            env = dict(os.environ, KLACK_SITE_FORBIDDEN=str(Path(d) / "l"))
+            env = dict(os.environ, TTYAK_SITE_FORBIDDEN=str(Path(d) / "l"))
             r = subprocess.run([sys.executable, str(HERE / "check_private.py"), str(Path(d) / "s")],
                                capture_output=True, text=True, env=env)
             self.assertEqual(r.returncode, 2)
+
+    def test_the_list_lives_in_the_ttyak_config(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = Path(d)
+            (home / "site").mkdir()
+            (home / "site" / "i.html").write_text("Alice Smith\n")
+            env = {k: v for k, v in os.environ.items() if k != "TTYAK_SITE_FORBIDDEN"}
+            env["HOME"] = str(home)
+            run = lambda: subprocess.run([sys.executable, str(HERE / "check_private.py"), str(home / "site")],
+                                         capture_output=True, text=True, env=env)
+            r = run()
+            self.assertEqual(r.returncode, 2)
+            self.assertIn(str(home / ".config/ttyak-site/forbidden.txt"), r.stderr)
+            (home / ".config/ttyak-site").mkdir(parents=True)
+            (home / ".config/ttyak-site/forbidden.txt").write_text("Alice Smith\n")
+            self.assertEqual(run().returncode, 1)
 
     def test_missing_list(self):
         r = self.run_cli("nope.txt", "hello\n")

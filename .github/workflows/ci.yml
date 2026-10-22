@@ -16,8 +16,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: No old name
-        # Every tracked file except the site (site, tools/site), which is renamed later.
-        run: sh tools/check-name.sh --except site --except tools/site
+        # Every tracked file (old names only on lines marked old-name-ok).
+        run: sh tools/check-name.sh .
       - name: Tool tests
         run: python3 -m unittest tools/test_check_name.py tools/test_move_to_ttyak.py
       - name: Packages

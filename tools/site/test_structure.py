@@ -8,7 +8,7 @@ SITE = Path(__file__).resolve().parents[2] / "site"
 SECTIONS = ["top", "features", "numbers", "get", "footer"]
 FILLS = ["hero-capture", "download-button", "downloads", "sheet", "measured-note",
          "capture-huddle", "capture-signin", "capture-keys"]
-OWN = "https://github.com/dmytrobsp/klack"
+OWN = "https://github.com/dmytrobsp/ttyak"
 
 
 class Page(HTMLParser):
@@ -74,8 +74,23 @@ class Structure(unittest.TestCase):
     def test_head(self):
         p = parse()
         self.assertEqual(p.html_lang, "en")
-        self.assertEqual(p.title.strip(), "klack — Slack, minus the browser")
+        self.assertEqual(p.title.strip(), "ttyak — Slack, minus the browser")
         self.assertTrue(p.viewport)
+
+    def test_wordmark_and_favicon(self):
+        page = (SITE / "index.html").read_text()
+        self.assertIn('<a class="wordmark" href="#top">ttyak</a>', page)
+        self.assertIn('<link rel="icon" href="img/favicon.svg" type="image/svg+xml">', page)
+        self.assertTrue((SITE / "img" / "favicon.svg").read_text().startswith("<svg"))
+
+    def test_no_old_name_outside_marked_lines(self):
+        # the release links of builds made before the rename carry old-name-ok; nothing else says the old name
+        for p in sorted(SITE.rglob("*")):
+            if p.suffix not in (".html", ".css", ".js", ".json", ".svg"):
+                continue
+            for n, line in enumerate(p.read_text().splitlines(), 1):
+                if re.search("(?i)k" + "lack", line):
+                    self.assertIn("old-name-ok", line, "%s:%d" % (p.relative_to(SITE), n))
 
     def test_sections_in_order(self):
         self.assertEqual(parse().section_ids, SECTIONS)
@@ -125,7 +140,8 @@ class Structure(unittest.TestCase):
         self.assertRegex(v, r"^\d+\.\d+\.\d+$")
         self.assertEqual(len(r["assets"]), 4)
         for a in r["assets"]:
-            self.assertEqual(a["name"], "klack-%s-%s.zip" % (v, a["platform"]))
+            self.assertIn(a["name"], ("ttyak-%s-%s.zip" % (v, a["platform"]),
+                                      "klack-%s-%s.zip" % (v, a["platform"])))  # old-name-ok: before 0.10
             self.assertTrue(a["url"].startswith(OWN + "/releases/download/v%s/" % v))
             self.assertIsInstance(a["size"], int)
         self.assertTrue(r["sums_url"].endswith("/SHA256SUMS"))
@@ -134,7 +150,7 @@ class Structure(unittest.TestCase):
         n = json.loads((SITE / "data" / "numbers.json").read_text())
         for key in ("measured_on", "machine", "versions", "rows"):
             self.assertIn(key, n)
-        self.assertEqual(n["versions"]["klack"], "0.8.0")
+        self.assertEqual(n["versions"]["ttyak"], "0.8.0")
         ids = [r["id"] for r in n["rows"]]
         for want in ("download", "disk", "ram_rest", "ram_busy", "cpu_idle", "startup", "cpu_share", "ram_share"):
             self.assertIn(want, ids)
@@ -142,7 +158,7 @@ class Structure(unittest.TestCase):
         for r in n["rows"]:
             self.assertIn(r["unit"], ("bytes", "kB", "percent", "seconds"))
             self.assertIsInstance(r["label"], str)
-            for side in ("klack", "slack"):
+            for side in ("ttyak", "slack"):
                 self.assertIsInstance(r[side], (int, float))
                 self.assertGreaterEqual(r[side], 0)
 

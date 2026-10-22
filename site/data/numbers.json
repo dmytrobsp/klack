@@ -2,7 +2,7 @@
   "measured_on": "2026-10-21",
   "machine": "AMD Ryzen 9 9950X (16 cores), 64 GB RAM, AMD Radeon GPU, Pop!_OS 24.04 (Linux 7.2)",
   "versions": {
-    "klack": "0.8.0",
+    "ttyak": "0.8.0",
     "slack": "4.52.178"
   },
   "rows": [
@@ -10,70 +10,70 @@
       "id": "download",
       "label": "download",
       "unit": "bytes",
-      "klack": 12667135,
+      "ttyak": 12667135,
       "slack": 95292754
     },
     {
       "id": "disk",
       "label": "on disk",
       "unit": "bytes",
-      "klack": 30099064,
+      "ttyak": 30099064,
       "slack": 314438634
     },
     {
       "id": "startup",
       "label": "startup to the first conversation",
       "unit": "seconds",
-      "klack": 1.69,
+      "ttyak": 1.69,
       "slack": 1.85
     },
     {
       "id": "ram_rest",
       "label": "RAM at rest",
       "unit": "kB",
-      "klack": 32558,
+      "ttyak": 32558,
       "slack": 629458
     },
     {
       "id": "ram_busy",
       "label": "RAM after scrolling back through a busy channel",
       "unit": "kB",
-      "klack": 41513,
+      "ttyak": 41513,
       "slack": 642436
     },
     {
       "id": "cpu_idle",
       "label": "CPU at rest (one core)",
       "unit": "percent",
-      "klack": 0.63,
+      "ttyak": 0.63,
       "slack": 0.45
     },
     {
       "id": "cpu_scroll",
       "label": "CPU while scrolling history (one core)",
       "unit": "percent",
-      "klack": 1.92,
+      "ttyak": 1.92,
       "slack": 15.83
     },
     {
       "id": "cpu_share",
       "label": "CPU while sharing a 1280×720 window (one core)",
       "unit": "percent",
-      "klack": 18.53,
+      "ttyak": 18.53,
       "slack": 19.4
     },
     {
       "id": "ram_share",
       "label": "RAM while sharing a screen",
       "unit": "kB",
-      "klack": 138768,
+      "ttyak": 138768,
       "slack": 1015882
     },
     {
       "id": "vram",
       "label": "video memory at rest",
       "unit": "kB",
-      "klack": 0,
+      "ttyak": 0,
       "slack": 124564
     }
   ]
