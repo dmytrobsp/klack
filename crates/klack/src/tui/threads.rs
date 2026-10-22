@@ -77,8 +77,8 @@ pub fn parse(v: &Value) -> (Vec<Entry>, bool) {
     (v["threads"].as_array().into_iter().flatten().filter_map(Entry::from_json).collect(), v["has_more"].as_bool().unwrap_or(false))
 }
 
-/// The feed is built again this often at most while nothing in it changed (names, statuses and
-/// pictures that arrived meanwhile show then).
+/// The feed is built again at most this often for what it looks like (names, statuses and
+/// pictures that changed meanwhile show then); a change to its threads or its width shows at once.
 const REBUILD: Duration = Duration::from_secs(1);
 
 const LOADING: &str = "Loading…";
@@ -113,10 +113,12 @@ pub struct Threads {
     row_threads: Vec<Option<(String, String)>>,
     /// The message the pointer is over (not the selection), at the last `Moved`.
     pub hover: Option<(String, String)>,
-    /// The feed as last built, its links, and the width it was built for and when.
+    /// The feed as last built, its links, and how it looked then (its width, people, …) and when.
     feed: Feed,
     feed_links: Vec<LinkSpot>,
-    built: Option<(u16, Instant)>,
+    built: Option<(super::messages::Look, Instant)>,
+    /// How many times the feed was built.
+    pub builds: u64,
     /// The threads changed since: build the feed again at the next draw.
     dirty: bool,
     /// The messages in feed order (for ↑ / ↓).
@@ -343,23 +345,28 @@ impl Threads {
             return;
         }
         let entries = self.entries.as_deref().unwrap_or_default();
-        let stale = self.dirty || self.built.is_none_or(|(w, at)| w != inner.width || at.elapsed() >= REBUILD);
+        let avatars = if !ws.settings.messages.avatars {
+            Avatars::Off
+        } else if media.avatars {
+            Avatars::Pictures
+        } else {
+            Avatars::Initials
+        };
+        // Built again at once when its threads or its width changed; when only what it looks like did, at most every
+        // [`REBUILD`]. Never just because time passed.
+        let stale = self.dirty || self.built.as_ref().is_none_or(|(look, at)| look.width() != inner.width || (!look.holds(here, inner.width, avatars) && at.elapsed() >= REBUILD));
         if stale {
             let thumb_size = |file: &File, max_cols: u16| media.thumb_size(file, max_cols).filter(|_| ws.settings.messages.inline_images);
-            let avatars = if !ws.settings.messages.avatars {
-                Avatars::Off
-            } else if media.avatars {
-                Avatars::Pictures
-            } else {
-                Avatars::Initials
-            };
             self.feed = super::feed::build(here, entries, inner.width, super::feed::REPLIES_SHOWN, &thumb_size, avatars);
             let messages: Vec<Message> = entries.iter().flat_map(|e| std::iter::once(&e.root).chain(&e.unread).chain(&e.latest)).cloned().collect();
             let owners: Vec<Option<String>> = self.feed.owners.iter().map(|o| o.as_ref().map(|(_, ts)| ts.clone())).collect();
             self.feed_links = super::messages::link_spots(here, &messages, &self.feed.lines, &owners);
             self.order = self.feed.owners.iter().flatten().cloned().collect();
             self.order.dedup();
-            (self.built, self.dirty) = (Some((inner.width, Instant::now())), false);
+            let people = messages.iter().filter_map(|m| m.user.as_deref());
+            let look = super::messages::Look::new(here, inner.width, avatars, people);
+            (self.built, self.dirty) = (Some((look, Instant::now())), false);
+            self.builds += 1;
         }
         if self.selected.as_ref().is_none_or(|s| !self.order.contains(s)) {
             self.selected = self.order.first().cloned();
@@ -549,6 +556,51 @@ mod tests {
             assert!((x0..=x1).all(|x| buf[(x, y)].bg != p.selection), "row {y}: not the selected message");
         }
         assert_ne!(buf[(x1 + 1, parent[0])].bg, p.selection, "not the border");
+    }
+
+    #[test]
+    fn the_feed_is_built_again_only_when_something_in_it_changes() {
+        let mut ws = Workspace::default();
+        for id in ["U1", "U2"] {
+            ws.users.insert(id.into(), slack_core::types::User { id: id.into(), name: id.to_lowercase(), ..Default::default() });
+        }
+        ws.users_changed();
+        let media = Media::with(ratatui_image::picker::Picker::halfblocks());
+        let draw = |t: &mut Threads, ws: &Workspace, width: u16| {
+            let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, 30)).unwrap();
+            terminal.draw(|f| t.draw(f, f.area(), &Here::alone(ws), true, &media)).unwrap();
+            let buf = terminal.backend().buffer().clone();
+            (0..buf.area.height).map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect::<String>()).collect::<Vec<_>>().join("\n")
+        };
+        let a_second_on = |t: &mut Threads| t.built.as_mut().unwrap().1 -= Duration::from_secs(2);
+        let mut t = Threads::default();
+        t.add_page(parse(&page()).0, false);
+        draw(&mut t, &ws, 100);
+        assert_eq!(t.builds, 1);
+        // Seconds go by with nothing new: not built again (it was, every second).
+        a_second_on(&mut t);
+        draw(&mut t, &ws, 100);
+        t.hover_at(5, 3);
+        t.move_by(1);
+        draw(&mut t, &ws, 100);
+        assert_eq!(t.builds, 1);
+        // Someone's name or status changed: built again, at most once a second.
+        let renamed = |ws: &mut Workspace, name: &str| crate::tui::live::apply(ws, &serde_json::json!({"type": "user_profile_changed", "user": {"id": "U2", "profile": {"display_name": name}}}), None);
+        renamed(&mut ws, "annie");
+        assert!(draw(&mut t, &ws, 100).contains("annie"));
+        assert_eq!(t.builds, 2);
+        renamed(&mut ws, "ann2");
+        draw(&mut t, &ws, 100);
+        assert_eq!(t.builds, 2, "within a second of the last build");
+        a_second_on(&mut t);
+        assert!(draw(&mut t, &ws, 100).contains("ann2"));
+        assert_eq!(t.builds, 3);
+        // A reply in a thread, the width: at once.
+        let reply = Message { ts: "1792349990.000100".into(), thread_ts: Some("1792349791.643499".into()), user: Some("U1".into()), text: "brand new".into(), ..Default::default() };
+        t.add_reply("D1", &reply, true);
+        assert!(draw(&mut t, &ws, 100).contains("brand new"));
+        draw(&mut t, &ws, 90);
+        assert_eq!(t.builds, 5);
     }
 
     #[test]
