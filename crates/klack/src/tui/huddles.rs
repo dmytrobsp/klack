@@ -254,6 +254,10 @@ impl Huddles {
         // (No room at all leaves `total` one past the lines: start at most at their end.)
         let start = self.scroll.min(lines.len());
         let end = (start + height).min(lines.len());
+        // Scrolled off the selection: it follows onto the screen; the view stays.
+        if let Some(next) = self.selected.as_ref().and_then(|s| super::threads::follow_view(&owners, start, end, s)) {
+            self.selected = Some(next);
+        }
         let mut shown: Vec<Line<'static>> = lines.drain(start..end).collect();
         let mut rows: Vec<Option<Row>> = owners[start..end].to_vec();
         if more > 0 && shown.len() < height {
@@ -573,5 +577,34 @@ mod tests {
         h.fail(second, "boom".into());
         let screen = drawn(&mut h, &ws, 60, 12);
         assert!(screen.iter().any(|l| l.contains("could not be loaded: boom")));
+    }
+
+    #[test]
+    fn the_selection_follows_any_scroll_onto_the_screen() {
+        let ws = ws();
+        let mut h = Huddles::default();
+        let first = h.reload();
+        h.add_page(first, false, (1..=30).map(|n| past(&format!("R{n}"), "C1", NOW - 3600 * n as i64, 60, &["U2"], &[], None)).collect(), None);
+        drawn(&mut h, &ws, 60, 12);
+        let on_screen = |h: &Huddles| -> Vec<Row> {
+            let mut v: Vec<Row> = h.rows.iter().flatten().cloned().collect();
+            v.dedup();
+            v
+        };
+        // Scrolled down (however): the top row on screen; ↓ moves from there.
+        h.scroll = 30;
+        drawn(&mut h, &ws, 60, 12);
+        // (The top or bottom one on screen may be cut by the edge: the next one in is shown whole.)
+        let shown = on_screen(&h);
+        let sel = h.selected.clone().unwrap();
+        assert!(shown[..2].contains(&sel), "the top one: {sel:?} of {shown:?}");
+        h.move_by(1);
+        drawn(&mut h, &ws, 60, 12);
+        assert_eq!(h.selected.as_ref(), shown.iter().skip_while(|r| **r != sel).nth(1), "the next one");
+        // Scrolled up: the bottom one.
+        h.scroll = 0;
+        drawn(&mut h, &ws, 60, 12);
+        let shown = on_screen(&h);
+        assert!(shown[shown.len() - 2..].contains(h.selected.as_ref().unwrap()), "the bottom one");
     }
 }

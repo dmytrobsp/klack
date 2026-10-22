@@ -822,6 +822,10 @@ impl Activity {
         // (No room at all leaves `total` one past the lines: start at most at their end.)
         let start = self.scroll.min(built.lines.len());
         let end = (start + height).min(built.lines.len());
+        // Scrolled off the selection: it follows onto the screen; the view stays.
+        if let Some(next) = super::threads::follow_view(owners, start, end, &self.selected) {
+            self.selected = next;
+        }
         let mut lines: Vec<Line<'static>> = built.lines[start..end].to_vec();
         let mut rows: Vec<Option<usize>> = owners[start..end].to_vec();
         if self.loading && lines.len() < height {
@@ -1949,5 +1953,35 @@ mod tests {
         // A deletion klack asked for failed: back as it was.
         a.put_back("C1", &m);
         assert_eq!(a.find("C1", "2.0").unwrap().text, "the message");
+    }
+
+    #[test]
+    fn the_selection_follows_any_scroll_onto_the_screen() {
+        let ws = ws();
+        let media = super::super::media::Media::with(ratatui_image::picker::Picker::halfblocks());
+        let it = |key: &str| item(key, Kind::Mention("at_user".into()), "C1", key, None, false, noon(0));
+        let mut a = Activity::default();
+        a.set_items(Tab::All, (1..=40).map(|n| it(&n.to_string())).collect(), None);
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        let mut draw = |a: &mut Activity| {
+            terminal.draw(|f| a.draw(f, f.area(), &Here::alone(&ws), true, &media)).unwrap();
+        };
+        draw(&mut a);
+        // Scrolled down (however): the top item on screen.
+        a.scroll = 40;
+        draw(&mut a);
+        assert_eq!(Some(&a.selected), a.shown.first(), "the top one");
+        // ↓ and a page down move from there.
+        let first = a.shown.clone();
+        a.move_by(1);
+        draw(&mut a);
+        assert_eq!((a.selected, a.shown.clone()), (first[1], first.clone()), "the next one, the view stays");
+        a.move_by(a.page());
+        draw(&mut a);
+        assert!(a.shown.contains(&a.selected) && a.selected > first[1], "a page further, on screen");
+        // Scrolled up: the bottom one.
+        a.scroll = 0;
+        draw(&mut a);
+        assert_eq!(Some(&a.selected), a.shown.last(), "the bottom one");
     }
 }

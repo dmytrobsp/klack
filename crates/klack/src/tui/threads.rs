@@ -208,7 +208,7 @@ impl Threads {
         shown.len().max(1) as isize
     }
 
-    /// Scroll the feed by `delta` lines (the wheel), leaving the selection where it is.
+    /// Scroll the feed by `delta` lines (the wheel); a selection scrolled off goes onto the screen at the next draw.
     pub fn scroll_by(&mut self, delta: isize) {
         self.scroll = self.scroll.saturating_add_signed(delta);
     }
@@ -532,6 +532,10 @@ impl Threads {
         // (No room at all leaves `total` one past the lines: start at most at their end.)
         let start = self.scroll.min(feed.lines.len());
         let end = (start + height).min(feed.lines.len());
+        // Scrolled off the selection (the wheel, …): it follows onto the screen; the view stays.
+        if let Some(next) = self.selected.as_ref().and_then(|s| follow_view(&feed.owners, start, end, s)) {
+            self.selected = Some(next);
+        }
         let mut lines: Vec<Line<'static>> = feed.lines[start..end].to_vec();
         let mut rows: Vec<Option<(String, String)>> = feed.owners[start..end].to_vec();
         if self.loading && lines.len() < height {
@@ -574,6 +578,34 @@ pub(super) fn bring_into_view(scroll: usize, height: usize, first: usize, last: 
     } else {
         scroll
     }
+}
+
+/// The item to select instead of `sel` once a list (`owners`: the item of each of its lines) shows lines `start..end`:
+/// none while `sel` is on screen (all of it, or filling the view), or is not in the list; else the nearest one on
+/// screen ([`view_edge`]) — the top one when `sel` is above the view, the bottom one when it is below.
+pub(super) fn follow_view<T: PartialEq + Clone>(owners: &[Option<T>], start: usize, end: usize, sel: &T) -> Option<T> {
+    let (first, last) = span(owners, sel)?;
+    if (first >= start && last < end) || (first <= start && last + 1 >= end) {
+        return None;
+    }
+    view_edge(owners, start, end, first < start)
+}
+
+/// The item on screen (lines `start..end` of a list, `owners` as in [`follow_view`]) nearest its top (`top`) or its
+/// bottom edge: one shown whole, if any is.
+pub(super) fn view_edge<T: PartialEq + Clone>(owners: &[Option<T>], start: usize, end: usize, top: bool) -> Option<T> {
+    let end = end.min(owners.len());
+    let mut shown: Vec<&T> = owners.get(start..end)?.iter().flatten().collect();
+    shown.dedup();
+    let whole = |t: &&T| span(owners, t).is_some_and(|(first, last)| first >= start && last < end);
+    let full: Vec<&T> = shown.iter().copied().filter(whole).collect();
+    let pick = if full.is_empty() { shown } else { full };
+    if top { pick.first() } else { pick.last() }.map(|t| (*t).clone())
+}
+
+/// The first and last lines of item `t` in a list (`owners` as in [`follow_view`]).
+fn span<T: PartialEq>(owners: &[Option<T>], t: &T) -> Option<(usize, usize)> {
+    Some((owners.iter().position(|o| o.as_ref() == Some(t))?, owners.iter().rposition(|o| o.as_ref() == Some(t))?))
 }
 
 #[cfg(test)]
@@ -1023,5 +1055,36 @@ mod tests {
         let screen: String = { let buf = terminal.backend().buffer(); (0..buf.area.height).flat_map(|y| (0..buf.area.width).map(move |x| (x, y))).map(|(x, y)| buf[(x, y)].symbol().to_string()).collect() };
         assert!(screen.contains("late") && screen.contains(" new "), "shown, the rule stays until the next load");
         assert!(!screen.contains(" 2 new "), "but no longer counted unread");
+    }
+
+    #[test]
+    fn the_selection_follows_the_wheel_onto_the_screen() {
+        let mut t = Threads::default();
+        t.add_page((1..=12).map(|n| thread(n, false)).collect(), false);
+        drawn(&mut t);
+        let on_screen = |t: &Threads| -> Vec<(String, String)> {
+            let mut v: Vec<(String, String)> = t.rows.iter().flatten().cloned().collect();
+            v.dedup();
+            v
+        };
+        // The wheel down: the selection (the first message) was above the view; the top message on screen now.
+        t.scroll_by(30);
+        drawn(&mut t);
+        let shown = on_screen(&t);
+        assert_eq!(t.selected.as_ref(), shown.first(), "the top one");
+        // ↓ moves from there, the view stays.
+        let visible = t.visible.clone();
+        t.move_by(1);
+        drawn(&mut t);
+        assert_eq!((t.selected.as_ref(), t.visible.clone()), (shown.get(1), visible), "the next one");
+        // The wheel up: the bottom one on screen.
+        t.scroll_by(-30);
+        drawn(&mut t);
+        assert_eq!(t.selected.as_ref(), on_screen(&t).last(), "the bottom one");
+        // A scroll leaving it on screen leaves it.
+        let kept = t.selected.clone();
+        t.scroll_by(1);
+        drawn(&mut t);
+        assert_eq!(t.selected, kept);
     }
 }

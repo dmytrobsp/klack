@@ -10832,4 +10832,206 @@ mod tests {
         go(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
         assert_eq!(app.messages.selected, None);
     }
+
+    /// The messages `pane` showed at the last draw, top to bottom.
+    fn on_screen(pane: &super::MessagePane) -> Vec<String> {
+        let a = pane.area;
+        let mut v: Vec<String> = (a.y..a.bottom()).filter_map(|y| pane.message_at(a.x + 2, y)).collect();
+        v.dedup();
+        v
+    }
+
+    /// The wheel (`down` or up) once over terminal cell (`column`, `row`).
+    fn wheel(app: &mut super::App, down: bool, column: u16, row: u16) {
+        use crossterm::event::{Event, MouseEvent, MouseEventKind};
+        let kind = if down { MouseEventKind::ScrollDown } else { MouseEventKind::ScrollUp };
+        super::handle_event(app, Event::Mouse(MouseEvent { kind, column, row, modifiers: KeyModifiers::NONE }));
+        settle(app, true);
+    }
+
+    #[tokio::test]
+    async fn the_selection_follows_pages_and_the_wheel_in_the_conversation_and_the_thread() {
+        use super::Focus;
+        let (mut app, _net) = with_channels(&["C2", "C1"]);
+        long_c1(&mut app, 200, 150);
+        app.jump_to("C1");
+        settle(&mut app, true);
+        app.focus = Focus::Messages;
+        drawn(&mut app);
+        go(&mut app, KeyCode::Char('k'), KeyModifiers::NONE);
+        drawn(&mut app);
+        // PgUp: the bottom message on screen; k moves from there and the view stays.
+        go(&mut app, KeyCode::PageUp, KeyModifiers::NONE);
+        drawn(&mut app);
+        let shown = on_screen(&app.messages);
+        assert_eq!(app.messages.selected.as_ref(), shown.last(), "PgUp: the bottom one");
+        assert_ne!(app.messages.selected, Some(top_ts(200)));
+        go(&mut app, KeyCode::Char('k'), KeyModifiers::NONE);
+        drawn(&mut app);
+        assert_eq!((app.messages.selected.as_ref(), on_screen(&app.messages)), (shown.get(shown.len() - 2), shown.clone()), "k: the one above, the view stays");
+        // Twice up and once down: the top message on screen; j moves from there.
+        go(&mut app, KeyCode::PageUp, KeyModifiers::NONE);
+        drawn(&mut app);
+        go(&mut app, KeyCode::PageUp, KeyModifiers::NONE);
+        drawn(&mut app);
+        go(&mut app, KeyCode::PageDown, KeyModifiers::NONE);
+        drawn(&mut app);
+        let shown = on_screen(&app.messages);
+        assert_eq!(app.messages.selected.as_ref(), shown.first(), "PgDn: the top one");
+        go(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
+        drawn(&mut app);
+        assert_eq!((app.messages.selected.as_ref(), on_screen(&app.messages)), (shown.get(1), shown.clone()), "j: the next one, the view stays");
+        // The wheel up, then down, over the conversation.
+        let (x, y) = (app.messages.area.x + 5, app.messages.area.y + 5);
+        for _ in 0..16 {
+            wheel(&mut app, false, x, y);
+        }
+        drawn(&mut app);
+        let shown = on_screen(&app.messages);
+        assert_eq!(app.messages.selected.as_ref(), shown.last(), "the wheel up: the bottom one");
+        for _ in 0..16 {
+            wheel(&mut app, true, x, y);
+        }
+        drawn(&mut app);
+        let shown = on_screen(&app.messages);
+        assert_eq!(app.messages.selected.as_ref(), shown.first(), "the wheel down: the top one");
+        go(&mut app, KeyCode::Char('k'), KeyModifiers::NONE);
+        drawn(&mut app);
+        assert!(on_screen(&app.messages).contains(app.messages.selected.as_ref().unwrap()), "k from there: on screen");
+        // Ctrl+U / Ctrl+D move it too (as before).
+        go(&mut app, KeyCode::Char('u'), KeyModifiers::CONTROL);
+        drawn(&mut app);
+        assert!(on_screen(&app.messages).contains(app.messages.selected.as_ref().unwrap()), "Ctrl+U");
+        go(&mut app, KeyCode::Char('d'), KeyModifiers::CONTROL);
+        drawn(&mut app);
+        assert!(on_screen(&app.messages).contains(app.messages.selected.as_ref().unwrap()), "Ctrl+D");
+        // None of that was a step: back is C2, forward C1.
+        go(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
+        assert_eq!(app.current.as_deref(), Some("C2"), "one step back: where you came from");
+        go(&mut app, KeyCode::Right, KeyModifiers::ALT);
+        assert_eq!(app.current.as_deref(), Some("C1"));
+        // The thread pane: opened at its newest, PgUp and the wheel, then k / j.
+        app.open_thread(&top_ts(1));
+        settle(&mut app, true);
+        app.focus = Focus::Thread;
+        drawn(&mut app);
+        go(&mut app, KeyCode::Char('k'), KeyModifiers::NONE);
+        drawn(&mut app);
+        go(&mut app, KeyCode::PageUp, KeyModifiers::NONE);
+        drawn(&mut app);
+        let shown = on_screen(&app.thread_pane);
+        assert_eq!(app.thread_pane.selected.as_ref(), shown.last(), "the thread, PgUp: the bottom one");
+        go(&mut app, KeyCode::Char('k'), KeyModifiers::NONE);
+        drawn(&mut app);
+        assert_eq!((app.thread_pane.selected.as_ref(), on_screen(&app.thread_pane)), (shown.get(shown.len() - 2), shown.clone()), "k from there");
+        let (x, y) = (app.thread_pane.area.x + 5, app.thread_pane.area.y + 5);
+        // A little: the selection still on screen stays.
+        let kept = app.thread_pane.selected.clone();
+        wheel(&mut app, true, x, y);
+        drawn(&mut app);
+        assert_eq!(app.thread_pane.selected, kept, "the thread, still on screen: kept");
+        for _ in 0..15 {
+            wheel(&mut app, false, x, y);
+        }
+        drawn(&mut app);
+        assert_eq!(app.thread_pane.selected.as_ref(), on_screen(&app.thread_pane).last(), "the thread, the wheel up: the bottom one");
+        for _ in 0..15 {
+            wheel(&mut app, true, x, y);
+        }
+        drawn(&mut app);
+        let shown = on_screen(&app.thread_pane);
+        assert_eq!(app.thread_pane.selected.as_ref(), shown.first(), "the thread, the wheel down: the top one");
+        go(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
+        drawn(&mut app);
+        assert_eq!(app.thread_pane.selected.as_ref(), shown.get(1), "j from there");
+    }
+
+    #[tokio::test]
+    async fn the_conversation_behind_a_thread_opened_again_shows_its_selection() {
+        use super::super::applink::Target;
+        let (mut app, _net) = with_channels(&["C1", "C2"]);
+        long_c1(&mut app, 120, 60);
+        // The thread of the first (far up) message, opened at reply 20; the conversation's selection on its parent.
+        app.open_in_app(Target::Message { channel: "C1".into(), ts: reply_ts(20), thread_ts: Some(top_ts(1)) }, true);
+        settle(&mut app, true);
+        drawn(&mut app);
+        app.jump_to("C2");
+        settle(&mut app, true);
+        drawn(&mut app);
+        go(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
+        assert_eq!((app.thread_pane.selected.clone(), app.messages.selected.clone()), (Some(reply_ts(20)), Some(top_ts(1))));
+        drawn(&mut app);
+        assert!(on_screen(&app.messages).contains(&top_ts(1)), "the parent on screen beside the thread, unfocused");
+        assert!(on_screen(&app.thread_pane).contains(&reply_ts(20)));
+    }
+
+    #[tokio::test]
+    async fn the_selection_follows_the_wheel_and_pages_in_the_views() {
+        use super::super::activity::Tab;
+        use super::Net;
+        let (mut app, _net) = with_channels(&["C1"]);
+        // The Threads feed, twelve threads of two replies each.
+        let parents: Vec<String> = (1..=12).map(|n| format!("{}.000000", 100 - n)).collect();
+        let replies: Vec<[String; 2]> = parents.iter().map(|p| [p.replace(".000000", ".100000"), p.replace(".000000", ".200000")]).collect();
+        let threads: Vec<(&str, &str, Vec<&str>)> = parents.iter().zip(&replies).map(|(p, r)| ("C1", p.as_str(), r.iter().map(String::as_str).collect())).collect();
+        let threads: Vec<(&str, &str, &[&str])> = threads.iter().map(|(c, p, r)| (*c, *p, r.as_slice())).collect();
+        super::run_global(&mut app, super::Action::Threads);
+        settle(&mut app, true);
+        super::handle_net(&mut app, Net::ThreadView { result: Ok(feed_page(&threads, false)), more: false });
+        drawn(&mut app);
+        let feed_shown = |app: &super::App| -> Vec<(String, String)> {
+            let l = app.threads.list;
+            let mut v: Vec<(String, String)> = (l.y..l.bottom()).filter_map(|y| app.threads.message_at(l.x + 2, y)).collect();
+            v.dedup();
+            v
+        };
+        let (x, y) = (app.threads.list.x + 5, app.threads.list.y + 5);
+        for _ in 0..10 {
+            wheel(&mut app, true, x, y);
+        }
+        drawn(&mut app);
+        let shown = feed_shown(&app);
+        assert_eq!(app.threads.selected.as_ref(), shown.first(), "the feed, the wheel down: the top one");
+        go(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
+        drawn(&mut app);
+        assert_eq!(app.threads.selected.as_ref(), shown.get(1), "j moves from there");
+        go(&mut app, KeyCode::PageDown, KeyModifiers::NONE);
+        drawn(&mut app);
+        let at = app.threads.selected.clone().unwrap();
+        assert!(feed_shown(&app).contains(&at), "PgDn: on screen");
+        go(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
+        drawn(&mut app);
+        assert!(feed_shown(&app).contains(app.threads.selected.as_ref().unwrap()) && app.threads.selected != Some(at), "j from there");
+        for _ in 0..3 {
+            wheel(&mut app, false, x, y);
+        }
+        drawn(&mut app);
+        assert_eq!(app.threads.selected.as_ref(), feed_shown(&app).last(), "the wheel up: the bottom one");
+        // Activity: forty items; PgDn, the wheel, j.
+        go(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
+        let dm = |n: usize| serde_json::json!({"feed_ts": format!("{}.0", 1000 - n), "is_unread": false, "key": format!("k{n}"), "item": {"type": "dm", "bundle_info": {"payload": {"dm_entry": {"latest_message": {"channel": "DU2", "ts": format!("{n}.0")}}}}}});
+        let feed = serde_json::json!({"items": (1..=40).map(dm).collect::<Vec<_>>()});
+        super::handle_net(&mut app, Net::ActivityFeed { tab: Tab::All, more: false, result: Ok(feed) });
+        settle(&mut app, false);
+        drawn(&mut app);
+        let activity_shown = |app: &super::App| -> Vec<usize> {
+            let l = app.activity.list;
+            let mut v: Vec<usize> = (l.y..l.bottom()).filter_map(|y| app.activity.row_at(l.x + 2, y)).collect();
+            v.dedup();
+            v
+        };
+        go(&mut app, KeyCode::PageDown, KeyModifiers::NONE);
+        drawn(&mut app);
+        assert!(activity_shown(&app).contains(&app.activity.selected) && app.activity.selected > 0, "PgDn: on screen");
+        let (x, y) = (app.activity.list.x + 5, app.activity.list.y + 2);
+        for _ in 0..3 {
+            wheel(&mut app, true, x, y);
+        }
+        drawn(&mut app);
+        let at = app.activity.selected;
+        assert!(activity_shown(&app).contains(&at), "the wheel: on screen");
+        go(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
+        drawn(&mut app);
+        assert_eq!(app.activity.selected, at + 1, "j from there");
+    }
 }
