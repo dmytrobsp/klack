@@ -37,46 +37,101 @@ impl Place {
     }
 }
 
+/// How the main pane came to be where it is after an event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Went {
+    /// Not by your doing: a reply that came in, a tick, the pointer moving.
+    No,
+    /// You went there: a key, a click, a link, a notification.
+    Yes,
+    /// A move through the sidebar (its keys, the wheel over it, the next / previous conversation): a run of them
+    /// is one step.
+    Browse,
+}
+
 #[derive(Debug, Default)]
 pub struct History {
     /// The places left, the last one last.
     back: Vec<Place>,
     /// The places gone back from, the next one last.
     forward: Vec<Place>,
-    /// Where the main pane is.
+    /// Where the main pane is (while landing: where a step goes).
     here: Option<Place>,
     /// A step back or forward was taken: where it lands is not a new place.
     stepped: bool,
+    /// A step to a thread has shown its conversation; the thread opens once its history is in.
+    landing: bool,
+    /// The sidebar moves under way since the last other event: one step.
+    browsing: bool,
+    /// Taken up again for a workspace switched back to: the first place shown is a step from the one left there.
+    resumed: bool,
 }
 
 impl History {
-    /// The main pane is at `place` now (None: nowhere yet). `went`: you went there (a key, a click, a link, a
-    /// notification), so the place left is kept and what was ahead is dropped; otherwise (a page that came in,
-    /// a conversation gone) it only stands in for the place it was.
-    pub fn arrive(&mut self, place: Option<Place>, went: bool) {
+    /// The main pane is at `place` now (None: nowhere yet), as `went` says: a step keeps the place left and drops
+    /// what was ahead; otherwise (a page that came in, a conversation gone) the place only stands in for the one it
+    /// was.
+    pub fn arrive(&mut self, place: Option<Place>, went: Went) {
         let stepped = std::mem::take(&mut self.stepped);
         let Some(place) = place else { return };
+        let went = if std::mem::take(&mut self.resumed) && went == Went::No { Went::Yes } else { went };
+        if went == Went::Yes {
+            self.browsing = false;
+        }
         if self.here.as_ref().is_some_and(|h| h.same(&place)) {
             self.here = Some(place);
+            self.landing = false;
             return;
         }
-        if went && !stepped {
-            if let Some(left) = self.here.take() {
-                keep(&mut self.back, left);
-                self.forward.clear();
+        if (stepped || self.landing) && self.here.as_ref().is_some_and(|h| on_the_way(h, &place)) {
+            self.landing = true;
+            return;
+        }
+        self.landing = false;
+        match went {
+            Went::Yes if !stepped => self.leave(),
+            Went::Browse if !stepped && !self.browsing => {
+                self.leave();
+                self.browsing = true;
             }
+            _ => {}
         }
         self.here = Some(place);
     }
 
+    /// The place shown is kept as one left; what was ahead is dropped.
+    fn leave(&mut self) {
+        if let Some(left) = self.here.take() {
+            keep(&mut self.back, left);
+            self.forward.clear();
+        }
+    }
+
+    /// Taken up again for a workspace switched back to (see [`History::resumed`]).
+    pub fn resume(&mut self) {
+        (self.stepped, self.landing, self.browsing, self.resumed) = (false, false, false, true);
+    }
+
     /// The place to go back to, those `gone` skipped (and forgotten); where the pane is goes ahead. None: nowhere.
     pub fn back(&mut self, gone: impl Fn(&Place) -> bool) -> Option<Place> {
-        step(&mut self.back, &mut self.forward, &mut self.here, &mut self.stepped, gone)
+        let place = step(&mut self.back, &mut self.forward, &mut self.here, gone)?;
+        (self.stepped, self.landing) = (true, false);
+        Some(place)
     }
 
     /// The place to go forward to, as [`History::back`].
     pub fn forward(&mut self, gone: impl Fn(&Place) -> bool) -> Option<Place> {
-        step(&mut self.forward, &mut self.back, &mut self.here, &mut self.stepped, gone)
+        let place = step(&mut self.forward, &mut self.back, &mut self.here, gone)?;
+        (self.stepped, self.landing) = (true, false);
+        Some(place)
+    }
+}
+
+/// `place` is on the way to `target`: its conversation, the thread not open yet.
+fn on_the_way(target: &Place, place: &Place) -> bool {
+    match (target, place) {
+        (Place::Conversation { channel: a, thread: Some(_), .. }, Place::Conversation { channel: b, thread: None, .. }) => a == b,
+        _ => false,
     }
 }
 
@@ -89,7 +144,7 @@ fn keep(list: &mut Vec<Place>, place: Place) {
 }
 
 /// The next place of `from` that is still there and not where the pane is; `here` goes onto `to`.
-fn step(from: &mut Vec<Place>, to: &mut Vec<Place>, here: &mut Option<Place>, stepped: &mut bool, gone: impl Fn(&Place) -> bool) -> Option<Place> {
+fn step(from: &mut Vec<Place>, to: &mut Vec<Place>, here: &mut Option<Place>, gone: impl Fn(&Place) -> bool) -> Option<Place> {
     while let Some(place) = from.pop() {
         if gone(&place) || here.as_ref().is_some_and(|h| h.same(&place)) {
             continue;
@@ -97,7 +152,6 @@ fn step(from: &mut Vec<Place>, to: &mut Vec<Place>, here: &mut Option<Place>, st
         if let Some(left) = here.replace(place.clone()) {
             keep(to, left);
         }
-        *stepped = true;
         return Some(place);
     }
     None
@@ -115,7 +169,7 @@ mod tests {
     fn went(places: &[Place]) -> History {
         let mut h = History::default();
         for p in places {
-            h.arrive(Some(p.clone()), true);
+            h.arrive(Some(p.clone()), Went::Yes);
         }
         h
     }
@@ -124,14 +178,14 @@ mod tests {
     fn back_and_forward_as_a_browser() {
         let mut h = went(&[conv("C1"), Place::Activity(Tab::Dms), conv("D1")]);
         assert_eq!(h.back(|_| false), Some(Place::Activity(Tab::Dms)));
-        h.arrive(Some(Place::Activity(Tab::Dms)), true);
+        h.arrive(Some(Place::Activity(Tab::Dms)), Went::Yes);
         assert_eq!(h.back(|_| false), Some(conv("C1")));
-        h.arrive(Some(conv("C1")), true);
+        h.arrive(Some(conv("C1")), Went::Yes);
         assert_eq!(h.back(|_| false), None, "nothing before the first");
         assert_eq!(h.forward(|_| false), Some(Place::Activity(Tab::Dms)));
-        h.arrive(Some(Place::Activity(Tab::Dms)), true);
+        h.arrive(Some(Place::Activity(Tab::Dms)), Went::Yes);
         assert_eq!(h.forward(|_| false), Some(conv("D1")));
-        h.arrive(Some(conv("D1")), true);
+        h.arrive(Some(conv("D1")), Went::Yes);
         assert_eq!(h.forward(|_| false), None);
     }
 
@@ -139,8 +193,8 @@ mod tests {
     fn going_somewhere_new_drops_what_was_ahead() {
         let mut h = went(&[conv("C1"), conv("C2"), conv("C3")]);
         assert_eq!(h.back(|_| false), Some(conv("C2")));
-        h.arrive(Some(conv("C2")), true);
-        h.arrive(Some(conv("C4")), true);
+        h.arrive(Some(conv("C2")), Went::Yes);
+        h.arrive(Some(conv("C4")), Went::Yes);
         assert_eq!(h.forward(|_| false), None, "C3 is gone from ahead");
         assert_eq!(h.back(|_| false), Some(conv("C2")));
     }
@@ -151,7 +205,7 @@ mod tests {
         let mut h = went(&ids);
         let mut seen = Vec::new();
         while let Some(p) = h.back(|_| false) {
-            h.arrive(Some(p.clone()), true);
+            h.arrive(Some(p.clone()), Went::Yes);
             seen.push(p);
         }
         assert_eq!(seen.len(), CAP);
@@ -164,7 +218,7 @@ mod tests {
         let mut h = went(&[conv("C1"), conv("C2"), conv("C3")]);
         let gone = |p: &Place| *p == conv("C2");
         assert_eq!(h.back(gone), Some(conv("C1")));
-        h.arrive(Some(conv("C1")), true);
+        h.arrive(Some(conv("C1")), Went::Yes);
         assert_eq!(h.forward(gone), Some(conv("C3")), "C3 went ahead; C2 is forgotten");
         let mut h = went(&[conv("C1"), conv("C2")]);
         assert_eq!(h.back(|_| true), None, "all gone: nowhere");
@@ -174,13 +228,13 @@ mod tests {
     fn what_comes_in_by_itself_is_not_a_step() {
         // A page that came in opens the thread a link led to: the same step.
         let mut h = went(&[Place::Activity(Tab::All), conv("C1")]);
-        h.arrive(Some(Place::Conversation { channel: "C1".into(), thread: Some("1.0".into()), member: true }), false);
+        h.arrive(Some(Place::Conversation { channel: "C1".into(), thread: Some("1.0".into()), member: true }), Went::No);
         assert_eq!(h.back(|_| false), Some(Place::Activity(Tab::All)));
         // Where a step back lands, and what comes in after it, is not a new place either.
         let mut h = went(&[conv("C1"), Place::Conversation { channel: "C2".into(), thread: Some("2.0".into()), member: true }, conv("C3")]);
         assert!(h.back(|_| false).is_some());
-        h.arrive(Some(conv("C2")), true);
-        h.arrive(Some(Place::Conversation { channel: "C2".into(), thread: Some("2.0".into()), member: true }), false);
+        h.arrive(Some(conv("C2")), Went::Yes);
+        h.arrive(Some(Place::Conversation { channel: "C2".into(), thread: Some("2.0".into()), member: true }), Went::No);
         assert_eq!(h.forward(|_| false), Some(conv("C3")), "still ahead");
         assert_eq!(h.back(|_| false), Some(Place::Conversation { channel: "C2".into(), thread: Some("2.0".into()), member: true }));
     }
@@ -189,7 +243,67 @@ mod tests {
     fn a_tab_is_the_same_place() {
         let mut h = went(&[conv("C1"), Place::Activity(Tab::All), Place::Activity(Tab::Dms), conv("D1")]);
         assert_eq!(h.back(|_| false), Some(Place::Activity(Tab::Dms)), "on the tab it was left on");
-        h.arrive(Some(Place::Activity(Tab::Dms)), true);
+        h.arrive(Some(Place::Activity(Tab::Dms)), Went::Yes);
+        assert_eq!(h.back(|_| false), Some(conv("C1")));
+    }
+
+    #[test]
+    fn a_run_of_sidebar_moves_is_one_step() {
+        let mut h = went(&[conv("C1"), Place::Activity(Tab::Dms), conv("D1")]);
+        // A wheel flick over the sidebar: 24 conversations passed.
+        for n in 2..26 {
+            h.arrive(Some(conv(&format!("C{n}"))), Went::Browse);
+            // (A page that comes in meanwhile does not end the run.)
+            h.arrive(Some(conv(&format!("C{n}"))), Went::No);
+        }
+        assert_eq!(h.back(|_| false), Some(conv("D1")), "where you were before browsing");
+        h.arrive(Some(conv("D1")), Went::Yes);
+        assert_eq!(h.back(|_| false), Some(Place::Activity(Tab::Dms)), "still kept");
+        h.arrive(Some(Place::Activity(Tab::Dms)), Went::Yes);
+        assert_eq!(h.forward(|_| false), Some(conv("D1")));
+        h.arrive(Some(conv("D1")), Went::Yes);
+        assert_eq!(h.forward(|_| false), Some(conv("C25")), "the one you stopped on");
+        h.arrive(Some(conv("C25")), Went::Yes);
+        // Another event ends a run (reading, a key): the next moves are a step of their own.
+        h.arrive(Some(conv("C26")), Went::Browse);
+        h.arrive(Some(conv("C26")), Went::Yes);
+        h.arrive(Some(conv("C27")), Went::Browse);
+        h.arrive(Some(conv("C28")), Went::Browse);
+        assert_eq!(h.back(|_| false), Some(conv("C26")));
+        h.arrive(Some(conv("C26")), Went::Yes);
+        assert_eq!(h.back(|_| false), Some(conv("C25")));
+    }
+
+    #[test]
+    fn a_second_back_while_a_thread_opens_goes_on_from_it() {
+        let thread = Place::Conversation { channel: "C".into(), thread: Some("1.0".into()), member: true };
+        let mut h = went(&[conv("C"), thread.clone(), conv("D")]);
+        assert_eq!(h.back(|_| false), Some(thread.clone()));
+        // Its conversation shows first; back again before the thread is in.
+        h.arrive(Some(conv("C")), Went::Yes);
+        h.arrive(Some(conv("C")), Went::Yes);
+        assert_eq!(h.back(|_| false), Some(conv("C")), "the place before it, not skipped");
+        h.arrive(Some(conv("C")), Went::Yes);
+        assert_eq!(h.forward(|_| false), Some(thread.clone()), "the thread is ahead, not its conversation");
+        h.arrive(Some(conv("C")), Went::Yes);
+        h.arrive(Some(thread.clone()), Went::No);
+        assert_eq!(h.forward(|_| false), Some(conv("D")));
+    }
+
+    #[test]
+    fn a_workspace_taken_up_again_steps_from_where_it_was_left() {
+        let mut h = went(&[conv("C1"), Place::Activity(Tab::All)]);
+        h.resume();
+        // Before its conversations are in: nowhere; then the one it starts on.
+        h.arrive(None, Went::No);
+        h.arrive(Some(conv("C2")), Went::No);
+        assert_eq!(h.back(|_| false), Some(Place::Activity(Tab::All)), "the view it was left on");
+        h.arrive(Some(Place::Activity(Tab::All)), Went::Yes);
+        assert_eq!(h.back(|_| false), Some(conv("C1")));
+        // Taken up on the place it was left at: no step.
+        let mut h = went(&[conv("C1"), conv("C2")]);
+        h.resume();
+        h.arrive(Some(conv("C2")), Went::No);
         assert_eq!(h.back(|_| false), Some(conv("C1")));
     }
 }

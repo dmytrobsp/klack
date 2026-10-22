@@ -13,7 +13,7 @@ use slack_core::types::{HistoryPage, User};
 use tokio::sync::mpsc;
 
 use super::composer::{Composer, KeyOutcome};
-use super::history::Place;
+use super::history::{Place, Went};
 use super::keymap::{Action, Context, Key, Keymap, LEADER, Mode, Pending, Resolved};
 use super::keys_file::Change;
 use super::messages::MessagePane;
@@ -229,6 +229,8 @@ struct App {
     view: View,
     /// Where the main pane was, for back and forward (this workspace's, kept across switches).
     history: super::history::History,
+    /// The event moved through the sidebar (a run of such moves is one step back).
+    browsed: bool,
     /// The Activity view (Ctrl+A), shown while `view` is Activity.
     activity: super::activity::Activity,
     /// The save dialog (`␣s`).
@@ -1310,12 +1312,12 @@ impl App {
     /// A sidebar-context action on the selected conversation.
     fn sidebar_action(&mut self, action: Action) {
         match action {
-            Action::Up => self.sidebar.move_by(-1),
-            Action::Down => self.sidebar.move_by(1),
-            Action::Top => self.sidebar.move_by(isize::MIN / 2),
-            Action::Bottom => self.sidebar.move_by(isize::MAX / 2),
-            Action::HalfPageUp => self.sidebar.move_by(-((self.sidebar.area.height.saturating_sub(2) / 2).max(1) as isize)),
-            Action::HalfPageDown => self.sidebar.move_by((self.sidebar.area.height.saturating_sub(2) / 2).max(1) as isize),
+            Action::Up => self.browse_sidebar(-1, false),
+            Action::Down => self.browse_sidebar(1, false),
+            Action::Top => self.browse_sidebar(isize::MIN / 2, false),
+            Action::Bottom => self.browse_sidebar(isize::MAX / 2, false),
+            Action::HalfPageUp => self.browse_sidebar(-((self.sidebar.area.height.saturating_sub(2) / 2).max(1) as isize), false),
+            Action::HalfPageDown => self.browse_sidebar((self.sidebar.area.height.saturating_sub(2) / 2).max(1) as isize, false),
             Action::Open if self.sidebar.selected_folded().is_some() => self.sidebar.toggle_selected_fold(&self.ws, self.current.as_deref()),
             Action::Open if self.sidebar.on_view().is_some() => {
                 if let Some(v) = self.sidebar.on_view().and_then(|i| view_of_row(&i)) {
@@ -1658,7 +1660,10 @@ impl App {
             }
             return;
         };
-        self.close_view();
+        // A conversation looked up first: the view stays until it opens (one step).
+        if target.channel().is_none_or(|c| self.ws.conversations.contains_key(c)) {
+            self.close_view();
+        }
         self.open_in_app(target, false);
     }
 
@@ -1754,6 +1759,16 @@ impl App {
         }
     }
 
+    /// A view gives way to the conversation once its message box gets the focus (a command put into it, …): only
+    /// the Threads feed has one, once a thread to reply in was chosen there. (After each event, so the history
+    /// counts it as that event's step; and before each draw.)
+    fn give_way_to_composer(&mut self) {
+        if self.view != View::Conversation && self.focus == Focus::Composer && self.feed_reply.is_none() {
+            self.close_view();
+            self.focus = Focus::Composer;
+        }
+    }
+
     /// Where the main pane is, as the history keeps it (None: no conversation yet).
     fn place(&self) -> Option<Place> {
         match self.view {
@@ -1769,15 +1784,33 @@ impl App {
         }
     }
 
-    /// After an event: the place shown now goes into the history (`went`: by your doing, see [`goes_somewhere`]).
-    fn track_place(&mut self, went: bool) {
+    /// After an event: the place shown now goes into the history, as `went` says (see [`goes_somewhere`]).
+    fn track_place(&mut self, went: Went) {
+        let went = if went == Went::Yes && std::mem::take(&mut self.browsed) { Went::Browse } else { went };
         let place = self.place();
         self.history.arrive(place, went);
+    }
+
+    /// Take up this workspace's history, kept from when it was last shown.
+    fn resume_history(&mut self, kept: &mut super::history::History) {
+        self.history = std::mem::take(kept);
+        self.history.resume();
+    }
+
+    /// Move the sidebar's selection by `delta` rows (`conversations`: conversations, past folded sections), as
+    /// browsing does.
+    fn browse_sidebar(&mut self, delta: isize, conversations: bool) {
+        if conversations { self.sidebar.move_by_conversation(delta) } else { self.sidebar.move_by(delta) }
+        self.browsed = true;
     }
 
     /// Back to the place left last (`forward`: forward to the one gone back from), as opening it does; with
     /// nowhere to go, say so.
     fn step_history(&mut self, forward: bool) {
+        // (Before the workspace is in, every conversation would look gone.)
+        if self.loading {
+            return;
+        }
         let ws = &self.ws;
         let gone = |p: &Place| place_gone(ws, p);
         let to = if forward { self.history.forward(gone) } else { self.history.back(gone) };
@@ -4397,6 +4430,7 @@ impl App {
             status_shown: (String::new(), std::time::Instant::now()),
             loading: true,
             history: Default::default(),
+            browsed: false,
         }
     }
 }
@@ -4425,7 +4459,7 @@ async fn run_workspace(
     app.drafts = super::drafts::load(&client.session.team_id, &client.session.user_id);
     app.ws = Workspace { team_name, team_id: client.session.team_id.clone(), self_id: client.session.user_id.clone(), settings: settings.clone(), ..Default::default() };
     app.sidebar = Sidebar::for_account(&client.session.team_id, &client.session.user_id);
-    app.history = std::mem::take(history);
+    app.resume_history(history);
 
     let mut tick = tokio::time::interval(Duration::from_millis(500));
     let mut video_tick = tokio::time::interval(Duration::from_millis(40));
@@ -4462,22 +4496,23 @@ async fn run_workspace(
         let which_key_due = app.which_key_due();
         let recording_due = app.recording_due();
         // You went somewhere (a key, a click, a notification): a step in the history.
-        let mut went = false;
+        let mut went = Went::No;
         tokio::select! {
             ev = events.next() => {
                 let Some(ev) = ev else { break };
-                went = true;
-                if !handle_terminal(&mut app, ev?) {
+                let ev = ev?;
+                went = if passive(&ev) { Went::No } else { Went::Yes };
+                if !handle_terminal(&mut app, ev) {
                     break;
                 }
                 app.refresh_completion();
             }
             Some(msg) = net_rx.recv() => {
-                went = goes_somewhere(&msg);
+                went = if goes_somewhere(&msg) { Went::Yes } else { Went::No };
                 handle_net(&mut app, msg);
             }
             Some((index, target)) = clicks.recv() => {
-                went = true;
+                went = Went::Yes;
                 if index == app.workspace {
                     app.open_target(target);
                 } else {
@@ -4554,8 +4589,8 @@ async fn run_workspace(
         let _ = tokio::time::timeout(Duration::from_secs(1), app.client.call_raw("rooms.leave", &params)).await;
     }
     app.save_drafts();
-    let App { switch_to, media, clipboard, history: kept, .. } = app;
-    *history = kept;
+    *history = std::mem::take(&mut app.history);
+    let App { switch_to, media, clipboard, .. } = app;
     Ok((switch_to, media, clipboard))
 }
 
@@ -4585,6 +4620,16 @@ fn swallowed(ev: &Event, which_key: Option<Rect>, closing_click: Option<(std::ti
         MouseEventKind::Down(_) | MouseEventKind::Up(_) if which_key.is_some_and(|a| a.contains((column, row).into())) => true,
         MouseEventKind::Down(MouseButton::Left) | MouseEventKind::Up(MouseButton::Left) => closing_click.is_some_and(|(at, c, r)| (c, r) == (column, row) && now.duration_since(at) < DOUBLE_CLICK),
         _ => false,
+    }
+}
+
+/// A terminal event that is not you doing something: the pointer moving, the focus, a resize, a key let go.
+fn passive(ev: &Event) -> bool {
+    match ev {
+        Event::Key(k) => k.kind == KeyEventKind::Release,
+        Event::Mouse(m) => m.kind == MouseEventKind::Moved,
+        Event::FocusGained | Event::FocusLost | Event::Resize(..) => true,
+        Event::Paste(_) => false,
     }
 }
 
@@ -4642,6 +4687,7 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
         Mode::Normal | Mode::Insert => handle_main(app, ev),
     };
     app.sync_feed_composer();
+    app.give_way_to_composer();
     keep_going
 }
 
@@ -5281,8 +5327,8 @@ fn handle_main(app: &mut App, ev: Event) -> bool {
                 app.huddles.hover = None;
                 app.view_action(if m.kind == MouseEventKind::ScrollDown { Action::Down } else { Action::Up });
             }
-            MouseEventKind::ScrollUp if app.sidebar.area.contains((m.column, m.row).into()) => app.sidebar.move_by(-1),
-            MouseEventKind::ScrollDown if app.sidebar.area.contains((m.column, m.row).into()) => app.sidebar.move_by(1),
+            MouseEventKind::ScrollUp if app.sidebar.area.contains((m.column, m.row).into()) => app.browse_sidebar(-1, false),
+            MouseEventKind::ScrollDown if app.sidebar.area.contains((m.column, m.row).into()) => app.browse_sidebar(1, false),
             MouseEventKind::ScrollUp if app.messages.area.contains((m.column, m.row).into()) => {
                 app.messages.scroll_up(3);
                 app.maybe_load_older();
@@ -5545,8 +5591,8 @@ fn run_global(app: &mut App, action: Action) -> bool {
         Action::Workspace9 => app.switch_workspace(8),
         Action::GoBack => app.step_history(false),
         Action::GoForward => app.step_history(true),
-        Action::PrevConversation => app.sidebar.move_by_conversation(-1),
-        Action::NextConversation => app.sidebar.move_by_conversation(1),
+        Action::PrevConversation => app.browse_sidebar(-1, true),
+        Action::NextConversation => app.browse_sidebar(1, true),
         Action::PrevUnread | Action::NextUnread => {
             // From the open conversation, else from where the sidebar's selection is.
             let from = app.current.clone().or_else(|| app.sidebar.selected_id().map(String::from));
@@ -6328,13 +6374,8 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     if app.huddle_view.is_none() && app.focus == Focus::Huddle {
         app.focus = Focus::Messages;
     }
-    // A view gives way to the conversation once its message box gets the focus (a command put
-    // into it, …): only the Threads feed has one, once a thread to reply in was chosen there.
     app.sync_feed_composer();
-    if app.view != View::Conversation && app.focus == Focus::Composer && app.feed_reply.is_none() {
-        app.close_view();
-        app.focus = Focus::Composer;
-    }
+    app.give_way_to_composer();
     let mode = app.mode();
     let call_rows = app.call.as_ref().map_or(0, |call| call.bar_rows(&app.ws, &app.media, f.area().width));
     let [body, call_bar, status] = bottom_rows(f.area(), call_rows);
@@ -8049,6 +8090,7 @@ mod tests {
         use slack_core::rtm::RtmEvent;
         let (url, mut asked) = fake_slack(&[("client.counts", r#"{"ok":true,"activity_v2":{"at_user":0,"dm":5,"message_reaction":1,"thread_v2":0}}"#), ("activity.feed", r#"{"ok":true,"items":[]}"#)]).await;
         let (mut app, mut net) = test_app_at(&url);
+        app.ws.conversations.insert("C1".into(), slack_core::types::Conversation { id: "C1".into(), name: "c".into(), is_channel: true, is_member: true, ..Default::default() });
         // At start: Slack's own badge, from `client.counts` (no feed fetched for it).
         let counts = serde_json::json!({"activity_v2": {"at_user": 1, "dm": 1, "message_reaction": 2, "thread_v2": 1}});
         super::handle_net(&mut app, Net::Boot { boot: serde_json::json!({}), users: vec![], counts: Some(counts) });
@@ -8412,6 +8454,7 @@ mod tests {
         use crossterm::event::{KeyCode, KeyModifiers};
         use ratatui::layout::Rect;
         let (mut app, _net) = test_app();
+        app.ws.conversations.insert("C1".into(), slack_core::types::Conversation { id: "C1".into(), name: "c".into(), is_channel: true, is_member: true, ..Default::default() });
         app.current = Some("C1".into());
         app.sidebar.rebuild(&app.ws);
         let rows = |t: &ratatui::Terminal<ratatui::backend::TestBackend>| {
@@ -8609,7 +8652,7 @@ mod tests {
     /// After an event, as the event loop does: the sidebar's selection followed, and the place kept (`went`: by your doing).
     fn settle(app: &mut super::App, went: bool) {
         app.sync_current();
-        app.track_place(went);
+        app.track_place(if went { super::Went::Yes } else { super::Went::No });
     }
 
     /// [`press`], then [`settle`].
@@ -8625,6 +8668,7 @@ mod tests {
             app.ws.conversations.insert(id.to_string(), slack_core::types::Conversation { id: id.to_string(), name: format!("chan{id}"), is_channel: true, is_member: true, ..Default::default() });
         }
         with_dm(&mut app, "U2");
+        app.loading = false;
         app.jump_to(ids[0]);
         settle(&mut app, false);
         app.status.clear();
@@ -8724,5 +8768,134 @@ mod tests {
         go(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
         assert_eq!(app.current.as_deref(), Some("C1"));
         assert!(!goes_somewhere(&Net::Error("x".into())));
+    }
+
+    /// The DM `DU2`'s item on the Activity view's DMs tab, opened from C1 (and some more channels).
+    fn on_activity_dms(app: &mut super::App, dm: &str) {
+        use super::super::activity::Tab;
+        go(app, KeyCode::Char('a'), KeyModifiers::CONTROL);
+        go(app, KeyCode::Char('2'), KeyModifiers::NONE);
+        let feed = serde_json::json!({"items": [{"feed_ts": "2.0", "is_unread": true, "key": format!("dm-{dm}"), "item": {"type": "dm", "bundle_info": {"payload": {"dm_entry": {"latest_message": {"channel": dm, "ts": "1.0"}}}}}}]});
+        super::handle_net(app, super::Net::ActivityFeed { tab: Tab::Dms, more: false, result: Ok(feed) });
+        settle(app, false);
+    }
+
+    #[tokio::test]
+    async fn a_wheel_flick_over_the_sidebar_is_one_step() {
+        use super::super::activity::Tab;
+        use super::View;
+        use crossterm::event::{Event, MouseEvent, MouseEventKind};
+        let (mut app, _net) = with_channels(&["C1", "C2", "C3", "C4", "C5", "C6"]);
+        on_activity_dms(&mut app, "DU2");
+        go(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.current.as_deref(), Some("DU2"));
+        // Eight notches up over the sidebar, a conversation each.
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        let (x, y) = (app.sidebar.area.x + 2, app.sidebar.area.y + 3);
+        let mut passed = std::collections::HashSet::new();
+        for _ in 0..8 {
+            assert!(super::handle_event(&mut app, Event::Mouse(MouseEvent { kind: MouseEventKind::ScrollUp, column: x, row: y, modifiers: KeyModifiers::NONE })));
+            settle(&mut app, true);
+            passed.insert(app.current.clone());
+        }
+        assert!(passed.len() >= 4, "it went through conversations: {passed:?}");
+        // Back: the DM you were in before the flick; back again: Activity on its tab.
+        go(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
+        assert_eq!((app.view, app.current.as_deref()), (View::Conversation, Some("DU2")));
+        go(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
+        assert_eq!((app.view, app.activity.tab), (View::Activity, Tab::Dms));
+        // j / k in the sidebar, Alt+↑ / Alt+↓: one step too; a click is a step of its own.
+        go(&mut app, KeyCode::Right, KeyModifiers::ALT);
+        app.focus = super::Focus::Sidebar;
+        for (code, mods) in [(KeyCode::Char('k'), KeyModifiers::NONE), (KeyCode::Char('k'), KeyModifiers::NONE), (KeyCode::Up, KeyModifiers::ALT), (KeyCode::Up, KeyModifiers::ALT)] {
+            go(&mut app, code, mods);
+        }
+        assert_ne!(app.current.as_deref(), Some("DU2"));
+        go(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
+        assert_eq!(app.current.as_deref(), Some("DU2"));
+    }
+
+    #[tokio::test]
+    async fn an_activity_item_in_a_conversation_looked_up_first_is_one_step() {
+        use super::super::activity::Tab;
+        use super::{goes_somewhere, Net, View};
+        let (mut app, _net) = with_channels(&["C1"]);
+        on_activity_dms(&mut app, "D7");
+        let target = app.activity.target().expect("the DM's target");
+        go(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.view, View::Activity, "the view stays while D7 is looked up");
+        let dm = slack_core::types::Conversation { id: "D7".into(), is_im: true, is_member: true, user: Some("U7".into()), ..Default::default() };
+        let msg = Net::LinkConversation { result: Ok(dm), target };
+        let went = goes_somewhere(&msg);
+        super::handle_net(&mut app, msg);
+        settle(&mut app, went);
+        assert_eq!((app.view, app.current.as_deref()), (View::Conversation, Some("D7")));
+        go(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
+        assert_eq!((app.view, app.activity.tab), (View::Activity, Tab::Dms), "back: Activity, not C1");
+        go(&mut app, KeyCode::Right, KeyModifiers::ALT);
+        assert_eq!(app.current.as_deref(), Some("D7"));
+    }
+
+    #[tokio::test]
+    async fn back_waits_until_the_workspace_is_in() {
+        let (mut app, _net) = with_channels(&["C1", "C2"]);
+        app.jump_to("C2");
+        settle(&mut app, true);
+        app.loading = true;
+        go(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
+        assert_eq!(app.current.as_deref(), Some("C2"));
+        app.loading = false;
+        go(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
+        assert_eq!(app.current.as_deref(), Some("C1"), "nothing was forgotten");
+    }
+
+    #[tokio::test]
+    async fn a_view_that_gives_way_to_its_composer_is_left_by_that_key() {
+        use super::super::activity::Tab;
+        use super::View;
+        let (mut app, _net) = with_channels(&["C1"]);
+        on_activity_dms(&mut app, "DU2");
+        // ␣as puts /status in the message box: the view gives way to C1. A reply comes before anything else.
+        for c in [' ', 'a', 's'] {
+            assert!(super::handle_terminal(&mut app, crossterm::event::Event::Key(crossterm::event::KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))));
+            settle(&mut app, true);
+        }
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        settle(&mut app, false);
+        assert_eq!((app.view, app.focus), (View::Conversation, super::Focus::Composer));
+        app.composer.clear();
+        go(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        go(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
+        assert_eq!((app.view, app.activity.tab), (View::Activity, Tab::Dms));
+    }
+
+    #[tokio::test]
+    async fn each_workspace_keeps_its_own_history() {
+        use super::View;
+        // Workspace 1: C1, then Activity; switched away from there.
+        let (mut app, _net) = with_channels(&["C1"]);
+        go(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
+        let mut kept = std::collections::HashMap::new();
+        *kept.entry(0usize).or_default() = std::mem::take(&mut app.history);
+        // Workspace 2 starts with none of it.
+        let (mut other, _net2) = test_app();
+        other.resume_history(kept.entry(1).or_default());
+        other.loading = false;
+        go(&mut other, KeyCode::Char('o'), KeyModifiers::CONTROL);
+        assert_eq!(other.status, super::super::history::NOTHING_BACK);
+        // Back in workspace 1: it starts on C1; back is the Activity view it was left on, then C1.
+        let (mut app, _net) = test_app();
+        app.resume_history(kept.entry(0).or_default());
+        app.ws.conversations.insert("C1".into(), slack_core::types::Conversation { id: "C1".into(), name: "c1".into(), is_channel: true, is_member: true, ..Default::default() });
+        with_dm(&mut app, "U2");
+        app.loading = false;
+        app.jump_to("C1");
+        settle(&mut app, false);
+        go(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
+        assert_eq!(app.view, View::Activity);
+        go(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
+        assert_eq!((app.view, app.current.as_deref()), (View::Conversation, Some("C1")));
     }
 }
