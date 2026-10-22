@@ -381,6 +381,8 @@ pub struct Activity {
     pub hover: Option<usize>,
     /// Where links were drawn at the last draw: as in the message panes.
     links: Vec<(Rect, String, Option<AppLink>, bool)>,
+    /// Where reaction pills were drawn at the last draw: the item, its message (channel, ts) and the reaction.
+    pills: Vec<(Rect, usize, (String, String), String)>,
     /// Pictures on screen but not loaded at the last draw.
     pub pictures: Vec<(File, (u16, u16))>,
     /// How many times the list was built (laid out) to be drawn.
@@ -401,6 +403,7 @@ struct Cache {
     built: Built,
     owners: Vec<Option<usize>>,
     links: Vec<messages::LinkSpot>,
+    pills: Vec<messages::PillSpot>,
 }
 
 impl Activity {
@@ -751,6 +754,14 @@ impl Activity {
         self.links.iter().find(|(at, ..)| at.contains((column, row).into())).map(|(_, url, app, _)| (url.clone(), app.clone()))
     }
 
+    /// The reaction pill drawn at a terminal position: its item, the message (channel, ts) and the reaction's name.
+    pub fn pill_at(&self, column: u16, row: u16) -> Option<(usize, (String, String), String)> {
+        if !self.area.contains((column, row).into()) {
+            return None;
+        }
+        self.pills.iter().find(|(at, ..)| at.contains((column, row).into())).map(|(_, n, m, name)| (*n, m.clone(), name.clone()))
+    }
+
     /// Not drawn this time: nothing of it is under the mouse.
     pub fn hide(&mut self) {
         (self.area, self.list, self.hover) = (Rect::default(), Rect::default(), None);
@@ -758,6 +769,7 @@ impl Activity {
         self.tab_spots.clear();
         self.shown.clear();
         self.links.clear();
+        self.pills.clear();
     }
 
     /// Draw the view into `area` (the main pane), its frame lit while it has the focus: the tab bar, then the items.
@@ -769,6 +781,7 @@ impl Activity {
         self.tab_spots.clear();
         self.shown.clear();
         self.links.clear();
+        self.pills.clear();
         self.pictures.clear();
         self.at_end = false;
         let border = Style::default().fg(if focused { p.accent } else { p.dim });
@@ -864,6 +877,12 @@ impl Activity {
             messages::hyperlink(f.buffer_mut(), x, y, width, &spot.url);
             self.links.push((Rect { x, y, width, height: 1 }, spot.url.clone(), spot.app.clone(), spot.wants_author));
         }
+        for spot in cache.pills.iter().filter(|s| (start..end).contains(&s.line)) {
+            let (x, y) = (list.x + spot.col, list.y + (spot.line - start) as u16);
+            if let Some((n, it)) = owners[spot.line].and_then(|n| Some((n, self.items.as_ref()?.get(n)?))) {
+                self.pills.push((Rect { x, y, width: spot.width.min(list.right().saturating_sub(x)), height: 1 }, n, (it.channel.clone(), spot.ts.clone()), spot.name.clone()));
+            }
+        }
         super::scroll::indicator_beside(f, area, list, start, end - start, total, border);
         self.pictures = messages::draw_pictures(f, list, slots, start, 0, media);
         let mut on_screen = HashSet::new();
@@ -885,6 +904,8 @@ impl Activity {
         let built = build(here, &items, &self.messages, width, super::clock::now().date_naive(), avatars);
         let owners = built.owners.iter().map(|o| o.map(|n| visible[n])).collect();
         let links = messages::link_spots(here, &built.messages, &built.lines, &built.message_rows);
+        let mut pills = messages::pill_spots(&built.messages, &built.lines, &built.message_rows);
+        pills.extend(built.pills.iter().cloned());
         // Whose statuses it shows: who reacted, the authors.
         let reacted = items.iter().filter_map(|it| match &it.kind {
             Kind::Reaction { user, .. } => Some(user.as_str()),
@@ -892,7 +913,7 @@ impl Activity {
         });
         let authors = items.iter().flat_map(|it| [it.author.as_deref(), self.messages.get(&it.message_key()).and_then(Option::as_ref).and_then(|m| m.user.as_deref())]).flatten();
         let look = messages::Look::new(here, width, avatars, reacted.chain(authors));
-        self.cache = Some(Cache { of, look, visible, built, owners, links });
+        self.cache = Some(Cache { of, look, visible, built, owners, links, pills });
         self.dirty = false;
         self.builds += 1;
     }
@@ -930,6 +951,8 @@ pub struct Built {
     pub slots: Vec<ImageSlot>,
     pub messages: Vec<Message>,
     pub message_rows: Vec<Option<String>>,
+    /// The pill of each reaction item (what it reacted with), on the message reacted to.
+    pub pills: Vec<messages::PillSpot>,
 }
 
 /// The list of `items` (newest first) `width` columns wide: its lines and the item each line belongs to (none: date
@@ -960,6 +983,20 @@ pub fn build(here: &Here, items: &[&Item], messages: &HashMap<(String, String), 
         let start = out.lines.len();
         let parent = it.parent_key().and_then(|k| messages.get(&k)).and_then(Option::as_ref);
         let (lines, slots, rows, message) = item_lines(here, it, messages.get(&it.message_key()), parent, body, avatars);
+        // A reaction's pill: the first one in its lines (the header has none).
+        if let (Kind::Reaction { name, .. }, Some(m)) = (&it.kind, &message) {
+            let pill = lines.iter().enumerate().find_map(|(k, line)| {
+                let mut col = 0u16;
+                line.spans.iter().find_map(|span| {
+                    let width = unicode_width::UnicodeWidthStr::width(span.content.as_ref()) as u16;
+                    col += width;
+                    messages::pill_count(span).map(|_| (k, col - width, width))
+                })
+            });
+            if let Some((k, col, width)) = pill {
+                out.pills.push(messages::PillSpot { line: start + k, col, width, ts: m.ts.clone(), name: name.clone() });
+            }
+        }
         out.slots.extend(slots.into_iter().map(|mut s| {
             s.line += start;
             s

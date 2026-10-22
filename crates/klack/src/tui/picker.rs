@@ -53,6 +53,13 @@ fn people_line(names: &[String], total: u64, width: usize) -> String {
     String::new()
 }
 
+/// ":tada: · you, alice, +2": who reacted with `r` (`me` first, then in Slack's order), for the pointer over its pill.
+pub fn who_reacted(r: &slack_core::types::Reaction, me: &str, name: &dyn Fn(&str) -> String) -> String {
+    let you = r.users.iter().filter(|u| *u == me).map(|_| super::i18n::tr("you").into_owned());
+    let names: Vec<String> = you.chain(r.users.iter().filter(|u| *u != me).map(|u| name(u))).collect();
+    format!(":{}: · {}", r.name, people_line(&names, r.count, 60))
+}
+
 #[derive(Debug, Default)]
 pub struct EmojiPicker {
     pub query: String,

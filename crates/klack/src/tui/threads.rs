@@ -18,7 +18,7 @@ use slack_core::types::{File, Message};
 use super::applink::{AppLink, Here};
 use super::feed::{Feed, ReadClock};
 use super::media::Media;
-use super::messages::{Avatars, ImageSlot, LinkSpot};
+use super::messages::{Avatars, ImageSlot, LinkSpot, PillSpot};
 
 #[derive(Debug, Clone, Default)]
 pub struct Entry {
@@ -126,6 +126,7 @@ pub struct Threads {
     /// The feed as last built, its links, and how it looked then (its width, people, …) and when.
     feed: Feed,
     feed_links: Vec<LinkSpot>,
+    feed_pills: Vec<PillSpot>,
     built: Option<(super::messages::Look, Instant)>,
     /// How many times the feed was built.
     pub builds: u64,
@@ -141,6 +142,8 @@ pub struct Threads {
     fetched: std::collections::HashSet<(String, String)>,
     /// Where links were drawn at the last draw: as in the message panes.
     links: Vec<(Rect, String, Option<AppLink>, bool)>,
+    /// Where reaction pills were drawn at the last draw: the message (channel, ts) and the reaction.
+    pills: Vec<(Rect, (String, String), String)>,
     /// Pictures on screen but not loaded at the last draw.
     pub wanted: Vec<(File, (u16, u16))>,
     /// Replies deleted here (`delete_here`), to put back if Slack refuses.
@@ -455,12 +458,21 @@ impl Threads {
         self.links.iter().find(|(at, ..)| at.contains((column, row).into())).map(|(_, url, app, _)| (url.clone(), app.clone()))
     }
 
+    /// The reaction pill drawn at a terminal position: its message (channel, ts) and the reaction's name.
+    pub fn pill_at(&self, column: u16, row: u16) -> Option<((String, String), String)> {
+        if !self.area.contains((column, row).into()) {
+            return None;
+        }
+        self.pills.iter().find(|(at, ..)| at.contains((column, row).into())).map(|(_, m, name)| (m.clone(), name.clone()))
+    }
+
     /// Not drawn this time: nothing of it is under the mouse or on screen.
     pub fn hide(&mut self) {
         (self.area, self.list, self.hover, self.visible) = (Rect::default(), Rect::default(), None, 0..0);
         self.rows.clear();
         self.row_threads.clear();
         self.links.clear();
+        self.pills.clear();
     }
 
     /// Draw the view into `area` (the main pane), its frame lit while it has the focus.
@@ -472,6 +484,7 @@ impl Threads {
         self.rows.clear();
         self.row_threads.clear();
         self.links.clear();
+        self.pills.clear();
         self.wanted.clear();
         let border = Style::default().fg(if focused { p.accent } else { p.dim });
         let block = Block::default().borders(Borders::ALL).border_style(border).title(format!(" {} ", super::i18n::tr("Threads")));
@@ -505,6 +518,7 @@ impl Threads {
             let messages: Vec<Message> = entries.iter().flat_map(|e| std::iter::once(&e.root).chain(&e.unread).chain(&e.latest)).cloned().collect();
             let owners: Vec<Option<String>> = self.feed.owners.iter().map(|o| o.as_ref().map(|(_, ts)| ts.clone())).collect();
             self.feed_links = super::messages::link_spots(here, &messages, &self.feed.lines, &owners);
+            self.feed_pills = super::messages::pill_spots(&messages, &self.feed.lines, &owners);
             self.order = self.feed.owners.iter().flatten().cloned().collect();
             self.order.dedup();
             let people = messages.iter().filter_map(|m| m.user.as_deref());
@@ -565,6 +579,12 @@ impl Threads {
             let width = spot.width.min(inner.right().saturating_sub(x));
             super::messages::hyperlink(f.buffer_mut(), x, y, width, &spot.url);
             self.links.push((Rect { x, y, width, height: 1 }, spot.url.clone(), spot.app.clone(), spot.wants_author));
+        }
+        for spot in self.feed_pills.iter().filter(|s| (start..end).contains(&s.line)) {
+            let (x, y) = (inner.x + spot.col, inner.y + (spot.line - start) as u16);
+            if let Some(m) = feed.owners[spot.line].clone() {
+                self.pills.push((Rect { x, y, width: spot.width.min(inner.right().saturating_sub(x)), height: 1 }, m, spot.name.clone()));
+            }
         }
         super::scroll::indicator(f, area, start, end - start, total, border);
         self.wanted = super::messages::draw_pictures(f, inner, slots, start, 0, media);

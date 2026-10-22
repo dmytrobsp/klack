@@ -2650,9 +2650,43 @@ impl App {
         if let Some(n) = self.sidebar.item_at(column, row) {
             return self.sidebar.status_note(&self.ws, n, chrono::Utc::now().timestamp());
         }
+        if let Some((t, name)) = self.pill_at(column, row) {
+            let r = self.find_message(&t.channel, &t.ts)?.reactions.iter().find(|r| r.name == name)?;
+            return Some(super::picker::who_reacted(r, &self.ws.self_id, &|u| self.ws.user_name(u)));
+        }
         let (url, app) = self.thread.as_ref().and_then(|_| self.thread_pane.link_under(column, row)).or_else(|| self.messages.link_under(column, row)).or_else(|| self.threads.link_under(column, row)).or_else(|| self.activity.link_under(column, row))?;
         let here = super::applink::Here { ws: &self.ws, workspaces: &self.addresses, names: &self.workspaces, shown: self.workspace, authors: &self.authors, message: None };
         Some(super::applink::hover_note(&url, app.as_ref(), &here))
+    }
+
+    /// The reaction pill drawn at a terminal position (the thread pane, the messages, the Threads feed, Activity): its
+    /// message as a target, and the reaction's name.
+    fn pill_at(&self, column: u16, row: u16) -> Option<(MessageTarget, String)> {
+        let pane = |thread: bool, (ts, name): (String, String)| Some((self.pane_target(thread, ts)?, name));
+        self.thread
+            .as_ref()
+            .and_then(|_| self.thread_pane.pill_at(column, row))
+            .and_then(|p| pane(true, p))
+            .or_else(|| self.messages.pill_at(column, row).and_then(|p| pane(false, p)))
+            .or_else(|| self.threads.pill_at(column, row).map(|((channel, ts), name)| (MessageTarget { channel, ts, shown: Shown::Feed }, name)))
+            .or_else(|| self.activity.pill_at(column, row).map(|(_, (channel, ts), name)| (MessageTarget { channel, ts, shown: Shown::Activity }, name)))
+    }
+
+    /// A click on reaction pill `name` of message `t`: the message selected, as a click on it does (an Activity item
+    /// is not opened), then your reaction with that emoji added or taken off.
+    fn click_pill(&mut self, column: u16, row: u16, t: MessageTarget, name: String) {
+        match t.shown {
+            Shown::Messages => (self.messages.selected, self.focus) = (Some(t.ts.clone()), Focus::Messages),
+            Shown::Thread => (self.thread_pane.selected, self.focus) = (Some(t.ts.clone()), Focus::Thread),
+            Shown::Feed => (self.threads.selected, self.focus) = (Some((t.channel.clone(), t.ts.clone())), Focus::Messages),
+            Shown::Activity => {
+                if let Some((n, ..)) = self.activity.pill_at(column, row) {
+                    self.activity.selected = n;
+                }
+                self.focus = Focus::Messages;
+            }
+        }
+        self.toggle_reaction(t.channel, t.ts, name);
     }
 
     /// The link into the profile's workspaces drawn at a terminal position (the thread pane, then the messages).
@@ -5721,6 +5755,8 @@ fn handle_main(app: &mut App, ev: Event) -> bool {
                 } else if app.sidebar.click(m.column, m.row) {
                     // On its messages in NORMAL, as Jump to (`i` types).
                     app.focus = Focus::Messages;
+                } else if let Some((t, name)) = app.pill_at(m.column, m.row) {
+                    app.click_pill(m.column, m.row, t, name);
                 } else if let Some(link) = m.modifiers.is_empty().then(|| app.threads.link_under(m.column, m.row).and_then(|(_, app)| app)).flatten() {
                     // A plain click on a link into your Slack in the Threads feed opens it here.
                     app.open_app_link(&link);
@@ -11126,5 +11162,163 @@ mod tests {
         let order: Vec<String> = super::super::messages::shown_messages(&app.ws.timelines["C1"], false).map(|m| m.ts.clone()).collect();
         let at = order.iter().position(|o| *o == first).unwrap();
         assert_eq!(app.messages.new_since.as_deref(), Some(order[at - 1].as_str()), "unread from the message clicked");
+    }
+
+    /// Draw (160 × 40), then the cell showing `symbol` inside `area` (as the draw left it: `area(app)`).
+    fn cell_in(app: &mut super::App, symbol: &str, area: fn(&super::App) -> ratatui::layout::Rect) -> (u16, u16) {
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 40)).unwrap();
+        terminal.draw(|f| super::draw(f, app)).unwrap();
+        let (buf, at) = (terminal.backend().buffer().clone(), area(app));
+        (at.y..at.bottom()).flat_map(|y| (at.x..at.right()).map(move |x| (x, y))).find(|&(x, y)| buf[(x, y)].symbol() == symbol).unwrap_or_else(|| panic!("{symbol} is drawn in {at:?}: {:#?}", screen(&terminal)))
+    }
+
+    /// The places back and forward in the history (not where you are in the place).
+    fn steps(app: &super::App) -> String {
+        let all = format!("{:?}", app.history);
+        all[..all.find(", here:").unwrap_or(all.len())].to_string()
+    }
+
+    /// Who reacted with `name` to message `ts` of C1, and how many, as klack holds it (the first copy found).
+    fn reacted(app: &super::App, ts: &str, name: &str) -> (Vec<String>, u64) {
+        app.find_message("C1", ts).and_then(|m| m.reactions.iter().find(|r| r.name == name)).map_or((vec![], 0), |r| (r.users.clone(), r.count))
+    }
+
+    #[tokio::test]
+    async fn a_click_on_a_reaction_pill_toggles_your_reaction_in_the_conversation_and_the_thread() {
+        use super::Focus;
+        use slack_core::types::{Message, Reaction};
+        let (url, mut asked) = fake_slack(&[]).await;
+        let (mut app, _net) = test_app_at(&url);
+        app.ws.self_id = "U0".into();
+        app.ws.conversations.insert("C1".into(), slack_core::types::Conversation { id: "C1".into(), name: "general".into(), is_channel: true, is_member: true, ..Default::default() });
+        app.loading = false;
+        let r = |name: &str, users: &[&str]| Reaction { name: name.into(), users: users.iter().map(|u| u.to_string()).collect(), count: users.len() as u64 };
+        let parent = Message { ts: top_ts(1), user: Some("U2".into()), text: "the parent".into(), thread_ts: Some(top_ts(1)), reply_count: 1, reactions: vec![r("eyes", &["U2"])], ..Default::default() };
+        let other = Message { ts: top_ts(2), user: Some("U2".into()), text: "another one".into(), ..Default::default() };
+        let reply = Message { ts: reply_ts(1), thread_ts: Some(top_ts(1)), user: Some("U2".into()), text: "a reply".into(), reactions: vec![r("tada", &["U2", "U0"])], ..Default::default() };
+        app.ws.timelines.insert("C1".into(), super::super::state::Timeline { messages: vec![parent.clone(), other], loaded: true, ..Default::default() });
+        app.ws.threads.insert(super::super::state::thread_key("C1", &top_ts(1)), super::super::state::Timeline { messages: vec![parent, reply], loaded: true, ..Default::default() });
+        app.jump_to("C1");
+        settle(&mut app, true);
+        app.open_thread(&top_ts(1));
+        settle(&mut app, true);
+        let history = steps(&app);
+        // The conversation: the parent's pill adds yours, and selects it as a click on it does.
+        app.messages.selected = Some(top_ts(2));
+        let (x, y) = cell_in(&mut app, "👀", |a| a.messages.area);
+        click(&mut app, x, y);
+        let req = asked_for(&mut asked, "reactions.add").await;
+        assert!(req.contains("channel=C1") && req.contains(&format!("timestamp={}", top_ts(1))) && req.contains("name=eyes"), "{req}");
+        assert_eq!(reacted(&app, &top_ts(1), "eyes"), (vec!["U2".to_string(), "U0".to_string()], 2), "shown at once");
+        assert_eq!((app.messages.selected.clone(), app.focus), (Some(top_ts(1)), Focus::Messages), "the message clicked selected");
+        // Again: yours taken off.
+        let (x, y) = cell_in(&mut app, "👀", |a| a.messages.area);
+        click(&mut app, x + 2, y);
+        asked_for(&mut asked, "reactions.remove").await;
+        assert_eq!(reacted(&app, &top_ts(1), "eyes"), (vec!["U2".to_string()], 1));
+        // Beside the pill (the space after it) and on the text: nothing toggled.
+        click(&mut app, x + 5, y);
+        let (tx, ty) = cell_in(&mut app, "p", |a| a.messages.area);
+        click(&mut app, tx, ty);
+        assert_eq!(reacted(&app, &top_ts(1), "eyes"), (vec!["U2".to_string()], 1), "beside a pill");
+        // The thread pane: the reply's pill is yours, so it is taken off first, then given back.
+        let (x, y) = cell_in(&mut app, "🎉", |a| a.thread_pane.area);
+        click(&mut app, x, y);
+        let req = asked_for(&mut asked, "reactions.remove").await;
+        assert!(req.contains(&format!("timestamp={}", reply_ts(1))) && req.contains("name=tada"), "{req}");
+        assert_eq!(reacted(&app, &reply_ts(1), "tada"), (vec!["U2".to_string()], 1));
+        assert_eq!((app.thread_pane.selected.clone(), app.focus), (Some(reply_ts(1)), Focus::Thread));
+        let (x, y) = cell_in(&mut app, "🎉", |a| a.thread_pane.area);
+        click(&mut app, x, y);
+        asked_for(&mut asked, "reactions.add").await;
+        assert_eq!(reacted(&app, &reply_ts(1), "tada"), (vec!["U2".to_string(), "U0".to_string()], 2));
+        // Slack's own event for it changes nothing more.
+        super::handle_rtm(&mut app, slack_core::rtm::RtmEvent::Event(serde_json::json!({"type": "reaction_added", "user": "U0", "reaction": "tada", "item": {"type": "message", "channel": "C1", "ts": reply_ts(1)}})));
+        assert_eq!(reacted(&app, &reply_ts(1), "tada").1, 2, "counted once");
+        settle(&mut app, true);
+        assert_eq!(steps(&app), history, "no step in the history");
+    }
+
+    #[tokio::test]
+    async fn the_pointer_over_a_reaction_pill_says_who_reacted() {
+        use slack_core::types::{Message, Reaction};
+        let (mut app, _net) = with_channels(&["C1"]);
+        app.ws.self_id = "U0".into();
+        let reactions = vec![Reaction { name: "eyes".into(), users: vec!["U2".into(), "U0".into()], count: 3 }];
+        let m = Message { ts: top_ts(1), user: Some("U2".into()), text: "look".into(), reactions, ..Default::default() };
+        app.ws.timelines.insert("C1".into(), super::super::state::Timeline { messages: vec![m], loaded: true, ..Default::default() });
+        let (x, y) = cell_in(&mut app, "👀", |a| a.messages.area);
+        let name = app.ws.user_name("U2");
+        assert_eq!(app.link_note_at(x, y), Some(format!(":eyes: · you, {name}, +1")), "you first, then the others; those not listed as +N");
+        assert_eq!(app.link_note_at(x + 5, y), None, "beside it");
+    }
+
+    #[tokio::test]
+    async fn a_click_on_a_reaction_pill_toggles_your_reaction_in_the_threads_feed() {
+        use slack_core::types::Reaction;
+        let (url, mut asked) = fake_slack(&[]).await;
+        let (mut app, _net) = feed_app(&url);
+        app.ws.self_id = "U0".into();
+        app.threads.entries.as_mut().unwrap()[0].latest[0].reactions = vec![Reaction { name: "eyes".into(), users: vec!["U2".into()], count: 1 }];
+        let reply = ("C1".to_string(), "1729440000.000200".to_string());
+        let (x, y) = cell_in(&mut app, "👀", |a| a.threads.area);
+        click(&mut app, x, y);
+        let req = asked_for(&mut asked, "reactions.add").await;
+        assert!(req.contains("channel=C1") && req.contains("timestamp=1729440000.000200") && req.contains("name=eyes"), "{req}");
+        assert_eq!(reacted(&app, &reply.1, "eyes"), (vec!["U2".to_string(), "U0".to_string()], 2), "shown at once");
+        assert_eq!((app.view, app.threads.selected.clone()), (super::View::Threads, Some(reply.clone())), "selected; the view stays");
+        // Slack's own event for it changes nothing more.
+        super::handle_rtm(&mut app, slack_core::rtm::RtmEvent::Event(serde_json::json!({"type": "reaction_added", "user": "U0", "reaction": "eyes", "item": {"type": "message", "channel": "C1", "ts": reply.1}})));
+        assert_eq!(reacted(&app, &reply.1, "eyes").1, 2, "counted once");
+        let (x, y) = cell_in(&mut app, "👀", |a| a.threads.area);
+        click(&mut app, x, y);
+        asked_for(&mut asked, "reactions.remove").await;
+        assert_eq!(reacted(&app, &reply.1, "eyes"), (vec!["U2".to_string()], 1));
+        click(&mut app, x + 5, y);
+        assert_eq!(reacted(&app, &reply.1, "eyes"), (vec!["U2".to_string()], 1), "beside a pill");
+        assert_eq!(app.view, super::View::Threads);
+    }
+
+    #[tokio::test]
+    async fn a_click_on_a_reaction_pill_toggles_your_reaction_in_activity() {
+        use slack_core::types::Reaction;
+        let (url, mut asked) = fake_slack(&[]).await;
+        let (mut app, _net) = activity_app(&url);
+        let (t1, t2) = ("1729440000.000100", "1729440000.000300");
+        let key = ("C1".to_string(), t1.to_string());
+        let mut mention = app.activity.messages[&key].clone().unwrap();
+        mention.reactions = vec![Reaction { name: "eyes".into(), users: vec!["U2".into()], count: 1 }];
+        app.activity.add_message(key, Some(mention));
+        settle(&mut app, true);
+        let history = steps(&app);
+        // The mention's pill.
+        let (x, y) = cell_in(&mut app, "👀", |a| a.activity.area);
+        click(&mut app, x, y);
+        let req = asked_for(&mut asked, "reactions.add").await;
+        assert!(req.contains("channel=C1") && req.contains(&format!("timestamp={t1}")) && req.contains("name=eyes"), "{req}");
+        assert_eq!(reacted(&app, t1, "eyes"), (vec!["U2".to_string(), "U0".to_string()], 2), "shown at once");
+        assert_eq!((app.view, app.activity.selected), (super::View::Activity, 0), "selected, not opened");
+        let (x, y) = cell_in(&mut app, "👀", |a| a.activity.area);
+        click(&mut app, x, y);
+        asked_for(&mut asked, "reactions.remove").await;
+        assert_eq!(reacted(&app, t1, "eyes"), (vec!["U2".to_string()], 1));
+        // The reaction item's pill: yours with that emoji on the message reacted to.
+        let (x, y) = cell_in(&mut app, "🎉", |a| a.activity.area);
+        click(&mut app, x, y);
+        let req = asked_for(&mut asked, "reactions.add").await;
+        assert!(req.contains(&format!("timestamp={t2}")) && req.contains("name=tada"), "{req}");
+        assert_eq!(reacted(&app, t2, "tada"), (vec!["U1".to_string(), "U0".to_string()], 2));
+        assert_eq!((app.view, app.activity.selected), (super::View::Activity, 1), "selected, not opened");
+        let (x, y) = cell_in(&mut app, "🎉", |a| a.activity.area);
+        click(&mut app, x, y);
+        asked_for(&mut asked, "reactions.remove").await;
+        assert_eq!(reacted(&app, t2, "tada"), (vec!["U1".to_string()], 1));
+        settle(&mut app, true);
+        assert_eq!(steps(&app), history, "no step in the history");
+        // Beside a pill: the item opens, as before; nothing toggled.
+        let (x, y) = cell_in(&mut app, "👀", |a| a.activity.area);
+        click(&mut app, x + 5, y);
+        assert_eq!(reacted(&app, t1, "eyes"), (vec!["U2".to_string()], 1), "beside a pill");
+        assert_eq!(app.view, super::View::Conversation, "opened");
     }
 }

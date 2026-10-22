@@ -184,6 +184,8 @@ pub struct MessagePane {
     /// Where links were drawn at the last draw (for clicks and the hover note): the address, for a link into the
     /// profile's workspaces where it goes, and whether its author is worth asking for.
     links: Vec<(Rect, String, Option<AppLink>, bool)>,
+    /// Where reaction pills were drawn at the last draw (for clicks and the hover note): the message and the reaction.
+    pills: Vec<(Rect, String, String)>,
     /// Thread mode: show the parent and every reply instead of top-level messages.
     pub thread: bool,
     /// Message under the mouse pointer.
@@ -292,6 +294,7 @@ impl MessagePane {
     pub fn hide(&mut self) {
         self.area = Rect::default();
         self.links.clear();
+        self.pills.clear();
         self.hover = None;
     }
 
@@ -308,6 +311,14 @@ impl MessagePane {
             return None;
         }
         self.links.iter().find(|(at, ..)| at.contains((column, row).into())).map(|(_, url, app, _)| (url.clone(), app.clone()))
+    }
+
+    /// The reaction pill drawn at a terminal position: its message (ts) and the reaction's name.
+    pub fn pill_at(&self, column: u16, row: u16) -> Option<(String, String)> {
+        if !self.area.contains((column, row).into()) {
+            return None;
+        }
+        self.pills.iter().find(|(at, ..)| at.contains((column, row).into())).map(|(_, ts, name)| (ts.clone(), name.clone()))
     }
 
     /// Where a menu for a message opens: its first row on screen, past the gutter (the pane's
@@ -336,6 +347,7 @@ impl MessagePane {
         let following = self.anchor.is_none();
         self.area = area;
         self.links.clear();
+        self.pills.clear();
         let title = if title.is_empty() { String::new() } else { format!(" {title} ") };
         let border = if focused { Style::default().fg(super::theme::p().accent) } else { Style::default().fg(super::theme::p().dim) };
         let block = Block::default().borders(Borders::ALL).border_style(border).title(title);
@@ -570,6 +582,11 @@ impl MessagePane {
                 let width = spot.width.min(inner.right().saturating_sub(x));
                 hyperlink(f.buffer_mut(), x, y, width, &spot.url);
                 self.links.push((Rect { x, y, width, height: 1 }, spot.url.clone(), spot.app, spot.wants_author));
+            }
+            for spot in pill_spots(&t.messages, &lines, &owners).into_iter().filter(|s| (start..end).contains(&s.line)) {
+                let (x, y) = (inner.x + spot.col, inner.y + (pad + spot.line - start) as u16);
+                let width = spot.width.min(inner.right().saturating_sub(x));
+                self.pills.push((Rect { x, y, width, height: 1 }, spot.ts, spot.name));
             }
         }
         if let (Some(top), Some(bottom)) = (on_screen.first().and_then(index), on_screen.last().and_then(index)) {
@@ -870,6 +887,61 @@ pub fn link_spots(here: &Here, messages: &[Message], lines: &[Line], owners: &[O
                     }
                     col += width;
                 }
+            }
+        }
+        n = end;
+    }
+    out
+}
+
+/// A reaction pill in built message lines: `width` cells at `col` of `line`, reaction `name` on message `ts`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PillSpot {
+    pub line: usize,
+    pub col: u16,
+    pub width: u16,
+    pub ts: String,
+    pub name: String,
+}
+
+/// A span drawn by [`reaction_pill`]: " 👍 2 " (or "[👍 2]"; a picture's cells blank), the count after the last
+/// unbreakable space.
+pub fn pill_count(span: &Span) -> Option<u64> {
+    let c = span.content.as_ref();
+    let inner = c.strip_prefix('\u{a0}').and_then(|c| c.strip_suffix('\u{a0}')).or_else(|| c.strip_prefix('[').and_then(|c| c.strip_suffix(']')))?;
+    let (emoji, count) = inner.rsplit_once('\u{a0}')?;
+    (!emoji.is_empty()).then(|| count.parse().ok()).flatten()
+}
+
+/// Where the reaction pills of the messages in `lines` (`owners`: whose each line is) are: the rows of each message
+/// made of pills alone (and the spaces between them, the gutter), matched in order to its reactions (each pill's
+/// count its reaction's).
+pub fn pill_spots(messages: &[Message], lines: &[Line], owners: &[Option<String>]) -> Vec<PillSpot> {
+    let blank = |s: &Span| s.content.chars().all(|c| c.is_whitespace() || matches!(c, '▌' | '▎' | '▏'));
+    let mut out = Vec::new();
+    let mut n = 0;
+    while n < lines.len() {
+        let Some(ts) = owners[n].as_deref() else {
+            n += 1;
+            continue;
+        };
+        let end = owners[n..].iter().position(|o| o.as_deref() != Some(ts)).map_or(lines.len(), |k| n + k);
+        let reactions = lines[n..end].iter().any(|l| l.spans.iter().any(|s| pill_count(s).is_some())).then(|| messages.iter().find(|m| m.ts == ts)).flatten().map(|m| m.reactions.as_slice()).unwrap_or_default();
+        let mut next = reactions.iter();
+        'lines: for (k, line) in lines[n..end].iter().enumerate() {
+            if !line.spans.iter().all(|s| pill_count(s).is_some() || blank(s)) {
+                continue;
+            }
+            let mut col = 0u16;
+            for span in &line.spans {
+                let width = unicode_width::UnicodeWidthStr::width(span.content.as_ref()) as u16;
+                if let Some(count) = pill_count(span) {
+                    match next.next() {
+                        Some(r) if r.count == count => out.push(PillSpot { line: n + k, col, width, ts: ts.to_string(), name: r.name.clone() }),
+                        _ => break 'lines,
+                    }
+                }
+                col += width;
             }
         }
         n = end;
@@ -1537,6 +1609,48 @@ mod tests {
         // Plain text (notifications, search) never gets a placeholder.
         let plain_text = format::plain_text(&format::message_blocks(&m.text, &m.blocks), &|i| text::inline_plain(&ws, i));
         assert_eq!(plain_text, "so :piggy: much ✅");
+    }
+
+    #[test]
+    fn reaction_pills_are_found_where_they_are_drawn() {
+        let mut ws = Workspace { self_id: "U0".into(), emoji_pictures: true, ..Default::default() };
+        ws.custom_emoji.insert("piggy".into(), "https://emoji.slack-edge.com/T1/piggy/b77.png".into());
+        ws.number_emoji();
+        let r = |name: &str, users: &[&str]| Reaction { name: name.into(), users: users.iter().map(|u| u.to_string()).collect(), count: users.len() as u64 };
+        let mut t = Timeline { loaded: true, ..Default::default() };
+        t.upsert(Message { reactions: vec![r("eyes", &["U2", "U3"]), r("piggy", &["U0"]), r("tada", &["U2"])], ..msg("1729440000.000100", "U2", "look") });
+        let (workspaces, names) = (vec![], vec![]);
+        let authors = crate::tui::applink::Authors::new();
+        let here = Here { ws: &ws, workspaces: &workspaces, names: &names, shown: 0, authors: &authors, message: None };
+        let media = Media::with(ratatui_image::picker::Picker::halfblocks());
+        // Narrow: the pills wrap onto two rows.
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(18, 10)).unwrap();
+        let mut pane = MessagePane::default();
+        terminal.draw(|f| pane.draw(f, f.area(), &here, "t", Some(&t), true, &media)).unwrap();
+        let mut found: Vec<(u16, String, usize)> = Vec::new();
+        for y in 0..10 {
+            for x in 0..18 {
+                if let Some((ts, name)) = pane.pill_at(x, y) {
+                    assert_eq!(ts, "1729440000.000100");
+                    match found.last_mut() {
+                        Some((row, last, cells)) if *row == y && *last == name => *cells += 1,
+                        _ => found.push((y, name, 1)),
+                    }
+                }
+            }
+        }
+        let pills: Vec<(&str, usize)> = found.iter().map(|(_, n, c)| (n.as_str(), *c)).collect();
+        assert_eq!(pills, [("eyes", 6), ("piggy", 6), ("tada", 6)], "each pill's every cell, in order; the custom one (a picture) too");
+        assert!(found.iter().map(|f| f.0).collect::<std::collections::HashSet<_>>().len() > 1, "wrapped: {found:?}");
+        let buf = terminal.backend().buffer().clone();
+        let (x, y) = (0..10).flat_map(|y| (0..18).map(move |x| (x, y))).find(|&(x, y)| buf[(x, y)].symbol() == "👀").expect("the pill is drawn");
+        assert_eq!(pane.pill_at(x - 1, y).map(|p| p.1).as_deref(), Some("eyes"), "its padding");
+        assert_eq!(pane.pill_at(x + 5, y), None, "the space beside it");
+        let (lx, ly) = (0..10).flat_map(|y| (0..18).map(move |x| (x, y))).find(|&(x, y)| buf[(x, y)].symbol() == "l").expect("the text");
+        assert_eq!(pane.pill_at(lx, ly), None, "the message's text");
+        // Not drawn this time: nothing there to click.
+        pane.hide();
+        assert_eq!(pane.pill_at(x, y), None);
     }
 
     #[test]
