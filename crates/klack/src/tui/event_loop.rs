@@ -198,9 +198,11 @@ struct App {
     call: Option<super::call::Call>,
     /// Presence subscription sent on the current RTM connection.
     presence_subscribed: bool,
-    /// People whose `user_change` events were asked for on the current RTM connection, and
-    /// when the list was last checked for new ones.
-    followed: (std::collections::HashSet<String>, Option<std::time::Instant>),
+    /// People whose `user_change` events were asked for on the current RTM connection, when the
+    /// list was last checked for new ones, and what it went by then (`Workspace::people_key`).
+    followed: (std::collections::HashSet<String>, Option<std::time::Instant>, Option<u64>),
+    /// How many times the people to follow were gone through.
+    follow_passes: u64,
     /// Open conversation details (␣cd).
     details: Option<super::details::Details>,
     /// Open profile card.
@@ -2299,12 +2301,18 @@ impl App {
     /// DMs, message authors — as the web client does. On Slack's gateway they come as
     /// `user_invalidated` ([`Self::profile_invalidated`]); on the `rtm.connect` fallback not at all, hence
     /// also [`Self::refresh_statuses`]. New people are added every couple of seconds, in batches of
-    /// Slack's limit; one whose change came while not shown is looked up now.
+    /// Slack's limit; one whose change came while not shown is looked up now. Only when who is shown can have changed
+    /// (people, conversations, loaded messages: [`Workspace::people_key`]), at most every [`FOLLOW_EVERY`].
     fn follow_profiles(&mut self, now: std::time::Instant) {
         if !self.connected || self.ws.users.is_empty() || self.followed.1.is_some_and(|t| now.duration_since(t) < FOLLOW_EVERY) {
             return;
         }
         self.followed.1 = Some(now);
+        let key = self.ws.people_key();
+        if self.followed.2 == Some(key) {
+            return;
+        }
+        self.follow_passes += 1;
         let new: Vec<String> = self.ws.people_to_follow().into_iter().filter(|id| !self.followed.0.contains(id)).collect();
         for id in &new {
             if self.lookups.stale.remove(id) {
@@ -2317,6 +2325,8 @@ impl App {
             }
             self.followed.0.extend(chunk.iter().cloned());
         }
+        // (All asked for: not again until something changes.)
+        self.followed.2 = Some(key);
     }
 
     /// Show the huddle view in place of the messages, or the messages again.
@@ -4242,6 +4252,7 @@ impl App {
             autosave: (None, None, std::time::Instant::now(), true),
             presence_subscribed: false,
             followed: Default::default(),
+            follow_passes: 0,
             call: None,
             pending_hit: None,
             ringing: None,
@@ -7741,6 +7752,45 @@ mod tests {
         assert!(app.lookups.due.contains("U3") && app.lookups.stale.is_empty());
     }
 
+    #[tokio::test]
+    async fn the_people_follow_pass_runs_only_when_who_is_shown_can_change() {
+        use slack_core::rtm::RtmEvent;
+        let (mut app, _net) = test_app();
+        let (rtm, _frames) = tokio::sync::mpsc::unbounded_channel();
+        app.rtm_commands = rtm;
+        with_dm(&mut app, "U2");
+        super::handle_rtm(&mut app, RtmEvent::Connected(slack_core::api::Socket::Gateway));
+        let first = app.follow_passes;
+        assert!(app.followed.0.contains("U2") && first == 1);
+        let later = |s: u64| std::time::Instant::now() + std::time::Duration::from_secs(s);
+        // Nothing that shows people changed (presence, typing, the clock): no pass.
+        super::handle_rtm(&mut app, RtmEvent::Event(serde_json::json!({"type": "presence_change", "user": "U2", "presence": "away"})));
+        super::handle_rtm(&mut app, RtmEvent::Event(serde_json::json!({"type": "user_typing", "channel": "DU2", "user": "U2"})));
+        app.follow_profiles(later(5));
+        app.follow_profiles(later(10));
+        assert_eq!(app.follow_passes, first, "not run again");
+        // A message from someone new in a loaded conversation: followed at the next pass.
+        let mut t = super::super::state::Timeline::default();
+        t.upsert(slack_core::types::Message { ts: "1.000100".into(), user: Some("U4".into()), ..Default::default() });
+        app.ws.timelines.insert("C1".into(), t);
+        app.follow_profiles(later(15));
+        assert!(app.followed.0.contains("U4"), "followed");
+        assert_eq!(app.follow_passes, first + 1);
+        // Still at most one pass every couple of seconds.
+        app.ws.timelines.get_mut("C1").unwrap().upsert(slack_core::types::Message { ts: "2.000100".into(), user: Some("U5".into()), ..Default::default() });
+        app.follow_profiles(later(16));
+        assert!(!app.followed.0.contains("U5"), "not yet");
+        app.follow_profiles(later(18));
+        assert!(app.followed.0.contains("U5"));
+        // A group DM whose people come to be known.
+        app.ws.conversations.insert("G1".into(), slack_core::types::Conversation { id: "G1".into(), is_mpim: true, name: "mpdm-u0--u6-1".into(), ..Default::default() });
+        app.follow_profiles(later(21));
+        assert!(!app.followed.0.contains("U6"), "not known yet");
+        app.ws.put_user(slack_core::types::User { id: "U6".into(), name: "u6".into(), ..Default::default() });
+        app.follow_profiles(later(24));
+        assert!(app.followed.0.contains("U6"));
+    }
+
     /// The next request to Slack's `method` (others are passed over), within 10 s.
     async fn next_call(asked: &mut tokio::sync::mpsc::UnboundedReceiver<String>, method: &str) -> Option<String> {
         let wait = async {
@@ -8090,6 +8140,9 @@ mod tests {
         });
         time("people_to_follow", 5, &mut || {
             std::hint::black_box(ws.people_to_follow());
+        });
+        time("people_key (what the people-follow pass now checks per turn)", 100, &mut || {
+            std::hint::black_box(ws.people_key());
         });
         time("beat_jitter", 10_000, &mut || {
             std::hint::black_box(super::super::call::beat_jitter());

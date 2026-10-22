@@ -552,6 +552,24 @@ impl Workspace {
         ids.into_iter().filter(|id| self.is_person(id)).collect()
     }
 
+    /// What [`Self::people_to_follow`] goes by, in a number that changes when it changes: the people known (and
+    /// changes to them), the conversations and which are archived, and each loaded timeline's and thread's length
+    /// and ends. Cheap: no message is looked at but the first and last of each.
+    pub fn people_key(&self) -> u64 {
+        use std::hash::{BuildHasher, Hash, Hasher};
+        let hasher = std::hash::BuildHasherDefault::<std::collections::hash_map::DefaultHasher>::default();
+        let mut h = hasher.build_hasher();
+        (self.look, self.users.len(), self.conversations.len(), self.conversations.values().filter(|c| c.is_archived).count()).hash(&mut h);
+        // (In any order: the maps have none.)
+        let mut loaded = 0u64;
+        for (key, t) in self.timelines.iter().chain(&self.threads) {
+            let ends = (t.messages.first().map(|m| m.ts.as_str()), t.messages.last().map(|m| m.ts.as_str()));
+            loaded = loaded.wrapping_add(hasher.hash_one((key, t.messages.len(), ends)));
+        }
+        (self.timelines.len(), self.threads.len(), loaded).hash(&mut h);
+        h.finish()
+    }
+
     /// The people to look up again for their statuses, at most `max`, the ones shown first: the
     /// authors of the `timelines` (timeline or thread keys: the open conversation and thread; newest
     /// first), then the people of the DMs and group DMs `on_screen`, then those of the `others` in
