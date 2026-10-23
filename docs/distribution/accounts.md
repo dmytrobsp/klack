@@ -7,6 +7,19 @@ settings.
 Prices and steps were checked on **2026-10-23**. Websites change. Where a step could not be confirmed, it says
 **(verify)**: if what you see is different, do what the site says and tell Claude what was different.
 
+## Status on 2026-10-23
+
+| What | Status |
+|---|---|
+| Apple Developer Program, its API key and the Developer ID certificate (section 2) | **done**: the macOS builds are signed and notarized |
+| SSL.com, the Windows code-signing certificate (section 1) | **postponed** until further notice: its ID check refused your passport. `ttyak.exe` is not signed |
+| Domain `ttyak.sh` (section 3) | **done**: bought at Namecheap, live on GitHub Pages with HTTPS |
+| AUR account (section 4) | **closed**: the AUR's account sign-up is closed, so there is no account and nothing is pushed there |
+| Chocolatey account and API key (section 5) | **done** |
+| GitHub: the winget fork, the two tokens, the tap and the bucket (section 6) | **done** |
+
+The sections below are the steps as they were written before; where a step is postponed or closed, it says so.
+
 ## Safety rules for every step
 
 - **Never paste a secret into a chat with Claude**, into an issue, or into a file inside the repository.
@@ -39,35 +52,41 @@ Start the slow ones first. They wait for other people.
 
 Total per year, roughly: $99 + $129 + $180 ≈ **$408**, plus the domain's renewal.
 
-Start 1 and 2 today. 3 is done; 4 to 6 can be done any time, in any order.
+That was the plan on 2026-10-23: 1 and 2 first, 4 to 6 any time. The status table above says how each one ended; with
+SSL.com postponed, the yearly cost is Apple's $99 plus the domain's renewal.
 
 ## All the secrets
 
-The release workflows use these GitHub secrets, by name only. A workflow job skips itself with a notice when its
-secrets are missing.
+The release workflow uses these GitHub secrets, by name only. A publishing job (the tap and the bucket, the AUR,
+Chocolatey) skips itself with a notice when its secret is missing, and winget then only does a dry run. The macOS
+signing is the exception: a tag of `dmytrobsp/ttyak` without the Apple secrets fails on purpose, so a release is never
+published unsigned. The `ES_*` secrets are postponed with SSL.com: the release workflow does not use them.
 
 | Secret name | What it is | Who sets it | Used for |
 |---|---|---|---|
 | `PUBLISH_TOKEN` | GitHub fine-grained token: Contents read/write on `homebrew-ttyak` and `scoop-ttyak` | you | Homebrew tap, Scoop bucket |
 | `WINGET_TOKEN` | GitHub classic token with the `public_repo` scope | you | winget pull requests |
 | `CHOCOLATEY_API_KEY` | Chocolatey API key | you | Chocolatey push |
-| `AUR_SSH_KEY` | private SSH key for the AUR | Claude's script `tools/publish/aur-key.sh` | AUR push |
+| `AUR_SSH_KEY` | private SSH key for the AUR | Claude's script `tools/publish/aur-key.sh` | AUR push (not until an AUR account exists) |
 | `APPLE_P12` | Developer ID Application certificate and its key (p12, base64) | Claude's script `tools/signing/apple-csr.sh` | macOS signing |
 | `APPLE_P12_PASSWORD` | the p12's password (random) | Claude's script `tools/signing/apple-csr.sh` | macOS signing |
 | `APPLE_API_KEY` | the App Store Connect API key file (`AuthKey_….p8`), its whole text | you | macOS notarization |
 | `APPLE_API_KEY_ID` | that key's Key ID | you | macOS notarization |
 | `APPLE_API_ISSUER` | the Issuer ID | you | macOS notarization |
 | `APPLE_TEAM_ID` | your Apple Team ID | you | macOS signing check |
-| `ES_USERNAME` | your SSL.com account username | you | Windows signing |
-| `ES_PASSWORD` | your SSL.com account password | you | Windows signing |
-| `ES_CREDENTIAL_ID` | the eSigner credential ID of the certificate | you | Windows signing |
-| `ES_TOTP_SECRET` | the eSigner TOTP "secret code" | you | Windows signing |
+| `ES_USERNAME` | your SSL.com account username | you | Windows signing (postponed: not used) |
+| `ES_PASSWORD` | your SSL.com account password | you | Windows signing (postponed: not used) |
+| `ES_CREDENTIAL_ID` | the eSigner credential ID of the certificate | you | Windows signing (postponed: not used) |
+| `ES_TOTP_SECRET` | the eSigner TOTP "secret code" | you | Windows signing (postponed: not used) |
 
 Claude's scripts never print a secret. They pipe it straight into `gh secret set`.
 
 ---
 
 ## 1. SSL.com: the Windows code-signing certificate
+
+**Postponed until further notice** (2026-10-23): SSL.com's ID check refused your passport. The steps stay here for
+when it is taken up again.
 
 **What it is for.** Windows shows your legal name as the publisher of `ttyak.exe`. The certificate is an
 "Individual Validation" (IV) code-signing certificate. Its key lives in SSL.com's cloud ("eSigner"), so CI can sign
@@ -121,7 +140,8 @@ may ask for another document (verify).
 **Remember.** With these four values anyone can sign programs in your name. Keep them only in GitHub secrets, your
 password manager and the authenticator app. If you change your SSL.com password, set `ES_PASSWORD` again.
 
-**Claude then:** signs `ttyak.exe` in the release workflow with SSL.com's GitHub action `sslcom/esigner-codesign`.
+**Claude then (postponed with the certificate):** would sign `ttyak.exe` in the release workflow with SSL.com's GitHub
+action `sslcom/esigner-codesign`. Until then `ttyak.exe` is not signed.
 
 ---
 
@@ -225,14 +245,17 @@ its subdomains (no one can take the domain over if the site is ever switched off
 **Remember.** Keep auto-renew on for `ttyak.sh` at Namecheap (verify that it is on). If the domain lapses, the site, the
 install one-liners and ttyak's update check (`https://ttyak.sh/latest.json`) stop working.
 
-**Claude then:** once public DNS shows the records, sets `ttyak.sh` as the custom domain of the repository's Pages site
-(through GitHub's API), waits for the certificate and turns on **Enforce HTTPS**. The site is deployed by the Pages
-workflow (GitHub Actions), and for that GitHub ignores a `CNAME` file: the domain is a repository setting, so the repo
-has no `site/CNAME`. GitHub then redirects `dmytrobsp.github.io/ttyak` and `www.ttyak.sh` to `https://ttyak.sh`.
+**What Claude did:** once public DNS showed the records, Claude set `ttyak.sh` as the custom domain of the repository's
+Pages site (through GitHub's API), waited for the certificate and turned on **Enforce HTTPS**. The site is deployed by
+the Pages workflow (GitHub Actions), and for that GitHub ignores a `CNAME` file: the domain is a repository setting, so
+the repo has no `site/CNAME`. GitHub redirects `dmytrobsp.github.io/ttyak` and `www.ttyak.sh` to `https://ttyak.sh`.
 
 ---
 
 ## 4. AUR: the Arch Linux package `ttyak-bin`
+
+**Closed** (2026-10-23): the AUR's account sign-up is closed, so there is no account yet. Nothing is pushed to the AUR
+until one exists. The steps stay here for when the sign-up opens again.
 
 **What it is for.** Once the AUR account exists, Arch users install with an AUR helper (`yay -S ttyak-bin`) and CI
 pushes each new version over SSH. Until then the release's recipes zip carries the PKGBUILD (`makepkg -si`).
@@ -257,9 +280,9 @@ pushes each new version over SSH. Until then the release's recipes zip carries t
    password** → **Update**.
 7. Tell Claude it is done.
 
-**Claude then:** makes the package, and the release workflow pushes it on each release. On 2026-10-23 the name
-`ttyak-bin` was
-free.
+**Claude then:** the package is made (the release's recipes zip carries its PKGBUILD). The release workflow pushes it
+on each release only once the account exists and `AUR_SSH_KEY` is set; until then the AUR job skips itself with a
+notice. On 2026-10-23 the name `ttyak-bin` was free.
 
 ---
 
@@ -332,8 +355,8 @@ that exist.
 **When a token expires**, the publishing jobs fail with an error about authentication. Make a new token the same way
 and set the secret again.
 
-**Claude then:** creates the tap and bucket repositories (with your OK), and the release workflow jobs that push to them and to
-winget.
+**What Claude did:** created the tap and bucket repositories (with your OK), and the release workflow jobs that push to
+them and to winget.
 
 ---
 

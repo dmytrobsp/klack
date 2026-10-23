@@ -353,7 +353,7 @@ switches that stop the sign-in "set up a profile" interception (find the current
 - [ ] **Step 2:** FAIL. **Step 3:** implement. **Step 4:** green.
 - [ ] **Step 5: Live (fake home):** kitty test window running `env HOME=$F … ./target/debug/klack --profile g auth
   login; exec sleep 600` (one command; Chrome absent there): the list shows `Firefox · klack-test` with rslack-testbed
-  `as dmytro.dudnyk`; j/k, `/rsl`, Esc, Space, Enter → `✓ Signed in …`; `auth status` → source `Firefox ·
+  `as <A's handle>`; j/k, `/rsl`, Esc, Space, Enter → `✓ Signed in …`; `auth status` → source `Firefox ·
   klack-test`; again → `already signed in`; `another workspace…` → type `rslack-testbed` (screenshot shows the dim
   `.slack.com`), Esc out; `--profile typo` + Esc → no `$F/.config/klack/typo` nor cache folder; a mouse click on a row
   (SGR escape via `kitty @ send-text`) marks it. Plain `klack --profile g2` (no sign-ins) → guide → TUI opens.

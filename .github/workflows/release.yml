@@ -78,10 +78,12 @@ jobs:
         with:
           path: /tmp/ttyak-apt/*.deb
           key: ${{ steps.apt-key.outputs.key }}
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned by commit: they run before the macOS signing steps, which hold the Apple secrets. (CI keeps the tags.)
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: ${{ matrix.target }}
       - run: cargo build --locked --release --target ${{ matrix.target }}

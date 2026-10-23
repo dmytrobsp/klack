@@ -47,6 +47,8 @@ Or with a package manager:
 | Fedora, RHEL | the release's `.rpm`: `sudo dnf install ./ttyak-<version>-1.x86_64.rpm` (arm: `.aarch64.rpm`) |
 | Arch | not in the AUR yet (its sign-up is closed for now): unzip the release's `ttyak-<version>-recipes.zip` and run `makepkg -si` in its `aur` folder |
 
+winget and Chocolatey review each new version: they can list it a few days after the release.
+
 Homebrew on Linux uses the system's ALSA library: `libasound2` (`libasound2t64` on Ubuntu 24.04, Debian 13 and later) on
 Debian/Ubuntu, `alsa-lib` on Fedora/Arch. Homebrew's own alsa-lib is only a fallback for systems without one, and it needs
 glibc 2.38 or newer.
@@ -94,7 +96,8 @@ it was installed:
 
 - the install script: F6 → Updates → Update (it downloads the new version, checks it and puts it in place; start
   ttyak again), or run the one-liner again
-- `brew upgrade ttyak` · `scoop update ttyak` · `winget upgrade dmytrobsp.ttyak` · `choco upgrade ttyak`
+- `brew upgrade ttyak` · `scoop update ttyak` · `winget upgrade dmytrobsp.ttyak` · `choco upgrade ttyak` (winget
+  and Chocolatey review each new version: they can list it a few days after the release)
 - `.deb`, `.rpm`: install the new release's package as above; Arch: `makepkg -si` with the new release's recipes zip
 - by hand: the new zip's `ttyak` over the old one
 
