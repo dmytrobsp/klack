@@ -121,6 +121,11 @@ class AllPlatforms(unittest.TestCase):
         caveats = block(rb, "def caveats")
         self.assertIn("ttyak purge", caveats)
         self.assertIn("brew uninstall ttyak", caveats)
+        # Linux only: the system's ALSA library first, Homebrew's a fallback that needs a newer glibc.
+        linux_note = block(caveats, "if OS.linux?")
+        for words in ["libasound2", "alsa-lib", "glibc 2.38"]:
+            self.assertIn(words, linux_note)
+        self.assertIn("brew linkage", block(rb, "def install"), "why brew linkage misses libasound.so.2")
         self.assertNotIn("install.json", rb)
 
     def launcher(self, tmp):

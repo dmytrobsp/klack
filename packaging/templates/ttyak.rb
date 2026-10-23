@@ -46,7 +46,8 @@ class Ttyak < Formula
 
     # Linux: the program links libasound.so.2. The system's, set up for the desktop's sound server (PipeWire,
     # PulseAudio), comes first; Homebrew's alsa-lib only when the system has none. So no rpath (it would win): the
-    # program goes in libexec and bin gets a launcher that picks.
+    # program goes in libexec and bin gets a launcher that picks. (`brew linkage` reads libexec/ttyak without the
+    # launcher, so it reports libasound.so.2, or on old systems libgcc_s and libstdc++, as missing.)
     libexec.install "ttyak"
     arch = Hardware::CPU.arm? ? "aarch64" : "x86_64"
     cache_tag = Hardware::CPU.arm? ? "AArch64" : "x86-64"
@@ -74,11 +75,18 @@ class Ttyak < Formula
   end
 
   def caveats
-    <<~EOS
+    text = <<~EOS
       ttyak keeps its settings, sign-ins, drafts and caches in your home folder, and
       `brew uninstall ttyak` leaves them there. To delete them, run this first:
         ttyak purge
     EOS
+    if OS.linux?
+      text += <<~EOS
+        ttyak uses your system's ALSA library (libasound2 on Debian/Ubuntu, alsa-lib on Fedora/Arch).
+        Homebrew's alsa-lib is only a fallback for systems without one, and it needs glibc 2.38 or newer.
+      EOS
+    end
+    text
   end
 
   test do
