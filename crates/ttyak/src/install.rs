@@ -2,9 +2,6 @@
 //! manager (told by the executable's path or by the package databases' file lists), or by hand; and which release
 //! platform this build is.
 
-// The update screen and `ttyak uninstall` use this; until then nothing outside the tests does.
-#![allow(dead_code)]
-
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -17,10 +14,11 @@ macro_rules! winget_id {
 }
 
 /// The id the winget manifest uses.
+#[allow(dead_code)] // the winget step (a later task) sets it; until then only the tests read it
 pub const WINGET_ID: &str = winget_id!();
 
 /// The file the install scripts write next to the executable.
-const RECORD_FILE: &str = "install.json";
+pub const RECORD_FILE: &str = "install.json";
 
 /// How a copy of ttyak was installed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -62,6 +60,7 @@ impl Method {
 
     /// The package manager's command that updates ttyak; None where ttyak updates itself or nothing does it in one
     /// command.
+    #[allow(dead_code)] // for the update screen (a later step)
     pub fn update_command(self) -> Option<&'static str> {
         match self {
             Method::Homebrew => Some("brew upgrade ttyak"),
@@ -94,6 +93,13 @@ pub struct Record {
     pub method: String,
     pub version: String,
     pub dir: PathBuf,
+}
+
+impl Record {
+    /// The `install.json` in `dir`, None when there is none or it cannot be read.
+    pub fn read(dir: &Path, fs: &impl Probe) -> Option<Record> {
+        fs.read(&dir.join(RECORD_FILE)).and_then(|text| serde_json::from_str(&text).ok())
+    }
 }
 
 /// This copy of ttyak: how it was installed, where it is, whether ttyak can write its folder.
@@ -250,11 +256,7 @@ fn hint(exe: &Path, fs: &impl Probe) -> Option<Method> {
 /// `install.json` next to it, else what its path hints at, else unknown.
 pub fn detect(exe: &Path, fs: &impl Probe) -> Install {
     let dir = exe.parent().filter(|d| !d.as_os_str().is_empty());
-    let recorded = || {
-        dir.and_then(|d| fs.read(&d.join(RECORD_FILE)))
-            .and_then(|text| serde_json::from_str::<Record>(&text).ok())
-            .and_then(|r| Method::from_name(&r.method))
-    };
+    let recorded = || dir.and_then(|d| Record::read(d, fs)).and_then(|r| Method::from_name(&r.method));
     let method = owner(exe, fs).or_else(recorded).or_else(|| hint(exe, fs)).unwrap_or(Method::Unknown);
     let writable = method == Method::Script && dir.is_some_and(|d| fs.writable(d));
     Install { method, exe: exe.to_path_buf(), writable }
@@ -270,6 +272,7 @@ pub fn current() -> Install {
 const PLATFORMS: [&str; 5] = ["x86_64-linux", "aarch64-linux", "x86_64-macos", "aarch64-macos", "x86_64-windows"];
 
 /// This build's release platform (`x86_64-linux`, …), None for a target ttyak is not released for.
+#[allow(dead_code)] // for the update check (a later step)
 pub fn platform() -> Option<&'static str> {
     PLATFORMS.into_iter().find(|p| p.split_once('-') == Some((std::env::consts::ARCH, std::env::consts::OS)))
 }

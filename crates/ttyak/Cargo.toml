@@ -57,6 +57,10 @@ rustix = { version = "1.1.5", features = ["event", "stdio"] }
 # glibc's mallopt: fewer malloc arenas (`main`, Linux only); the terminal's echo off for a typed secret (`auth`, every Unix).
 libc = "0.2"
 
+[target.'cfg(windows)'.dependencies]
+# The user PATH in the registry and the broadcast that it changed (`ttyak uninstall`); already in the tree.
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Registry", "Win32_UI_WindowsAndMessaging"] }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 # The keyring holding Chrome's cookie key (Secret Service, for `auth login --from-browser chrome`).
 zbus = { version = "5.19", default-features = false, features = ["tokio"] }

@@ -178,6 +178,10 @@ only, nothing secret). One profile may hold two accounts of the same workspace.
   ttyak's own `ttyak-cookies-*` / `ttyak-<pid>-*` files in the temporary folder (yours only). Lists them first and asks
   y/N (or `--yes`); refused while a ttyak runs. A folder that is a symbolic link loses only the link (what it
   points to stays, and ttyak says so). Files you saved from messages stay; Slack is not signed out.
+- `ttyak uninstall` — removes ttyak put here by the install script: the program, its `install.json` and the line
+  (on Windows the user PATH entry) that put it on PATH; asks whether to keep your settings, sign-ins and drafts, and
+  if not deletes what `purge` deletes. `--yes` for scripts (the data goes too), `--yes --keep-data` to keep it.
+  Installed by a package manager, it shows that manager's uninstall command instead.
 
 Use `--profile NAME` to keep several accounts apart (letters, digits, `-` and `_`, and `.` or `@` inside
 the name: `john.doe`, `me@work`); signing in under a

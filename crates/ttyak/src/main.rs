@@ -8,6 +8,7 @@ mod login_watch;
 mod pick;
 mod qr;
 mod tui;
+mod uninstall;
 
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
@@ -48,6 +49,17 @@ enum Command {
         /// Do not ask.
         #[arg(long)]
         yes: bool,
+    },
+    /// Remove ttyak installed by the install script: the program, the line or entry that put it on PATH and,
+    /// unless you keep it, everything `purge` deletes (it asks which). Installed by a package manager: shows that
+    /// manager's command.
+    Uninstall {
+        /// Do not ask: removes the data too, unless --keep-data.
+        #[arg(long)]
+        yes: bool,
+        /// Keep the settings, sign-ins and drafts.
+        #[arg(long)]
+        keep_data: bool,
     },
     /// Scriptable commands (used for automation and end-to-end tests).
     Ctl {
@@ -184,6 +196,7 @@ async fn run() -> Result<()> {
         },
         Some(Command::Profile { cmd }) => profile_command(&dirs, cmd),
         Some(Command::Purge { yes }) => purge_command(&dirs, yes),
+        Some(Command::Uninstall { yes, keep_data }) => uninstall::command(&dirs, yes, keep_data),
         Some(Command::Ctl { cmd }) => ctl::run(&profile, cli.team.as_deref(), cmd).await,
         None => {
             let mut p = Profile::read_or_new(&session_file)?;
@@ -227,10 +240,37 @@ async fn run() -> Result<()> {
 
 /// `ttyak purge`: lists, asks, then deletes ttyak's folders and temporary leftovers.
 fn purge_command(dirs: &Dirs, yes: bool) -> Result<()> {
+    refuse_while_running(dirs)?;
+    let targets = purge_targets(dirs);
+    if targets.is_empty() {
+        println!("nothing to delete");
+        return Ok(());
+    }
+    eprintln!("This deletes everything ttyak wrote (files you saved from messages stay):");
+    list_purge_targets(&targets);
+    if !auth::confirm("Delete all of this?", yes)? {
+        println!("nothing deleted");
+        return Ok(());
+    }
+    let failed = delete_purge_targets(&targets);
+    if failed > 0 {
+        bail!("{failed} of {} could not be deleted (see above); quit what uses them and run purge again", targets.len());
+    }
+    Ok(())
+}
+
+/// Refuses while a ttyak runs on any profile: its folders are not deleted under it.
+fn refuse_while_running(dirs: &Dirs) -> Result<()> {
     let running = profiles::running_profiles(dirs);
     if !running.is_empty() {
         bail!("ttyak is running (profile {}) — quit it first", running.join(", "));
     }
+    Ok(())
+}
+
+/// What `ttyak purge` deletes: ttyak's folders, Windows' roaming data folder, this user's leftovers in the temporary
+/// folder.
+fn purge_targets(dirs: &Dirs) -> Vec<std::path::PathBuf> {
     // Windows' roaming data folder.
     let more: Vec<std::path::PathBuf> = Dirs::roaming_data().into_iter().collect();
     // Only this user's leftovers in a shared temporary folder.
@@ -239,24 +279,23 @@ fn purge_command(dirs: &Dirs, yes: bool) -> Result<()> {
     let owner = Some(unsafe { libc::getuid() });
     #[cfg(not(unix))]
     let owner = None;
-    let targets = profiles::purge_targets(dirs, &more, &std::env::temp_dir(), owner);
-    if targets.is_empty() {
-        println!("nothing to delete");
-        return Ok(());
-    }
-    eprintln!("This deletes everything ttyak wrote (files you saved from messages stay):");
-    for path in &targets {
+    profiles::purge_targets(dirs, &more, &std::env::temp_dir(), owner)
+}
+
+/// Prints `targets`, one a line, saying which are links.
+fn list_purge_targets(targets: &[std::path::PathBuf]) {
+    for path in targets {
         match profiles::link_target(path) {
             Some(to) => eprintln!("  {} (a link: only the link, not {})", path.display(), to.display()),
             None => eprintln!("  {}", path.display()),
         }
     }
-    if !auth::confirm("Delete all of this?", yes)? {
-        println!("nothing deleted");
-        return Ok(());
-    }
+}
+
+/// Deletes `targets`, saying how each went; returns how many could not be deleted.
+fn delete_purge_targets(targets: &[std::path::PathBuf]) -> usize {
     let mut failed = 0;
-    for (path, result) in profiles::purge(&targets) {
+    for (path, result) in profiles::purge(targets) {
         match result {
             Ok(None) => println!("deleted {}", path.display()),
             Ok(Some(to)) => println!("removed the link {} (its target {} was left)", path.display(), to.display()),
@@ -266,10 +305,7 @@ fn purge_command(dirs: &Dirs, yes: bool) -> Result<()> {
             }
         }
     }
-    if failed > 0 {
-        bail!("{failed} of {} could not be deleted (see above); quit what uses them and run purge again", targets.len());
-    }
-    Ok(())
+    failed
 }
 
 /// `ttyak profile …`: reads and removes local files only.
