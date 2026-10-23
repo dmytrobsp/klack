@@ -430,7 +430,7 @@ on Windows only from an SSH session, where `gdigrab` cannot capture (no desktop)
 
 | Variable | |
 |---|---|
-| (F6 or `/prefs`) | preferences: availability (status, away, Notifications — on or paused until when; Enter pauses for 30 minutes or resumes, + / - change a pause's length — and the notification schedule: off, every day, weekdays or custom, with the hours you receive notifications in, per day for custom: hours, receive all day or paused all day; kept on Slack), theme, compact list, thumbnails, profile pictures, emoji as names, custom emoji as pictures, how often people's statuses are looked up again, when feed threads are marked read, 12/24 h clock, date format, time zone, language, desktop notifications and sound, microphone and speaker, volumes, microphone gain, speaking threshold, noise suppression, echo cancellation — saved in `settings.toml` next to `keys.toml` |
+| (F6 or `/prefs`) | preferences: availability (status, away, Notifications — on or paused until when; Enter pauses for 30 minutes or resumes, + / - change a pause's length — and the notification schedule: off, every day, weekdays or custom, with the hours you receive notifications in, per day for custom: hours, receive all day or paused all day; kept on Slack), theme, compact list, thumbnails, profile pictures, emoji as names, custom emoji as pictures, how often people's statuses are looked up again, when feed threads are marked read, 12/24 h clock, date format, time zone, language, desktop notifications and sound, microphone and speaker, volumes, microphone gain, speaking threshold, noise suppression, echo cancellation, camera, huddle sounds (joining, someone joining or leaving, the ring and how long it rings, declining when it rings out, the alone reminder and when it starts), updates (the version and install method, the check on or off, how often, the download timeout, Check now, the command to update, Update) — saved in `settings.toml` next to `keys.toml` |
 | `TTYAK_LOG` | log filter, e.g. `ttyak=debug` (log file: `~/.cache/ttyak/<profile>/ttyak.log`); the websocket library's handshake and frames (`tungstenite::handshake::client`, `tungstenite::client`, `tungstenite::protocol`), which would print the token, cookie and messages, stay off unless named |
 | `TTYAK_DOWNLOAD_DIR` | where `␣s` saves attachments first, over F6 → Messages & media → Save files to (default: your downloads folder) |
 | `TTYAK_OPEN_WITH` | the program `␣o` opens links with, given the address (default: the system's opener — `xdg-open`, `open`, Windows' URL handler); only web and mail links are opened |
@@ -448,7 +448,10 @@ winget, Chocolatey, the AUR, a .deb or .rpm package, or unknown for a copy downl
 the check on or off and sets how often it runs (`[updates] check`, `check_every_secs` in `settings.toml`)
 and how long the update screen's download waits for data (`download_timeout_secs`). Check now looks at
 once, due or not and with the check off too, and says what it found on its row — never with a desktop
-notification. The page also shows what to run to update this install (Enter copies it), and while a
+notification; a version it finds counts as told, so no notification or `⬆` comes for it later either, but
+whenever a check finds it again (the daily one in a later run too) the Update row is back. Hand-edited
+seconds below the least F6 offers count as it (an hour between checks, 10 s for the download, which waits a
+day at most). The page also shows what to run to update this install (Enter copies it), and while a
 newer version is known an Update row that opens the update screen: a copy the install script put in a
 folder ttyak can write updates itself there (downloaded, checked against the release's SHA256s, put in
 place; ttyak never restarts by itself), any other says the command or the page to download from.

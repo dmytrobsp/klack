@@ -2829,7 +2829,8 @@ impl App {
     }
 
     /// Enter on a row of F6 → Updates that is no setting: Check now asks the background check
-    /// (it answers on `update_checked`), the command is copied, Update opens the update screen.
+    /// (it answers on `update_checked`), the command is copied, Update opens the update screen; a
+    /// row with nothing to do says so.
     fn update_preference(&mut self) {
         use super::prefs::{CheckNow, UpdateAction};
         let Some(p) = self.prefs.as_mut() else { return };
@@ -2842,6 +2843,7 @@ impl App {
             }
             Some(UpdateAction::Copy(text)) => self.update_do(super::update_view::Do::Copy(text)),
             Some(UpdateAction::Open) => self.open_update_screen(),
+            Some(UpdateAction::Note(note)) => self.status = note,
             None => {}
         }
     }
@@ -8569,7 +8571,7 @@ mod tests {
         let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(150, 40)).unwrap();
         terminal.draw(|f| super::draw(f, &mut app)).unwrap();
         let text = screen(&terminal).join("\n");
-        assert!(text.contains("ttyak 9.9.9 (2026-11-01): open the update screen…") && !text.contains('⬆'), "{text}");
+        assert!(text.contains("ttyak 9.9.9 (2026-11-01): open the update screen…") && !screen(&terminal).last().unwrap().contains('⬆'), "no pill in the status line: {text}");
         // Enter on the Update row: the update screen, above the preferences.
         select(&mut app, Field::UpdateOpen);
         app.change_preference();
@@ -8587,6 +8589,12 @@ mod tests {
         assert_eq!(app.status, "ttyak is up to date");
         app.update_checked(Checked::Failed("offline".into()));
         assert_eq!(app.status, "could not check for a new ttyak: offline");
+        // A row with nothing to do: said so.
+        app.prefs = Some(Prefs::default());
+        app.prefs.as_mut().unwrap().category = CATEGORIES.iter().position(|c| c.0 == "Updates").unwrap();
+        select(&mut app, Field::UpdateVersion);
+        app.change_preference();
+        assert_eq!(app.status, "this is ttyak's version: nothing to change here");
     }
 
     #[tokio::test]

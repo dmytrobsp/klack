@@ -251,9 +251,9 @@ impl Field {
             Field::AloneSound => "Alone in a huddle, loop",
             Field::AloneSecs => "Start it after",
             Field::UpdateVersion => "Version",
-            Field::UpdateCheck => "Check for new versions",
+            Field::UpdateCheck => "Check for updates",
             Field::UpdateEvery => "Check at most every",
-            Field::UpdateTimeout => "A download gives up after",
+            Field::UpdateTimeout => "Download timeout",
             Field::UpdateCheckNow => "Check now",
             Field::UpdateCommand => "To update it",
             Field::UpdateOpen => "Update",
@@ -388,11 +388,18 @@ impl Field {
             Field::AloneSound => s.huddle.alone_sound.clone(),
             Field::AloneSecs => format!("{} s alone", s.huddle.alone_secs),
             Field::UpdateCheck => yes(s.updates.check),
-            Field::UpdateEvery => match in_words(s.updates.check_every_secs) {
-                Some(words) => format!("{} s ({words})", s.updates.check_every_secs),
-                None => format!("{} s", s.updates.check_every_secs),
+            Field::UpdateEvery => {
+                let (n, used) = (s.updates.check_every_secs, crate::update::sane(s.updates.clone()).check_every_secs);
+                match in_words(n) {
+                    _ if n != used => format!("{n} s (taken as {used} s)"),
+                    Some(words) => format!("{n} s ({words})"),
+                    None => format!("{n} s"),
+                }
+            }
+            Field::UpdateTimeout => match (s.updates.download_timeout_secs, crate::update::sane(s.updates.clone()).download_timeout_secs) {
+                (n, used) if n != used => format!("{n} s without data (taken as {used} s)"),
+                (n, _) => format!("{n} s without data"),
             },
-            Field::UpdateTimeout => format!("{} s without data", s.updates.download_timeout_secs),
             // Drawn from the page (see `Prefs::update_value`).
             Field::UpdateVersion | Field::UpdateCheckNow | Field::UpdateCommand | Field::UpdateOpen => String::new(),
         }
@@ -545,7 +552,7 @@ fn in_words(secs: u64) -> Option<String> {
 }
 
 /// F6 → Updates' words beyond the labels.
-const VERSION_ROW: &str = "ttyak {version} · {how}";
+const VERSION_ROW: &str = "{version} · {how}";
 const BY_SCRIPT: &str = "with the install script";
 const BY_HAND: &str = "unknown (a manual download)";
 const UPDATE_BELOW: &str = "none needed: use Update below";
@@ -558,7 +565,12 @@ const NOT_CHECKED: &str = "could not check for a new ttyak: {error}";
 /// Why Check now got no answer when the background check is not running.
 pub const NOT_RUNNING: &str = "the update check is not running";
 const OPEN_UPDATE: &str = "ttyak {version} ({date}): open the update screen…";
-const UPDATE_WORDS: &[&str] = &[VERSION_ROW, BY_SCRIPT, BY_HAND, UPDATE_BELOW, UPDATE_ITSELF, CHECK_IDLE, CHECKING, UP_TO_DATE, IS_OUT, NOT_CHECKED, NOT_RUNNING, OPEN_UPDATE];
+/// Enter on a row with nothing to do.
+const VERSION_ONLY: &str = "this is ttyak's version: nothing to change here";
+const NOTHING_TO_RUN_BELOW: &str = "nothing to run: use Update below";
+const NOTHING_TO_RUN: &str = "nothing to run: ttyak updates itself once a new version is out";
+const UNDER_WAY: &str = "a check is under way";
+const UPDATE_WORDS: &[&str] = &[VERSION_ROW, BY_SCRIPT, BY_HAND, UPDATE_BELOW, UPDATE_ITSELF, CHECK_IDLE, CHECKING, UP_TO_DATE, IS_OUT, NOT_CHECKED, NOT_RUNNING, OPEN_UPDATE, VERSION_ONLY, NOTHING_TO_RUN_BELOW, NOTHING_TO_RUN, UNDER_WAY];
 
 /// What a Check now found, in words (its row, or the status line with F6 closed).
 pub fn checked_note(checked: &Checked) -> String {
@@ -598,6 +610,8 @@ pub enum UpdateAction {
     Copy(String),
     /// Open the update screen.
     Open,
+    /// Nothing to do there: say why (the status line).
+    Note(String),
 }
 
 /// A change to make on Slack (applied locally at once by the caller).
@@ -838,26 +852,29 @@ impl Prefs {
         })
     }
 
-    /// The update command row: what it shows and what Enter copies (the update screen's offer for
-    /// this install; nothing to copy where ttyak updates itself).
-    fn update_command(&self) -> (String, Option<String>) {
+    /// The update command row: what it shows and what Enter does (copies the update screen's
+    /// offer for this install; where ttyak updates itself, says there is nothing to run).
+    fn update_command(&self) -> (String, UpdateAction) {
         use super::i18n::tr;
         let u = &self.update;
         let install = u.install.clone().unwrap_or(Install { method: Method::Unknown, exe: Default::default(), writable: false });
         let page = u.available.as_ref().map_or(RELEASES_PAGE, |l| l.notes.as_str());
+        let note = |s: &str| UpdateAction::Note(tr(s).into_owned());
         match super::update_view::offer_with(&install, page) {
-            Offer::UpdateNow if u.available.is_some() => (tr(UPDATE_BELOW).into_owned(), None),
-            Offer::UpdateNow => (tr(UPDATE_ITSELF).into_owned(), None),
-            Offer::Command(text) | Offer::Download { url: text, .. } => (text.clone(), Some(text)),
+            Offer::UpdateNow if u.available.is_some() => (tr(UPDATE_BELOW).into_owned(), note(NOTHING_TO_RUN_BELOW)),
+            Offer::UpdateNow => (tr(UPDATE_ITSELF).into_owned(), note(NOTHING_TO_RUN)),
+            Offer::Command(text) | Offer::Download { url: text, .. } => (text.clone(), UpdateAction::Copy(text)),
         }
     }
 
-    /// Enter on the selected row of F6 → Updates that is no setting: what to do (None: nothing,
-    /// a Check now already under way too).
+    /// Enter on the selected row of F6 → Updates that is no setting: what to do (None on other rows).
     pub fn update_action(&self, keys: &Keymap) -> Option<UpdateAction> {
+        let note = |s: &str| Some(UpdateAction::Note(super::i18n::tr(s).into_owned()));
         match self.selected_field(keys)? {
-            Field::UpdateCheckNow if self.update.check != CheckNow::Running => Some(UpdateAction::CheckNow),
-            Field::UpdateCommand => self.update_command().1.map(UpdateAction::Copy),
+            Field::UpdateVersion => note(VERSION_ONLY),
+            Field::UpdateCheckNow if self.update.check == CheckNow::Running => note(UNDER_WAY),
+            Field::UpdateCheckNow => Some(UpdateAction::CheckNow),
+            Field::UpdateCommand => Some(self.update_command().1),
             Field::UpdateOpen => Some(UpdateAction::Open),
             _ => None,
         }
@@ -2160,10 +2177,10 @@ mod tests {
         let v = env!("CARGO_PKG_VERSION");
         for (method, says) in [(Method::Script, "with the install script"), (Method::Homebrew, "with Homebrew"), (Method::Aur, "from the AUR"), (Method::Deb, "from a .deb package"), (Method::Unknown, "unknown (a manual download)")] {
             p.update.install = installed(method, false);
-            assert_eq!(p.update_value(Field::UpdateVersion), Some(format!("ttyak {v} · {says}")), "{method:?}");
+            assert_eq!(p.update_value(Field::UpdateVersion), Some(format!("{v} · {says}")), "{method:?}");
         }
         p.update.install = None;
-        assert_eq!(p.update_value(Field::UpdateVersion), Some(format!("ttyak {v} · unknown (a manual download)")), "not looked at");
+        assert_eq!(p.update_value(Field::UpdateVersion), Some(format!("{v} · unknown (a manual download)")), "not looked at");
         // The command for this install, the same as the update screen's; Enter copies it.
         let keys = Keymap::default();
         p.selected = p.fields(&keys).iter().position(|f| *f == Field::UpdateCommand).unwrap();
@@ -2176,11 +2193,42 @@ mod tests {
         assert_eq!(p.update_value(Field::UpdateCommand), Some(new_version().notes), "the new release's page");
         p.update.install = installed(Method::Script, true);
         assert_eq!(p.update_value(Field::UpdateCommand).as_deref(), Some(UPDATE_BELOW), "it updates itself");
-        assert_eq!(p.update_action(&keys), None, "nothing to copy");
+        assert_eq!(p.update_action(&keys), Some(UpdateAction::Note(NOTHING_TO_RUN_BELOW.into())), "nothing to copy: said");
         p.sync_update(None);
         assert_eq!(p.update_value(Field::UpdateCommand).as_deref(), Some(UPDATE_ITSELF));
+        assert_eq!(p.update_action(&keys), Some(UpdateAction::Note(NOTHING_TO_RUN.into())));
         p.update.install = installed(Method::Script, false);
         assert!(p.update_value(Field::UpdateCommand).unwrap().starts_with("curl -fsSL https://ttyak.sh/install.sh |") || cfg!(windows), "a folder ttyak cannot write: the script's command");
+    }
+
+    #[test]
+    fn rows_without_an_action_say_so() {
+        let keys = Keymap::default();
+        let mut p = updates_prefs();
+        assert_eq!(p.update_action(&keys), Some(UpdateAction::Note(VERSION_ONLY.into())), "the version row");
+        p.selected = 4;
+        p.update.check = CheckNow::Running;
+        assert_eq!(p.update_action(&keys), Some(UpdateAction::Note(UNDER_WAY.into())), "Check now while one runs");
+        p.update.check = CheckNow::Done(Checked::UpToDate);
+        assert_eq!(p.update_action(&keys), Some(UpdateAction::CheckNow), "again once it is over");
+    }
+
+    #[test]
+    fn version_row_fits_at_the_minimum_width() {
+        use crate::install::Method;
+        let keys = Keymap::load("").0;
+        let ws = Workspace::default();
+        for method in [Method::Script, Method::Homebrew, Method::Chocolatey, Method::Rpm, Method::Unknown] {
+            let mut p = updates_prefs();
+            p.update.install = installed(method, false);
+            let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(84, 24)).unwrap();
+            terminal.draw(|f| p.draw(f, f.area(), &ws, None, &keys)).unwrap();
+            let buf = terminal.backend().buffer();
+            let rows: Vec<String> = (0..buf.area.height).map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect()).collect();
+            let row = rows.iter().find(|r| r.contains(" Version ")).unwrap();
+            let want = p.update_value(Field::UpdateVersion).unwrap();
+            assert!(row.contains(&want) && !row.contains('…'), "{method:?}: {row}");
+        }
     }
 
     #[test]
@@ -2202,8 +2250,14 @@ mod tests {
         Field::UpdateEvery.adjust(&mut ws.settings, false, false);
         Field::UpdateEvery.adjust(&mut ws.settings, false, false);
         assert_eq!(Field::UpdateEvery.value(&ws, None, &keys), "43200 s (12 h)");
-        ws.settings.updates.check_every_secs = 100;
-        assert_eq!(Field::UpdateEvery.value(&ws, None, &keys), "100 s", "a hand-edited value as it is");
+        ws.settings.updates.check_every_secs = 5000;
+        assert_eq!(Field::UpdateEvery.value(&ws, None, &keys), "5000 s", "a hand-edited value as it is");
+        ws.settings.updates.check_every_secs = 0;
+        assert_eq!(Field::UpdateEvery.value(&ws, None, &keys), "0 s (taken as 3600 s)", "below the least: said what counts");
+        ws.settings.updates.download_timeout_secs = 2;
+        assert_eq!(Field::UpdateTimeout.value(&ws, None, &keys), "2 s without data (taken as 10 s)");
+        assert_eq!((UPDATE_EVERY[0], DOWNLOAD_TIMEOUTS[0]), (crate::update::MIN_CHECK_EVERY_SECS, crate::update::MIN_DOWNLOAD_TIMEOUT_SECS), "the least offered is the least used");
+        assert!(DOWNLOAD_TIMEOUTS.iter().all(|t| *t <= crate::update::MAX_DOWNLOAD_TIMEOUT_SECS));
         ws.settings.updates.check_every_secs = 604_800;
         Field::UpdateEvery.change(&mut ws.settings, &Default::default());
         assert_eq!(ws.settings.updates.check_every_secs, 3600, "Enter wraps around");

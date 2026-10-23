@@ -21,6 +21,22 @@ pub const URL_ENV: &str = "TTYAK_UPDATE_URL";
 /// How often whether a check is due is looked at again, in seconds (the settings may have
 /// changed meanwhile).
 const LOOK_AGAIN_SECS: u64 = 3600;
+/// The least `check_every_secs` used (the shortest F6 offers); a hand-edited one below it counts as it.
+pub const MIN_CHECK_EVERY_SECS: u64 = 3600;
+/// The least and the most `download_timeout_secs` used.
+pub const MIN_DOWNLOAD_TIMEOUT_SECS: u64 = 10;
+pub const MAX_DOWNLOAD_TIMEOUT_SECS: u64 = 86_400;
+
+/// `[updates]` as used: hand-edited seconds brought within [`MIN_CHECK_EVERY_SECS`] and
+/// [`MIN_DOWNLOAD_TIMEOUT_SECS`]–[`MAX_DOWNLOAD_TIMEOUT_SECS`].
+pub fn sane(u: crate::tui::settings::Updates) -> crate::tui::settings::Updates {
+    crate::tui::settings::Updates { check_every_secs: u.check_every_secs.max(MIN_CHECK_EVERY_SECS), download_timeout_secs: u.download_timeout_secs.clamp(MIN_DOWNLOAD_TIMEOUT_SECS, MAX_DOWNLOAD_TIMEOUT_SECS), ..u }
+}
+
+/// `[updates]` from settings.toml as read now, [`sane`].
+fn settings() -> crate::tui::settings::Updates {
+    sane(crate::tui::settings::load().0.updates)
+}
 
 /// The newest release for this platform, from `latest.json`.
 #[derive(Debug, Clone, PartialEq)]
@@ -52,14 +68,21 @@ pub fn parse(json: &str, platform: &str) -> Result<Latest> {
     let mut feed: Feed = serde_json::from_str(json).context("latest.json")?;
     let version = Version::parse(&feed.version).with_context(|| format!("latest.json: version {:?}", feed.version))?;
     let asset = feed.assets.remove(platform).with_context(|| format!("latest.json: no archive for {platform}"))?;
-    let asset = Asset { url: printable(&asset.url), sha256: printable(&asset.sha256) };
+    // What is downloaded and checked is refused, never cleaned up.
+    ensure!(!asset.url.chars().chain(asset.sha256.chars()).any(hidden), "latest.json: a control character or an invisible format character in the archive's address or SHA256");
     Ok(Latest { version, date: printable(&feed.date), notes: printable(&feed.notes), asset })
 }
 
-/// `text` without control characters (C0 with ESC, DEL and C1), so text from the feed can never
-/// steer the terminal it is shown in.
+/// A character that is not shown as itself: a control (C0 with ESC, DEL, C1), a format character
+/// (bidi overrides and isolates, zero-width ones, the soft hyphen, …) or a line or paragraph separator.
+fn hidden(c: char) -> bool {
+    c.is_control() || matches!(c, '\u{ad}' | '\u{600}'..='\u{605}' | '\u{61c}' | '\u{6dd}' | '\u{70f}' | '\u{8e2}' | '\u{180e}' | '\u{200b}'..='\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{206f}' | '\u{feff}' | '\u{fff9}'..='\u{fffb}' | '\u{110bd}' | '\u{110cd}' | '\u{13430}'..='\u{1343f}' | '\u{1bca0}'..='\u{1bca3}' | '\u{1d173}'..='\u{1d17a}' | '\u{e0001}' | '\u{e0020}'..='\u{e007f}')
+}
+
+/// `text` without the characters [`hidden`] names, so text from the feed can never steer the
+/// terminal it is shown in or hide what it says.
 pub fn printable(text: &str) -> String {
-    text.chars().filter(|c| !c.is_control()).collect()
+    text.chars().filter(|c| !hidden(*c)).collect()
 }
 
 /// Whether `latest` is newer than `current` (build metadata does not count); a pre-release is
@@ -219,68 +242,76 @@ pub async fn fetch(url: &str) -> Result<String> {
 
 /// How long until whether a check is due is looked at again.
 fn wait(settings: &crate::tui::settings::Updates, state: &State, now: u64) -> Duration {
-    let until_due = if settings.check { (state.last_check + settings.check_every_secs).saturating_sub(now) } else { LOOK_AGAIN_SECS };
+    let until_due = if settings.check { state.last_check.saturating_add(settings.check_every_secs).saturating_sub(now) } else { LOOK_AGAIN_SECS };
     Duration::from_secs(until_due.clamp(60, LOOK_AGAIN_SECS))
 }
 
 /// Check in the background, the first time at once when due, then as it comes due (the settings
 /// read again each time; a broken settings.toml means the defaults, as everywhere in ttyak), and at
-/// once on each request on `asks` (Check now; requests that came meanwhile are answered by the same
-/// check). Each newer version a check finds is sent on `reports`, to be notified only once written
-/// down; a check asked for also says how it ended.
-pub fn spawn(reports: tokio::sync::mpsc::UnboundedSender<Report>, mut asks: tokio::sync::mpsc::UnboundedReceiver<()>) {
+/// once on a request on `asks` (Check now). Each newer version a check finds is sent on `reports`,
+/// to be notified only once written down; a check asked for also says how it ended.
+pub fn spawn(reports: tokio::sync::mpsc::UnboundedSender<Report>, asks: tokio::sync::mpsc::UnboundedReceiver<()>) {
     let Some(path) = state_path() else { return };
-    let platform = crate::install::platform();
     let current = Version::parse(env!("CARGO_PKG_VERSION")).expect("the package version is semver");
     let url = std::env::var(URL_ENV).ok().filter(|u| !u.is_empty()).unwrap_or_else(|| URL.to_string());
-    tokio::spawn(async move {
-        // What this run last wrote (or tried to): a floor under what the file says.
-        let mut kept = State::default();
-        let mut asked = false;
-        loop {
-            let settings = crate::tui::settings::load().0.updates;
-            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-            // Read each time: another ttyak (another profile) may have checked meanwhile.
-            let mut state = with_floor(load_state(&path), &kept);
-            let get = |u: String| async move { fetch(&u).await };
-            let ran = if asked {
-                let (next, newer, checked) = check_now(&state, now, &current, platform, &url, get).await;
-                Some((next, newer, Some(checked)))
-            } else {
-                check(&settings, &state, now, &current, platform, &url, get).await.map(|(next, newer)| (next, newer, None))
-            };
-            if let Some((next, newer, checked)) = ran {
-                kept = next.clone();
-                // Only once it is written: never notified twice.
-                let saved = save_state(&path, &next);
-                if let Err(e) = &saved {
-                    tracing::debug!("update check: {}: {e:#}", path.display());
-                }
-                if let Some(Found { latest, notify }) = newer {
-                    if reports.send(Report::Found(Found { latest, notify: notify && saved.is_ok() })).is_err() {
-                        return;
-                    }
-                }
-                if let Some(checked) = checked {
-                    if reports.send(Report::Checked(checked)).is_err() {
-                        return;
-                    }
-                }
-                state = next;
+    tokio::spawn(run(path, crate::install::platform(), url, current, reports, asks, |u: String| async move { fetch(&u).await }, settings));
+}
+
+/// [`spawn`]'s task, with `path` for `updates.json`, `fetch` for the GET and `settings` for
+/// `[updates]`; it ends when the app is gone. All the requests that came before a check ends are
+/// answered by that one check.
+async fn run<F, Fut>(path: PathBuf, platform: Option<&str>, url: String, current: Version, reports: tokio::sync::mpsc::UnboundedSender<Report>, mut asks: tokio::sync::mpsc::UnboundedReceiver<()>, fetch: F, settings: impl Fn() -> crate::tui::settings::Updates)
+where
+    F: Fn(String) -> Fut,
+    Fut: Future<Output = Result<String>>,
+{
+    // What this run last wrote (or tried to): a floor under what the file says.
+    let mut kept = State::default();
+    let mut asked = false;
+    loop {
+        let settings = settings();
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        // Read each time: another ttyak (another profile) may have checked meanwhile.
+        let mut state = with_floor(load_state(&path), &kept);
+        let ran = if asked {
+            let (next, newer, checked) = check_now(&state, now, &current, platform, &url, &fetch).await;
+            // Pressed while it ran: answered by it.
+            while asks.try_recv().is_ok() {}
+            Some((next, newer, Some(checked)))
+        } else {
+            check(&settings, &state, now, &current, platform, &url, &fetch).await.map(|(next, newer)| (next, newer, None))
+        };
+        if let Some((next, newer, checked)) = ran {
+            kept = next.clone();
+            // Only once it is written: never notified twice.
+            let saved = save_state(&path, &next);
+            if let Err(e) = &saved {
+                tracing::debug!("update check: {}: {e:#}", path.display());
             }
-            asked = tokio::select! {
-                () = tokio::time::sleep(wait(&settings, &state, now)) => false,
-                ask = asks.recv() => match ask {
-                    Some(()) => {
-                        while asks.try_recv().is_ok() {}
-                        true
-                    }
-                    // The app is gone.
-                    None => return,
-                },
-            };
+            if let Some(Found { latest, notify }) = newer {
+                if reports.send(Report::Found(Found { latest, notify: notify && saved.is_ok() })).is_err() {
+                    return;
+                }
+            }
+            if let Some(checked) = checked {
+                if reports.send(Report::Checked(checked)).is_err() {
+                    return;
+                }
+            }
+            state = next;
         }
-    });
+        asked = tokio::select! {
+            () = tokio::time::sleep(wait(&settings, &state, now)) => false,
+            ask = asks.recv() => match ask {
+                Some(()) => {
+                    while asks.try_recv().is_ok() {}
+                    true
+                }
+                // The app is gone.
+                None => return,
+            },
+        };
+    }
 }
 
 /// The executable in the release archive (its top level).
@@ -464,7 +495,7 @@ async fn self_update_from(latest: &Latest, install: &Install, progress: &Progres
     let leftovers = Leftovers(vec![download.clone(), staged(&dir), staged_record(&dir)]);
     let name = format!("ttyak-{}-{}.zip", latest.version, release.platform);
     // Connecting and every wait for data alike.
-    let timeout = Duration::from_secs(crate::tui::settings::load().0.updates.download_timeout_secs.max(1));
+    let timeout = Duration::from_secs(settings().download_timeout_secs);
     let http = client(|b| b.connect_timeout(timeout).read_timeout(timeout))?;
 
     // The archive, its SHA256 taken as it comes.
@@ -789,14 +820,73 @@ mod tests {
 
     #[test]
     fn feed_text_is_sanitised() {
-        // ESC sequences (clear the screen, a hidden link), BEL, a C1 CSI, NUL and line ends.
-        let feed = r#"{"version":"9.9.9","date":"2026-11-01\u001b[2J","notes":"https://x.invalid/\u001b]8;;https://evil.invalid\u0007notes\u009b31m",
-            "assets":{"x86_64-linux":{"url":"https://x.invalid/a.zip\u0000","sha256":"ab12\r\n"}}}"#;
+        // ESC sequences (clear the screen, a hidden link), BEL, a C1 CSI, bidi overrides and isolates,
+        // zero-width characters and a line separator in the text shown.
+        let feed = r#"{"version":"9.9.9","date":"2026-11-01\u001b[2J\u202e","notes":"https://x.invalid/\u001b]8;;https://evil.invalid\u0007notes\u009b31m\u2066\u2069\u200b\u200f\u2028\u2029\ufeff",
+            "assets":{"x86_64-linux":{"url":"https://x.invalid/a.zip","sha256":"ab12"}}}"#;
         let l = parse(feed, "x86_64-linux").unwrap();
         assert_eq!(l.date, "2026-11-01[2J");
         assert_eq!(l.notes, "https://x.invalid/]8;;https://evil.invalidnotes31m");
-        assert_eq!((l.asset.url.as_str(), l.asset.sha256.as_str()), ("https://x.invalid/a.zip", "ab12"));
-        assert_eq!(printable("a\u{1b}b\u{7f}c\u{85}d\u{9f}e\tf ü 🎉"), "abcdef ü 🎉", "C0, DEL and C1 go; the rest stays");
+        assert_eq!(printable("a\u{1b}b\u{7f}c\u{85}d\u{9f}e\tf\u{202a}\u{202d}\u{2067}\u{200e}\u{ad} ü 🎉"), "abcdef ü 🎉", "C0, DEL, C1 and format characters go; the rest stays");
+        // In what is downloaded and checked: refused, never cleaned up.
+        for (url, sha) in [("https://x.invalid/a.zip\\u0000", "ab12"), ("https://x.invalid/a.zip", "ab12\\r\\n"), ("https://x.invalid/\\u001b[2Ja.zip", "ab12"), ("https://x.invalid/a.zip", "ab\\u202e12")] {
+            let feed = format!(r#"{{"version":"9.9.9","date":"","notes":"","assets":{{"x86_64-linux":{{"url":"{url}","sha256":"{sha}"}}}}}}"#);
+            let e = parse(&feed, "x86_64-linux").unwrap_err();
+            assert!(format!("{e:#}").contains("control character"), "{url} {sha}: {e:#}");
+        }
+    }
+
+    #[test]
+    fn hand_edited_seconds_are_floored() {
+        let read = |every, timeout| sane(Updates { check: true, check_every_secs: every, download_timeout_secs: timeout });
+        assert_eq!((read(0, 0).check_every_secs, read(0, 0).download_timeout_secs), (MIN_CHECK_EVERY_SECS, MIN_DOWNLOAD_TIMEOUT_SECS));
+        assert_eq!((MIN_CHECK_EVERY_SECS, MIN_DOWNLOAD_TIMEOUT_SECS), (3600, 10), "the shortest F6 offers");
+        let max = read(u64::MAX, u64::MAX);
+        assert_eq!((max.check_every_secs, max.download_timeout_secs), (u64::MAX, MAX_DOWNLOAD_TIMEOUT_SECS));
+        assert_eq!(read(86_400, 30), Updates::default(), "the defaults as they are");
+        let s = State { last_check: 1_000, notified: None };
+        assert_eq!(wait(&max, &s, 1_000), Duration::from_secs(3_600), "no overflow: at most an hour");
+        assert_eq!(wait(&read(0, 0), &s, 1_000), Duration::from_secs(3_600), "0: an hour, never a tight loop");
+        assert!(!due(&s, 2_000, u64::MAX) && due(&s, 999, u64::MAX));
+    }
+
+    #[tokio::test]
+    async fn queued_check_nows_are_answered_by_one_check() {
+        let dir = std::env::temp_dir().join(format!("ttyak-test-asks-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (reports_tx, mut reports) = tokio::sync::mpsc::unbounded_channel();
+        let (asks_tx, asks) = tokio::sync::mpsc::unbounded_channel();
+        let fetched = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        // Two presses before it runs, two more while it fetches.
+        asks_tx.send(()).unwrap();
+        asks_tx.send(()).unwrap();
+        let fetch = {
+            // (Weak: the channel still closes when the test lets go of it.)
+            let (fetched, asks_tx) = (fetched.clone(), asks_tx.downgrade());
+            move |_url: String| {
+                fetched.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if let Some(asks_tx) = asks_tx.upgrade() {
+                    let _ = asks_tx.send(());
+                    let _ = asks_tx.send(());
+                }
+                async { Ok(FEED.to_string()) }
+            }
+        };
+        let off = || Updates { check: false, ..Default::default() };
+        let task = tokio::spawn(run(dir.join("updates.json"), Some("x86_64-linux"), "http://127.0.0.1:9/latest.json".into(), v("0.10.0"), reports_tx, asks, fetch, off));
+        async fn next(r: &mut tokio::sync::mpsc::UnboundedReceiver<Report>) -> Result<Option<Report>, tokio::time::error::Elapsed> {
+            tokio::time::timeout(Duration::from_secs(5), r.recv()).await
+        }
+        assert!(matches!(next(&mut reports).await, Ok(Some(Report::Found(Found { notify: false, .. })))));
+        assert!(matches!(next(&mut reports).await, Ok(Some(Report::Checked(Checked::Out(_))))));
+        assert!(tokio::time::timeout(Duration::from_millis(300), reports.recv()).await.is_err(), "no second check");
+        assert_eq!(fetched.load(std::sync::atomic::Ordering::SeqCst), 1);
+        // A press after it: checked again.
+        asks_tx.send(()).unwrap();
+        assert!(matches!(next(&mut reports).await, Ok(Some(Report::Found(_)))));
+        drop(asks_tx);
+        tokio::time::timeout(Duration::from_secs(5), task).await.unwrap().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

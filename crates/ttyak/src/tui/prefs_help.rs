@@ -355,15 +355,15 @@ fn build(field: Field, _ws: &Workspace, keys: &Keymap, tr: &dyn Fn(&'static str)
             b.text("Looks for a new version of ttyak now and then: a plain request for the site's latest.json, which sends nothing about you but ttyak's name and version. A new version is told once: a desktop notification (when they are on) and ⬆ in the status line. Off: no check at all, unless you ask for one (Check now).");
         }
         Field::UpdateEvery => {
-            b.text("How often the check runs at most, in seconds; a check that got no answer counts too.").blank();
+            b.text("How often the check runs at most, in seconds; a check that got no answer counts too. Less than an hour (written by hand in settings.toml) counts as an hour.").blank();
             b.step("1, 6 or 12 hours, or 1, 3 or 7 days");
         }
         Field::UpdateTimeout => {
-            b.text("The update screen's download gives up when no data has come for this long; the old ttyak stays as it was.").blank();
+            b.text("The update screen's download gives up when no data has come for this long; the old ttyak stays as it was. Written by hand in settings.toml, it counts as at least 10 seconds and at most a day.").blank();
             b.step("10, 15, 30, 60, 120 or 300 seconds");
         }
         Field::UpdateCheckNow => {
-            b.text("Looks for a new version at once, whether a check is due or not, with the check off too. It never shows a desktop notification: what it finds is said here, and a new version adds the Update row below.").blank();
+            b.text("Looks for a new version at once, whether a check is due or not, with the check off too. It never shows a desktop notification: what it finds is said here, and a new version adds the Update row below. A version found this way is not announced later either (no notification, no ⬆ in the status line), but whenever a check finds it again — the daily one in a later run too — the Update row is back here.").blank();
             b.change("check now (a press while one runs does nothing)");
         }
         Field::UpdateCommand => {
