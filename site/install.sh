@@ -5,7 +5,7 @@
 # The archive comes from the GitHub release and must match the release's SHA256SUMS. `--help` lists the flags.
 set -eu
 
-MARKER='# added by the ttyak installer'
+MARKER='# added by the ttyak installer; "ttyak uninstall" removes this line'
 LATEST_URL=${TTYAK_LATEST_URL:-https://ttyak.sh/latest.json}
 DOWNLOAD_URL=${TTYAK_DOWNLOAD_URL:-https://github.com/dmytrobsp/ttyak/releases/download}
 tmp=''
@@ -16,18 +16,19 @@ usage() {
 	cat <<'EOF'
 Installs ttyak into ~/.local/bin, or updates the copy there.
 
-usage: install.sh [--yes] [--version X.Y.Z] [--dir PATH]
+usage: install.sh [--yes] [--version X.Y.Z] [--dir PATH] [--no-modify-path]
        install.sh --uninstall [--yes] [--keep-data] [--dir PATH]
 
   -y, --yes          answer yes to every question (needed with no terminal for --uninstall, or as root)
   --version X.Y.Z    install this version instead of the latest
   --dir PATH         install into PATH instead of ~/.local/bin
+  --no-modify-path   edit no shell startup file; say what to add instead
   --uninstall        remove ttyak and its data (runs `ttyak uninstall`)
   --keep-data        with --uninstall: keep settings, sign-ins, drafts and caches
   -h, --help         this text
 
-The environment variables TTYAK_YES=1, TTYAK_VERSION, TTYAK_DIR, TTYAK_UNINSTALL=1 and TTYAK_KEEP_DATA=1 do the
-same as the flags; the flags win.
+The environment variables TTYAK_YES=1, TTYAK_VERSION, TTYAK_DIR, TTYAK_NO_MODIFY_PATH=1, TTYAK_UNINSTALL=1 and
+TTYAK_KEEP_DATA=1 do the same as the flags; the flags win.
 EOF
 }
 
@@ -127,23 +128,23 @@ pick_tools() {
 	fi
 }
 
-# Downloads $1 into the file $2.
+# Downloads $1 into the file $2, giving up after $3 seconds when given (the archive gets no limit).
 fetch() {
 	if [ "$fetcher" = curl ]; then
-		case $1 in
-		https://*) curl -fsSL --proto '=https' -o "$2" "$1" </dev/null ;;
-		*) curl -fsSL -o "$2" "$1" </dev/null ;;
-		esac
+		proto=''
+		case $1 in https://*) proto='=https' ;; esac
+		curl -fsSL ${proto:+--proto "$proto"} --connect-timeout 15 ${3:+--max-time "$3"} -o "$2" "$1" </dev/null
 	else
-		wget -q -O "$2" "$1" </dev/null
+		wget -q --timeout=15 -O "$2" "$1" </dev/null
 	fi
 }
 
+# The file's SHA256, read from stdin so that no file name is ever escaped into the output.
 sha256_of() {
 	if [ "$summer" = sha256sum ]; then
-		sha256sum "$1" </dev/null
+		sha256sum <"$1"
 	else
-		shasum -a 256 "$1" </dev/null
+		shasum -a 256 <"$1"
 	fi | awk '{ print tolower($1) }'
 }
 
@@ -158,7 +159,7 @@ unpack() {
 
 # The latest version as latest.json names it; nothing when it cannot be read.
 version_from_feed() {
-	fetch "$LATEST_URL" "$tmp/latest.json" 2>/dev/null || return 0
+	fetch "$LATEST_URL" "$tmp/latest.json" 30 2>/dev/null || return 0
 	json_version "$tmp/latest.json"
 }
 
@@ -167,9 +168,9 @@ version_from_github() {
 	releases=${DOWNLOAD_URL%/download}
 	[ "$releases" != "$DOWNLOAD_URL" ] || return 0
 	if [ "$fetcher" = curl ]; then
-		headers=$(curl -sSI "$releases/latest" </dev/null 2>/dev/null || true)
+		headers=$(curl -sSI --connect-timeout 15 --max-time 30 "$releases/latest" </dev/null 2>/dev/null || true)
 	else
-		headers=$(wget -S --max-redirect=0 -O /dev/null "$releases/latest" </dev/null 2>&1 || true)
+		headers=$(wget -S --timeout=15 --max-redirect=0 -O /dev/null "$releases/latest" </dev/null 2>&1 || true)
 	fi
 	tag=$(printf '%s\n' "$headers" | tr -d '\r' | awk 'tolower($1) == "location:" { loc = $2 } END { print loc }' |
 		sed -n 's|^.*/releases/tag/\([^/?#]*\)$|\1|p')
@@ -205,6 +206,7 @@ make_dir() {
 write_record() {
 	escaped=$(printf '%s' "$dir" | sed 's/\\/\\\\/g; s/"/\\"/g')
 	staged=$dir/.install.json.new
+	rm -f -- "$staged"
 	printf '{"method":"script","version":"%s","dir":"%s"}\n' "$version" "$escaped" >"$staged"
 	mv -f -- "$staged" "$dir/install.json"
 	staged=''
@@ -216,55 +218,117 @@ sh_quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 # $1 quoted for fish (in its single quotes only \\ and \' are special).
 fish_quote() { printf "'%s'" "$(printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e "s/'/\\\\'/g")"; }
 
-# Puts $dir on PATH in the shell's profile when it is not on PATH already, once.
+# Says what to add to PATH, and where, instead of editing a file.
+suggest() {
+	say "$1"
+	say "  $2"
+}
+
+# Puts $dir on PATH in the shell's startup file when it is not on PATH already, once. Only files whose syntax is
+# known, and never one that is a link or not writable (dotfiles kept elsewhere): otherwise it says what to add where.
 add_to_path() {
 	case ":${PATH:-}:" in
 	*":$dir:"* | *":$dir/:"*)
 		found=$(command -v ttyak 2>/dev/null || true)
-		if [ -n "$found" ] && [ "$found" != "$dir/ttyak" ]; then
-			warn "note: $found comes before $dir on PATH, so \`ttyak\` runs that one"
-		fi
+		case $found in
+		'' | "$dir/ttyak" | "$dir//ttyak") ;;
+		*) warn "note: $found comes before $dir on PATH, so \`ttyak\` runs that one" ;;
+		esac
 		say "Run: ttyak"
 		return 0
 		;;
 	esac
+	if [ "$dir" = "$home/.local/bin" ]; then
+		# shellcheck disable=SC2016 # $HOME and $PATH are for the startup file to expand
+		posix_line='case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) export PATH="$HOME/.local/bin:$PATH" ;; esac'
+		# shellcheck disable=SC2016
+		fish_line='contains -- ~/.local/bin $PATH; or set -gx PATH ~/.local/bin $PATH'
+		# shellcheck disable=SC2088 # shown as the user would type it
+		shown='~/.local/bin'
+		# shellcheck disable=SC2016
+		nu_line='$env.PATH = ($env.PATH | prepend ($nu.home-path | path join .local bin))'
+	else
+		quoted=$(sh_quote "$dir")
+		posix_line="case \":\$PATH:\" in *:$quoted:*) ;; *) export PATH=$quoted:\"\$PATH\" ;; esac"
+		quoted=$(fish_quote "$dir")
+		fish_line="contains -- $quoted \$PATH; or set -gx PATH $quoted \$PATH"
+		shown=$(sh_quote "$dir")
+		nu_line="\$env.PATH = (\$env.PATH | prepend $shown)"
+	fi
 	shell_name=${SHELL:-}
 	shell_name=${shell_name##*/}
-	if [ "$dir" = "$HOME/.local/bin" ]; then
-		# shellcheck disable=SC2016 # $HOME and $PATH are for the profile to expand
-		posix_line='export PATH="$HOME/.local/bin:$PATH"'
-		fish_line='fish_add_path --path ~/.local/bin'
-	else
-		posix_line="export PATH=$(sh_quote "$dir"):\"\$PATH\""
-		fish_line="fish_add_path --path $(fish_quote "$dir")"
-	fi
 	line=$posix_line
 	case $shell_name in
+	sh | dash | ksh | ksh93 | mksh | yash) profile=$home/.profile ;;
 	bash)
-		# macOS terminals start login shells, which read ~/.bash_profile and not ~/.bashrc.
-		if [ "$os" = macos ]; then profile=$HOME/.bash_profile; else profile=$HOME/.bashrc; fi
+		profile=$home/.bashrc
+		if [ "$os" = macos ]; then
+			# macOS terminals start login shells, which read the first of these that exists.
+			profile=$home/.bash_profile
+			for f in "$home/.bash_profile" "$home/.bash_login" "$home/.profile"; do
+				if [ -e "$f" ] || [ -L "$f" ]; then
+					profile=$f
+					break
+				fi
+			done
+		fi
 		;;
-	zsh) profile=${ZDOTDIR:-$HOME}/.zshrc ;;
+	zsh) profile=${ZDOTDIR:-$home}/.zshrc ;;
 	fish)
-		profile=${XDG_CONFIG_HOME:-$HOME/.config}/fish/conf.d/ttyak.fish
+		profile=${XDG_CONFIG_HOME:-$home/.config}/fish/conf.d/ttyak.fish
 		line=$fish_line
 		;;
-	*) profile=$HOME/.profile ;;
+	csh | tcsh)
+		suggest "$dir is not on PATH, and the installer does not edit $shell_name's files: add a line like this to ~/.${shell_name}rc (a suggestion):" "set path = ( $shown \$path ) $MARKER"
+		return 0
+		;;
+	nu)
+		suggest "$dir is not on PATH, and the installer does not edit nushell's files: add a line like this to its env.nu (see \$nu.env-path; a suggestion):" "$nu_line $MARKER"
+		return 0
+		;;
+	elvish)
+		suggest "$dir is not on PATH, and the installer does not edit elvish's files: add a line like this to ~/.config/elvish/rc.elv (a suggestion):" "set paths = [$shown \$@paths] $MARKER"
+		return 0
+		;;
+	xonsh)
+		suggest "$dir is not on PATH, and the installer does not edit xonsh's files: add a line like this to ~/.xonshrc (a suggestion):" "\$PATH.insert(0, $(sh_quote "$shown")) $MARKER"
+		return 0
+		;;
+	*)
+		suggest "$dir is not on PATH: add it to PATH in your shell's startup file; for a POSIX shell the line is:" "$posix_line $MARKER"
+		return 0
+		;;
 	esac
 	if [ -f "$profile" ] && grep -Fqx -- "$line $MARKER" "$profile"; then
 		say "$profile already puts $dir on PATH: open a new terminal to use ttyak"
 		return 0
 	fi
-	(umask 077 && mkdir -p -- "${profile%/*}") || die "could not create ${profile%/*}"
+	if is_on "$no_modify_path"; then
+		suggest "$dir is not on PATH; as asked, no file was changed: add this line to $profile:" "$line $MARKER"
+		return 0
+	fi
+	if [ -L "$profile" ] || { [ -e "$profile" ] && [ ! -w "$profile" ]; }; then
+		suggest "$dir is not on PATH; $profile is a link or not writable, so it was left alone: add this line to it (or to where it comes from):" "$line $MARKER"
+		return 0
+	fi
+	if ! (umask 077 && mkdir -p -- "${profile%/*}") 2>/dev/null; then
+		suggest "$dir is not on PATH; could not create ${profile%/*}: add this line to $profile:" "$line $MARKER"
+		return 0
+	fi
 	if [ -s "$profile" ] && [ -n "$(tail -c 1 -- "$profile")" ]; then printf '\n' >>"$profile"; fi
 	printf '%s %s\n' "$line" "$MARKER" >>"$profile"
-	say "$dir was not on PATH: added it in $profile."
-	say "Open a new terminal to use ttyak, or run this line in this one first:"
-	say "  $line"
+	say "Added $dir to PATH in $profile; other shells you use need the same in their own startup files."
+	suggest "Open a new terminal to use ttyak, or run this in this one first:" "$line"
 }
 
 # As root: install only when asked (--yes, --dir, or yes on the terminal).
 root_gate() {
+	# sudo that keeps the user's HOME (macOS, sudo -E) would leave root's files in it.
+	# shellcheck disable=SC2012 # only the numeric owner, which ls -n prints the same everywhere
+	home_owner=$(ls -ldn -- "$home" 2>/dev/null | awk '{ print $3 }')
+	if [ -z "$dir_given" ] && { [ -n "${SUDO_USER:-}" ] || { [ -n "$home_owner" ] && [ "$home_owner" != 0 ]; }; }; then
+		die "you ran the installer with sudo: run it as yourself, no sudo needed (or pass --dir PATH to install as root into another folder)"
+	fi
 	if [ -n "$dir_given" ] || is_on "$yes"; then
 		warn "running as root: installing into $dir"
 		return 0
@@ -286,7 +350,7 @@ install_ttyak() {
 	base=$DOWNLOAD_URL/v$version
 	say "Downloading ttyak $version for $platform"
 	fetch "$base/SHA256SUMS" "$tmp/SHA256SUMS" || die "could not download $base/SHA256SUMS: is $version a ttyak release?"
-	want=$(awk -v f="$asset" '$2 == f || $2 == "*" f { print tolower($1); exit }' "$tmp/SHA256SUMS")
+	want=$(awk -v f="$asset" '{ sub(/\r$/, "") } $2 == f || $2 == "*" f { print tolower($1); exit }' "$tmp/SHA256SUMS")
 	[ -n "$want" ] || die "ttyak $version has no build for $platform"
 	case $want in *[!0-9a-f]*) die "SHA256SUMS has no proper checksum for $asset" ;; esac
 	[ ${#want} -eq 64 ] || die "SHA256SUMS has no proper checksum for $asset"
@@ -305,6 +369,7 @@ install_ttyak() {
 		old=$(json_version "$dir/install.json")
 	fi
 	staged=$dir/.ttyak.new
+	rm -f -- "$staged"
 	cp -- "$tmp/unpacked/ttyak" "$staged"
 	chmod 755 "$staged"
 	mv -f -- "$staged" "$dir/ttyak"
@@ -349,6 +414,7 @@ main() {
 	dir=${TTYAK_DIR:-}
 	uninstall=${TTYAK_UNINSTALL:-}
 	keep_data=${TTYAK_KEEP_DATA:-}
+	no_modify_path=${TTYAK_NO_MODIFY_PATH:-}
 	while [ $# -gt 0 ]; do
 		case $1 in
 		-y | --yes) yes=1 ;;
@@ -364,6 +430,7 @@ main() {
 			shift
 			;;
 		--dir=*) dir=${1#*=} ;;
+		--no-modify-path) no_modify_path=1 ;;
 		--uninstall) uninstall=1 ;;
 		--keep-data) keep_data=1 ;;
 		-h | --help)
@@ -375,12 +442,13 @@ main() {
 		shift
 	done
 	[ -n "${HOME:-}" ] || die "HOME is not set"
+	home=${HOME%/}
 	dir_given=$dir
 	# shellcheck disable=SC2088 # a literal ~ from --dir=~/…
 	case $dir in
-	'') dir=$HOME/.local/bin ;;
-	'~') dir=$HOME ;;
-	'~/'*) dir=$HOME/${dir#'~/'} ;;
+	'') dir=$home/.local/bin ;;
+	'~') dir=$home ;;
+	'~/'*) dir=$home/${dir#'~/'} ;;
 	/*) ;;
 	*) dir=$(pwd)/$dir ;;
 	esac

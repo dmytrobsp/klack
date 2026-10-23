@@ -21,14 +21,15 @@ import zipfile
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SCRIPT = os.path.join(ROOT, "site", "install.sh")
 SHELLS = [s for s in (shutil.which("dash"), shutil.which("bash")) if s]
-MARKER = "# added by the ttyak installer"
+MARKER = '# added by the ttyak installer; "ttyak uninstall" removes this line'
 LATEST = "0.10.0"
 PLATFORMS = ["x86_64-linux", "aarch64-macos", "x86_64-macos"]
 # version -> platforms with an archive; 6.6.6's SHA256SUMS lies about its Linux archive
-RELEASES = {"0.9.0": PLATFORMS, "0.10.0": PLATFORMS, "0.11.0-rc.1": PLATFORMS + ["aarch64-linux", "x86_64-windows"],
-            "6.6.6": PLATFORMS}
+# 0.9.2's SHA256SUMS has CRLF line ends.
+RELEASES = {"0.9.0": PLATFORMS, "0.9.2": PLATFORMS, "0.10.0": PLATFORMS,
+            "0.11.0-rc.1": PLATFORMS + ["aarch64-linux", "x86_64-windows"], "6.6.6": PLATFORMS}
 # The tools the script (and the stub) may run; a test hides some of them.
-TOOLS = ["sh", "id", "mktemp", "rm", "mkdir", "chmod", "mv", "cp", "cat", "sed", "awk", "tr", "tail", "grep",
+TOOLS = ["sh", "id", "ls", "mktemp", "rm", "mkdir", "chmod", "mv", "cp", "cat", "sed", "awk", "tr", "tail", "grep",
          "dirname", "curl", "wget", "unzip", "bsdtar", "python3", "sha256sum", "shasum"]
 STUB = """#!/bin/sh
 # ttyak stub for {platform}
@@ -41,6 +42,20 @@ uninstall)
 \t;;
 esac
 """
+
+
+def posix_line(d=None):
+    """The line the script puts in sh-like startup files, for ~/.local/bin or for the folder d."""
+    if d is None:
+        return 'case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) export PATH="$HOME/.local/bin:$PATH" ;; esac'
+    q = "'" + d.replace("'", "'\\''") + "'"
+    return 'case ":$PATH:" in *:%s:*) ;; *) export PATH=%s:"$PATH" ;; esac' % (q, q)
+
+
+def fish_line(d=None):
+    """The line the script puts in conf.d/ttyak.fish."""
+    q = "~/.local/bin" if d is None else "'" + d.replace("\\", "\\\\").replace("'", "\\'") + "'"
+    return "contains -- %s $PATH; or set -gx PATH %s $PATH" % (q, q)
 
 
 def sha256(path):
@@ -67,7 +82,7 @@ def build_fixtures(root):
             if version == "6.6.6" and platform == "x86_64-linux":
                 digest = "0" * 64
             sums.append("%s  %s\n" % (digest, name))
-        with open(os.path.join(d, "SHA256SUMS"), "w") as f:
+        with open(os.path.join(d, "SHA256SUMS"), "w", newline="\r\n" if version == "0.9.2" else "\n") as f:
             f.writelines(sums)
     feed = {"name": "ttyak", "version": LATEST, "date": "2026-10-23",
             "notes": "https://github.com/dmytrobsp/ttyak/releases/tag/v" + LATEST,
@@ -88,6 +103,9 @@ def build_fixtures(root):
     for name, text in broken.items():
         with open(os.path.join(root, "feeds", name), "w") as f:
             f.write(text)
+    os.makedirs(os.path.join(root, "feeds-ok"))
+    with open(os.path.join(root, "feeds-ok", "crlf.json"), "w", newline="\r\n") as f:
+        json.dump(dict(feed, version="0.9.2"), f, indent=2)
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
@@ -152,7 +170,8 @@ def write_exe(path, text):
 class Run:
     """One run's folders: home, tmp, bin (the run's PATH)."""
 
-    def __init__(self, test, shell, os_name="Linux", arch="x86_64", translated=None, root=False, hide=()):
+    def __init__(self, test, shell, os_name="Linux", arch="x86_64", translated=None, root=False, home_owner=0, hide=()):
+        """root: `id -u` says 0; then `ls -ldn` says HOME belongs to home_owner (None: the real ls, this user)."""
         self.test, self.shell = test, shell
         self.top = tempfile.mkdtemp(prefix="ttyak-install-test-")
         test.addCleanup(shutil.rmtree, self.top)
@@ -173,6 +192,10 @@ class Run:
         if root:
             write_exe(os.path.join(self.bin, "id"),
                       '#!/bin/sh\nif [ "$1" = -u ]; then echo 0; else exec %s "$@"; fi\n' % shutil.which("id"))
+            if home_owner is not None:
+                write_exe(os.path.join(self.bin, "ls"),
+                          '#!/bin/sh\nif [ "$1" = -ldn ]; then echo "drwx------ 2 %d 0 4096 Jan 1 00:00 $3"; '
+                          'else exec %s "$@"; fi\n' % (home_owner, shutil.which("ls")))
         self.local_bin = os.path.join(self.home, ".local", "bin")
         self.env = {"HOME": self.home, "PATH": self.bin, "SHELL": "/bin/sh", "TMPDIR": self.tmp,
                     "TTYAK_LATEST_URL": BASE + "/latest.json", "TTYAK_DOWNLOAD_URL": BASE + "/gh/releases/download"}
@@ -302,11 +325,11 @@ class InstallSh:
             self.assertFalse(os.path.exists(r.local_bin))
             self.assertEqual(stat.S_IMODE(os.stat(target).st_mode), 0o700)
             profile = r.read(".profile")
-            self.assertIn("export PATH='%s':\"$PATH\" %s\n" % (target.replace("'", "'\\''"), MARKER), profile)
-            self.assertIn("added it in %s/.profile" % r.home, p.stdout)
-            # the line works in a shell
-            out = subprocess.run([r.shell, "-c", '. "$HOME/.profile"; printf %s "$PATH"'], env={"HOME": r.home, "PATH": "/usr/bin"},
-                                 capture_output=True, text=True).stdout
+            self.assertEqual(profile, posix_line(target) + " " + MARKER + "\n")
+            self.assertIn("Added %s to PATH in %s/.profile" % (target, r.home), p.stdout)
+            # the line works in a shell, also sourced twice
+            out = subprocess.run([r.shell, "-c", '. "$HOME/.profile"; . "$HOME/.profile"; printf %s "$PATH"'],
+                                 env={"HOME": r.home, "PATH": "/usr/bin"}, capture_output=True, text=True).stdout
             self.assertEqual(out, target + ":/usr/bin")
             # the env var, a relative folder and ~/
             other = os.path.join(r.top, "env-dir")
@@ -349,11 +372,12 @@ class InstallSh:
             self.assertRecord(r, "0.9.0")
 
     def test_path_added_once(self):
-        default_line = 'export PATH="$HOME/.local/bin:$PATH" ' + MARKER + "\n"
-        fish_line = "fish_add_path --path ~/.local/bin " + MARKER + "\n"
+        default_line = posix_line() + " " + MARKER + "\n"
+        fish_default = fish_line() + " " + MARKER + "\n"
         cases = (("/bin/bash", ".bashrc", default_line), ("/usr/bin/zsh", ".zshrc", default_line),
-                 ("/usr/bin/fish", ".config/fish/conf.d/ttyak.fish", fish_line), ("/bin/sh", ".profile", default_line),
-                 ("", ".profile", default_line), ("/usr/bin/ksh", ".profile", default_line))
+                 ("/usr/bin/fish", ".config/fish/conf.d/ttyak.fish", fish_default), ("/bin/sh", ".profile", default_line),
+                 ("/usr/bin/dash", ".profile", default_line), ("/usr/bin/ksh", ".profile", default_line),
+                 ("/bin/mksh", ".profile", default_line), ("/usr/bin/yash", ".profile", default_line))
         for shell_path, rel, line in cases:
             for r in self.runs():
                 with open(os.path.join(r.home, ".profile"), "w") as f:
@@ -361,7 +385,8 @@ class InstallSh:
                 with open(os.path.join(r.home, ".bashrc"), "w") as f:
                     f.write("alias ll='ls -l'\n")
                 p = r.ok(SHELL=shell_path)
-                self.assertIn("added it in %s/%s" % (r.home, rel), p.stdout)
+                self.assertIn("Added %s to PATH in %s/%s; other shells you use need the same in their own startup files"
+                              % (r.local_bin, r.home, rel), p.stdout)
                 self.assertIn("Open a new terminal", p.stdout)
                 text = r.read(rel)
                 self.assertEqual(text.count(MARKER), 1, rel)
@@ -373,40 +398,159 @@ class InstallSh:
                 p = r.ok(SHELL=shell_path)
                 self.assertEqual(r.read(rel), text)
                 self.assertIn("already puts %s on PATH" % r.local_bin, p.stdout)
-        # macOS bash reads ~/.bash_profile in its login shells
-        for r in self.runs(os_name="Darwin", arch="arm64", translated=0):
-            r.ok(SHELL="/bin/bash")
-            self.assertEqual(r.read(".bash_profile"), default_line)
-            self.assertFalse(os.path.exists(os.path.join(r.home, ".bashrc")))
+        # the default line sourced twice puts the folder on PATH once
+        for r in self.runs():
+            r.ok()
+            out = subprocess.run([r.shell, "-c", '. "$HOME/.profile"; . "$HOME/.profile"; printf %s "$PATH"'],
+                                 env={"HOME": r.home, "PATH": "/usr/bin"}, capture_output=True, text=True).stdout
+            self.assertEqual(out, r.local_bin + ":/usr/bin")
         # ZDOTDIR and XDG_CONFIG_HOME are followed
         for r in self.runs():
             zdot, xdg = os.path.join(r.top, "zdot"), os.path.join(r.top, "xdg")
             r.ok(SHELL="/bin/zsh", ZDOTDIR=zdot)
             self.assertEqual(slurp(os.path.join(zdot, ".zshrc")), default_line)
             r.ok(SHELL="/usr/bin/fish", XDG_CONFIG_HOME=xdg)
-            self.assertEqual(slurp(os.path.join(xdg, "fish", "conf.d", "ttyak.fish")), fish_line)
-        # already on PATH: nothing is added anywhere
+            self.assertEqual(slurp(os.path.join(xdg, "fish", "conf.d", "ttyak.fish")), fish_default)
+        # already on PATH (also as a dir/ entry): nothing is added anywhere, and no note about another ttyak
         for r in self.runs():
-            for shell_path in ("/bin/bash", "/usr/bin/fish", "/bin/sh"):
-                p = r.ok(SHELL=shell_path, PATH=r.local_bin + ":" + r.bin)
-                self.assertIn("Run: ttyak", p.stdout)
+            for path in (r.local_bin + ":" + r.bin, r.local_bin + "/:" + r.bin):
+                for shell_path in ("/bin/bash", "/usr/bin/fish", "/bin/sh"):
+                    p = r.ok(SHELL=shell_path, PATH=path)
+                    self.assertIn("Run: ttyak", p.stdout)
+                    self.assertEqual(p.stderr, "")
             self.assertEqual(sorted(os.listdir(r.home)), [".local"])
         # fish quoting for another folder
         for r in self.runs():
             target = os.path.join(r.top, "a'b\\c")
             r.ok("--dir", target, SHELL="/usr/bin/fish")
-            line = r.read(".config/fish/conf.d/ttyak.fish")
-            self.assertEqual(line, "fish_add_path --path '%s' %s\n" % (target.replace("\\", "\\\\").replace("'", "\\'"), MARKER))
+            self.assertEqual(r.read(".config/fish/conf.d/ttyak.fish"), fish_line(target) + " " + MARKER + "\n")
+
+    def test_macos_bash_startup_file(self):
+        # login shells read the first of these that exists: a new ~/.bash_profile would hide the others
+        for existing, want in (((), ".bash_profile"), ((".profile",), ".profile"),
+                               ((".bash_login", ".profile"), ".bash_login"), ((".bash_profile", ".profile"), ".bash_profile")):
+            for r in self.runs(os_name="Darwin", arch="arm64", translated=0):
+                for rel in existing:
+                    with open(os.path.join(r.home, rel), "w") as f:
+                        f.write("# mine\n")
+                r.ok(SHELL="/bin/bash")
+                self.assertEqual(r.read(want), ("# mine\n" if want in existing else "") + posix_line() + " " + MARKER + "\n")
+                for rel in existing:
+                    if rel != want:
+                        self.assertEqual(r.read(rel), "# mine\n")
+                self.assertEqual(sorted(os.listdir(r.home)), sorted({".local", want, *existing}))
+
+    def test_other_shells_only_get_hints(self):
+        cases = (("/bin/csh", "set path = ( ~/.local/bin $path )", "~/.cshrc"),
+                 ("/usr/bin/tcsh", "set path = ( ~/.local/bin $path )", "~/.tcshrc"),
+                 ("/usr/bin/nu", "$env.PATH = ($env.PATH | prepend ($nu.home-path | path join .local bin))", "env.nu"),
+                 ("/usr/bin/elvish", "set paths = [~/.local/bin $@paths]", "rc.elv"),
+                 ("/usr/bin/xonsh", "$PATH.insert(0, '~/.local/bin')", "~/.xonshrc"),
+                 ("/opt/odd/bin/zork", posix_line(), "startup file"), ("", posix_line(), "startup file"))
+        for shell_path, line, where in cases:
+            for r in self.runs():
+                p = r.ok(SHELL=shell_path)
+                self.assertIn("  " + line + " " + MARKER + "\n", p.stdout)
+                self.assertIn(where, p.stdout)
+                self.assertNotIn("Added", p.stdout)
+                self.assertEqual(sorted(os.listdir(r.home)), [".local"])
+
+    def test_profile_link_or_read_only_left_alone(self):
+        for r in self.runs():
+            real = os.path.join(r.top, "dotfiles-bashrc")
+            with open(real, "w") as f:
+                f.write("# managed\n")
+            os.symlink(real, os.path.join(r.home, ".bashrc"))
+            p = r.ok(SHELL="/bin/bash")
+            self.assertEqual(slurp(real), "# managed\n")
+            self.assertTrue(os.path.islink(os.path.join(r.home, ".bashrc")))
+            self.assertIn("  " + posix_line() + " " + MARKER + "\n", p.stdout)
+            self.assertIn(r.home + "/.bashrc", p.stdout)
+        for r in self.runs():
+            ro = os.path.join(r.home, ".zshrc")
+            with open(ro, "w") as f:
+                f.write("# mine\n")
+            os.chmod(ro, 0o400)
+            p = r.ok(SHELL="/bin/zsh")
+            self.assertEqual(slurp(ro), "# mine\n")
+            self.assertIn("  " + posix_line() + " " + MARKER + "\n", p.stdout)
+
+    def test_no_modify_path(self):
+        for r in self.runs():
+            for args, env in ((["--no-modify-path"], {}), ([], {"TTYAK_NO_MODIFY_PATH": "1"})):
+                p = r.ok(*args, SHELL="/bin/bash", **env)
+                self.assertEqual(sorted(os.listdir(r.home)), [".local"])
+                self.assertIn("  " + posix_line() + " " + MARKER + "\n", p.stdout)
+                self.assertIn(r.home + "/.bashrc", p.stdout)
+
+    def test_hash_read_from_stdin(self):
+        # sha256sum escapes a file name with a backslash and then marks the hash with one too
+        for hide in ((), ("sha256sum",)):
+            if hide and not shutil.which("shasum"):
+                continue
+            for r in self.runs(hide=hide):
+                tmp = os.path.join(r.top, "back\\slash")
+                os.mkdir(tmp)
+                r.ok(TMPDIR=tmp)
+                self.assertEqual(r.installed(), "ttyak " + LATEST)
+                self.assertEqual(os.listdir(tmp), [])
+
+    def test_staged_files_never_followed(self):
+        for r in self.runs():
+            os.makedirs(r.local_bin)
+            victim = os.path.join(r.top, "victim")
+            with open(victim, "w") as f:
+                f.write("keep\n")
+            for name in (".ttyak.new", ".install.json.new"):
+                os.symlink(victim, os.path.join(r.local_bin, name))
+            r.ok()
+            self.assertEqual(slurp(victim), "keep\n")
+            self.assertEqual(r.installed(), "ttyak " + LATEST)
+            self.assertRecord(r, LATEST)
+            self.assertEqual(sorted(os.listdir(r.local_bin)), ["install.json", "ttyak"])
+
+    def test_home_with_trailing_slash(self):
+        for r in self.runs():
+            r.ok(HOME=r.home + "/")
+            self.assertRecord(r, LATEST)
+            self.assertEqual(r.read(".profile"), posix_line() + " " + MARKER + "\n")
+
+    def test_crlf_files(self):
+        for r in self.runs():
+            r.ok(TTYAK_LATEST_URL=BASE + "/feeds-ok/crlf.json")
+            self.assertEqual(r.installed(), "ttyak 0.9.2")
+            self.assertNotIn("HEAD /gh/releases/latest", Handler.requests)
+
+    def test_truncated_script_runs_nothing(self):
+        with open(SCRIPT, "rb") as f:
+            data = f.read()
+        for r in self.runs():
+            part = os.path.join(r.top, "part.sh")
+            for cut in [4000] + list(range(300, len(data) - 20, 700)):
+                with open(part, "wb") as f:
+                    f.write(data[:cut])
+                Handler.requests.clear()
+                with open(part, "rb") as stdin:
+                    p = subprocess.run([r.shell], env=r.env, stdin=stdin, capture_output=True, timeout=30,
+                                       start_new_session=True)
+                if cut == 4000:
+                    self.assertNotEqual(p.returncode, 0)
+                self.assertEqual(os.listdir(r.home), [], cut)
+                self.assertEqual(Handler.requests, [], cut)
 
     @unittest.skipUnless(shutil.which("fish"), "needs fish")
     def test_fish_line_works(self):
+        # sourced twice: the folder once, first, and fish says nothing
         for r in self.runs():
-            target = os.path.join(r.top, "a'b\\c d")
-            r.ok("--dir", target, SHELL="/usr/bin/fish")
-            conf = os.path.join(r.home, ".config", "fish", "conf.d", "ttyak.fish")
-            out = subprocess.run(["fish", "--no-config", "-c", "source %s; string join \\n -- $PATH" % conf.replace(" ", "\\ ")],
-                                 env={"HOME": r.home, "PATH": "/usr/bin"}, capture_output=True, text=True).stdout
-            self.assertEqual(out.splitlines()[0], target)
+            for args in ([], ["--dir", os.path.join(r.top, "a'b\\c d")]):
+                r.ok(*args, SHELL="/usr/bin/fish")
+                conf = os.path.join(r.home, ".config", "fish", "conf.d", "ttyak.fish")
+                p = subprocess.run(["fish", "--no-config", "-c", "source $argv[1]; source $argv[1]; string join \\n -- $PATH", conf],
+                                   env={"HOME": r.home, "PATH": "/usr/bin"}, capture_output=True, text=True)
+                want = args[1] if args else r.local_bin
+                self.assertEqual(p.stdout.splitlines(), [want, "/usr/bin"])
+                self.assertEqual(p.stderr, "")
+                os.remove(conf)
 
     def test_no_tty_never_waits(self):
         setsid = shutil.which("setsid")
@@ -459,6 +603,22 @@ class InstallSh:
             self.assertNotEqual(code, 0)
             self.assertIn("nothing installed", err)
             self.assertFalse(os.path.exists(os.path.join(r.local_bin, "ttyak")))
+
+    def test_sudo_refused(self):
+        # sudo that keeps the user's HOME would leave root-owned files in it
+        for r in self.runs(root=True):
+            p = r.fails("--yes", SUDO_USER="me")
+            self.assertIn("you ran the installer with sudo", p.stderr)
+            self.assertIn("no sudo needed", p.stderr)
+            self.assertEqual(os.listdir(r.home), [])
+            self.assertEqual(Handler.requests, [])
+            other = os.path.join(r.top, "opt")
+            r.ok("--dir", other, SUDO_USER="me")
+            self.assertRecord(r, LATEST, other)
+        for r in self.runs(root=True, home_owner=None):
+            p = r.fails("--yes")
+            self.assertIn("you ran the installer with sudo", p.stderr)
+            self.assertEqual(os.listdir(r.home), [])
 
     def test_picks_platform(self):
         cases = ((dict(os_name="Linux", arch="x86_64"), "x86_64-linux"), (dict(os_name="Linux", arch="amd64"), "x86_64-linux"),
