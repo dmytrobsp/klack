@@ -500,8 +500,17 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn sudo_only_for_someone_else_s_folder() {
-        let mine = std::env::temp_dir().join(format!("ttyak-test-yours-{}", std::process::id()));
+        // (A long name, as macOS's temp folders have: the words wrap on the screen.)
+        let mine = std::env::temp_dir().join(format!("ttyak-test-yours-{}-a-folder-name-long-enough-to-wrap-a-line", std::process::id()));
         std::fs::create_dir_all(&mine).unwrap();
+        /// Removes the folder even when an assertion fails.
+        struct Gone<'a>(&'a Path);
+        impl Drop for Gone<'_> {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir(self.0);
+            }
+        }
+        let _gone = Gone(&mine);
         assert!(yours(&mine) && !yours(&mine.join("not there")));
         // SAFETY: getuid has no preconditions and cannot fail.
         if unsafe { libc::getuid() } != 0 {
@@ -509,10 +518,11 @@ mod tests {
         }
         let mut v = UpdateView::new(latest(), Install { method: Method::Script, exe: mine.join("ttyak"), writable: false });
         assert_eq!(v.offer, Offer::Command(format!("curl -fsSL https://ttyak.sh/install.sh | sh -s -- --dir {}", mine.display())), "your own folder: no sudo");
-        let text = screen(&mut v).join("\n");
-        assert!(text.contains("Once you can write there (it is your folder), run:") && !text.contains("as someone"), "{text}");
+        // What it says, before the screen wraps it.
+        let says = v.lines().join("\n");
+        assert!(says.contains(&format!("ttyak cannot write {}, so it cannot update itself. Once you can write there (it is your folder), run:", mine.display())) && !says.contains("as someone"), "{says}");
+        assert!(screen(&mut v).join("\n").contains("[ Copy the command (y) ]"));
         assert_eq!(script_command(Path::new("/usr/local/bin"), true), "curl -fsSL https://ttyak.sh/install.sh | sudo sh -s -- --dir /usr/local/bin");
-        std::fs::remove_dir(&mine).unwrap();
     }
 
     #[test]
