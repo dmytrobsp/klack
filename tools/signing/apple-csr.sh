@@ -18,10 +18,11 @@ P12="$DIR/developer-id.p12"
 PASS="$DIR/developer-id.p12-password"
 REPO="dmytrobsp/ttyak"
 # Apple sets the certificate's subject from the account and ignores the request's; this one only names the key.
-SUBJECT="/CN=ttyak Developer ID/emailAddress=dmytrobsp@gmail.com"
+SUBJECT="/CN=ttyak Developer ID"
 G2_URL="https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer"
 # SHA-256 of that file (DER) as downloaded on 2026-10-23: "Developer ID Certification Authority", OU G2, until 2031.
 G2_SHA256="f16cd3c54c7f83cea4bf1a3e6a0819c8aaa8e4a1528fd144715f350643d2df3a"
+EMPTY_SHA256="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
 usage() { echo "usage: $ME request [--renew] | install FILE.cer | status" >&2; exit 2; }
 die() { echo "$ME: $*" >&2; exit 1; }
@@ -47,9 +48,17 @@ folder() {
 
 sha256_of() { openssl dgst -sha256 -r "$1" | cut -d' ' -f1; }
 
-# Public-key digests: the certificate's and the key's. Only public halves pass through the pipes.
-cert_pub() { openssl x509 -in "$1" -noout -pubkey | openssl pkey -pubin -outform DER | openssl dgst -sha256 -r; }
-key_pub() { openssl pkey -in "$KEY" -pubout -outform DER | openssl dgst -sha256 -r; }
+# Public keys (DER) of a certificate and of the key. Only public halves pass through the pipes.
+cert_pub_der() { openssl x509 -in "$1" -noout -pubkey | openssl pkey -pubin -outform DER; }
+key_pub_der() { openssl pkey -in "$KEY" -pubout -outform DER; }
+
+# SHA-256 of what the given command prints; fails when any part of the pipe fails or it printed nothing.
+pub_digest() {
+    local d
+    d=$("$@" | openssl dgst -sha256 -r | cut -d' ' -f1) || return 1
+    if [ -z "$d" ] || [ "$d" = "$EMPTY_SHA256" ]; then return 1; fi
+    printf '%s\n' "$d"
+}
 
 subject_cn() { openssl x509 -in "$1" -noout -subject -nameopt sep_multiline,utf8,sname | sed -n 's/^ *CN=//p'; }
 
@@ -139,6 +148,7 @@ EOF
 intermediate() {
     local out=$1 raw
     if [ -n "${TTYAK_SIGNING_CA-}" ]; then
+        echo "$ME: using TTYAK_SIGNING_CA (not pinned): for tests only" >&2
         openssl x509 -in "$TTYAK_SIGNING_CA" -out "$out" 2>/dev/null \
             || openssl x509 -inform DER -in "$TTYAK_SIGNING_CA" -out "$out" 2>/dev/null \
             || die "TTYAK_SIGNING_CA is not a certificate: $TTYAK_SIGNING_CA"
@@ -152,13 +162,23 @@ intermediate() {
     openssl x509 -inform DER -in "$raw" -out "$out"
 }
 
+# gh must be logged in as an admin of the repository (who may set its secrets); checked before anything is built.
+gh_ready() {
+    local admin
+    command -v gh >/dev/null || die "gh (GitHub CLI) is not installed"
+    gh auth status >/dev/null 2>&1 < /dev/null || die "gh is not logged in: run gh auth login, then install again"
+    admin=$(gh api "repos/$REPO" --jq .permissions.admin 2>/dev/null < /dev/null) \
+        || die "gh cannot read the repository $REPO: check gh auth status, then install again"
+    [ "$admin" = true ] || die "the gh account is not an admin of $REPO, so it cannot set the secrets"
+}
+
 install_cer() {
-    local given pem ca p12 pass der cn why
+    local given pem ca p12 pass der cn why code cert_digest key_digest
     [ $# -eq 1 ] || usage
     given=$1
     [ -f "$given" ] || die "no such file: $given"
     [ -f "$KEY" ] || die "no key in $DIR yet: run $ME request first"
-    command -v gh >/dev/null || die "gh (GitHub CLI) is not installed"
+    gh_ready
     folder
     temp pem
     openssl x509 -inform DER -in "$given" -out "$pem" 2>/dev/null \
@@ -171,13 +191,22 @@ install_cer() {
     esac
     openssl x509 -in "$pem" -noout -ext extendedKeyUsage 2>/dev/null | grep -q 'Code Signing' \
         || die "the certificate is not for Code Signing"
-    [ "$(cert_pub "$pem")" = "$(key_pub)" ] \
+    cert_digest=$(pub_digest cert_pub_der "$pem") || die "cannot read the public key of $given"
+    key_digest=$(pub_digest key_pub_der) || die "cannot read the public key of $KEY"
+    [ "$cert_digest" = "$key_digest" ] \
         || die "the certificate does not match the key $KEY (Apple must get the request made with it: $CSR)"
     openssl x509 -in "$pem" -noout -checkend 0 >/dev/null || die "the certificate expired on $(expiry "$pem")"
     temp ca
     intermediate "$ca"
-    why=$(openssl verify -partial_chain -trusted "$ca" "$pem" 2>&1) \
-        || die "not issued by Apple's Developer ID G2 authority: make it again and choose G2 Sub-CA (Xcode 11.4.1 or later). openssl: $(printf '%s\n' "$why" | grep -m 1 -o 'error [0-9]* at .*' || true)"
+    # Only the issuer is checked here: Apple's certificates carry private critical extensions openssl does not know.
+    if ! why=$(openssl verify -ignore_critical -partial_chain -trusted "$ca" "$pem" 2>&1); then
+        why=$(printf '%s\n' "$why" | grep -m 1 -o 'error [0-9]* at .*' || printf '%s\n' "$why" | tail -n 1)
+        code=$(printf '%s\n' "$why" | sed -n 's/^error \([0-9]*\) at .*/\1/p')
+        if [ "$code" = 20 ]; then
+            die "not issued by Apple's Developer ID G2 authority (openssl: $why). Make it again and choose G2 Sub-CA (Xcode 11.4.1 or later)."
+        fi
+        die "the certificate does not check out against Apple's G2 intermediate (openssl: $why). Do not make a new certificate yet (Apple allows only five Developer ID Application certificates): ask for help with this message."
+    fi
 
     # PBE-SHA1-3DES keys and certificates with a SHA-1 MAC: `security import` rejects OpenSSL 3's AES/PBKDF2 default.
     temp p12
@@ -189,7 +218,11 @@ install_cer() {
     openssl pkcs12 -in "$p12" -noout -passin "file:$pass" 2>/dev/null || die "the new p12 does not open"
     openssl x509 -in "$pem" -outform DER -out "$der"
 
-    if [ -e "$CER" ] && ! cmp -s "$der" "$CER"; then move_aside "$CER" "$P12" "$PASS"; fi
+    if [ -e "$CER" ] && ! cmp -s "$der" "$CER"; then
+        move_aside "$CER" "$P12" "$PASS"
+    else
+        move_aside "$P12" "$PASS"
+    fi
     mv -- "$der" "$CER"
     mv -- "$p12" "$P12"
     mv -- "$pass" "$PASS"
@@ -204,7 +237,7 @@ install_cer() {
 }
 
 status() {
-    local f days pem kept=""
+    local f days pem cert_digest key_digest kept=""
     [ $# -eq 0 ] || usage
     if [ ! -d "$DIR" ]; then
         echo "Nothing yet: $DIR does not exist. Start with: $ME request"
@@ -219,7 +252,11 @@ status() {
         days=$(days_left "$pem")
         printf '  developer-id.cer                 %s, expires %s (%s)' "$(subject_cn "$pem")" "$(expiry "$pem")" \
             "$([ "$days" -ge 0 ] && echo "$days days left" || echo "expired")"
-        if [ -e "$KEY" ] && [ "$(cert_pub "$pem")" = "$(key_pub)" ]; then
+        if [ ! -e "$KEY" ]; then
+            echo "; no key"
+        elif ! cert_digest=$(pub_digest cert_pub_der "$pem") || ! key_digest=$(pub_digest key_pub_der); then
+            echo "; cannot read its key or the key"
+        elif [ "$cert_digest" = "$key_digest" ]; then
             echo "; matches the key"
         else
             echo "; does NOT match the key"

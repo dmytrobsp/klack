@@ -11,17 +11,29 @@ SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "apple-csr.sh"
 REPO = "dmytrobsp/ttyak"
 TEAM = "TEAMID1234"
 
-# Records each call's arguments and the length and SHA-256 of stdin, never the value. Fails like gh does
-# when FAKE_GH_FAIL is set, and when APPLE_P12 does not get non-empty base64.
+# Records each call's arguments and, for `secret set`, the length and SHA-256 of stdin, never the value.
+# `auth status` fails with FAKE_GH_AUTH_FAIL; `api repos/…` prints FAKE_GH_ADMIN (default true) for the admin
+# permission; `secret set` fails with FAKE_GH_FAIL, and when APPLE_P12 does not get non-empty base64.
 FAKE_GH = r'''#!/usr/bin/env python3
 import base64, binascii, hashlib, os, sys
-data = sys.stdin.buffer.read()
+args = sys.argv[1:]
+data = sys.stdin.buffer.read() if args[:2] == ["secret", "set"] else b""
 with open(os.environ["FAKE_GH_LOG"], "a") as log:
-    log.write("%s\t%d\t%s\n" % (" ".join(sys.argv[1:]), len(data), hashlib.sha256(data).hexdigest()))
+    log.write("%s\t%d\t%s\n" % (" ".join(args), len(data), hashlib.sha256(data).hexdigest()))
+if args[:2] == ["auth", "status"]:
+    if os.environ.get("FAKE_GH_AUTH_FAIL"):
+        sys.stderr.write("You are not logged into any GitHub hosts. To log in, run: gh auth login\n")
+        sys.exit(1)
+    sys.exit(0)
+if args[:1] == ["api"]:
+    if args != ["api", "repos/dmytrobsp/ttyak", "--jq", ".permissions.admin"]:
+        sys.exit(1)
+    print(os.environ.get("FAKE_GH_ADMIN", "true"))
+    sys.exit(0)
 if os.environ.get("FAKE_GH_FAIL"):
     sys.stderr.write("HTTP 404: Not Found\n")
     sys.exit(1)
-if sys.argv[1:4] == ["secret", "set", "APPLE_P12"]:
+if args[:3] == ["secret", "set", "APPLE_P12"]:
     try:
         ok = len(base64.b64decode(data, validate=True)) > 0
     except binascii.Error:
@@ -89,6 +101,8 @@ class AppleCsr(unittest.TestCase):
         with open(ext, "w") as f:
             f.write("basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\n")
             f.write("extendedKeyUsage=critical,%s\n" % eku)
+            # Apple's private marker for Developer ID Application certificates, critical as in Apple's.
+            f.write("1.2.840.113635.100.6.1.13=critical,DER:0500\n")
         out = self.path(name)
         subject = "/UID=%s/CN=%s: Test, Person (%s)/OU=%s/O=Test, Person/C=US" % (TEAM, kind, TEAM, TEAM)
         openssl("x509", "-req", "-in", csr, "-CA", ca_cert, "-CAkey", ca_key, "-set_serial", str(serial), "-days", "365",
@@ -107,15 +121,25 @@ class AppleCsr(unittest.TestCase):
         with open(self.gh_log) as f:
             return [line.rstrip("\n").split("\t") for line in f]
 
+    def secret_calls(self):
+        return [c for c in self.gh_calls() if c[0].startswith("secret ")]
+
     def secrets(self):
-        """The secret byte strings no output may contain: the key's PEM body lines and the p12 password."""
+        """The strings no output may contain, from every key, password and p12 in the folder (also kept ones):
+        the keys' PEM body lines, the passwords, and the p12s' base64 (whole, and its first 40 characters)."""
         found = []
-        with open(self.key) as f:
-            found += [line.strip() for line in f if len(line.strip()) >= 16 and "PRIVATE KEY" not in line]
-        pw = os.path.join(self.folder, "developer-id.p12-password")
-        if os.path.exists(pw):
-            with open(pw) as f:
-                found.append(f.read().strip())
+        for name in sorted(os.listdir(self.folder)):
+            path = os.path.join(self.folder, name)
+            if name.startswith("developer-id.key"):
+                with open(path) as f:
+                    found += [line.strip() for line in f if len(line.strip()) >= 16 and "PRIVATE KEY" not in line]
+            elif name.startswith("developer-id.p12-password"):
+                with open(path) as f:
+                    found.append(f.read().strip())
+            elif name.startswith("developer-id.p12"):
+                with open(path, "rb") as f:
+                    b64 = base64.b64encode(f.read()).decode()
+                found += [b64, b64[:40]]
         return found
 
     def assert_nothing_secret_printed(self):
@@ -150,7 +174,8 @@ class AppleCsr(unittest.TestCase):
         self.assertIn("Public-Key: (2048 bit)", text)
         self.assertIn("rsaEncryption", text)
         self.assertIn("sha256WithRSAEncryption", text)
-        self.assertIn("CN = ttyak Developer ID", text)
+        self.assertIn("Subject: CN = ttyak Developer ID\n", text)
+        self.assertNotIn("emailAddress", text)
         openssl("req", "-in", self.csr, "-noout", "-verify")
         csr_pub = openssl("req", "-in", self.csr, "-noout", "-pubkey")
         key_pub = openssl("pkey", "-in", self.key, "-pubout")
@@ -198,7 +223,9 @@ class AppleCsr(unittest.TestCase):
         for p in (p12, pw, cer):
             self.assertEqual(self.mode(p), 0o600, p)
         self.assertEqual(self.mode(self.folder), 0o700)
-        calls = self.gh_calls()
+        self.assertEqual([c[0] for c in self.gh_calls()[:2]], [
+            "auth status", "api repos/%s --jq .permissions.admin" % REPO])
+        calls = self.secret_calls()
         self.assertEqual([c[0] for c in sorted(calls)], [
             "secret set APPLE_P12 -R " + REPO,
             "secret set APPLE_P12_PASSWORD -R " + REPO,
@@ -214,6 +241,7 @@ class AppleCsr(unittest.TestCase):
         lines = r.stdout.splitlines()
         self.assertTrue(any(l.startswith("APPLE_P12 and APPLE_P12_PASSWORD are set (expires ") for l in lines), lines)
         self.assertIn("Developer ID Application: Test, Person (%s)" % TEAM, r.stdout)
+        self.assertIn("using TTYAK_SIGNING_CA (not pinned)", r.stderr)
         self.assert_nothing_secret_printed()
 
     def test_p12_opens_with_its_password_in_the_algorithms_macos_imports(self):
@@ -242,14 +270,14 @@ class AppleCsr(unittest.TestCase):
 
     def test_install_accepts_pem(self):
         self.request_and_install(der=False)
-        self.assertEqual(len(self.gh_calls()), 2)
+        self.assertEqual(len(self.secret_calls()), 2)
 
     def test_install_refuses_a_certificate_for_another_key(self):
         self.assertEqual(self.run_script("request").returncode, 0)
         r = self.run_script("install", self.issue(self.other_csr(), "other.cer"))
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("does not match", r.stderr)
-        self.assertEqual(self.gh_calls(), [])
+        self.assertEqual(self.secret_calls(), [])
         self.assertEqual(sorted(os.listdir(self.folder)), ["developer-id.certSigningRequest", "developer-id.key"])
         self.assert_nothing_secret_printed()
 
@@ -262,15 +290,53 @@ class AppleCsr(unittest.TestCase):
         r = self.run_script("install", self.issue(self.csr, "no-eku.cer", eku="emailProtection"))
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("Code Signing", r.stderr)
-        self.assertEqual(self.gh_calls(), [])
+        self.assertEqual(self.secret_calls(), [])
         self.assert_nothing_secret_printed()
 
     def test_install_refuses_a_certificate_from_another_authority(self):
         self.assertEqual(self.run_script("request").returncode, 0)
         r = self.run_script("install", self.issue(self.csr, "g1.cer", ca=self.make_ca("Old CA")))
         self.assertNotEqual(r.returncode, 0)
-        self.assertIn("G2", r.stderr)
-        self.assertEqual(self.gh_calls(), [])
+        self.assertIn("error 20", r.stderr)
+        self.assertIn("choose G2 Sub-CA (Xcode 11.4.1 or later)", r.stderr)
+        self.assertEqual(self.secret_calls(), [])
+
+    def test_install_other_verify_errors_say_not_to_make_a_new_certificate(self):
+        # The right issuer, a broken signature (its last byte flipped): error 7, not the issuer lookup's 20.
+        self.assertEqual(self.run_script("request").returncode, 0)
+        cer = self.issue(self.csr, "bad-signature.cer")
+        with open(cer, "rb") as f:
+            der = bytearray(f.read())
+        der[-1] ^= 0x01
+        with open(cer, "wb") as f:
+            f.write(der)
+        r = self.run_script("install", cer)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("error 7", r.stderr)
+        self.assertIn("Do not make a new certificate", r.stderr)
+        self.assertNotIn("choose G2 Sub-CA", r.stderr)
+        self.assertEqual(self.secret_calls(), [])
+
+    def test_install_refuses_an_unreadable_key(self):
+        self.assertEqual(self.run_script("request").returncode, 0)
+        cer = self.issue(self.csr, "apple.cer")
+        with open(self.key, "w") as f:
+            f.write("not a key\n")
+        r = self.run_script("install", cer)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("cannot read the public key", r.stderr)
+        self.assertEqual(self.secret_calls(), [])
+
+    def test_install_checks_gh_before_building_anything(self):
+        self.assertEqual(self.run_script("request").returncode, 0)
+        cer = self.issue(self.csr, "apple.cer")
+        for extra, says in (({"FAKE_GH_AUTH_FAIL": "1"}, "gh auth login"), ({"FAKE_GH_ADMIN": "false"}, "admin")):
+            r = self.run_script("install", cer, env=dict(self.env, **extra))
+            self.assertNotEqual(r.returncode, 0, extra)
+            self.assertIn(says, r.stderr)
+            self.assertEqual(sorted(os.listdir(self.folder)), ["developer-id.certSigningRequest", "developer-id.key"])
+        self.assertEqual(self.secret_calls(), [])
+        self.assert_nothing_secret_printed()
 
     def test_install_refuses_a_file_that_is_no_certificate(self):
         self.assertEqual(self.run_script("request").returncode, 0)
@@ -305,6 +371,19 @@ class AppleCsr(unittest.TestCase):
         kept = [n for n in os.listdir(self.folder) if n.startswith("developer-id.cer.")]
         self.assertEqual(len(kept), 1)
         self.assertEqual(sha256(os.path.join(self.folder, kept[0])), first)
+        self.assert_nothing_secret_printed()
+
+    def test_installing_the_same_certificate_again_keeps_the_old_p12_and_password(self):
+        self.request_and_install()
+        first = {n: sha256(os.path.join(self.folder, n)) for n in ("developer-id.p12", "developer-id.p12-password")}
+        self.assertEqual(self.run_script("install", self.path("apple.cer")).returncode, 0)
+        names = os.listdir(self.folder)
+        self.assertEqual([n for n in names if n.startswith("developer-id.cer.")], [])
+        for name, digest in first.items():
+            kept = [n for n in names if n.startswith(name + ".") and n[len(name) + 1:][:1].isdigit()]
+            self.assertEqual(len(kept), 1, (name, names))
+            self.assertEqual(sha256(os.path.join(self.folder, kept[0])), digest)
+            self.assertNotEqual(sha256(os.path.join(self.folder, name)), digest)
         self.assert_nothing_secret_printed()
 
     # status
