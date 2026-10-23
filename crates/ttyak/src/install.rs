@@ -36,7 +36,7 @@ pub enum Method {
 }
 
 impl Method {
-    const ALL: [Method; 9] = [Method::Script, Method::Homebrew, Method::Scoop, Method::Winget, Method::Chocolatey, Method::Aur, Method::Deb, Method::Rpm, Method::Unknown];
+    pub const ALL: [Method; 9] = [Method::Script, Method::Homebrew, Method::Scoop, Method::Winget, Method::Chocolatey, Method::Aur, Method::Deb, Method::Rpm, Method::Unknown];
 
     /// The method as `install.json` names it.
     pub fn name(self) -> &'static str {

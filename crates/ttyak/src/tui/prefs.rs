@@ -553,8 +553,16 @@ fn in_words(secs: u64) -> Option<String> {
 
 /// F6 → Updates' words beyond the labels.
 const VERSION_ROW: &str = "{version} · {how}";
-const BY_SCRIPT: &str = "with the install script";
-const BY_HAND: &str = "unknown (a manual download)";
+/// The ways to have got ttyak, short enough for the row at the least width with a pre-release version (the update screen names the Arch package).
+const BY_SCRIPT: &str = "install script";
+const BY_HOMEBREW: &str = "Homebrew";
+const BY_SCOOP: &str = "Scoop";
+const BY_WINGET: &str = "winget";
+const BY_CHOCOLATEY: &str = "Chocolatey";
+const BY_PACMAN: &str = "Arch package";
+const BY_DEB: &str = ".deb package";
+const BY_RPM: &str = ".rpm package";
+const BY_HAND: &str = "manual download";
 const UPDATE_BELOW: &str = "none needed: use Update below";
 const UPDATE_ITSELF: &str = "none needed: ttyak updates itself once a new version is out";
 const CHECK_IDLE: &str = "look for a new version now";
@@ -570,7 +578,24 @@ const VERSION_ONLY: &str = "this is ttyak's version: nothing to change here";
 const NOTHING_TO_RUN_BELOW: &str = "nothing to run: use Update below";
 const NOTHING_TO_RUN: &str = "nothing to run: ttyak updates itself once a new version is out";
 const UNDER_WAY: &str = "a check is under way";
-const UPDATE_WORDS: &[&str] = &[VERSION_ROW, BY_SCRIPT, BY_HAND, UPDATE_BELOW, UPDATE_ITSELF, CHECK_IDLE, CHECKING, UP_TO_DATE, IS_OUT, NOT_CHECKED, NOT_RUNNING, OPEN_UPDATE, VERSION_ONLY, NOTHING_TO_RUN_BELOW, NOTHING_TO_RUN, UNDER_WAY];
+const UPDATE_WORDS: &[&str] = &[VERSION_ROW, BY_SCRIPT, BY_HOMEBREW, BY_SCOOP, BY_WINGET, BY_CHOCOLATEY, BY_PACMAN, BY_DEB, BY_RPM, BY_HAND, UPDATE_BELOW, UPDATE_ITSELF, CHECK_IDLE, CHECKING, UP_TO_DATE, IS_OUT, NOT_CHECKED, NOT_RUNNING, OPEN_UPDATE, VERSION_ONLY, NOTHING_TO_RUN_BELOW, NOTHING_TO_RUN, UNDER_WAY];
+
+/// The Version row: `version` and how this copy got here.
+fn version_row(version: &str, method: Method) -> String {
+    use super::i18n::tr;
+    let how = match method {
+        Method::Script => BY_SCRIPT,
+        Method::Homebrew => BY_HOMEBREW,
+        Method::Scoop => BY_SCOOP,
+        Method::Winget => BY_WINGET,
+        Method::Chocolatey => BY_CHOCOLATEY,
+        Method::Aur => BY_PACMAN,
+        Method::Deb => BY_DEB,
+        Method::Rpm => BY_RPM,
+        Method::Unknown => BY_HAND,
+    };
+    tr(VERSION_ROW).replace("{version}", version).replace("{how}", &tr(how))
+}
 
 /// What a Check now found, in words (its row, or the status line with F6 closed).
 pub fn checked_note(checked: &Checked) -> String {
@@ -596,6 +621,8 @@ pub enum CheckNow {
 pub struct UpdatePage {
     /// How this ttyak was installed (looked at as F6 opens; None: unknown).
     pub install: Option<Install>,
+    /// This ttyak's version, as the Version row shows it.
+    pub version: String,
     /// The newer version the app knows of (see `Prefs::sync_update`).
     pub available: Option<Latest>,
     pub check: CheckNow,
@@ -785,7 +812,7 @@ impl Prefs {
         let id = |d: &String| d.split(" — ").next().unwrap_or(d).to_string();
         let devices = huddle::devices::list_devices().map(|(i, o)| (i.iter().map(id).collect(), o.iter().map(id).collect())).unwrap_or_default();
         let cameras = huddle::camera::list_cameras().into_iter().map(|c| c.name).collect();
-        let update = UpdatePage { install: Some(crate::install::current()), ..Default::default() };
+        let update = UpdatePage { install: Some(crate::install::current()), version: env!("CARGO_PKG_VERSION").into(), ..Default::default() };
         Prefs { devices, cameras, update, ..Default::default() }
     }
 
@@ -830,14 +857,7 @@ impl Prefs {
         use super::i18n::tr;
         let u = &self.update;
         Some(match field {
-            Field::UpdateVersion => {
-                let how = match u.install.as_ref().map_or(Method::Unknown, |i| i.method) {
-                    Method::Script => BY_SCRIPT,
-                    Method::Unknown => BY_HAND,
-                    method => method.how(),
-                };
-                tr(VERSION_ROW).replace("{version}", env!("CARGO_PKG_VERSION")).replace("{how}", &tr(how))
-            }
+            Field::UpdateVersion => version_row(&u.version, u.install.as_ref().map_or(Method::Unknown, |i| i.method)),
             Field::UpdateCheckNow => match &u.check {
                 CheckNow::Idle => tr(CHECK_IDLE).into_owned(),
                 CheckNow::Running => tr(CHECKING).into_owned(),
@@ -2146,7 +2166,8 @@ mod tests {
     }
 
     fn updates_prefs() -> Prefs {
-        Prefs { category: CATEGORIES.iter().position(|c| c.0 == "Updates").unwrap(), ..Default::default() }
+        let update = UpdatePage { version: env!("CARGO_PKG_VERSION").into(), ..Default::default() };
+        Prefs { category: CATEGORIES.iter().position(|c| c.0 == "Updates").unwrap(), update, ..Default::default() }
     }
 
     fn new_version() -> crate::update::Latest {
@@ -2175,12 +2196,12 @@ mod tests {
         use crate::install::Method;
         let mut p = updates_prefs();
         let v = env!("CARGO_PKG_VERSION");
-        for (method, says) in [(Method::Script, "with the install script"), (Method::Homebrew, "with Homebrew"), (Method::Aur, "as the Arch package ttyak-bin"), (Method::Deb, "from a .deb package"), (Method::Unknown, "unknown (a manual download)")] {
+        for (method, says) in [(Method::Script, "install script"), (Method::Homebrew, "Homebrew"), (Method::Aur, "Arch package"), (Method::Deb, ".deb package"), (Method::Unknown, "manual download")] {
             p.update.install = installed(method, false);
             assert_eq!(p.update_value(Field::UpdateVersion), Some(format!("{v} · {says}")), "{method:?}");
         }
         p.update.install = None;
-        assert_eq!(p.update_value(Field::UpdateVersion), Some(format!("{v} · unknown (a manual download)")), "not looked at");
+        assert_eq!(p.update_value(Field::UpdateVersion), Some(format!("{v} · manual download")), "not looked at");
         // The command for this install, the same as the update screen's; Enter copies it.
         let keys = Keymap::default();
         p.selected = p.fields(&keys).iter().position(|f| *f == Field::UpdateCommand).unwrap();
@@ -2218,19 +2239,22 @@ mod tests {
 
     #[test]
     fn version_row_fits_at_the_minimum_width() {
-        use crate::install::Method;
         let keys = Keymap::load("").0;
         let ws = Workspace::default();
-        for method in [Method::Script, Method::Homebrew, Method::Chocolatey, Method::Rpm, Method::Unknown] {
-            let mut p = updates_prefs();
-            p.update.install = installed(method, false);
-            let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(84, 24)).unwrap();
-            terminal.draw(|f| p.draw(f, f.area(), &ws, None, &keys)).unwrap();
-            let buf = terminal.backend().buffer();
-            let rows: Vec<String> = (0..buf.area.height).map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect()).collect();
-            let row = rows.iter().find(|r| r.contains(" Version ")).unwrap();
-            let want = p.update_value(Field::UpdateVersion).unwrap();
-            assert!(row.contains(&want) && !row.contains('…'), "{method:?}: {row}");
+        for version in ["0.11.0", "0.11.0-rc.1", "0.12.10-rc.10"] {
+            for method in Method::ALL {
+                let mut p = updates_prefs();
+                p.update.install = installed(method, false);
+                p.update.version = version.into();
+                let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(84, 24)).unwrap();
+                terminal.draw(|f| p.draw(f, f.area(), &ws, None, &keys)).unwrap();
+                let buf = terminal.backend().buffer();
+                let rows: Vec<String> = (0..buf.area.height).map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect()).collect();
+                let row = rows.iter().find(|r| r.contains(" Version ")).unwrap();
+                let want = p.update_value(Field::UpdateVersion).unwrap();
+                assert!(want.starts_with(version), "{want}");
+                assert!(row.contains(&want) && !row.contains('…'), "{version} {method:?}: {row}");
+            }
         }
     }
 
