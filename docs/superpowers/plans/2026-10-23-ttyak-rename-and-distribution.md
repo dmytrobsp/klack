@@ -75,7 +75,7 @@ items are unproven until a task proves them on a real run; a task that finds one
   marker `old-name-ok` (e.g. fill.py's match for pre-0.10 asset names). It takes the paths to check as arguments; CI
   runs it on the paths renamed so far, the last slice on everything.
 - The site keeps working between the rename and the first ttyak release: `fill.py` accepts `ttyak-` and `klack-` asset
-  names (the latter marked `old-name-ok`, dropped after 0.10.0 by Task 21).
+  names (the latter marked `old-name-ok`) — done and removed 2026-10-23: ttyak 0.10.0 was released and the old releases deleted (the user's call).
 - Install method: `install.json` next to the resolved executable wins; else the executable's path tells (Homebrew
   `Cellar`/`homebrew`/`linuxbrew`, Scoop `\scoop\apps\`, winget `\WinGet\Packages\` or `\WinGet\Links\`, Chocolatey
   `\chocolatey\`, `/usr/bin/ttyak` owned by pacman → aur, by dpkg → deb, by rpm → rpm, by checking the package
@@ -91,7 +91,7 @@ items are unproven until a task proves them on a real run; a task that finds one
 - Packages: one zip per platform stays the only archive; Homebrew, the AUR, Scoop, winget and Chocolatey all install
   from it. `.deb`/`.rpm` come from nfpm. The install scripts unzip with `unzip`, else `bsdtar`, else `python3 -m
   zipfile`, and say which to install when none is there.
-- Proving routes needs real published versions: a pre-release tag `v0.10.0-rc.N` (the user's word first, Task 22)
+- Proving routes needs real published versions: a pre-release tag `v0.11.0-rc.N` (the user's word first, Task 22)
   publishes only the GitHub pre-release and the rendered recipes as release assets; registries (tap, bucket, AUR,
   Chocolatey, winget) are pushed only for tags without `-`. Tap and bucket get a branch `rc` for the rehearsal.
 
@@ -539,7 +539,7 @@ The spec: Homebrew formula (own tap) with caveats giving the cleanup command; Sc
 - Every recipe installs from the platform zip and writes no `install.json`: Task 9's path detection names the
   manager.
 
-- [ ] **Step 1: Failing tests** (`python3 -m unittest packaging/test_render.py`, a fixture SHA256SUMS for 0.10.0):
+- [ ] **Step 1: Failing tests** (`python3 -m unittest packaging/test_render.py`, a fixture SHA256SUMS for 0.11.0):
   every file rendered with the right URLs and hashes per platform; the formula has `on_macos`/`on_linux` ×
   `on_arm`/`on_intel`, a `test do` running `ttyak --version`, and caveats naming `ttyak purge`; the Scoop manifest's
   uninstaller runs `ttyak.exe purge --yes` only inside `if ($cmd -eq 'uninstall')`, has `checkver`/`autoupdate`
@@ -666,7 +666,7 @@ the user's domain and API key.
 - Create: `site/CNAME` (`ttyak.sh`)
 - Modify: `site/index.html` + tests (install one-liners per OS as the main call to action, the packages listed,
   "verify" link), `README.md` (Install / Verify / Build it yourself / Update / Uninstall), `tools/site/check_private.py`
-  allowlist if needed; drop fill.py's `old-name-ok` klack asset match once 0.10.0 exists (or leave a ledger note)
+  allowlist if needed; `test_structure`'s 4-asset count grows with aarch64 Linux (Task 17)
 
 - [ ] **Step 1:** Failing tests for the DNS script (records diffed against the fake API's state; idempotent second
   run) and the site's new copy (`test_copy.py`, `test_structure.py`).
@@ -680,14 +680,14 @@ the user's domain and API key.
 
 ### Task 22: Prove every route on a real pre-release, then the release
 
-The spec: everything marked (verify) is unproven until a real run. Only with the user's word: a tag `v0.10.0-rc.1`.
+The spec: everything marked (verify) is unproven until a real run. Only with the user's word: a tag `v0.11.0-rc.1`.
 
-- [ ] **Step 1:** (Controller, with the user's word) bump to `0.10.0-rc.1`, tag, push; the workflow publishes the
+- [ ] **Step 1:** (Controller, with the user's word) bump to `0.11.0-rc.1`, tag, push; the workflow publishes the
   GitHub pre-release with all assets and attestations; tap and bucket get their `rc` branches.
 - [ ] **Step 2:** Prove, each on a real machine, and write each result into PROGRESS (LIVE or NOT with why):
-  `install.sh --version 0.10.0-rc.1` on this machine (fake HOME) and the Mac; `install.ps1 -Version 0.10.0-rc.1` on
+  `install.sh --version 0.11.0-rc.1` on this machine (fake HOME) and the Mac; `install.ps1 -Version 0.11.0-rc.1` on
   the VM; `brew install` from the tap's `rc` branch on the Mac and in a podman Linuxbrew container;
-  `scoop install` from the bucket's `rc` branch on the VM, then rc.2 (`v0.10.0-rc.2`, the user's word again) and
+  `scoop install` from the bucket's `rc` branch on the VM, then rc.2 (`v0.11.0-rc.2`, the user's word again) and
   `scoop update ttyak` keeps a settings file, `scoop uninstall ttyak` purges; `winget install --manifest` and
   `choco install` from the rendered recipes on the VM (local sources), then `choco upgrade` from rc.1 to rc.2 keeps a
   settings file (verify that Chocolatey's upgrade never runs `chocolateyUninstall.ps1`; if it does, the purge moves
@@ -696,5 +696,5 @@ The spec: everything marked (verify) is unproven until a real run. Only with the
   and the VM (when Tasks 19/20 are done); the update screen from rc.1 to rc.2 via the script install.
 - [ ] **Step 3:** Remove everything installed on the machines, the podman images pulled for this plan, the `rc`
   branches; restore the VM's power state.
-- [ ] **Step 4:** (Controller) the final whole-branch review; then, with the user's word, bump to `0.10.0`, tag; watch
-  every publishing job; the site's `latest.json` and the one-liners against the real release.
+- [ ] **Step 4:** (Controller) the final whole-branch review; then, with the user's word, bump to `0.11.0`, tag; watch
+  every publishing job; the site's `latest.json` and the one-liners against the real release (0.11.0; 0.10.0 was the rename release, 2026-10-23).
