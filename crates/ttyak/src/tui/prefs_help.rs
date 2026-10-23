@@ -349,7 +349,7 @@ fn build(field: Field, _ws: &Workspace, keys: &Keymap, tr: &dyn Fn(&'static str)
         }
         // Updates
         Field::UpdateVersion => {
-            b.text("This ttyak's version and how it was installed: with the install script, by a package manager (Homebrew, Scoop, winget, Chocolatey, the AUR, a .deb or an .rpm package), or unknown — a copy downloaded by hand. How it was installed decides how it is updated.");
+            b.text("This ttyak's version and how it was installed: the install script, a package manager (Homebrew, Scoop, winget, Chocolatey, the Arch package, a .deb or .rpm package), or manual download — a copy downloaded by hand. How it was installed decides how it is updated.");
         }
         Field::UpdateCheck => {
             b.text("Looks for a new version of ttyak now and then: a plain request for the site's latest.json, which sends nothing about you but ttyak's name and version. A new version is told once: a desktop notification (when they are on) and ⬆ in the status line. Off: no check at all, unless you ask for one (Check now).");

@@ -520,7 +520,7 @@ nothing about you but ttyak's name and version as the User-Agent (no cookies). A
 once, ever — a desktop notification (when they are on; on Linux a click opens the update screen) and `⬆ <version>`
 in the status line for that run — and the last one told is kept in `updates.json` in ttyak's data folder.
 F6 → Updates shows the version and how this ttyak was installed (the install script, Homebrew, Scoop,
-winget, Chocolatey, the Arch package, a .deb or .rpm package, or unknown for a copy downloaded by hand), turns
+winget, Chocolatey, the Arch package, a .deb or .rpm package, or manual download for a copy downloaded by hand), turns
 the check on or off and sets how often it runs (`[updates] check`, `check_every_secs` in `settings.toml`)
 and how long the update screen's download waits for data (`download_timeout_secs`). Check now looks at
 once, due or not and with the check off too, and says what it found on its row — never with a desktop
