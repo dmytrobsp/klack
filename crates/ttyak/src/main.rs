@@ -9,6 +9,7 @@ mod pick;
 mod qr;
 mod tui;
 mod uninstall;
+mod update;
 
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};

@@ -272,7 +272,6 @@ pub fn current() -> Install {
 const PLATFORMS: [&str; 5] = ["x86_64-linux", "aarch64-linux", "x86_64-macos", "aarch64-macos", "x86_64-windows"];
 
 /// This build's release platform (`x86_64-linux`, …), None for a target ttyak is not released for.
-#[allow(dead_code)] // for the update check (a later step)
 pub fn platform() -> Option<&'static str> {
     PLATFORMS.into_iter().find(|p| p.split_once('-') == Some((std::env::consts::ARCH, std::env::consts::OS)))
 }

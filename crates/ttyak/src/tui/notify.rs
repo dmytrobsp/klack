@@ -63,6 +63,17 @@ pub fn huddle_notification(ws: &Workspace, channel: &str, user: &str, in_it: boo
     Some((title, format!("Press {join_key} in ttyak to join")))
 }
 
+const NEW_VERSION: &str = "ttyak {version} is out";
+const YOU_HAVE: &str = "You have {current}. See F6 → Updates.";
+/// The update notice's words, for the locale template.
+pub const UPDATE_WORDS: &[&str] = &[NEW_VERSION, YOU_HAVE];
+
+/// Title and body for a newer ttyak, `latest`, when this one is `current`.
+pub fn update_notification(latest: &crate::update::Latest, current: &str) -> (String, String) {
+    use super::i18n::tr;
+    (tr(NEW_VERSION).replace("{version}", &latest.version.to_string()), tr(YOU_HAVE).replace("{current}", current))
+}
+
 /// Where clicking a notification takes you: a conversation, and the message in it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Target {
@@ -194,6 +205,12 @@ mod tests {
         assert!(notification(&w, "C1", &msg("U2", "hey <@UME>"), false, 0.0).is_none());
         w.notify.global = "nothing".into();
         assert!(notification(&w, "D1", &msg("U2", "hi"), false, 0.0).is_none(), "nothing silences DMs too");
+    }
+
+    #[test]
+    fn the_update_notice() {
+        let latest = crate::update::Latest { version: semver::Version::new(9, 9, 9), date: String::new(), notes: String::new(), asset: crate::update::Asset { url: String::new(), sha256: String::new() } };
+        assert_eq!(update_notification(&latest, "0.10.0"), ("ttyak 9.9.9 is out".into(), "You have 0.10.0. See F6 → Updates.".into()));
     }
 
     #[test]

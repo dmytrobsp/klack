@@ -15,6 +15,23 @@ pub struct Settings {
     pub huddle: Huddle,
     pub which_key: WhichKey,
     pub threads: Threads,
+    pub updates: Updates,
+}
+
+/// The check for a new version of ttyak (a plain GET of the site's `latest.json`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Updates {
+    /// Check at all.
+    pub check: bool,
+    /// At most this often, in seconds.
+    pub check_every_secs: u64,
+}
+
+impl Default for Updates {
+    fn default() -> Self {
+        Updates { check: true, check_every_secs: 86400 }
+    }
 }
 
 /// The Threads view (Ctrl+T).
@@ -278,6 +295,15 @@ mod tests {
         let s = Settings::parse("[which_key]\ndelay_secs = 0\n").unwrap();
         assert_eq!((s.which_key.show, s.which_key.corner.as_str(), s.which_key.delay_secs, s.which_key.max_height_percent, s.which_key.icons), (true, "bottom-right", 0.0, 50, true));
         assert!(Settings::parse("[region]\nclock_24h = \"yes\"").is_err());
+    }
+
+    #[test]
+    fn updates_default_without_the_section() {
+        let s = Settings::parse("[region]\nclock_24h = false\n").unwrap();
+        assert_eq!(s.updates, Updates { check: true, check_every_secs: 86400 });
+        let s = Settings::parse("[updates]\ncheck = false\n").unwrap();
+        assert_eq!((s.updates.check, s.updates.check_every_secs), (false, 86400));
+        assert!(Settings::default().to_toml().contains("[updates]\ncheck = true\ncheck_every_secs = 86400\n"), "{}", Settings::default().to_toml());
     }
 
     #[test]

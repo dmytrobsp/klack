@@ -130,6 +130,8 @@ enum Net {
     /// A history request failed: the conversation can be asked again.
     HistoryFailed { channel: String, error: String },
     Error(String),
+    /// The update check found a version not notified before.
+    UpdateAvailable(crate::update::Latest),
 }
 
 enum Confirm {
@@ -251,6 +253,10 @@ struct App {
     history: super::history::History,
     /// The event moved through the sidebar (a run of such moves is one step back).
     browsed: bool,
+    /// The newer version notified this run (kept across workspace switches, see [`Update`]).
+    update_available: Option<crate::update::Latest>,
+    /// The status line shows `update_available` (until the update screen is opened).
+    update_pill: bool,
     /// The Activity view (Ctrl+A), shown while `view` is Activity.
     activity: super::activity::Activity,
     /// The save dialog (`␣s`).
@@ -2770,6 +2776,18 @@ impl App {
         }
     }
 
+    /// The update check found `latest`, not notified before: a desktop notification (when they are
+    /// on; quiet hours and keywords are about messages) and, for this run, the status line's pill.
+    fn update_found(&mut self, latest: crate::update::Latest) {
+        if self.ws.settings.notifications.desktop {
+            let (title, body) = super::notify::update_notification(&latest, env!("CARGO_PKG_VERSION"));
+            super::notify::show(title, body, &self.ws.settings, None);
+        }
+        tracing::info!(version = %latest.version, "a new version of ttyak");
+        self.update_available = Some(latest);
+        self.update_pill = true;
+    }
+
     /// This workspace's session has ended: it is marked in the rail (and not switched back to), the
     /// status line keeps saying so, what is loaded stays readable and nothing more is sent.
     fn mark_signed_out(&mut self) {
@@ -4730,6 +4748,15 @@ fn wanted_index(profile: &slack_core::session::Profile, account: Option<(&str, &
         .unwrap_or(0)
 }
 
+/// The update check's findings for the whole run, kept while workspaces are switched.
+struct Update {
+    /// New versions to notify, from [`crate::update::spawn`].
+    found: mpsc::UnboundedReceiver<crate::update::Latest>,
+    /// `App::update_available` and `App::update_pill` while no workspace is shown.
+    available: Option<crate::update::Latest>,
+    pill: bool,
+}
+
 /// Run the app on the profile's `account` (team id, user id; or its default workspace; the first
 /// signed-in one when that one is in `signed_out`); Alt+1…9 and `/workspace` switch to another of
 /// the profile's workspaces without leaving the terminal. The signed-out ones are skipped.
@@ -4760,6 +4787,10 @@ pub async fn run(profile: slack_core::session::Profile, account: Option<(&str, &
     let mut media = super::media::Media::detect(&super::settings::load().0.messages.graphics);
     let mut clipboard = super::clipboard::Clipboard::default();
     let mut events = EventStream::new();
+    // Once the screen is up, so the check never holds the start.
+    let (found_tx, found) = mpsc::unbounded_channel();
+    crate::update::spawn(found_tx);
+    let mut update = Update { found, available: None, pill: false };
     // Each workspace's back and forward, kept while another is shown.
     let mut histories: std::collections::HashMap<usize, super::history::History> = std::collections::HashMap::new();
     loop {
@@ -4786,7 +4817,7 @@ pub async fn run(profile: slack_core::session::Profile, account: Option<(&str, &
         // A graphics mode this terminal cannot draw: said once, at the first workspace.
         keymap.1.extend(media.note.take());
         super::messages::set_open_key(keymap.0.first_shown(Context::Messages, Action::Open).unwrap_or_default());
-        let (next, kept_media, kept_clipboard) = run_workspace(client, (labels.clone(), index, badges.clone(), open_after.clone(), logos.clone(), signed_out.clone(), addresses.clone()), &mut clicks, &keymap, &settings, &mut terminal, &mut events, media, clipboard, histories.entry(index).or_default()).await?;
+        let (next, kept_media, kept_clipboard) = run_workspace(client, (labels.clone(), index, badges.clone(), open_after.clone(), logos.clone(), signed_out.clone(), addresses.clone()), &mut clicks, &keymap, &settings, &mut terminal, &mut events, media, clipboard, histories.entry(index).or_default(), &mut update).await?;
         (media, clipboard) = (kept_media, kept_clipboard);
         match next {
             Some(i) => index = i,
@@ -4920,6 +4951,8 @@ impl App {
             loading: true,
             history: Default::default(),
             browsed: false,
+            update_available: None,
+            update_pill: false,
         }
     }
 }
@@ -4936,6 +4969,7 @@ async fn run_workspace(
     mut media: super::media::Media,
     clipboard: super::clipboard::Clipboard,
     history: &mut super::history::History,
+    update: &mut Update,
 ) -> Result<(Option<usize>, super::media::Media, super::clipboard::Clipboard)> {
     let (net_tx, mut net_rx) = mpsc::unbounded_channel();
     spawn_boot(client.clone(), net_tx.clone());
@@ -4949,6 +4983,7 @@ async fn run_workspace(
     app.ws = Workspace { team_name, team_id: client.session.team_id.clone(), self_id: client.session.user_id.clone(), settings: settings.clone(), ..Default::default() };
     app.sidebar = Sidebar::for_account(&client.session.team_id, &client.session.user_id);
     app.resume_history(history);
+    (app.update_available, app.update_pill) = (update.available.take(), update.pill);
 
     let mut tick = tokio::time::interval(Duration::from_millis(500));
     let mut video_tick = tokio::time::interval(Duration::from_millis(40));
@@ -5000,6 +5035,7 @@ async fn run_workspace(
                 went = if goes_somewhere(&msg) { Went::Yes } else { Went::No };
                 handle_net(&mut app, msg);
             }
+            Some(latest) = update.found.recv() => handle_net(&mut app, Net::UpdateAvailable(latest)),
             Some((index, target)) = clicks.recv() => {
                 went = Went::Yes;
                 if index == app.workspace {
@@ -5081,6 +5117,7 @@ async fn run_workspace(
     }
     app.save_drafts();
     *history = std::mem::take(&mut app.history);
+    (update.available, update.pill) = (app.update_available.take(), app.update_pill);
     let App { switch_to, media, clipboard, .. } = app;
     Ok((switch_to, media, clipboard))
 }
@@ -6868,6 +6905,7 @@ fn handle_net(app: &mut App, msg: Net) {
             app.loading = false;
             app.status = e;
         }
+        Net::UpdateAvailable(latest) => app.update_found(latest),
         Net::Reacted { channel, ts, name, add, error, refused } => {
             app.reacting.remove(&(channel.clone(), ts.clone(), name.clone()));
             let Some(error) = error else { return };
@@ -7201,6 +7239,7 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         away: app.ws.presence.get(&app.ws.self_id) == Some(&false),
         live: app.connected,
         note,
+        update: app.update_available.as_ref().filter(|_| app.update_pill).map(|l| l.version.to_string()),
     };
     let showcmd = app.keys.show(app.pending.typed());
     f.render_widget(Paragraph::new(super::status::line(pill, &info, &showcmd, &hints, status.width)), status);
@@ -8205,6 +8244,30 @@ mod tests {
         app.call = Some(test_call("C1"));
         app.huddle_ended();
         assert!(tokio::time::timeout(std::time::Duration::from_millis(300), asked.recv()).await.is_err(), "nothing sent");
+    }
+
+    #[tokio::test]
+    async fn pill_shown_for_the_run() {
+        let (mut app, _net) = test_app();
+        // (No real notification from a test.)
+        app.ws.settings.notifications.desktop = false;
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 24)).unwrap();
+        let mut status = |app: &mut super::App| {
+            terminal.draw(|f| super::draw(f, app)).unwrap();
+            screen(&terminal).pop().unwrap()
+        };
+        assert!(!status(&mut app).contains('⬆'));
+        let latest = crate::update::Latest { version: semver::Version::new(9, 9, 9), date: "2026-11-01".into(), notes: String::new(), asset: crate::update::Asset { url: "u".into(), sha256: "s".into() } };
+        super::handle_net(&mut app, super::Net::UpdateAvailable(latest.clone()));
+        assert!(status(&mut app).ends_with("⬆ 9.9.9 "), "{}", status(&mut app));
+        app.status = "copied a link to the message".into();
+        let with_note = status(&mut app);
+        assert!(with_note.contains("copied a link") && with_note.ends_with("⬆ 9.9.9 "), "a note leaves it: {with_note}");
+        assert_eq!((app.update_available.as_ref(), app.update_pill), (Some(&latest), true));
+        // The update screen (a later step) takes the pill away; the version stays known.
+        app.update_pill = false;
+        assert!(!status(&mut app).contains('⬆'));
+        assert_eq!(app.update_available, Some(latest));
     }
 
     #[tokio::test]

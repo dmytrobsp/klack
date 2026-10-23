@@ -29,6 +29,8 @@ pub struct Info {
     pub live: bool,
     /// A status message or the ringing text; takes the info's place.
     pub note: Option<String>,
+    /// A newer ttyak (its version), in a pill at the right end.
+    pub update: Option<String>,
 }
 
 /// The pill's colour: accent for NORMAL, green for INSERT, the pin yellow for a dialog.
@@ -67,6 +69,8 @@ struct Shape {
     hints: usize,
     /// The last hint as its key only.
     key_only: bool,
+    /// The update pill (when there is one).
+    update: bool,
 }
 
 fn pill_text(pill: Pill, full: bool) -> String {
@@ -111,7 +115,7 @@ fn info_spans(info: &Info, level: u8, note_room: Option<usize>) -> Vec<Span<'sta
     out
 }
 
-fn right_spans(showcmd: &str, hints: &[(String, String)], key_only: bool) -> Vec<Span<'static>> {
+fn right_spans(showcmd: &str, hints: &[(String, String)], key_only: bool, update: Option<&str>) -> Vec<Span<'static>> {
     let p = super::theme::p();
     let dim = Style::default().fg(p.dim);
     let mut out = Vec::new();
@@ -129,6 +133,9 @@ fn right_spans(showcmd: &str, hints: &[(String, String)], key_only: bool) -> Vec
         }
     }
     out.push(Span::raw(" "));
+    if let Some(version) = update {
+        out.push(Span::styled(format!(" ⬆ {version} "), Style::default().bg(p.good).fg(Color::Black).add_modifier(Modifier::BOLD)));
+    }
     out
 }
 
@@ -137,26 +144,27 @@ fn spans_width(spans: &[Span]) -> usize {
 }
 
 /// The status line in `width` columns: the mode pill, the info (or the note) after it, and
-/// flush right the pending keys and the hints. It shrinks as the mockup showed: the info goes
-/// short, hints drop from the front, the pill becomes a letter, the hints end at `?` and the
-/// info at `●`. The pending keys are never cut; a note is cut (with `…`) last.
+/// flush right the pending keys, the hints and a new version's pill. It shrinks as the mockup
+/// showed: the info goes short, hints drop from the front, the pill becomes a letter, the hints
+/// end at `?`, the info at `●` and the new version leaves. The pending keys are never cut; a
+/// note is cut (with `…`) last.
 pub fn line(pill: Pill, info: &Info, showcmd: &str, hints: &[(String, String)], width: u16) -> Line<'static> {
     let width = width as usize;
     let n = hints.len();
     let shapes = [
-        Shape { full_pill: true, info: 0, hints: n, key_only: false },
-        Shape { full_pill: true, info: 1, hints: n, key_only: false },
-        Shape { full_pill: true, info: 1, hints: n.min(3), key_only: false },
-        Shape { full_pill: false, info: 1, hints: n.min(3), key_only: false },
-        Shape { full_pill: false, info: 1, hints: n.min(2), key_only: false },
-        Shape { full_pill: false, info: 2, hints: n.min(1), key_only: true },
+        Shape { full_pill: true, info: 0, hints: n, key_only: false, update: true },
+        Shape { full_pill: true, info: 1, hints: n, key_only: false, update: true },
+        Shape { full_pill: true, info: 1, hints: n.min(3), key_only: false, update: true },
+        Shape { full_pill: false, info: 1, hints: n.min(3), key_only: false, update: true },
+        Shape { full_pill: false, info: 1, hints: n.min(2), key_only: false, update: true },
+        Shape { full_pill: false, info: 2, hints: n.min(1), key_only: true, update: false },
     ];
     let build = |s: Shape, note_room: Option<usize>| {
         let shown = &hints[n - s.hints..];
         let pill_style = Style::default().bg(pill_colour(pill)).fg(Color::Black).add_modifier(Modifier::BOLD);
         let mut left = vec![Span::styled(pill_text(pill, s.full_pill), pill_style), Span::raw(" ")];
         left.extend(info_spans(info, s.info, note_room));
-        (left, right_spans(showcmd, shown, s.key_only))
+        (left, right_spans(showcmd, shown, s.key_only, info.update.as_deref().filter(|_| s.update)))
     };
     let fits = |left: &[Span], right: &[Span]| spans_width(left) + spans_width(right) + 1 <= width;
     let mut chosen = None;
@@ -180,7 +188,7 @@ pub fn line(pill: Pill, info: &Info, showcmd: &str, hints: &[(String, String)], 
             left.truncate(1);
         }
         if !fits(&left, &right) {
-            right = right_spans(showcmd, &[], false);
+            right = right_spans(showcmd, &[], false, None);
         }
         if !fits(&left, &right) {
             left.clear();
@@ -320,6 +328,23 @@ mod tests {
         assert!(plain(&line(Pill::Normal, &away, "␣", &hints(), 80)).contains("3 · @1 ○"));
         let offline = Info { live: false, ..info() };
         assert!(dot(&offline, 80).content.starts_with('●'), "the connection doesn't dim your presence");
+    }
+
+    #[test]
+    fn the_update_pill_ends_the_line() {
+        let p = crate::tui::theme::p();
+        let new = Info { update: Some("9.9.9".into()), ..info() };
+        let l = line(Pill::Normal, &new, "␣", &hints(), 110);
+        let s = plain(&l);
+        assert_eq!(s.width(), 110, "{s:?}");
+        assert!(s.ends_with("? help  ⬆ 9.9.9 ") && s.contains("3 unread · 1 mention"), "{s:?}");
+        let pill = l.spans.iter().find(|sp| sp.content.contains('⬆')).unwrap();
+        assert_eq!(pill.style, Style::default().bg(p.good).fg(Color::Black).add_modifier(Modifier::BOLD), "styled as the mode pill");
+        let mid = plain(&line(Pill::Normal, &new, "␣", &hints(), 60));
+        assert!(mid.contains("⬆ 9.9.9") && !mid.contains("↑/↓ move"), "hints go first: {mid:?}");
+        let narrow = plain(&line(Pill::Normal, &new, "␣", &hints(), 24));
+        assert!(!narrow.contains('⬆') && narrow.ends_with("␣ ? "), "the barest line leaves it out: {narrow:?}");
+        assert!(!at(110).contains('⬆'), "none without a new version");
     }
 
     #[test]
