@@ -89,6 +89,27 @@ impl Target {
     }
 }
 
+/// A notification titled `title` saying `body`, with the settings' `sound` ("system": the
+/// desktop's); None: none at all.
+fn notice(title: &str, body: &str, sound: Option<&str>) -> notify_rust::Notification {
+    let mut n = notify_rust::Notification::new();
+    n.appname("ttyak").summary(title).body(body);
+    match sound {
+        Some("system") => {
+            n.sound_name(super::sound::system_sound_name());
+        }
+        Some(_) => {}
+        // (Without a sound name macOS and Windows stay silent; XDG servers may play their own.)
+        #[cfg(all(unix, not(target_os = "macos")))]
+        None => {
+            n.hint(notify_rust::Hint::SuppressSound(true));
+        }
+        #[cfg(not(all(unix, not(target_os = "macos"))))]
+        None => {}
+    }
+    n
+}
+
 /// How long a click on a notification still counts (the notification centre keeps them).
 #[cfg(all(unix, not(target_os = "macos")))]
 const CLICK_WAIT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
@@ -99,13 +120,20 @@ const CLICK_WAIT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 pub fn show(title: String, body: String, settings: &super::settings::Settings, on_click: Option<Box<dyn FnOnce() + Send>>) {
     let sound = settings.notifications.sound.clone();
     super::sound::play(&sound, super::settings::Settings::device(huddle::devices::OUTPUT_ENV, &settings.audio.output), settings.audio.sound_volume);
-    let mut n = notify_rust::Notification::new();
-    n.appname("ttyak").summary(&title).body(&body);
-    if sound == "system" {
-        n.sound_name(super::sound::system_sound_name());
-    }
+    post(notice(&title, &body, Some(&sound)), on_click);
+}
+
+/// Show a desktop notification without any sound, ttyak's or the desktop's (the update notice:
+/// quiet hours do not hold it back, so it must never sound).
+pub fn show_silent(title: String, body: String) {
+    post(notice(&title, &body, None), None);
+}
+
+/// Post `n` without blocking the UI; `on_click` as in [`show`].
+fn post(n: notify_rust::Notification, on_click: Option<Box<dyn FnOnce() + Send>>) {
     #[cfg(all(unix, not(target_os = "macos")))]
     tokio::spawn(async move {
+        let mut n = n;
         // A click invokes the "default" action, which servers only offer when it is declared.
         if on_click.is_some() {
             n.action("default", "Open");
@@ -211,6 +239,20 @@ mod tests {
     fn the_update_notice() {
         let latest = crate::update::Latest { version: semver::Version::new(9, 9, 9), date: String::new(), notes: String::new(), asset: crate::update::Asset { url: String::new(), sha256: String::new() } };
         assert_eq!(update_notification(&latest, "0.10.0"), ("ttyak 9.9.9 is out".into(), "You have 0.10.0. See F6 → Updates.".into()));
+    }
+
+    #[test]
+    fn the_update_notice_is_silent() {
+        let quiet = notice("t", "b", None);
+        let loud = notice("t", "b", Some("system"));
+        assert_eq!((quiet.summary.as_str(), quiet.body.as_str(), quiet.appname.as_str()), ("t", "b", "ttyak"));
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            use notify_rust::Hint;
+            assert!(quiet.hints.contains(&Hint::SuppressSound(true)) && !quiet.hints.iter().any(|h| matches!(h, Hint::SoundName(_))), "{:?}", quiet.hints);
+            assert!(!loud.hints.contains(&Hint::SuppressSound(true)) && loud.hints.iter().any(|h| matches!(h, Hint::SoundName(_))), "{:?}", loud.hints);
+        }
+        let _ = loud;
     }
 
     #[test]

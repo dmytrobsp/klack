@@ -2776,12 +2776,13 @@ impl App {
         }
     }
 
-    /// The update check found `latest`, not notified before: a desktop notification (when they are
-    /// on; quiet hours and keywords are about messages) and, for this run, the status line's pill.
+    /// The update check found `latest`, not notified before: a silent desktop notification (when
+    /// they are on; quiet hours and keywords are about messages, so it never sounds) and, for this
+    /// run, the status line's pill.
     fn update_found(&mut self, latest: crate::update::Latest) {
         if self.ws.settings.notifications.desktop {
             let (title, body) = super::notify::update_notification(&latest, env!("CARGO_PKG_VERSION"));
-            super::notify::show(title, body, &self.ws.settings, None);
+            super::notify::show_silent(title, body);
         }
         tracing::info!(version = %latest.version, "a new version of ttyak");
         self.update_available = Some(latest);

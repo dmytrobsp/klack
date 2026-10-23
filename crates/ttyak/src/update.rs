@@ -51,9 +51,10 @@ pub fn parse(json: &str, platform: &str) -> Result<Latest> {
     Ok(Latest { version, date: feed.date, notes: feed.notes, asset })
 }
 
-/// Whether `latest` is newer than `current`; a pre-release is never offered.
+/// Whether `latest` is newer than `current` (build metadata does not count); a pre-release is
+/// never offered.
 pub fn newer(current: &Version, latest: &Latest) -> bool {
-    latest.version.pre.is_empty() && latest.version > *current
+    latest.version.pre.is_empty() && latest.version.cmp_precedence(current).is_gt()
 }
 
 /// What `updates.json` keeps between runs.
@@ -71,7 +72,8 @@ pub fn state_path() -> Option<PathBuf> {
     slack_core::session::project_dirs().map(|d| d.data_local_dir().join("updates.json"))
 }
 
-/// The state in `path`; none yet (or a broken file): a fresh one.
+/// The state in `path`; none yet, or a broken file: a fresh one (so a broken file forgets the
+/// version notified, and that version may be notified once more).
 pub fn load_state(path: &Path) -> State {
     std::fs::read_to_string(path).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default()
 }
@@ -92,7 +94,19 @@ pub fn due(state: &State, now: u64, every: u64) -> bool {
 
 /// Whether `latest` is still to be notified: newer than the version notified last.
 pub fn should_notify(state: &State, latest: &Latest) -> bool {
-    state.notified.as_deref().and_then(|v| Version::parse(v).ok()).is_none_or(|notified| latest.version > notified)
+    state.notified.as_deref().and_then(|v| Version::parse(v).ok()).is_none_or(|notified| latest.version.cmp_precedence(&notified).is_gt())
+}
+
+/// `disk` with `kept` (what this run last wrote, or tried to) as its floor: the later check and
+/// the later version notified, so a state that could not be written still counts.
+pub fn with_floor(disk: State, kept: &State) -> State {
+    let version = |s: &State| s.notified.as_deref().and_then(|v| Version::parse(v).ok());
+    let notified = match (version(&disk), version(kept)) {
+        (Some(d), Some(k)) if k.cmp_precedence(&d).is_gt() => kept.notified.clone(),
+        (None, Some(_)) => kept.notified.clone(),
+        _ => disk.notified,
+    };
+    State { last_check: disk.last_check.max(kept.last_check), notified }
 }
 
 /// What a check at `now` that ended with `result` leaves: the state to write (before anything is
@@ -143,18 +157,22 @@ fn wait(settings: &crate::tui::settings::Updates, state: &State, now: u64) -> Du
 }
 
 /// Check in the background, the first time at once when due, then as it comes due (the settings
-/// read again each time); a new version to notify is sent on `found`.
+/// read again each time; a broken settings.toml means the defaults, as everywhere in ttyak); a
+/// new version to notify is sent on `found`.
 pub fn spawn(found: tokio::sync::mpsc::UnboundedSender<Latest>) {
     let (Some(path), Some(platform)) = (state_path(), crate::install::platform()) else { return };
     let current = Version::parse(env!("CARGO_PKG_VERSION")).expect("the package version is semver");
     let url = std::env::var(URL_ENV).ok().filter(|u| !u.is_empty()).unwrap_or_else(|| URL.to_string());
     tokio::spawn(async move {
+        // What this run last wrote (or tried to): a floor under what the file says.
+        let mut kept = State::default();
         loop {
             let settings = crate::tui::settings::load().0.updates;
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
             // Read each time: another ttyak (another profile) may have checked meanwhile.
-            let mut state = load_state(&path);
+            let mut state = with_floor(load_state(&path), &kept);
             if let Some((next, latest)) = check(&settings, &state, now, &current, Some(platform), &url, |u| async move { fetch(&u).await }).await {
+                kept = next.clone();
                 match save_state(&path, &next) {
                     // Only once it is written: never notified twice.
                     Ok(()) => {
@@ -223,6 +241,30 @@ mod tests {
     }
 
     #[test]
+    fn build_metadata_is_not_newer() {
+        let ci = latest("0.10.0+ci.1");
+        assert!(!newer(&v("0.10.0"), &ci));
+        assert!(!newer(&v("0.10.0+ci.1"), &latest("0.10.0")));
+        assert!(!should_notify(&State { last_check: 0, notified: Some("0.10.0".into()) }, &ci), "the same version notified");
+        assert!(newer(&v("0.10.0+ci.1"), &latest("0.10.1")));
+    }
+
+    #[test]
+    fn a_failed_save_still_means_once() {
+        // updates.json could not be written: nothing on disk, the last check kept in memory.
+        let kept = State { last_check: 500, notified: Some("9.9.9".into()) };
+        let state = with_floor(State::default(), &kept);
+        assert_eq!(state, kept);
+        assert!(!due(&state, 600, 86_400), "not again within the day");
+        assert!(!should_notify(&state, &latest("9.9.9")), "never a second notice");
+        // Another ttyak wrote a later check meanwhile: the later of each wins.
+        let disk = State { last_check: 900, notified: Some("9.9.10".into()) };
+        assert_eq!(with_floor(disk.clone(), &kept), disk);
+        assert_eq!(with_floor(State { last_check: 900, notified: None }, &kept), State { last_check: 900, notified: Some("9.9.9".into()) });
+        assert_eq!(with_floor(State { last_check: 100, notified: Some("0.1.0".into()) }, &kept), kept);
+    }
+
+    #[test]
     fn due_after_the_interval_only() {
         let s = State { last_check: 1_000, notified: None };
         assert!(!due(&s, 1_000, 86_400) && !due(&s, 87_399, 86_400));
@@ -239,8 +281,15 @@ mod tests {
         assert!(should_notify(&s, &latest("0.10.2")));
         assert!(should_notify(&State::default(), &latest("0.10.1")));
         // Across runs: the state as written and read back.
-        let dir = std::env::temp_dir().join(format!("ttyak-test-updates-{}", std::process::id()));
-        let path = dir.join("updates.json");
+        /// A temporary folder, removed with what it holds even when an assertion fails.
+        struct Temp(PathBuf);
+        impl Drop for Temp {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let dir = Temp(std::env::temp_dir().join(format!("ttyak-test-updates-{}", std::process::id())));
+        let path = dir.0.join("updates.json");
         let (next, shown) = after_check(&State::default(), 50, &v("0.10.0"), Ok(latest("0.10.1")));
         assert_eq!(shown, Some(latest("0.10.1")));
         save_state(&path, &next).unwrap();
@@ -250,7 +299,7 @@ mod tests {
         assert_eq!((again.last_check, shown), (90_000, None), "the next run checks and says nothing");
         std::fs::write(&path, "not json").unwrap();
         assert_eq!(load_state(&path), State::default(), "a broken file starts afresh");
-        std::fs::remove_dir_all(&dir).unwrap();
+        std::fs::remove_dir_all(&dir.0).unwrap();
         assert_eq!(load_state(&path), State::default(), "no file yet");
     }
 
