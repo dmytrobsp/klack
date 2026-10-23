@@ -27,7 +27,7 @@ jobs:
           - { platform: x86_64-linux, os: ubuntu-24.04, deb: amd64, rpm: x86_64 }
           - { platform: aarch64-linux, os: ubuntu-24.04-arm, deb: arm64, rpm: aarch64 }
     runs-on: ${{ matrix.os }}
-    # (ALSA's apt can take up to 22 minutes.)
+    # (ALSA's apt can take up to 23.5 minutes.)
     timeout-minutes: 45
     permissions:
       contents: read # the release and its files
@@ -94,7 +94,7 @@ jobs:
           echo "a changed copy of $ZIP: refused"
       # The zip needs ALSA's library (README: on every desktop Linux); a runner may lack it.
       - name: ALSA
-        timeout-minutes: 23
+        timeout-minutes: 24
         run: |
           if ldconfig -p | grep -q 'libasound\.so\.2 '; then
             echo "libasound.so.2 is there"
@@ -102,15 +102,18 @@ jobs:
             echo "no libasound.so.2: installing libasound2t64"
             bash tools/ci/apt-install.sh /tmp/ttyak-apt libasound2t64
           fi
-      # PATH without ~/.local/bin (the runner has it), so the installer adds its line to ~/.bashrc.
+      # PATH without ~/.local/bin (the runner has it), so the installer adds its line to ~/.bashrc. The script is fetched
+      # once: the copy hashed is the copy run, read from stdin as `curl … | sh` runs it.
       - name: install.sh
         timeout-minutes: 5
         run: |
           marker='# added by the ttyak installer; "ttyak uninstall" removes this line'
           bin=$HOME/.local/bin
           path=$(tr ':' '\n' <<< "$PATH" | grep -vxF -e "$bin" -e "$HOME/.local/bin/" | paste -sd: -)
-          echo "install.sh served: $(curl -fsSL https://ttyak.sh/install.sh | sha256sum | cut -d' ' -f1)"
-          curl -fsSL https://ttyak.sh/install.sh | env PATH="$path" SHELL=/bin/bash sh -s -- --yes --version "$VERSION"
+          script=$RUNNER_TEMP/install.sh
+          curl -fsSL https://ttyak.sh/install.sh -o "$script"
+          echo "install.sh served: $(sha256sum "$script" | cut -d' ' -f1)"
+          env PATH="$path" SHELL=/bin/bash sh -s -- --yes --version "$VERSION" < "$script"
           got=$("$bin/ttyak" --version)
           echo "$got"
           [ "$got" = "ttyak $VERSION" ] || { echo "::error::installed ttyak says '$got', not 'ttyak $VERSION'"; exit 1; }

@@ -81,9 +81,9 @@ jobs:
           path: /tmp/ttyak-apt/*.deb
           key: ${{ steps.apt-key.outputs.key }}
           restore-keys: ${{ steps.apt-key.outputs.prefix }}
-      # (The script's worst case is 22 minutes.)
+      # (The script's worst case is under 23.5 minutes.)
       - name: Packages
-        timeout-minutes: 23
+        timeout-minutes: 24
         run: |
           read -ra packages <<< "$APT_PACKAGES"
           bash tools/ci/apt-install.sh /tmp/ttyak-apt "${packages[@]}"

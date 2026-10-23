@@ -66,10 +66,10 @@ jobs:
           path: /tmp/ttyak-apt/*.deb
           key: ${{ steps.apt-key.outputs.key }}
           restore-keys: ${{ steps.apt-key.outputs.prefix }}
-      # Bounded and verbose, another mirror when the default one is slow (tools/ci/apt-install.sh; at most 22 min).
+      # Bounded and verbose, another mirror when the default one is slow (tools/ci/apt-install.sh; under 23.5 min).
       - name: Packages (Linux)
         if: runner.os == 'Linux'
-        timeout-minutes: 23
+        timeout-minutes: 24
         run: |
           read -ra packages <<< "$APT_PACKAGES"
           bash tools/ci/apt-install.sh /tmp/ttyak-apt "${packages[@]}"

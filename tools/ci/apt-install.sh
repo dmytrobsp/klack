@@ -6,7 +6,8 @@
 # (arm64 runners' ports.ubuntu.com has no other mirror and is tried again as it is). Afterwards DIR keeps only the
 # .debs that can still be downloaded.
 # Usage: bash tools/ci/apt-install.sh DIR PACKAGE...   (DIR absolute)
-# At most 3 x (120 s + 240 s) + 180 s + 60 s = 22 min: the step's limit must be above that.
+# At most 3 x (120 s + 240 s) + 180 s + 60 s = 22 min, plus 10 s for each of those 8 runs that ignores its stop and is
+# killed: under 23.5 min. The step's limit must be above that.
 set -euo pipefail
 
 [ $# -ge 2 ] && [ "${1#/}" != "$1" ] || { echo "usage: bash tools/ci/apt-install.sh DIR PACKAGE...  (DIR absolute)" >&2; exit 2; }
@@ -40,21 +41,22 @@ use_fallback() {
 	echo "apt: ${files[*]} switched to $fallback"
 }
 
+# (apt itself gives partial/ to _apt, mode 0700, for its sandboxed download.)
 sudo mkdir -p "$dir/partial"
 echo "apt: $(find "$dir" -maxdepth 1 -name '*.deb' | wc -l) .deb files in $dir before downloading; mirrors: $(mirrors)"
 # Each attempt: the lists under 120 s, the download under 240 s (a later attempt picks up a stalled file where it
 # stopped).
 for attempt in 1 2 3; do
 	[ "$attempt" -eq 1 ] || use_fallback
-	if sudo timeout 120 "${apt[@]}" update -qq &&
-		sudo timeout 240 "${apt[@]}" install -y --no-install-recommends --download-only "$@"; then
+	if sudo timeout -k 10 120 "${apt[@]}" update -qq &&
+		sudo timeout -k 10 240 "${apt[@]}" install -y --no-install-recommends --download-only "$@"; then
 		echo "apt: downloaded on attempt $attempt of 3 from $(mirrors)"
 		break
 	fi
 	[ "$attempt" -lt 3 ] || { echo "::error::apt-get could not download the packages in 3 attempts"; exit 1; }
 	echo "::warning::apt-get attempt $attempt failed or took too long (lists over 120 s or download over 240 s); trying again"
 done
-sudo timeout 180 "${apt[@]}" install -y --no-install-recommends --no-download "$@"
+sudo timeout -k 10 180 "${apt[@]}" install -y --no-install-recommends --no-download "$@"
 # Older versions out. (A cache takes DIR/*.deb: apt's lock and partial folder there are root's and _apt's.)
-sudo timeout 60 "${apt[@]}" autoclean -qq
+sudo timeout -k 10 60 "${apt[@]}" autoclean -qq
 echo "apt: installed; $(find "$dir" -maxdepth 1 -name '*.deb' | wc -l) .deb files in $dir"
