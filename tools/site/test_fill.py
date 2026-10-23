@@ -319,6 +319,8 @@ class LatestJsonTests(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertFalse((site / "latest.json").exists())
         self.assertIn("no ttyak-0.10.0-recipes.zip", err)
+        self.assertIn("no latest.json in this deploy", err)
+        self.assertNotIn("keeping", err)
         self.assertIn("ttyak-0.10.0-x86_64-linux.zip", (site / "index.html").read_text())
 
     def test_a_feed_that_does_not_check_out_fails_strict_and_writes_nothing(self):

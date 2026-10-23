@@ -314,7 +314,8 @@ def main(argv, urlopen=urllib.request.urlopen, stderr=sys.stderr, readme=None):
             feed, why = latest_feed(data, urlopen=urlopen)
             (site / "data/release.json").write_text(json.dumps(release, indent=2) + "\n")
             if feed is None:
-                print(f"no new latest.json ({why}); keeping site/latest.json if there is one", file=stderr)
+                # (A checkout has no site/latest.json: a CI deploy then goes out without one.)
+                print(f"no latest.json in this deploy ({why}) unless site/latest.json was there already", file=stderr)
             else:
                 (site / "latest.json").write_bytes(feed)
         except ReleaseFetchError as e:

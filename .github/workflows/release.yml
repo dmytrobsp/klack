@@ -49,23 +49,24 @@ jobs:
       # Windows: only the x86_64 MinGW toolchain (the `mingw-w64` metapackage adds i686's, ~290 MB in all).
       - name: Packages (Linux)
         if: runner.os == 'Linux'
-        timeout-minutes: 14
+        timeout-minutes: 17
         env:
           MINGW: ${{ matrix.name == 'x86_64-windows' && 'gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64' || '' }}
         run: |
-          apt=(sudo timeout 240 env DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=3
-            -o Acquire::http::Timeout=30 -o DPkg::Lock::Timeout=120)
+          # At most 120 s + 3 x 240 s + 2 x 60 s = 16 min, so the last error always prints within the step's 17.
+          apt=(env DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30
+            -o DPkg::Lock::Timeout=120)
           read -ra mingw <<< "$MINGW"
-          "${apt[@]}" update -qq
+          sudo timeout 120 "${apt[@]}" update -qq
           # Each attempt under 240 s; a second or third one picks up where a stalled download left off.
           for attempt in 1 2 3; do
-            if "${apt[@]}" install -y --no-install-recommends pkg-config cmake libasound2-dev "${mingw[@]}"; then
+            if sudo timeout 240 "${apt[@]}" install -y --no-install-recommends pkg-config cmake libasound2-dev "${mingw[@]}"; then
               echo "packages: attempt $attempt of 3 succeeded"
               break
             fi
             [ "$attempt" -lt 3 ] || { echo "::error::apt-get install failed 3 times"; exit 1; }
             echo "::warning::apt-get install attempt $attempt failed or took over 240 s; trying again"
-            sudo timeout 120 dpkg --configure -a || true
+            sudo timeout 60 dpkg --configure -a || true
           done
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -338,6 +339,7 @@ jobs:
     if: ${{ !cancelled() && needs.release.result == 'success' && github.repository == 'dmytrobsp/ttyak' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    permissions: {}
     defaults:
       run:
         shell: bash
@@ -412,6 +414,8 @@ jobs:
           - { registry: bucket, repo: dmytrobsp/scoop-ttyak, from: scoop/ttyak.json, to: bucket/ttyak.json }
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    # (None of these jobs uses GITHUB_TOKEN: download-artifact takes the run's own artifacts with the runner's token.)
+    permissions: {}
     defaults:
       run:
         shell: bash
@@ -467,6 +471,7 @@ jobs:
     if: github.repository == 'dmytrobsp/ttyak' && needs.registries.outputs.aur == 'go'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    permissions: {}
     defaults:
       run:
         shell: bash
@@ -520,6 +525,7 @@ jobs:
     if: github.repository == 'dmytrobsp/ttyak' && needs.registries.outputs.chocolatey == 'go'
     runs-on: windows-latest
     timeout-minutes: 15
+    permissions: {}
     defaults:
       run:
         shell: pwsh
@@ -557,11 +563,15 @@ jobs:
     if: ${{ !cancelled() && github.repository == 'dmytrobsp/ttyak' && needs.registries.outputs.winget != '' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    # (The dry run's token needs no permission: komac only checks that api.github.com does not answer 401. The pull
+    # request check and the submission use WINGET_TOKEN.)
+    permissions: {}
     defaults:
       run:
         shell: bash
     env:
       V: ${{ needs.registries.outputs.version }}
+      WINGET_ID: dmytrobsp.ttyak
       KOMAC_VERSION: 2.17.1
       # komac-2.17.1-x86_64-unknown-linux-gnu.tar.gz in https://github.com/russellbanks/Komac/releases/download/v2.17.1/SHA256SUMS
       KOMAC_SHA256: e694e79cd451afabf47bead66ed34586fef4814f7b94e4b61a098f419978d5d7
@@ -588,6 +598,18 @@ jobs:
           GITHUB_TOKEN: ${{ needs.registries.outputs.winget == 'submit' && secrets.WINGET_TOKEN || github.token }}
         run: |
           set +x
+          # komac titles its pull request "New package: <id> version <V>" or "New version: <id> version <V>", from
+          # the token's account; one already open for V: nothing is sent again. A check that fails fails the job.
+          if [ "$MODE" = submit ]; then
+            owner=$(gh api user --jq .login)
+            open=$(gh pr list -R microsoft/winget-pkgs --state open --author "$owner" \
+              --search "$WINGET_ID version $V in:title" --json title,url \
+              --jq ".[] | select(.title | endswith(\"$WINGET_ID version $V\")) | .url")
+            if [ -n "$open" ]; then
+              echo "::notice title=winget skipped::a pull request for $WINGET_ID $V is open already: ${open%%$'\n'*}"
+              exit 0
+            fi
+          fi
           args=(submit recipes/winget/manifests --yes)
           if [ "$MODE" != submit ]; then args+=(--dry-run); fi
           out=$("$RUNNER_TEMP/komac" "${args[@]}" 2>&1) || { printf '%s\n' "$out"; exit 1; }
