@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 import xml.etree.ElementTree as ET
 
@@ -110,18 +111,76 @@ class AllPlatforms(unittest.TestCase):
         self.assertIn('    depends_on "alsa-lib"', linux, "the binary links libasound.so.2")
         self.assertNotIn("depends_on", block(rb, "on_macos do"))
         install = block(rb, "def install").splitlines()
-        self.assertEqual(install[:2], ['    bin.install "ttyak"', "    return unless OS.linux?"], "nothing more on macOS")
-        # Relocated as Homebrew relocates a bottle; no wrapper (LD_LIBRARY_PATH would leak into what ttyak starts) and
-        # no patchelf program (Homebrew's bottle of it needs a newer glibc than Ubuntu 22.04's).
-        self.assertIn('    (bin/"ttyak").patch!(interpreter: (ld_so.to_s if ld_so.readable?), '
-                      'rpath: formula_opt_lib("alsa-lib").to_s)', install)
-        self.assertNotIn("write_env_script", rb, "the program stays bin/ttyak in the Cellar")
-        self.assertNotIn("patchelf", rb)
+        self.assertEqual(install[:4], ["    if OS.mac?", '      bin.install "ttyak"', "      return", "    end"], "macOS as before")
+        self.assertIn('    libexec.install "ttyak"', install, "Linux: the program in libexec, the launcher in bin")
+        self.assertIn('    (bin/"ttyak").write <<~SH', install)
+        # The system's library is never overridden: no rpath, no relocation.
+        for gone in ["patch!", "rpath:", "--set-rpath", "patchelf", "write_env_script"]:
+            self.assertNotIn(gone, rb)
         self.assertIn('assert_match version.to_s, shell_output("#{bin}/ttyak --version")', block(rb, "test do"))
         caveats = block(rb, "def caveats")
         self.assertIn("ttyak purge", caveats)
         self.assertIn("brew uninstall ttyak", caveats)
         self.assertNotIn("install.json", rb)
+
+    def launcher(self, tmp):
+        """The Linux launcher the formula writes, as sh gets it, with its folders in `tmp`: libs in tmp/lib, an
+        ldconfig at tmp/ldconfig, the program tmp/libexec/ttyak, Homebrew's alsa-lib at /brew/alsa/lib."""
+        rb = self.r.read("homebrew/ttyak.rb")
+        lines = rb.splitlines()
+        start = lines.index('    (bin/"ttyak").write <<~SH') + 1
+        end = lines.index("    SH", start)
+        text = textwrap.dedent("\n".join(lines[start:end])) + "\n"
+        # A squiggly heredoc: Ruby would read a backslash as an escape, so there must be none.
+        self.assertNotIn("\\", text)
+        for ruby, value in [("#{libexec}", tmp + "/libexec"), ("#{arch}", "x"), ("#{cache_tag}", "x86-64"),
+                            ('#{formula_opt_lib("alsa-lib")}', "/brew/alsa/lib")]:
+            self.assertIn(ruby, text)
+            text = text.replace(ruby, value)
+        self.assertNotIn("#{", text)
+        text, n = re.subn(r'(?m)^dirs=".*"$', 'dirs="%s/lib"' % tmp, text)
+        self.assertEqual(n, 1)
+        text, n = re.subn(r'(?m)^ldconfigs=".*"$', 'ldconfigs="%s/ldconfig"' % tmp, text)
+        self.assertEqual(n, 1)
+        return text
+
+    def test_linux_launcher(self):
+        """The system's libasound.so.2 when the system has one, else Homebrew's alsa-lib; arguments and stdin as given."""
+        args = ["a b", "", "c'd", "$HOME", "-x", "*"]
+        for case, lib, ldconfig, direct in [
+            ("a library in a standard folder", True, None, True),
+            ("ldconfig knows one", False, "\tlibasound.so.2 (libc6,x86-64) => /opt/x/libasound.so.2\n", True),
+            ("ldconfig knows only a 32-bit one", False, "\tlibasound.so.2 (libc6) => /usr/lib/libasound.so.2\n", False),
+            ("none", False, None, False),
+        ]:
+            for old_path in [None, "/mine"]:
+                with self.subTest(case=case, LD_LIBRARY_PATH=old_path), tempfile.TemporaryDirectory() as tmp:
+                    os.makedirs(tmp + "/lib")
+                    os.makedirs(tmp + "/libexec")
+                    if lib:
+                        open(tmp + "/lib/libasound.so.2", "w").close()
+                    if ldconfig is not None:
+                        with open(tmp + "/cache.txt", "w") as f:
+                            f.write("1 libs found in cache `/etc/ld.so.cache'\n" + ldconfig)
+                        with open(tmp + "/ldconfig", "w") as f:
+                            f.write('#!/bin/sh\n[ "$1" = -p ] && cat "%s/cache.txt"\n' % tmp)
+                        os.chmod(tmp + "/ldconfig", 0o755)
+                    with open(tmp + "/libexec/ttyak", "w") as f:
+                        f.write('#!/bin/sh\nprintf "%s\\n" "$@"\necho "LD=${LD_LIBRARY_PATH-unset}"\n'
+                                'echo "CONF=${ALSA_CONFIG_PATH-unset}"\ncat\n')
+                    os.chmod(tmp + "/libexec/ttyak", 0o755)
+                    with open(tmp + "/launcher", "w") as f:
+                        f.write(self.launcher(tmp))
+                    env = {"PATH": "/usr/bin:/bin", "ALSA_CONFIG_PATH": "/etc/mine.conf"}
+                    if old_path:
+                        env["LD_LIBRARY_PATH"] = old_path
+                    out = subprocess.run(["sh", tmp + "/launcher"] + args, input="typed\n", env=env,
+                                         capture_output=True, text=True, check=True).stdout
+                    want_ld = old_path or "unset"
+                    if not direct:
+                        want_ld = (old_path + ":" if old_path else "") + "/brew/alsa/lib"
+                    want_conf = "/etc/mine.conf" if direct else "unset"
+                    self.assertEqual(out, "\n".join(args + ["LD=" + want_ld, "CONF=" + want_conf, "typed"]) + "\n")
 
     def test_scoop(self):
         m = json.loads(self.r.read("scoop/ttyak.json"))

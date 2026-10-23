@@ -39,13 +39,38 @@ class Ttyak < Formula
   end
 
   def install
-    bin.install "ttyak"
-    return unless OS.linux?
+    if OS.mac?
+      bin.install "ttyak"
+      return
+    end
 
-    # The release binary links libasound.so.2 but has no rpath. Relocate it as Homebrew relocates a poured bottle
-    # (Keg#change_rpath!): Homebrew's ld.so, whose glibc the brewed alsa-lib may need, and an rpath to alsa-lib.
-    ld_so = HOMEBREW_PREFIX/"lib/ld.so"
-    (bin/"ttyak").patch!(interpreter: (ld_so.to_s if ld_so.readable?), rpath: formula_opt_lib("alsa-lib").to_s)
+    # Linux: the program links libasound.so.2. The system's, set up for the desktop's sound server (PipeWire,
+    # PulseAudio), comes first; Homebrew's alsa-lib only when the system has none. So no rpath (it would win): the
+    # program goes in libexec and bin gets a launcher that picks.
+    libexec.install "ttyak"
+    arch = Hardware::CPU.arm? ? "aarch64" : "x86_64"
+    cache_tag = Hardware::CPU.arm? ? "AArch64" : "x86-64"
+    (bin/"ttyak").write <<~SH
+      #!/bin/sh
+      # ttyak's launcher from Homebrew: the system's libasound.so.2 when its loader finds one, else Homebrew's.
+      exe="#{libexec}/ttyak"
+      dirs="/lib/#{arch}-linux-gnu /usr/lib/#{arch}-linux-gnu /lib64 /usr/lib64"
+      ldconfigs="/sbin/ldconfig /usr/sbin/ldconfig"
+      tag="libasound.so.2 (libc6,#{cache_tag})"
+      for dir in $dirs; do
+        [ -e "$dir/libasound.so.2" ] && exec "$exe" "$@"
+      done
+      for ldconfig in $ldconfigs; do
+        if [ -x "$ldconfig" ] && "$ldconfig" -p 2> /dev/null | grep -qF "$tag"; then
+          exec "$exe" "$@"
+        fi
+      done
+      unset ALSA_CONFIG_PATH
+      LD_LIBRARY_PATH="${LD_LIBRARY_PATH:+$LD_LIBRARY_PATH:}#{formula_opt_lib("alsa-lib")}"
+      export LD_LIBRARY_PATH
+      exec "$exe" "$@"
+    SH
+    (bin/"ttyak").chmod 0755
   end
 
   def caveats
