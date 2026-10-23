@@ -863,7 +863,7 @@ impl Prefs {
         match super::update_view::offer_with(&install, page) {
             Offer::UpdateNow if u.available.is_some() => (tr(UPDATE_BELOW).into_owned(), note(NOTHING_TO_RUN_BELOW)),
             Offer::UpdateNow => (tr(UPDATE_ITSELF).into_owned(), note(NOTHING_TO_RUN)),
-            Offer::Command(text) | Offer::Download { url: text, .. } => (text.clone(), UpdateAction::Copy(text)),
+            Offer::Command(text) | Offer::Download { url: text, .. } | Offer::Rebuild { url: text } => (text.clone(), UpdateAction::Copy(text)),
         }
     }
 
@@ -2175,7 +2175,7 @@ mod tests {
         use crate::install::Method;
         let mut p = updates_prefs();
         let v = env!("CARGO_PKG_VERSION");
-        for (method, says) in [(Method::Script, "with the install script"), (Method::Homebrew, "with Homebrew"), (Method::Aur, "from the AUR"), (Method::Deb, "from a .deb package"), (Method::Unknown, "unknown (a manual download)")] {
+        for (method, says) in [(Method::Script, "with the install script"), (Method::Homebrew, "with Homebrew"), (Method::Aur, "as the Arch package ttyak-bin"), (Method::Deb, "from a .deb package"), (Method::Unknown, "unknown (a manual download)")] {
             p.update.install = installed(method, false);
             assert_eq!(p.update_value(Field::UpdateVersion), Some(format!("{v} · {says}")), "{method:?}");
         }
@@ -2187,6 +2187,9 @@ mod tests {
         p.update.install = installed(Method::Homebrew, false);
         assert_eq!(p.update_value(Field::UpdateCommand).as_deref(), Some("brew upgrade ttyak"));
         assert_eq!(p.update_action(&keys), Some(UpdateAction::Copy("brew upgrade ttyak".into())));
+        p.update.install = installed(Method::Aur, false);
+        assert_eq!(p.update_value(Field::UpdateCommand).as_deref(), Some(RELEASES_PAGE), "the Arch package: the page with the recipes zip");
+        assert_eq!(p.update_action(&keys), Some(UpdateAction::Copy(RELEASES_PAGE.into())));
         p.update.install = installed(Method::Deb, false);
         assert_eq!(p.update_value(Field::UpdateCommand).as_deref(), Some(RELEASES_PAGE), "no version known: the latest release's page");
         p.sync_update(Some(&new_version()));

@@ -24,6 +24,7 @@ const UNWRITABLE: &str = "ttyak cannot write {dir}, so it cannot update itself. 
 const UNWRITABLE_YOURS: &str = "ttyak cannot write {dir}, so it cannot update itself. Once you can write there (it is your folder), run:";
 const PACKAGE: &str = "ttyak was installed {how}: download the new {package} from";
 const MANUAL: &str = "ttyak cannot tell how it was installed: download it from";
+const REBUILD: &str = "ttyak was installed {how}. To update it, download ttyak-{version}-recipes.zip from the release page, unzip it and run makepkg -si in its aur folder:";
 const DOWNLOADING: &str = "Downloading… {got} of {total}";
 const DOWNLOADING_UNSIZED: &str = "Downloading… {got}";
 const INSTALLING: &str = "Checking it and putting it in place…";
@@ -50,6 +51,7 @@ pub const WORDS: &[&str] = &[
     UNWRITABLE_YOURS,
     PACKAGE,
     MANUAL,
+    REBUILD,
     DOWNLOADING,
     DOWNLOADING_UNSIZED,
     INSTALLING,
@@ -70,7 +72,7 @@ pub const WORDS: &[&str] = &[
     "with Scoop",
     "with winget",
     "with Chocolatey",
-    "from the AUR",
+    "as the Arch package ttyak-bin",
     "from a .deb package",
     "from an .rpm package",
 ];
@@ -85,6 +87,9 @@ pub enum Offer {
     Command(String),
     /// Download the new `.deb` / `.rpm` (None: the archive) from the release page `url`.
     Download { package: Option<&'static str>, url: String },
+    /// Rebuild the Arch package with `makepkg -si` from the PKGBUILD in the recipes zip on the release page `url`
+    /// (ttyak-bin is not in the AUR yet).
+    Rebuild { url: String },
 }
 
 /// The newest release's page, for a download while no newer version is known.
@@ -108,6 +113,7 @@ pub fn offer_with(install: &Install, page: &str) -> Offer {
         }
         Method::Deb => download(Some(".deb")),
         Method::Rpm => download(Some(".rpm")),
+        Method::Aur => Offer::Rebuild { url: page.to_string() },
         method => match method.update_command() {
             Some(command) => Offer::Command(command.into()),
             None => download(None),
@@ -193,7 +199,7 @@ impl UpdateView {
             Stage::Ready | Stage::Cancelled | Stage::Failed(_) => match self.offer {
                 Offer::UpdateNow => vec![Button::UpdateNow, Button::Notes, Button::Close],
                 Offer::Command(_) => vec![Button::Copy, Button::Notes, Button::Close],
-                Offer::Download { .. } => vec![Button::Notes, Button::Copy, Button::Close],
+                Offer::Download { .. } | Offer::Rebuild { .. } => vec![Button::Notes, Button::Copy, Button::Close],
             },
         }
     }
@@ -203,9 +209,9 @@ impl UpdateView {
         match b {
             Button::UpdateNow if matches!(self.stage, Stage::Failed(_)) => (TRY_AGAIN, Action::UpdateNow),
             Button::UpdateNow => (UPDATE_NOW, Action::UpdateNow),
-            Button::Copy if matches!(self.offer, Offer::Download { .. }) => (COPY_LINK, Action::Copy),
+            Button::Copy if matches!(self.offer, Offer::Download { .. } | Offer::Rebuild { .. }) => (COPY_LINK, Action::Copy),
             Button::Copy => (COPY_COMMAND, Action::Copy),
-            Button::Notes if matches!(self.offer, Offer::Download { .. }) => (DOWNLOAD_PAGE, Action::ReleaseNotes),
+            Button::Notes if matches!(self.offer, Offer::Download { .. } | Offer::Rebuild { .. }) => (DOWNLOAD_PAGE, Action::ReleaseNotes),
             Button::Notes => (RELEASE_NOTES, Action::ReleaseNotes),
             Button::Cancel => (CANCEL, Action::Close),
             Button::Close => (CLOSE, Action::Close),
@@ -221,7 +227,7 @@ impl UpdateView {
             Button::UpdateNow => Do::Start,
             Button::Copy => match &self.offer {
                 Offer::Command(command) => Do::Copy(command.clone()),
-                Offer::Download { url, .. } => Do::Copy(url.clone()),
+                Offer::Download { url, .. } | Offer::Rebuild { url } => Do::Copy(url.clone()),
                 Offer::UpdateNow => Do::Nothing,
             },
             Button::Notes => Do::Open(self.latest.notes.clone()),
@@ -315,6 +321,11 @@ impl UpdateView {
                     None => tr(MANUAL).into_owned(),
                 });
                 out.push(format!("`{url}"));
+            }
+            Offer::Rebuild { url } => {
+                out.push(tr(REBUILD).replace("{how}", &how).replace("{version}", &version));
+                out.push(format!("`{url}"));
+                out.push("`makepkg -si".into());
             }
         }
         match &self.stage {
@@ -532,7 +543,6 @@ mod tests {
             (Method::Scoop, "scoop update ttyak", "with Scoop"),
             (Method::Winget, "winget upgrade dmytrobsp.ttyak", "with winget"),
             (Method::Chocolatey, "choco upgrade ttyak", "with Chocolatey"),
-            (Method::Aur, "yay -Syu ttyak-bin", "from the AUR"),
         ] {
             let mut v = view(method, false);
             assert_eq!(v.offer, Offer::Command(command.into()), "{method:?}");
@@ -540,6 +550,22 @@ mod tests {
             let text = screen(&mut v).join("\n");
             assert!(text.contains(&format!("ttyak was installed {how}. To update it, run:")) && text.contains(&format!("  {command}")), "{method:?}: {text}");
         }
+    }
+
+    #[test]
+    fn arch_package_says_rebuild_from_the_pkgbuild() {
+        // ttyak-bin is not in the AUR yet: the release's recipes zip has its PKGBUILD
+        let notes = latest().notes;
+        let mut v = view(Method::Aur, false);
+        assert_eq!(v.offer, Offer::Rebuild { url: notes.clone() });
+        assert_eq!(v.buttons(), [Button::Notes, Button::Copy, Button::Close]);
+        assert_eq!(v.key(Action::Open), Do::Open(notes.clone()), "Enter opens the page");
+        assert_eq!(v.key(Action::Copy), Do::Copy(notes.clone()));
+        let says = v.lines().join("\n");
+        assert!(says.contains("ttyak was installed as the Arch package ttyak-bin. To update it, download ttyak-9.9.9-recipes.zip from the release page, unzip it and run makepkg -si in its aur folder:"), "{says}");
+        assert!(says.contains(&format!("`{notes}")) && says.contains("`makepkg -si"), "{says}");
+        let text = screen(&mut v).join("\n");
+        assert!(text.contains("[ Open the download page (o) ]") && text.contains("[ Copy the link (y) ]") && !text.contains("yay"), "{text}");
     }
 
     #[test]

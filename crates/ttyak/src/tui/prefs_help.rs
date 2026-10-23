@@ -367,7 +367,7 @@ fn build(field: Field, _ws: &Workspace, keys: &Keymap, tr: &dyn Fn(&'static str)
             b.change("check now (a press while one runs does nothing)");
         }
         Field::UpdateCommand => {
-            b.text("How to update ttyak for the way it was installed: the package manager's command, the install script's for a folder ttyak cannot write, or the page to download a new .deb, .rpm or archive from. A copy the install script put in a folder ttyak can write updates itself: Update, once a new version is out.").blank();
+            b.text("How to update ttyak for the way it was installed: the package manager's command, the install script's for a folder ttyak cannot write, or the page to download a new .deb, .rpm or archive from, or, for the Arch package, the page with the release's recipes zip (its aur folder has the PKGBUILD: makepkg -si there). A copy the install script put in a folder ttyak can write updates itself: Update, once a new version is out.").blank();
             b.change("copy the command or the link");
         }
         Field::UpdateOpen => {

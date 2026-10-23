@@ -65,7 +65,7 @@ impl Method {
             Method::Scoop => "with Scoop",
             Method::Winget => "with winget",
             Method::Chocolatey => "with Chocolatey",
-            Method::Aur => "from the AUR",
+            Method::Aur => "as the Arch package ttyak-bin",
             Method::Deb => "from a .deb package",
             Method::Rpm => "from an .rpm package",
             Method::Script | Method::Unknown => "",
@@ -73,15 +73,14 @@ impl Method {
     }
 
     /// The package manager's command that updates ttyak; None where ttyak updates itself or nothing does it in one
-    /// command.
+    /// command (a .deb, an .rpm, the Arch package: rebuilt from the release's PKGBUILD, ttyak-bin is not in the AUR yet).
     pub fn update_command(self) -> Option<&'static str> {
         match self {
             Method::Homebrew => Some("brew upgrade ttyak"),
             Method::Scoop => Some("scoop update ttyak"),
             Method::Winget => Some(concat!("winget upgrade ", winget_id!())),
             Method::Chocolatey => Some("choco upgrade ttyak"),
-            Method::Aur => Some("yay -Syu ttyak-bin"),
-            Method::Script | Method::Deb | Method::Rpm | Method::Unknown => None,
+            Method::Script | Method::Aur | Method::Deb | Method::Rpm | Method::Unknown => None,
         }
     }
 
@@ -224,7 +223,7 @@ fn pacman_owns(fs: &impl Probe) -> bool {
 
 /// The package manager whose own files hold `exe`, which outweighs `install.json`: Homebrew's `Cellar`, Scoop's
 /// `scoop\apps`, winget's `WinGet\Packages`, Chocolatey's `chocolatey\lib`; for `/usr/bin/ttyak` pacman's file list
-/// of `ttyak-bin` (from the AUR) or dpkg's of `ttyak`.
+/// of `ttyak-bin` (the Arch package) or dpkg's of `ttyak`.
 fn owner(exe: &Path, fs: &impl Probe) -> Option<Method> {
     let path = exe.to_string_lossy();
     let parts = Parts::new(&path);
@@ -434,7 +433,7 @@ mod tests {
         }
         assert_eq!(Method::Winget.update_command(), Some(format!("winget upgrade {WINGET_ID}").as_str()));
         assert_eq!(Method::Winget.uninstall_command(), Some(format!("winget uninstall {WINGET_ID}").as_str()));
-        assert_eq!((Method::Aur.update_command(), Method::Deb.update_command()), (Some("yay -Syu ttyak-bin"), None));
+        assert_eq!((Method::Aur.update_command(), Method::Deb.update_command()), (None, None), "the Arch package is rebuilt from the release's PKGBUILD");
         assert_eq!((Method::Script.uninstall_command(), Method::Rpm.uninstall_command()), (None, Some("sudo dnf remove ttyak")));
     }
 

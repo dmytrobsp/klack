@@ -896,6 +896,8 @@ mod tests {
         assert!(scoop.contains("deletes your settings, sign-ins and drafts too"), "{scoop}");
         let brew = package_note(&Install { method: Method::Homebrew, exe: PathBuf::from("/opt/homebrew/Cellar/ttyak/0.11.0/bin/ttyak"), writable: false }).unwrap();
         assert_eq!(brew, "ttyak was installed with Homebrew. To remove it: brew uninstall ttyak\nTo delete your settings, sign-ins and drafts too, first run: ttyak purge");
+        let arch = package_note(&Install { method: Method::Aur, exe: PathBuf::from("/usr/bin/ttyak"), writable: false }).unwrap();
+        assert_eq!(arch, "ttyak was installed as the Arch package ttyak-bin. To remove it: sudo pacman -Rns ttyak-bin\nTo delete your settings, sign-ins and drafts too, first run: ttyak purge");
         assert_eq!(package_note(&Install { method: Method::Script, exe: PathBuf::from("/x/ttyak"), writable: true }), None);
     }
 

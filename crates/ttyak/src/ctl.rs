@@ -227,6 +227,7 @@ async fn self_update(url: Option<&str>) -> Result<()> {
         Offer::UpdateNow => {}
         Offer::Command(command) => bail!("ttyak cannot update itself here; run: {command}"),
         Offer::Download { url, .. } => bail!("ttyak cannot update itself here; download it from {url}"),
+        Offer::Rebuild { url } => bail!("ttyak cannot update itself here; download ttyak-{}-recipes.zip from {url}, unzip it and run makepkg -si in its aur folder", latest.version),
     }
     eprintln!("downloading ttyak {}…", latest.version);
     let exe = crate::update::self_update(&latest, &install, &crate::update::Progress::default()).await?;
