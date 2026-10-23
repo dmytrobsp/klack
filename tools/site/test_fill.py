@@ -1,12 +1,16 @@
 import copy
+import hashlib
 import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
 import unittest
 import urllib.error
+import zipfile
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import fill as F  # noqa: E402
@@ -229,6 +233,111 @@ class FillTests(unittest.TestCase):
             self.assertIn("release fetch failed:", err.getvalue())
             self.assertEqual((site / "index.html").read_text(), page)
             self.assertEqual((site / "data/release.json").read_bytes(), raw)
+
+
+class LatestJsonTests(unittest.TestCase):
+    """site/latest.json (the update check's feed) is the one inside the release's recipes zip."""
+    PAGE = "<!-- fill:download-button --><!-- /fill:download-button --><!-- fill:downloads --><!-- /fill:downloads -->"
+
+    def feed(self, version):
+        return (json.dumps({"name": "ttyak", "version": version, "date": "2026-10-24", "assets": {
+            "x86_64-linux": {"url": f"https://github.com/{F.REPO}/releases/download/v{version}/ttyak-{version}-x86_64-linux.zip",
+                             "sha256": "ab" * 32}}}, separators=(",", ":")) + "\n").encode()
+
+    def recipes_zip(self, members):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            for name, data in members.items():
+                z.writestr(name, data)
+        return buf.getvalue()
+
+    def serve(self, version, recipes=None, prerelease=False, sums_hash=None):
+        """An urlopen for the API's latest release of `version`, its SHA256SUMS and, when given, its recipes zip;
+        records every address asked for."""
+        base = f"https://github.com/{F.REPO}/releases/download/v{version}/"
+        files = {}
+        names = [f"ttyak-{version}-x86_64-linux.zip"]
+        sums = "%s  ttyak-%s-x86_64-linux.zip\n" % ("ab" * 32, version)
+        if recipes is not None:
+            names.append(f"ttyak-{version}-recipes.zip")
+            files[base + names[-1]] = recipes
+            sums += "%s  %s\n" % (sums_hash or hashlib.sha256(recipes).hexdigest(), names[-1])
+        files[base + "SHA256SUMS"] = sums.encode()
+        files[base + names[0]] = b"zip"
+        body = {"tag_name": f"v{version}", "html_url": f"https://github.com/{F.REPO}/releases/tag/v{version}",
+                "prerelease": prerelease,
+                "assets": [{"name": n, "browser_download_url": base + n, "size": len(files[base + n])}
+                           for n in names + ["SHA256SUMS"]]}
+        files[f"https://api.github.com/repos/{F.REPO}/releases/latest"] = json.dumps(body).encode()
+        self.asked = []
+
+        def opener(req, timeout=None):
+            self.asked.append((req.full_url, req.get_header("Authorization")))
+            if req.full_url not in files:
+                raise urllib.error.HTTPError(req.full_url, 404, "not found", {}, None)
+            return Resp(files[req.full_url])
+        return opener
+
+    def run_fill(self, opener, *flags, latest=None):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        site = Path(d.name)
+        (site / "data").mkdir()
+        (site / "index.html").write_text(self.PAGE)
+        (site / "data/release.json").write_text(json.dumps(RELEASE))
+        if latest is not None:
+            (site / "latest.json").write_bytes(latest)
+        err = io.StringIO()
+        with mock.patch.dict(os.environ, {"GITHUB_TOKEN": "tok"}):
+            code = F.main([str(site), "--fetch-release", *flags], urlopen=opener, stderr=err, readme=ROOT / "README.md")
+        return code, site, err.getvalue()
+
+    def test_latest_json_copied_from_release(self):
+        feed = self.feed("1.2.3")
+        code, site, err = self.run_fill(self.serve("1.2.3", self.recipes_zip({
+            "latest.json": feed, "homebrew/ttyak.rb": b"class Ttyak\n"})), "--strict", latest=b"old\n")
+        self.assertEqual(code, 0, err)
+        self.assertEqual((site / "latest.json").read_bytes(), feed)
+        self.assertEqual(json.loads((site / "data/release.json").read_text())["version"], "1.2.3")
+        # the token goes to the API only, never to a download (which GitHub redirects to another host)
+        self.assertEqual([a for u, a in self.asked if u.startswith("https://api.github.com/")], ["Bearer tok"])
+        self.assertEqual([a for u, a in self.asked if not u.startswith("https://api.github.com/")], [None, None])
+
+    def test_a_prerelease_never_becomes_latest_json(self):
+        for version, flag in (("1.3.0-rc.1", False), ("1.3.0", True)):
+            with self.subTest(version=version, prerelease=flag):
+                code, site, err = self.run_fill(self.serve(version, self.recipes_zip({"latest.json": self.feed(version)}),
+                                                           prerelease=flag), "--strict", latest=b"old\n")
+                self.assertEqual(code, 0, err)
+                self.assertEqual((site / "latest.json").read_bytes(), b"old\n")
+                self.assertIn("pre-release", err)
+                self.assertFalse(any(u.endswith("recipes.zip") for u, _ in self.asked))
+
+    def test_a_release_without_recipes_keeps_latest_json(self):
+        # 0.10.0, the rename release, has no recipes zip: the site still deploys, with no new feed
+        code, site, err = self.run_fill(self.serve("0.10.0"), "--strict")
+        self.assertEqual(code, 0, err)
+        self.assertFalse((site / "latest.json").exists())
+        self.assertIn("no ttyak-0.10.0-recipes.zip", err)
+        self.assertIn("ttyak-0.10.0-x86_64-linux.zip", (site / "index.html").read_text())
+
+    def test_a_feed_that_does_not_check_out_fails_strict_and_writes_nothing(self):
+        good = self.recipes_zip({"latest.json": self.feed("1.2.3")})
+        cases = {
+            "the zip is not the one in SHA256SUMS": self.serve("1.2.3", good, sums_hash="cd" * 32),
+            "another version's feed": self.serve("1.2.3", self.recipes_zip({"latest.json": self.feed("1.2.2")})),
+            "no latest.json in the zip": self.serve("1.2.3", self.recipes_zip({"nfpm.yaml": b"x"})),
+            "not JSON": self.serve("1.2.3", self.recipes_zip({"latest.json": b"{"})),
+            "not a zip": self.serve("1.2.3", b"PK not really"),
+        }
+        for why, opener in cases.items():
+            with self.subTest(why):
+                code, site, err = self.run_fill(opener, "--strict", latest=b"old\n")
+                self.assertNotEqual(code, 0, why)
+                self.assertIn("release fetch failed:", err)
+                self.assertEqual((site / "latest.json").read_bytes(), b"old\n")
+                self.assertEqual(json.loads((site / "data/release.json").read_text()), RELEASE)
+                self.assertEqual((site / "index.html").read_text(), self.PAGE)
 
 
 NUMBERS = {

@@ -2,14 +2,19 @@
 """Fills the generated regions of site/index.html from data (stdlib only).
 
     python3 tools/site/fill.py site [--fetch-release [--strict]]
+
+--fetch-release also writes site/latest.json (the update check's feed) from the latest release's recipes zip.
 """
+import hashlib
 import html as _html
+import io
 import json
 import os
 import re
 import sys
 import urllib.error
 import urllib.request
+import zipfile
 from pathlib import Path
 
 REPO = "dmytrobsp/ttyak"
@@ -90,16 +95,32 @@ def render_downloads(release, needs):
             f'<a href="{esc(release["url"])}">release v{esc(release["version"])}</a></p>')
 
 
-def release_from_api(repo, token, urlopen=urllib.request.urlopen):
-    req = urllib.request.Request(f"https://api.github.com/repos/{repo}/releases/latest",
-                                 headers={"Accept": "application/vnd.github+json", "User-Agent": "ttyak-site"})
+def _get(url, urlopen, token=None, accept="application/octet-stream"):
+    """The body at `url`; the token only for the API (a download redirects to another host)."""
+    req = urllib.request.Request(url, headers={"Accept": accept, "User-Agent": "ttyak-site"})
     if token:
         req.add_header("Authorization", f"Bearer {token}")
     try:
         with urlopen(req, timeout=20) as r:
-            data = json.loads(r.read().decode())
+            return r.read()
     except (urllib.error.URLError, OSError, ValueError) as e:
+        raise ReleaseFetchError(f"{url}: {e}") from e
+
+
+def fetch_release(repo, token, urlopen=urllib.request.urlopen):
+    """The GitHub API's reply for the latest release (never a draft or a pre-release, GitHub says)."""
+    body = _get(f"https://api.github.com/repos/{repo}/releases/latest", urlopen, token, "application/vnd.github+json")
+    try:
+        return json.loads(body.decode())
+    except ValueError as e:
         raise ReleaseFetchError(str(e)) from e
+
+
+def release_from_api(repo, token, urlopen=urllib.request.urlopen):
+    return release_from_data(fetch_release(repo, token, urlopen))
+
+
+def release_from_data(data):
     try:
         version = data["tag_name"].lstrip("v")
         assets, sums = [], None
@@ -116,6 +137,47 @@ def release_from_api(repo, token, urlopen=urllib.request.urlopen):
         return {"version": version, "url": data["html_url"], "sums_url": sums, "assets": assets}
     except (KeyError, TypeError) as e:
         raise ReleaseFetchError(f"unexpected reply: {e!r}") from e
+
+
+RECIPES_MAX = 10_000_000  # bytes; the recipes zip is a few kB
+
+
+def latest_feed(data, urlopen=urllib.request.urlopen):
+    """(latest.json's bytes, None) from the release's recipes zip, checked against its SHA256SUMS and the release's
+    version; (None, why) for a pre-release or a release without recipes (before 0.11.0)."""
+    try:
+        version = data["tag_name"].lstrip("v")
+        if data.get("prerelease") or "-" in version:
+            return None, f"v{version} is a pre-release"
+        assets = {a["name"]: a for a in data["assets"]}
+    except (KeyError, TypeError, AttributeError) as e:
+        raise ReleaseFetchError(f"unexpected reply: {e!r}") from e
+    name = f"ttyak-{version}-recipes.zip"
+    if name not in assets:
+        return None, f"no {name} in v{version}"
+    if "SHA256SUMS" not in assets:
+        raise ReleaseFetchError("release has no SHA256SUMS")
+    if not isinstance(assets[name].get("size"), int) or assets[name]["size"] > RECIPES_MAX:
+        raise ReleaseFetchError(f"{name}: not a size up to {RECIPES_MAX} bytes")
+    sums = _get(assets["SHA256SUMS"]["browser_download_url"], urlopen).decode(errors="replace")
+    want = [line.split()[0].lower() for line in sums.splitlines() if line.split()[1:] in ([name], ["*" + name])]
+    if len(want) != 1:
+        raise ReleaseFetchError(f"SHA256SUMS has no single line for {name}")
+    zipped = _get(assets[name]["browser_download_url"], urlopen)
+    if hashlib.sha256(zipped).hexdigest() != want[0]:
+        raise ReleaseFetchError(f"{name} does not match its SHA256SUMS line")
+    try:
+        with zipfile.ZipFile(io.BytesIO(zipped)) as z:
+            info = z.getinfo("latest.json")
+            if info.file_size > RECIPES_MAX:
+                raise ReleaseFetchError(f"{name}: latest.json is too big")
+            feed = z.read(info)
+        got = json.loads(feed.decode())
+    except (zipfile.BadZipFile, KeyError, ValueError, OSError, RuntimeError, NotImplementedError) as e:
+        raise ReleaseFetchError(f"{name}: no readable latest.json ({e})") from e
+    if not isinstance(got, dict) or got.get("name") != "ttyak" or got.get("version") != version:
+        raise ReleaseFetchError(f"{name}: latest.json is not the feed of ttyak {version}")
+    return feed, None
 
 
 # --- the spec sheet (LP10): the official app's numbers crossed out only where ttyak wins by WIN or more
@@ -247,8 +309,14 @@ def main(argv, urlopen=urllib.request.urlopen, stderr=sys.stderr, readme=None):
     release = None
     if "--fetch-release" in argv:
         try:
-            release = release_from_api(REPO, os.environ.get("GITHUB_TOKEN"), urlopen=urlopen)
+            data = fetch_release(REPO, os.environ.get("GITHUB_TOKEN"), urlopen=urlopen)
+            release = release_from_data(data)
+            feed, why = latest_feed(data, urlopen=urlopen)
             (site / "data/release.json").write_text(json.dumps(release, indent=2) + "\n")
+            if feed is None:
+                print(f"no new latest.json ({why}); keeping site/latest.json if there is one", file=stderr)
+            else:
+                (site / "latest.json").write_bytes(feed)
         except ReleaseFetchError as e:
             if "--strict" in argv:  # a deploy must not quietly go out with stale links: the last good one stays live
                 print(f"release fetch failed: {e}", file=stderr)

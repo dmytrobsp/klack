@@ -1,9 +1,12 @@
 # Release builds. A `v*` tag (matching the Cargo version) builds every platform, packages it (one zip per platform,
-# .deb and .rpm for both Linux architectures, the package recipes, SHA256SUMS over all of them), attests every file and
-# publishes a GitHub Release (a pre-release when the version has a `-`). A manual run does all of it but the release,
-# as version 0.0.0-dispatch.<run number>, and keeps the would-be release files as the run's `dist` artifact (7 days).
-# A tag of dmytrobsp/ttyak signs and notarizes the macOS builds; a manual run only when asked (`sign`); a fork's
-# builds are unsigned.
+# .deb and .rpm for both Linux architectures, the package recipes, SHA256SUMS over all of them), attests every file,
+# keeps them as the run's `dist` artifact and publishes a GitHub Release (a pre-release when the version has a `-`).
+# After the release, never holding it up, a tag of dmytrobsp/ttyak without `-` goes to the Homebrew tap, the Scoop
+# bucket, the AUR, Chocolatey and winget (a pre-release only to the tap's and the bucket's `rc` branch); each skips
+# with a notice when its secret is missing. A manual run publishes nothing, to GitHub or anywhere else: it builds as
+# version 0.0.0-dispatch.<run number> and keeps `dist` 7 days. A tag of dmytrobsp/ttyak signs and notarizes the macOS
+# builds, a manual run only when asked (`sign`); a fork's builds are unsigned (its tag publishes an unsigned release in
+# the fork).
 name: Release
 
 on:
@@ -62,8 +65,8 @@ jobs:
       - run: cargo build --locked --release --target ${{ matrix.target }}
       # macOS: the binary signed with the user's Developer ID (hardened runtime, Apple's timestamp) and notarized,
       # before it is staged, so the zips, SHA256SUMS and attestations are of the signed one. A tag of dmytrobsp/ttyak
-      # signs, a manual run only with `sign` true; either fails without the secrets (a release is never published
-      # unsigned). A manual run without `sign`, or a fork's tag, builds unsigned with a notice.
+      # signs, a manual run only with `sign` true; either fails without the secrets (a release of dmytrobsp/ttyak is
+      # never published unsigned). A manual run without `sign`, or a fork's tag, builds unsigned with a notice.
       - name: Signing (macOS)
         id: signing
         if: runner.os == 'macOS'
@@ -80,7 +83,7 @@ jobs:
           if [ "$TAG" = true ] || [ "$ASKED" = true ]; then
             if [ "$HAVE" != true ]; then
               if [ "$TAG" = true ]; then
-                echo "::error::the Apple signing secrets are missing: a release is never published unsigned"
+                echo "::error::the Apple signing secrets are missing: a release of dmytrobsp/ttyak is never published unsigned"
               else
                 echo "::error::the Apple signing secrets are missing, and sign=true asked for signing"
               fi
@@ -190,18 +193,20 @@ jobs:
           name: ttyak-${{ matrix.name }}
           path: stage/*
 
-  # Packages and attests on every run; publishes only for a pushed tag.
+  # Packages and attests on every run; the job `publish` makes the release from its `dist`.
   release:
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
-      contents: write # the release
+      contents: read
       id-token: write # the attestations' Sigstore certificate
       attestations: write # storing the attestations
     defaults:
       run:
         shell: bash
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     env:
       PUBLISH: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
       NFPM_VERSION: 2.48.0
@@ -213,6 +218,7 @@ jobs:
           persist-credentials: false
       # A tag must match the Cargo version; a manual run gets a version that is semver and plainly no release.
       - name: Version
+        id: version
         run: |
           if [ "$PUBLISH" = true ]; then
             version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
@@ -221,6 +227,7 @@ jobs:
             version=0.0.0-dispatch.$GITHUB_RUN_NUMBER
           fi
           echo "V=$version" >> "$GITHUB_ENV"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "DATE=$(date -u +%Y-%m-%d)" >> "$GITHUB_ENV"
           echo "version $version"
       - uses: actions/download-artifact@v4
@@ -282,11 +289,300 @@ jobs:
           path: dist/*
           # (A tag run's: the repository's default.)
           retention-days: ${{ env.PUBLISH != 'true' && '7' || '' }}
+
+  # The GitHub Release, for a pushed `v*` tag only (a manual run never publishes, Ruling JJ): every file of `dist`,
+  # a pre-release (never latest) when the version has a `-`. Nothing after it can hold it up.
+  publish:
+    needs: release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write # the release
+    defaults:
+      run:
+        shell: bash
+    env:
+      V: ${{ needs.release.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
       - name: Publish
-        if: env.PUBLISH == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
+          (cd dist && sha256sum -c SHA256SUMS)
           pre=()
           case $V in *-*) pre=(--prerelease --latest=false) ;; esac
-          gh release create "$GITHUB_REF_NAME" dist/* --title "ttyak $GITHUB_REF_NAME" --generate-notes "${pre[@]}"
+          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --title "ttyak $GITHUB_REF_NAME" --generate-notes "${pre[@]}"
+
+  # Which registries the run goes to, with a notice for each one it skips: only from a tag of dmytrobsp/ttyak whose
+  # GitHub Release was published; a version with `-` only to the tap's and the bucket's `rc` branch (Task 22's
+  # rehearsal); each only with its secret. winget runs komac's dry run whenever it does not submit.
+  registries:
+    needs: [release, publish]
+    if: ${{ !cancelled() && needs.release.result == 'success' && github.repository == 'dmytrobsp/ttyak' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    defaults:
+      run:
+        shell: bash
+    outputs:
+      version: ${{ needs.release.outputs.version }}
+      git: ${{ steps.plan.outputs.git }} # default | rc: the tap's and the bucket's branch
+      aur: ${{ steps.plan.outputs.aur }} # go
+      chocolatey: ${{ steps.plan.outputs.chocolatey }} # go
+      winget: ${{ steps.plan.outputs.winget }} # submit | dry-run
+    steps:
+      - name: Plan
+        id: plan
+        env:
+          TAG: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+          RELEASED: ${{ needs.publish.result == 'success' }}
+          V: ${{ needs.release.outputs.version }}
+          HAVE_PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN != '' }}
+          HAVE_AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY != '' }}
+          HAVE_CHOCOLATEY_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY != '' }}
+          HAVE_WINGET_TOKEN: ${{ secrets.WINGET_TOKEN != '' }}
+        run: |
+          skip() { echo "::notice title=$1 skipped::$2"; }
+          out() { echo "$1=$2" >> "$GITHUB_OUTPUT"; echo "$1: $2"; }
+          dry() { echo "::notice title=winget dry run::$1: komac only reads the manifests"; out winget dry-run; }
+          if [ "$TAG" != true ]; then
+            for r in tap bucket aur chocolatey; do skip "$r" "a manual run publishes nothing"; done
+            dry "a manual run publishes nothing"
+            exit 0
+          fi
+          if [ "$RELEASED" != true ]; then
+            for r in tap bucket aur chocolatey winget; do skip "$r" "the GitHub Release of v$V was not published"; done
+            exit 0
+          fi
+          pre=false
+          case $V in *-*) pre=true ;; esac
+          if [ "$HAVE_PUBLISH_TOKEN" != true ]; then
+            for r in tap bucket; do skip "$r" "no secret PUBLISH_TOKEN"; done
+          elif [ "$pre" = true ]; then
+            out git rc
+          else
+            out git default
+          fi
+          for r in aur:AUR_SSH_KEY:$HAVE_AUR_SSH_KEY chocolatey:CHOCOLATEY_API_KEY:$HAVE_CHOCOLATEY_API_KEY; do
+            IFS=: read -r name secret have <<< "$r"
+            if [ "$pre" = true ]; then
+              skip "$name" "v$V is a pre-release: only the tap's and the bucket's rc branch get it"
+            elif [ "$have" != true ]; then
+              skip "$name" "no secret $secret"
+            else
+              out "$name" go
+            fi
+          done
+          if [ "$pre" = true ]; then
+            dry "v$V is a pre-release"
+          elif [ "$HAVE_WINGET_TOKEN" != true ]; then
+            dry "no secret WINGET_TOKEN"
+          else
+            out winget submit
+          fi
+
+  # The Homebrew tap and the Scoop bucket: the rendered file committed as "ttyak V" on the repository's default
+  # branch (a pre-release: on `rc`, made from the default branch the first time), with PUBLISH_TOKEN.
+  tap-bucket:
+    name: ${{ matrix.registry }}
+    needs: [publish, registries]
+    if: github.repository == 'dmytrobsp/ttyak' && needs.registries.outputs.git != ''
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { registry: tap, repo: dmytrobsp/homebrew-ttyak, from: homebrew/ttyak.rb, to: Formula/ttyak.rb }
+          - { registry: bucket, repo: dmytrobsp/scoop-ttyak, from: scoop/ttyak.json, to: bucket/ttyak.json }
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+    env:
+      V: ${{ needs.registries.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - name: Recipes
+        run: |
+          (cd dist && awk -v f="ttyak-$V-recipes.zip" '$2 == f' SHA256SUMS | sha256sum -c -)
+          unzip -q "dist/ttyak-$V-recipes.zip" -d recipes
+      - name: Push
+        env:
+          TOKEN: ${{ secrets.PUBLISH_TOKEN }}
+          BRANCH: ${{ needs.registries.outputs.git }}
+          NAME: ${{ matrix.registry }}
+          REPO: ${{ matrix.repo }}
+          FROM: ${{ matrix.from }}
+          TO: ${{ matrix.to }}
+          GIT_TERMINAL_PROMPT: 0
+        run: |
+          set +x
+          auth=$(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)
+          echo "::add-mask::$auth"
+          git=(git -c credential.helper= -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth")
+          url="https://github.com/$REPO.git"
+          if [ "$BRANCH" = rc ] && [ -n "$("${git[@]}" ls-remote --heads "$url" rc)" ]; then
+            "${git[@]}" clone -q --depth 1 --branch rc "$url" repo
+          else
+            "${git[@]}" clone -q --depth 1 "$url" repo
+            if [ "$BRANCH" = rc ]; then git -C repo checkout -q -b rc; fi
+          fi
+          branch=$(git -C repo symbolic-ref --short HEAD)
+          mkdir -p "repo/$(dirname "$TO")"
+          cp "recipes/$FROM" "repo/$TO"
+          git -C repo add -- "$TO"
+          if git -C repo diff --cached --quiet; then
+            echo "::notice title=$NAME::$REPO already has ttyak $V on $branch"
+            exit 0
+          fi
+          git -C repo -c user.name="github-actions[bot]" \
+            -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -q -m "ttyak $V"
+          "${git[@]}" -C repo push -q origin "HEAD:refs/heads/$branch"
+          echo "$REPO: ttyak $V on $branch, $(git -C repo rev-parse --short HEAD)"
+
+  # The AUR package ttyak-bin: PKGBUILD and .SRCINFO committed as "ttyak V" and pushed over SSH with AUR_SSH_KEY
+  # (made by tools/publish/aur-key.sh); the first push creates the package.
+  aur:
+    needs: [publish, registries]
+    if: github.repository == 'dmytrobsp/ttyak' && needs.registries.outputs.aur == 'go'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+    env:
+      V: ${{ needs.registries.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - name: Recipes
+        run: |
+          (cd dist && awk -v f="ttyak-$V-recipes.zip" '$2 == f' SHA256SUMS | sha256sum -c -)
+          unzip -q "dist/ttyak-$V-recipes.zip" -d recipes
+      - name: Push
+        env:
+          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+          # aur.archlinux.org's ed25519 host key, SHA256:RFzBCUItH9LZS0cKB5UE6ceAYhBD5C8GeOBip8Z11+4 as
+          # https://aur.archlinux.org/ lists it (ssh-keyscan gave the same key on 2026-10-23).
+          AUR_HOST_KEY: aur.archlinux.org ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEuBKrPzbawxA/k2g6NcyV5jmqwJ2s+zpgZGZ7tpLIcN
+        run: |
+          set +x
+          umask 077
+          key="$RUNNER_TEMP/aur.key"
+          hosts="$RUNNER_TEMP/aur.known_hosts"
+          printf '%s\n' "$AUR_SSH_KEY" | tr -d '\r' | sed '/^$/d' > "$key"
+          ssh-keygen -y -P '' -f "$key" > "$key.pub" 2> /dev/null \
+            || { echo "::error::AUR_SSH_KEY is not an OpenSSH private key without a passphrase"; exit 1; }
+          echo "key: $(ssh-keygen -l -f "$key.pub")"
+          printf '%s\n' "$AUR_HOST_KEY" > "$hosts"
+          export GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o IdentityAgent=none -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$hosts"
+          git -c init.defaultBranch=master clone -q ssh://aur@aur.archlinux.org/ttyak-bin.git aur
+          cp recipes/aur/PKGBUILD recipes/aur/.SRCINFO aur/
+          git -C aur add -- PKGBUILD .SRCINFO
+          if git -C aur diff --cached --quiet; then
+            echo "::notice title=aur::ttyak-bin already has ttyak $V"
+            exit 0
+          fi
+          git -C aur -c user.name="github-actions[bot]" \
+            -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -q -m "ttyak $V"
+          git -C aur push -q origin HEAD:master
+          echo "ttyak-bin: ttyak $V, $(git -C aur rev-parse --short HEAD)"
+      - name: Remove the key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/aur.key" "$RUNNER_TEMP/aur.key.pub" "$RUNNER_TEMP/aur.known_hosts"
+
+  # Chocolatey: the package packed from the rendered nuspec and pushed with CHOCOLATEY_API_KEY; it is public once
+  # Chocolatey's review passes.
+  chocolatey:
+    needs: [publish, registries]
+    if: github.repository == 'dmytrobsp/ttyak' && needs.registries.outputs.chocolatey == 'go'
+    runs-on: windows-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      V: ${{ needs.registries.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - name: Recipes
+        run: |
+          $zip = "ttyak-$env:V-recipes.zip"
+          $want = @(Get-Content dist/SHA256SUMS | ForEach-Object { $f = -split $_; if ($f.Count -eq 2 -and $f[1] -eq $zip) { $f[0] } })
+          if ($want.Count -ne 1) { throw "SHA256SUMS has no single line for $zip" }
+          if ((Get-FileHash "dist/$zip" -Algorithm SHA256).Hash -ne $want[0]) { throw "$zip does not match SHA256SUMS" }
+          Expand-Archive "dist/$zip" -DestinationPath recipes
+      - name: Pack and push
+        env:
+          CHOCOLATEY_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}
+        run: |
+          choco pack recipes/chocolatey/ttyak.nuspec --outputdirectory out --limit-output
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $nupkg = @(Get-ChildItem out -Filter *.nupkg)
+          if ($nupkg.Count -ne 1) { throw "choco pack made $($nupkg.Count) packages" }
+          choco push $nupkg[0].FullName --source https://push.chocolatey.org/ --api-key $env:CHOCOLATEY_API_KEY --limit-output
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+  # winget: komac (its release's SHA-256 pinned) opens the pull request to microsoft/winget-pkgs from the user's fork
+  # with WINGET_TOKEN (a classic token with public_repo; the fork must exist; a first version goes in as a new
+  # package). When it does not submit (a manual run, a pre-release, no secret) it runs komac's dry run with the run's
+  # own token: the rendered manifests are read as komac would submit them, and nothing is sent.
+  winget:
+    needs: [publish, registries]
+    if: ${{ !cancelled() && github.repository == 'dmytrobsp/ttyak' && needs.registries.outputs.winget != '' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+    env:
+      V: ${{ needs.registries.outputs.version }}
+      KOMAC_VERSION: 2.17.1
+      # komac-2.17.1-x86_64-unknown-linux-gnu.tar.gz in https://github.com/russellbanks/Komac/releases/download/v2.17.1/SHA256SUMS
+      KOMAC_SHA256: e694e79cd451afabf47bead66ed34586fef4814f7b94e4b61a098f419978d5d7
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - name: Recipes
+        run: |
+          (cd dist && awk -v f="ttyak-$V-recipes.zip" '$2 == f' SHA256SUMS | sha256sum -c -)
+          unzip -q "dist/ttyak-$V-recipes.zip" -d recipes
+      - name: komac
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/komac.tar.gz" \
+            "https://github.com/russellbanks/Komac/releases/download/v$KOMAC_VERSION/komac-$KOMAC_VERSION-x86_64-unknown-linux-gnu.tar.gz"
+          echo "$KOMAC_SHA256  $RUNNER_TEMP/komac.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/komac.tar.gz" -C "$RUNNER_TEMP" komac
+          "$RUNNER_TEMP/komac" --version
+      # (komac skips manifests it cannot read and then says it found no valid packages, with exit 0.)
+      - name: Submit
+        env:
+          MODE: ${{ needs.registries.outputs.winget }}
+          GITHUB_TOKEN: ${{ needs.registries.outputs.winget == 'submit' && secrets.WINGET_TOKEN || github.token }}
+        run: |
+          set +x
+          args=(submit recipes/winget/manifests --yes)
+          if [ "$MODE" != submit ]; then args+=(--dry-run); fi
+          out=$("$RUNNER_TEMP/komac" "${args[@]}" 2>&1) || { printf '%s\n' "$out"; exit 1; }
+          printf '%s\n' "$out"
+          if grep -q 'No valid packages' <<< "$out"; then
+            echo "::error::komac read no complete package from the rendered manifests"
+            exit 1
+          fi
+          echo "komac: $MODE of ttyak $V done"

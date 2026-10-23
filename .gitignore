@@ -1,3 +1,5 @@
 /target
 *.session
 __pycache__/
+# Written by tools/site/fill.py --fetch-release from the latest release (deployed, never committed).
+/site/latest.json
