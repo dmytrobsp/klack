@@ -41,6 +41,10 @@ jobs:
       DEB_ARCH: ${{ matrix.deb }}
       RPM_ARCH: ${{ matrix.rpm }}
     steps:
+      # First: checkout empties the workspace (it once took the downloads with it). Only for tools/ci/apt-install.sh.
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       # Semver (a pre-release part allowed, no leading v) before the version goes into any name.
       - name: Version
         timeout-minutes: 1
@@ -88,9 +92,6 @@ jobs:
           printf x >> changed.zip
           if verify changed.zip > /dev/null 2>&1; then echo "::error::a changed copy of $ZIP passed"; exit 1; fi
           echo "a changed copy of $ZIP: refused"
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
       # The zip needs ALSA's library (README: on every desktop Linux); a runner may lack it.
       - name: ALSA
         timeout-minutes: 23
