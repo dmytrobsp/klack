@@ -100,7 +100,7 @@ jobs:
           codesign --verify --strict --test-requirement "=anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = \"$APPLE_TEAM_ID\"" "$EXE"
           codesign -d --verbose=2 "$EXE" 2>&1 | grep -E '^(Identifier=|Format=|CodeDirectory |Timestamp=|TeamIdentifier=|Runtime Version=)'
       # Apple's notary service checks a zip of the binary; a bare binary cannot be stapled, so Gatekeeper looks the
-      # ticket up online at the first start.
+      # ticket up online at the first start. (The team's first submissions took 30 to 70 minutes; most take minutes.)
       - name: Notarize (macOS)
         if: steps.signing.outputs.sign == 'true'
         env:
@@ -120,12 +120,12 @@ jobs:
           # The submission's id first, so a wait that runs out still names it.
           id=$(xcrun notarytool submit "$zip" "${auth[@]}" --output-format json | field id)
           echo "notarytool: submitted $id"
-          xcrun notarytool wait "$id" "${auth[@]}" --timeout 30m || true
+          xcrun notarytool wait "$id" "${auth[@]}" --timeout 90m || true
           status=$(xcrun notarytool info "$id" "${auth[@]}" --output-format json | field status)
           echo "notarytool: $id $status"
           if [ "$status" != Accepted ]; then
             if [ "$status" = "In Progress" ]; then
-              xcrun notarytool history "${auth[@]}" | head -n 20 || true
+              xcrun notarytool history "${auth[@]}" | head -n 40 || true
             else
               xcrun notarytool log "$id" "${auth[@]}" || true
             fi
