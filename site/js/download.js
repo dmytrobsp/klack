@@ -9,7 +9,7 @@
 //   macOS: two buttons a.dl "Apple Silicon" / "Intel"; mobile/unknown: one a.dl "ALL DOWNLOADS" -> #get.
 // From 0.11.0 (installs(): the first release the install scripts carry; fill.py's render_hero_install writes the
 // Linux one) the visitor's one-liner leads instead, its zip beside it:
-//   <code class="dl-cmd" data-os="linux"><span class="ps">$</span> curl -fsSL https://ttyak.sh/install.sh | sh</code>
+//   <code class="dl-cmd" data-os="linux" data-copy><span class="ps">$</span> curl -fsSL https://ttyak.sh/install.sh | sh</code>
 //   <a class="dl small" data-os="linux" href="<zip>">DOWNLOAD</a>
 //   <span class="dl-meta">v<version> · zip <size MB> · <span class="dl-others"><a href="#get">other systems and
 //     ways to install</a></span></span>
@@ -74,7 +74,7 @@ function installArea(os, release) {
   const button = zip ? `<a class="dl small" data-os="${os}" href="${esc(zip.url)}">DOWNLOAD</a>` : '';
   const size = zip ? `${os === 'macos' ? 'Apple Silicon zip' : 'zip'} ${mb(zip.size)} · ` : '';
   const others = (intel ? `<a href="${esc(intel.url)}">Intel zip</a> · ` : '') + '<a href="#get">other systems and ways to install</a>';
-  return `<code class="dl-cmd" data-os="${os}"><span class="ps">${one[0]}</span> ${esc(one[1])}</code>${button}`
+  return `<code class="dl-cmd" data-os="${os}" data-copy><span class="ps">${one[0]}</span> ${esc(one[1])}</code>${button}`
     + `<span class="dl-meta">${ver}${size}<span class="dl-others">${others}</span></span>`;
 }
 

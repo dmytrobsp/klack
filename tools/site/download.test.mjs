@@ -81,6 +81,14 @@ test('enhance rewrites the region for the visitor', () => {
   assert.match(d.area.innerHTML, /data-os="mobile" href="#get">ALL DOWNLOADS</);
 });
 
+test('enhance before 0.11 marks nothing to copy', () => {
+  for (const ua of [UA.linux, UA.win, UA.mac, UA.android]) {
+    const d = fakeDoc();
+    enhance(d, rel, { userAgent: ua, platform: '', maxTouchPoints: 0 });
+    assert.ok(!d.area.innerHTML.includes('data-copy'), d.area.innerHTML);
+  }
+});
+
 test('enhance leaves the static region alone with no region or no release', () => {
   const d = fakeDoc();
   enhance(d, null, { userAgent: UA.win });
@@ -114,7 +122,7 @@ test('enhance from 0.11: Linux gets curl, the same region fill.py writes', () =>
   const lin = url011('x86_64-linux');
   // (test_fill.py's test_hero_from_0_11_leads_with_the_one_liner has the same string)
   assert.equal(d.area.innerHTML,
-    '<code class="dl-cmd" data-os="linux"><span class="ps">$</span> curl -fsSL https://ttyak.sh/install.sh | sh</code>'
+    '<code class="dl-cmd" data-os="linux" data-copy><span class="ps">$</span> curl -fsSL https://ttyak.sh/install.sh | sh</code>'
     + `<a class="dl small" data-os="linux" href="${lin.url}">DOWNLOAD</a>`
     + `<span class="dl-meta">v0.11.0 · zip ${(lin.size / 1e6).toFixed(1)} MB · <span class="dl-others">`
     + '<a href="#get">other systems and ways to install</a></span></span>');
@@ -124,7 +132,7 @@ test('enhance from 0.11: macOS gets curl, the Apple Silicon zip beside, Intel in
   const d = fakeDoc();
   enhance(d, rel011, { userAgent: UA.mac, platform: 'MacIntel', maxTouchPoints: 0 });
   const h = d.area.innerHTML;
-  assert.ok(h.startsWith('<code class="dl-cmd" data-os="macos"><span class="ps">$</span> curl -fsSL https://ttyak.sh/install.sh | sh</code>'), h);
+  assert.ok(h.startsWith('<code class="dl-cmd" data-os="macos" data-copy><span class="ps">$</span> curl -fsSL https://ttyak.sh/install.sh | sh</code>'), h);
   assert.ok(h.includes(`<a class="dl small" data-os="macos" href="${url011('aarch64-macos').url}">DOWNLOAD</a>`), h);
   assert.ok(h.includes(`<a href="${url011('x86_64-macos').url}">Intel zip</a>`), h);
   assert.ok(h.includes('Apple Silicon zip'), h);
@@ -135,7 +143,7 @@ test('enhance from 0.11: Windows gets irm', () => {
   const d = fakeDoc();
   enhance(d, rel011, { userAgent: UA.win, platform: 'Win32', maxTouchPoints: 0 });
   const h = d.area.innerHTML;
-  assert.ok(h.startsWith('<code class="dl-cmd" data-os="windows"><span class="ps">&gt;</span> irm https://ttyak.sh/install.ps1 | iex</code>'), h);
+  assert.ok(h.startsWith('<code class="dl-cmd" data-os="windows" data-copy><span class="ps">&gt;</span> irm https://ttyak.sh/install.ps1 | iex</code>'), h);
   assert.ok(h.includes(`href="${url011('x86_64-windows').url}">DOWNLOAD</a>`), h);
   assert.ok(!h.includes('curl'), h);
   assert.ok(h.includes('href="#get"'), h);

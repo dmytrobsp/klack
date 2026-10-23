@@ -273,6 +273,7 @@ class Copy(unittest.TestCase):
             self.assertIn("quarantine", g)
             self.assertIn("Signed builds are coming soon.", g)
             self.assertFalse([e for e in by_id(self.root, "top").elements() if "dl-cmd" in e.classes])
+            self.assertFalse([e for e in self.root.elements() if "data-copy" in e.attrs], "no copy buttons before 0.11")
 
     def test_footer(self):
         f = by_id(self.root, "footer")
@@ -324,6 +325,27 @@ class CopyFrom011(unittest.TestCase):
         self.assertIn("attestation", g)
         self.assertIn("Signed Windows and Linux builds are coming soon.", g)
         self.assertIn("a few days after the release", g)
+
+    def test_every_install_command_is_marked_to_copy(self):
+        # js/copy.js adds a button to each data-copy element and copies its text without the prompt (.ps)
+        def command(e):
+            return flat("".join(c.data if c.kind == "text" else c.text() for c in e.children
+                                if not (c.kind == "el" and "ps" in c.classes)))
+        hero = [command(e) for e in self.top.elements() if "data-copy" in e.attrs]
+        get = [command(e) for e in self.get.elements() if "data-copy" in e.attrs]
+        self.assertEqual(hero, ["curl -fsSL https://ttyak.sh/install.sh | sh"])
+        self.assertEqual(get, ["curl -fsSL https://ttyak.sh/install.sh | sh", "irm https://ttyak.sh/install.ps1 | iex",
+                               "ttyak auth login", "brew install dmytrobsp/ttyak/ttyak",
+                               "scoop bucket add ttyak https://github.com/dmytrobsp/scoop-ttyak", "scoop install ttyak",
+                               "winget install dmytrobsp.ttyak", "choco install ttyak",
+                               "sudo apt install ./ttyak_0.11.0_amd64.deb",
+                               "sudo dnf install ./ttyak-0.11.0-1.x86_64.rpm", "makepkg -si"])
+        for e in [*self.top.elements(), *self.get.elements()]:
+            if "data-copy" in e.attrs:
+                self.assertIn(e.tag, ("code", "pre"))
+                self.assertEqual(e.attrs["data-copy"], None, "a bare marker: the text is the one source")
+                prompts = [c for c in e.children if c.kind == "el"]
+                self.assertTrue(all("ps" in c.classes for c in prompts), "nothing but the prompt inside")
 
     def test_hero_leads_with_the_one_liner_download_beside(self):
         area = next(e for e in self.top.elements() if "dl-area" in e.classes)

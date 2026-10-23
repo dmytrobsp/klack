@@ -83,8 +83,9 @@ def render_install(release):
         return BY_HAND
     v = esc(release["version"])
     recipes = esc(release["sums_url"].rsplit("/", 1)[0] + f"/ttyak-{release['version']}-recipes.zip")
-    cmd = lambda ps, c: f'<pre class="cmd"><span class="ps">{ps}</span> {txt(c)}</pre>'
-    code = lambda c: f"<code>{txt(c)}</code>"
+    # data-copy: js/copy.js gives each command a copy button
+    cmd = lambda ps, c: f'<pre class="cmd" data-copy><span class="ps">{ps}</span> {txt(c)}</pre>'
+    code = lambda c: f"<code data-copy>{txt(c)}</code>"
     # one per line: the privacy check reads a line's text across tags, so a name never runs into the next one
     pkgs = "\n      ".join([
         f"<li><b>Homebrew</b> (macOS, Linux) {code('brew install dmytrobsp/ttyak/ttyak')}</li>",
@@ -120,7 +121,7 @@ def render_hero_install(release):
     lin = _find(release, "x86_64-linux")
     button = f'<a class="dl small" data-os="linux" href="{esc(lin["url"])}">DOWNLOAD</a>' if lin else ""
     size = f"zip {fmt_size(lin['size'])} · " if lin else ""
-    return (f'<code class="dl-cmd" data-os="linux"><span class="ps">$</span> {txt(f"curl -fsSL {SITE}/install.sh | sh")}</code>'
+    return (f'<code class="dl-cmd" data-os="linux" data-copy><span class="ps">$</span> {txt(f"curl -fsSL {SITE}/install.sh | sh")}</code>'
             f'{button}<span class="dl-meta">v{esc(release["version"])} · {size}<span class="dl-others">'
             '<a href="#get">other systems and ways to install</a></span></span>')
 

@@ -139,6 +139,18 @@ class Structure(unittest.TestCase):
         for sel in (".dl-cmd {", ".dl-cmd .ps", ".dl.small {"):
             self.assertIn(sel, css)
 
+    def test_copy_buttons_loaded_and_styled(self):
+        # js/copy.js adds them (after download.js rewrote the hero too); the CSS gives them a focus ring and a quiet
+        # live region
+        page = (SITE / "index.html").read_text()
+        self.assertTrue((SITE / "js" / "copy.js").is_file())
+        script = page.split('<script type="module">')[1].split("</script>")[0]
+        self.assertIn("import('./js/copy.js')", script)
+        self.assertRegex(script, r"m\.load\(document\)\)\.then\(\(\) => copy\)\.then\(m => m\.addCopyButtons\(document\)\)")
+        css = (SITE / "css" / "site.css").read_text()
+        for sel in (".copy {", ".copy:focus-visible", ".copy[data-state=copied]", ".copy-status {", "> .copy { float: right;"):
+            self.assertIn(sel, css)
+
     def test_release_json(self):
         r = json.loads((SITE / "data" / "release.json").read_text())
         v = r["version"]

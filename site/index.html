@@ -115,7 +115,10 @@
     <script type="module">
       import { startHero } from './js/hero.js';
       startHero(document.getElementById('hero-art'));
-      import('./js/download.js').then(m => m.load(document));
+      const copy = import('./js/copy.js');
+      copy.then(m => m.addCopyButtons(document));
+      // the hero's one-liner again once download.js has picked the visitor's
+      import('./js/download.js').then(m => m.load(document)).then(() => copy).then(m => m.addCopyButtons(document));
       import('./js/zoom.js').then(m => m.enableZoom(document));
     </script>
   </section>

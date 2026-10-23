@@ -275,6 +275,25 @@ class InstallTests(unittest.TestCase):
         self.assertLess(text.index("install.ps1"), text.index("brew install"))
         self.assertIn("Unzip", F.render_install(release_at("0.10.0")))
 
+    def test_from_0_11_every_command_is_marked_to_copy(self):
+        # js/copy.js puts a button in each data-copy element; what it copies is the element's text without the prompt
+        h = F.render_install(release_at("0.11.0"))
+        marked = re.findall(r"<(code|pre)( class=\"cmd\")? data-copy>(.*?)</\1>", h)
+        got = [html.unescape(re.sub(r'<span class="ps">[^<]*</span>', "", m[2])).strip() for m in marked]
+        apt_dnf = ["sudo apt install ./ttyak_0.11.0_amd64.deb", "sudo dnf install ./ttyak-0.11.0-1.x86_64.rpm"]
+        self.assertEqual(sorted(got), sorted(self.COMMANDS + apt_dnf))
+        self.assertEqual(h.count("data-copy"), len(got))
+        for m in marked:
+            self.assertNotIn("<", re.sub(r'^<span class="ps">[^<]*</span> ', "", m[2]), "only the prompt is markup")
+        hero = F.render_download_button(release_at("0.11.0"))
+        self.assertEqual(hero.count("data-copy"), 1)
+
+    def test_before_0_11_nothing_to_copy(self):
+        r = release_at("0.10.0")
+        for h in (F.render_install(r), F.render_download_button(r), F.render_signing_note(r)):
+            self.assertNotIn("data-copy", h)
+        self.assertNotIn("data-copy", F.BY_HAND)
+
     def test_from_0_11_the_packages_of_the_release(self):
         r = release_at("0.11.0")
         h = F.render_install(r)
@@ -341,7 +360,7 @@ class InstallTests(unittest.TestCase):
         r = release_at("0.11.0")
         lin = next(a for a in r["assets"] if a["platform"] == "x86_64-linux")
         self.assertEqual(F.render_download_button(r),
-                         '<code class="dl-cmd" data-os="linux"><span class="ps">$</span> '
+                         '<code class="dl-cmd" data-os="linux" data-copy><span class="ps">$</span> '
                          'curl -fsSL https://ttyak.sh/install.sh | sh</code>'
                          f'<a class="dl small" data-os="linux" href="{lin["url"]}">DOWNLOAD</a>'
                          f'<span class="dl-meta">v0.11.0 · zip {F.fmt_size(lin["size"])} · <span class="dl-others">'
