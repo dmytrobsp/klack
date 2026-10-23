@@ -234,7 +234,8 @@ has no `site/CNAME`. GitHub then redirects `dmytrobsp.github.io/ttyak` and `www.
 
 ## 4. AUR: the Arch Linux package `ttyak-bin`
 
-**What it is for.** Arch users install with an AUR helper (`yay -S ttyak-bin`). CI pushes each new version over SSH.
+**What it is for.** Once the AUR account exists, Arch users install with an AUR helper (`yay -S ttyak-bin`) and CI
+pushes each new version over SSH. Until then the release's recipes zip carries the PKGBUILD (`makepkg -si`).
 
 **Price.** Free.
 
