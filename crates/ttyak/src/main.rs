@@ -2,6 +2,7 @@
 
 mod auth;
 mod ctl;
+mod install;
 mod login_import;
 mod login_watch;
 mod pick;
