@@ -758,7 +758,7 @@ mod tests {
 
     #[test]
     fn bar_words() {
-        assert_eq!(super::truncate("Dmytro Dudnyk-Longname-Here", 20), "Dmytro Dudnyk-Longn…");
+        assert_eq!(super::truncate("Aaaaaa Bbbbbb-Longname-Here", 20), "Aaaaaa Bbbbbb-Longn…");
         assert_eq!(super::truncate("Bob", 20), "Bob");
         assert_eq!(super::truncate("Ölgä Ünïcödé Näme Xyz", 20).chars().count(), 20);
         assert_eq!(super::people(1), "just you");

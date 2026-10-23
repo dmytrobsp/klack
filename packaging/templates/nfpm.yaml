@@ -1,0 +1,61 @@
+# Rendered by packaging/render.py from the release's SHA256SUMS (github.com/dmytrobsp/ttyak); edit the template.
+# One file for both architectures and both packagers: TTYAK_ARCH is nfpm's architecture (amd64 or arm64) and
+# TTYAK_DIR the folder the platform's zip was unpacked into, e.g.
+#   TTYAK_ARCH=amd64 TTYAK_DIR=x86_64-linux nfpm package --config nfpm.yaml --packager deb --target dist/
+# which writes ttyak_<version>_amd64.deb (rpm: ttyak-<version>-1.x86_64.rpm). Depends are what `ldd ttyak` lists;
+# libasound2 versioned, as dpkg-shlibdeps writes it, so apt takes the real ALSA (libasound2t64 on Ubuntu 24.04)
+# and never liboss4-salsa-asound2, which provides an unversioned libasound2 that lacks symbols ttyak uses.
+name: ttyak
+arch: ${TTYAK_ARCH}
+platform: linux
+version: {{version}}
+version_schema: semver
+section: net
+priority: optional
+maintainer: {{maintainer}}
+homepage: {{homepage}}
+license: {{license}}
+description: |-
+  Slack client for the terminal, with huddles
+  A Slack client for the terminal: messaging with threads, reactions, autocomplete and
+  formatting; inline images, an image viewer and video with sound; desktop notifications;
+  search; and huddles with audio.
+
+  Removing the package leaves ttyak's data (settings, sign-ins, drafts, caches) in your
+  home folder: run `ttyak purge` first to delete it.
+
+contents:
+  - src: ${TTYAK_DIR}/ttyak
+    dst: /usr/bin/ttyak
+    expand: true
+    file_info:
+      mode: 0755
+  - src: ${TTYAK_DIR}/README.md
+    dst: /usr/share/doc/ttyak/README.md
+    expand: true
+    file_info:
+      mode: 0644
+  - src: ${TTYAK_DIR}/LICENSE-MIT
+    dst: /usr/share/doc/ttyak/LICENSE-MIT
+    expand: true
+    file_info:
+      mode: 0644
+  - src: ${TTYAK_DIR}/LICENSE-APACHE
+    dst: /usr/share/doc/ttyak/LICENSE-APACHE
+    expand: true
+    file_info:
+      mode: 0644
+
+overrides:
+  deb:
+    depends:
+      - "libasound2 (>= 1.0.16)"
+      - "libc6 (>= 2.34)"
+      - "libgcc-s1"
+      - "libstdc++6"
+  rpm:
+    depends:
+      - "libasound.so.2()(64bit)"
+      - "libc.so.6(GLIBC_2.34)(64bit)"
+      - "libgcc_s.so.1()(64bit)"
+      - "libstdc++.so.6()(64bit)"

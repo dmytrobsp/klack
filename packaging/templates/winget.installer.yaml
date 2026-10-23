@@ -1,0 +1,17 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.28.0.schema.json
+# Rendered by packaging/render.py from the release's SHA256SUMS (github.com/dmytrobsp/ttyak); edit the template.
+
+PackageIdentifier: {{winget_id}}
+PackageVersion: {{version}}
+InstallerType: zip
+NestedInstallerType: portable
+NestedInstallerFiles:
+  - RelativeFilePath: ttyak.exe
+    PortableCommandAlias: ttyak
+ReleaseDate: {{date}}
+Installers:
+  - Architecture: x64
+    InstallerUrl: {{url_x86_64_windows}}
+    InstallerSha256: {{sha256_upper_x86_64_windows}}
+ManifestType: installer
+ManifestVersion: 1.28.0

@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Rendered by packaging/render.py from the release's SHA256SUMS (github.com/dmytrobsp/ttyak); edit the template. -->
+<package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
+  <metadata>
+    <id>ttyak</id>
+    <version>{{version}}</version>
+    <packageSourceUrl>https://github.com/dmytrobsp/ttyak/tree/master/packaging</packageSourceUrl>
+    <owners>{{name}}</owners>
+    <title>ttyak</title>
+    <authors>{{name}}</authors>
+    <projectUrl>{{homepage}}</projectUrl>
+    <licenseUrl>https://github.com/dmytrobsp/ttyak#licence</licenseUrl>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <projectSourceUrl>https://github.com/dmytrobsp/ttyak</projectSourceUrl>
+    <docsUrl>https://github.com/dmytrobsp/ttyak#readme</docsUrl>
+    <bugTrackerUrl>https://github.com/dmytrobsp/ttyak/issues</bugTrackerUrl>
+    <tags>slack chat terminal tui cli huddles</tags>
+    <summary>Slack client for the terminal. Note: choco uninstall ttyak also deletes your ttyak data.</summary>
+    <description>A Slack client for the terminal: messaging with threads, reactions, autocomplete and formatting; inline images, an image viewer and video with sound; desktop notifications; search; and huddles with audio.
+
+choco uninstall ttyak also deletes your ttyak data (settings, sign-ins of every profile, drafts, caches and logs), as `ttyak purge` does, for the user who runs choco. choco upgrade ttyak keeps it.</description>
+    <releaseNotes>{{notes}}</releaseNotes>
+  </metadata>
+  <files>
+    <file src="tools\**" target="tools" />
+  </files>
+</package>

@@ -1,0 +1,27 @@
+# Maintainer: {{maintainer:raw}}
+# Rendered by packaging/render.py from the release's SHA256SUMS (github.com/dmytrobsp/ttyak); edit the template.
+# Removing the package leaves ttyak's data in your home folder: run `ttyak purge` first to delete it.
+pkgname={{aur_pkgname}}
+pkgver={{pkgver}}
+pkgrel=1
+pkgdesc={{aur_pkgdesc}}
+arch=({{aur_arch}})
+url={{homepage}}
+license=({{aur_license}})
+depends=({{aur_depends}})
+provides=({{aur_provides}})
+conflicts=({{aur_conflicts}})
+options=({{aur_options}})
+source_x86_64=({{source_x86_64_linux}})
+sha256sums_x86_64=({{sha256_x86_64_linux}})
+{{if aarch64-linux}}
+source_aarch64=({{source_aarch64_linux}})
+sha256sums_aarch64=({{sha256_aarch64_linux}})
+{{end}}
+
+package() {
+	install -Dm755 ttyak "$pkgdir/usr/bin/ttyak"
+	install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+	install -Dm644 LICENSE-MIT "$pkgdir/usr/share/licenses/$pkgname/LICENSE-MIT"
+	install -Dm644 LICENSE-APACHE "$pkgdir/usr/share/licenses/$pkgname/LICENSE-APACHE"
+}

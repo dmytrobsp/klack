@@ -520,7 +520,7 @@ mod tests {
         for (method, command, how) in [
             (Method::Homebrew, "brew upgrade ttyak", "with Homebrew"),
             (Method::Scoop, "scoop update ttyak", "with Scoop"),
-            (Method::Winget, "winget upgrade ttyak.ttyak", "with winget"),
+            (Method::Winget, "winget upgrade dmytrobsp.ttyak", "with winget"),
             (Method::Chocolatey, "choco upgrade ttyak", "with Chocolatey"),
             (Method::Aur, "yay -Syu ttyak-bin", "from the AUR"),
         ] {

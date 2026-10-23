@@ -9,12 +9,12 @@ use serde::{Deserialize, Serialize};
 /// `WINGET_ID` as a literal, for `concat!`.
 macro_rules! winget_id {
     () => {
-        "ttyak.ttyak"
+        "dmytrobsp.ttyak"
     };
 }
 
-/// The id the winget manifest uses.
-#[allow(dead_code)] // the winget step (a later task) sets it; until then only the tests read it
+/// The id the winget manifest uses (`winget_id` in packaging/identity.json).
+#[allow(dead_code)] // the commands use `winget_id!`; only the tests read the constant
 pub const WINGET_ID: &str = winget_id!();
 
 /// The file the install scripts write next to the executable.
@@ -357,7 +357,7 @@ mod tests {
         for (exe, want, more) in [
             ("/opt/homebrew/Cellar/ttyak/0.11.0/bin/ttyak", Method::Homebrew, None),
             ("C:/Users/u/scoop/apps/ttyak/0.11.0/ttyak.exe", Method::Scoop, None),
-            ("C:/Users/u/AppData/Local/Microsoft/WinGet/Packages/ttyak.ttyak_x/ttyak.exe", Method::Winget, None),
+            ("C:/Users/u/AppData/Local/Microsoft/WinGet/Packages/dmytrobsp.ttyak_x/ttyak.exe", Method::Winget, None),
             ("C:/ProgramData/chocolatey/lib/ttyak/tools/ttyak.exe", Method::Chocolatey, None),
             ("/usr/bin/ttyak", Method::Aur, Some(("/var/lib/pacman/local/ttyak-bin-0.11.0-1/files", "usr/bin/ttyak\n"))),
             ("/usr/bin/ttyak", Method::Deb, Some(("/var/lib/dpkg/info/ttyak.list", "/usr/bin/ttyak\n"))),
@@ -383,7 +383,7 @@ mod tests {
             ("/opt/homebrew/bin/ttyak", Method::Homebrew),
             (r"C:\Users\u\scoop\apps\ttyak\0.11.0\ttyak.exe", Method::Scoop),
             (r"\\?\C:\Users\u\Scoop\Apps\ttyak\current\ttyak.exe", Method::Scoop),
-            (r"C:\Users\u\AppData\Local\Microsoft\WinGet\Packages\ttyak.ttyak_Microsoft.Winget.Source_8wekyb3d8bbwe\ttyak.exe", Method::Winget),
+            (r"C:\Users\u\AppData\Local\Microsoft\WinGet\Packages\dmytrobsp.ttyak_Microsoft.Winget.Source_8wekyb3d8bbwe\ttyak.exe", Method::Winget),
             (r"C:\Users\u\AppData\Local\Microsoft\WINGET\links\ttyak.exe", Method::Winget),
             (r"C:\ProgramData\chocolatey\lib\ttyak\tools\ttyak.exe", Method::Chocolatey),
             (r"C:\ProgramData\Chocolatey\bin\ttyak.exe", Method::Chocolatey),
@@ -436,6 +436,12 @@ mod tests {
         assert_eq!(Method::Winget.uninstall_command(), Some(format!("winget uninstall {WINGET_ID}").as_str()));
         assert_eq!((Method::Aur.update_command(), Method::Deb.update_command()), (Some("yay -Syu ttyak-bin"), None));
         assert_eq!((Method::Script.uninstall_command(), Method::Rpm.uninstall_command()), (None, Some("sudo dnf remove ttyak")));
+    }
+
+    #[test]
+    fn the_winget_id_is_the_packages() {
+        let identity: serde_json::Value = serde_json::from_str(include_str!("../../../packaging/identity.json")).unwrap();
+        assert_eq!(identity["winget_id"], WINGET_ID, "the manifests packaging/render.py writes");
     }
 
     #[test]

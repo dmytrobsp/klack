@@ -1,0 +1,21 @@
+{
+    "version": {{version}},
+    "description": "Slack client for the terminal: threads, images, notifications, search and huddles with audio",
+    "homepage": {{homepage}},
+    "license": {{scoop_license}},
+    "notes": [
+        "'scoop uninstall ttyak' also deletes your ttyak data (settings, sign-ins, drafts, caches), as 'ttyak purge' does.",
+        "'scoop update ttyak' keeps it."
+    ],
+    "url": {{url_x86_64_windows}},
+    "hash": {{sha256_x86_64_windows}},
+    "bin": "ttyak.exe",
+    "uninstaller": {
+        "script": [
+            "if ($cmd -eq 'uninstall') {",
+            "    & \"$dir\\ttyak.exe\" purge --yes",
+            "    if ($LASTEXITCODE -ne 0) { warn \"ttyak's data was not deleted: delete $env:APPDATA\\ttyak and $env:LOCALAPPDATA\\ttyak yourself\" }",
+            "}"
+        ]
+    }
+}

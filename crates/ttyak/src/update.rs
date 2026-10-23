@@ -668,6 +668,20 @@ mod tests {
         assert_eq!(parse(FEED, "aarch64-macos").unwrap().asset.sha256, "cd34");
     }
 
+    /// The feed packaging/render.py writes (packaging/test_render.py keeps this copy equal to its output): every
+    /// platform's archive is the very one a self-update would take from the release.
+    #[test]
+    fn parses_the_rendered_feed() {
+        let rendered = include_str!("../testdata/latest.json");
+        for platform in ["x86_64-linux", "aarch64-linux", "x86_64-macos", "aarch64-macos", "x86_64-windows"] {
+            let l = parse(rendered, platform).unwrap();
+            assert_eq!((&l.version, l.date.as_str(), l.notes.as_str()), (&v("0.11.0"), "2026-11-01", "https://github.com/dmytrobsp/ttyak/releases/tag/v0.11.0"));
+            let release = Release { base: DOWNLOAD_URL.into(), platform, max_zip: MAX_ZIP_BYTES, max_sums: MAX_SUMS_BYTES };
+            assert_eq!(l.asset.url, release.urls(&l.version).0, "{platform}");
+            assert!(l.asset.sha256.len() == 64 && l.asset.sha256.bytes().all(|b| b.is_ascii_hexdigit()), "{platform}");
+        }
+    }
+
     #[test]
     fn missing_platform_is_an_error() {
         let e = parse(FEED, "x86_64-windows").unwrap_err();

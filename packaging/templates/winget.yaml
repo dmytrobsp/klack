@@ -1,0 +1,8 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.version.1.28.0.schema.json
+# Rendered by packaging/render.py from the release's SHA256SUMS (github.com/dmytrobsp/ttyak); edit the template.
+
+PackageIdentifier: {{winget_id}}
+PackageVersion: {{version}}
+DefaultLocale: en-US
+ManifestType: version
+ManifestVersion: 1.28.0
