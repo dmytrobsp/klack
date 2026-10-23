@@ -176,17 +176,20 @@ regions). A payment card in your name (a card in another person's name may cause
 **Then: the Developer ID Application certificate (with Claude).** Apple lets only the Account Holder (you) make this
 certificate, on the website. Claude found no way to make it with the API key.
 
-17. Tell Claude you are ready. Claude runs `tools/signing/apple-csr.sh`. It makes a private key and a certificate
-    request in `~/.config/ttyak-signing/` (your backup; only you can read it) and prints the request file's path.
+17. Tell Claude you are ready. Claude runs `tools/signing/apple-csr.sh request`. It makes a private key and a
+    certificate request in `~/.config/ttyak-signing/` (your backup; only you can read it) and prints the request
+    file's path.
 18. Open <https://developer.apple.com/account/resources/certificates/list> → **+**.
 19. Under **Software**, choose **Developer ID**, then **Developer ID Application** → **Continue**.
 20. If it asks for a "Developer ID Certificate Intermediary", choose **G2 Sub-CA (Xcode 11.4.1 or later)**.
 21. **Choose File** → the `.certSigningRequest` file Claude's script printed → **Continue** → **Download**.
-22. Tell Claude the `.cer` file is in `~/Downloads`. The script puts the certificate into `APPLE_P12` and
-    `APPLE_P12_PASSWORD`. It prints nothing secret.
+22. Tell Claude the `.cer` file is in `~/Downloads` (usually `developerID_application.cer`). Claude runs
+    `tools/signing/apple-csr.sh install` with it: the script checks the certificate, puts it into `APPLE_P12` and
+    `APPLE_P12_PASSWORD`, and prints nothing secret. `tools/signing/apple-csr.sh status` shows the expiry date.
 
 **Remember.** Certificates from Apple's G2 authority are **valid for one year**. Each year: steps 17–22 again (about 10
-minutes). Builds signed before then stay valid.
+minutes), with `tools/signing/apple-csr.sh request --renew` in step 17 (it keeps the old files, dated). Builds signed
+before then stay valid.
 
 **Claude then:** signs and notarizes both macOS binaries in the release workflow.
 

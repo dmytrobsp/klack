@@ -19,7 +19,7 @@ jobs:
         # Every tracked file (old names only on lines marked old-name-ok).
         run: sh tools/check-name.sh .
       - name: Tool tests
-        run: python3 -m unittest tools/test_check_name.py tools/test_move_to_ttyak.py tools/install/test_install_sh.py packaging/test_render.py
+        run: python3 -m unittest tools/test_check_name.py tools/test_move_to_ttyak.py tools/install/test_install_sh.py tools/signing/test_apple_csr.py packaging/test_render.py
       - name: Packages
         run: sudo apt-get update -qq && sudo apt-get install -y -qq pkg-config cmake libasound2-dev
       - uses: dtolnay/rust-toolchain@stable
