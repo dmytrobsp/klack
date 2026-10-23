@@ -32,6 +32,7 @@ class Ttyak < Formula
       sha256 {{sha256_x86_64_linux}}
     end
 {{end}}
+    depends_on "alsa-lib"
 {{unless aarch64-linux}}
     depends_on arch: :x86_64
 {{end}}
@@ -39,6 +40,12 @@ class Ttyak < Formula
 
   def install
     bin.install "ttyak"
+    return unless OS.linux?
+
+    # The release binary links libasound.so.2 but has no rpath. Relocate it as Homebrew relocates a poured bottle
+    # (Keg#change_rpath!): Homebrew's ld.so, whose glibc the brewed alsa-lib may need, and an rpath to alsa-lib.
+    ld_so = HOMEBREW_PREFIX/"lib/ld.so"
+    (bin/"ttyak").patch!(interpreter: (ld_so.to_s if ld_so.readable?), rpath: formula_opt_lib("alsa-lib").to_s)
   end
 
   def caveats

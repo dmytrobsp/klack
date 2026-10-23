@@ -106,7 +106,17 @@ class AllPlatforms(unittest.TestCase):
         self.assertNotIn('depends_on "unzip"', rb, "Homebrew adds unzip itself where it is missing")
         self.assertNotIn("depends_on arch:", rb, "both Linux archives")
         self.assertNotRegex(rb, r"(?m)^  (url|sha256) ", "every url in its OS and CPU block")
-        self.assertIn('bin.install "ttyak"', block(rb, "def install"))
+        linux = block(rb, "on_linux do").splitlines()
+        self.assertIn('    depends_on "alsa-lib"', linux, "the binary links libasound.so.2")
+        self.assertNotIn("depends_on", block(rb, "on_macos do"))
+        install = block(rb, "def install").splitlines()
+        self.assertEqual(install[:2], ['    bin.install "ttyak"', "    return unless OS.linux?"], "nothing more on macOS")
+        # Relocated as Homebrew relocates a bottle; no wrapper (LD_LIBRARY_PATH would leak into what ttyak starts) and
+        # no patchelf program (Homebrew's bottle of it needs a newer glibc than Ubuntu 22.04's).
+        self.assertIn('    (bin/"ttyak").patch!(interpreter: (ld_so.to_s if ld_so.readable?), '
+                      'rpath: formula_opt_lib("alsa-lib").to_s)', install)
+        self.assertNotIn("write_env_script", rb, "the program stays bin/ttyak in the Cellar")
+        self.assertNotIn("patchelf", rb)
         self.assertIn('assert_match version.to_s, shell_output("#{bin}/ttyak --version")', block(rb, "test do"))
         caveats = block(rb, "def caveats")
         self.assertIn("ttyak purge", caveats)
@@ -300,7 +310,8 @@ class WithoutArmLinux(unittest.TestCase):
         # `url` may not stand in on_linux and arm Linux needs one to load: the Intel archive at the top (macOS's blocks
         # override it), arm Linux refused by depends_on (checked with brew audit and brew info --variations).
         self.assertIn('\n  url "%s"\n  sha256 "%s"\n  license ' % (url("x86_64-linux"), SHA["x86_64-linux"]), rb)
-        self.assertEqual(block(rb, "on_linux do").split(), ["depends_on", "arch:", ":x86_64"], "brew refuses arm Linux, not fails to load")
+        self.assertEqual(block(rb, "on_linux do").split(), ["depends_on", '"alsa-lib"', "depends_on", "arch:", ":x86_64"],
+                         "brew refuses arm Linux, not fails to load")
         macos = block(rb, "on_macos do")
         self.assertIn("on_arm do", macos)
         self.assertIn("on_intel do", macos)
