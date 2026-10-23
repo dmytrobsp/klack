@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- What the hardened runtime lets the signed ttyak do: the microphone in a huddle (CoreAudio, in this process). -->
+<!-- What the hardened runtime lets the signed ttyak do: the microphone in a huddle, captured in this process (cpal,
+     CoreAudio). The camera and the screen are captured by a separate ffmpeg process (huddle/src/camera.rs, screen.rs),
+     which ttyak's hardened runtime does not cover; screen recording has no entitlement (a TCC permission of the
+     terminal app). Camera capture moved into this process would need com.apple.security.device.camera. -->
 <plist version="1.0">
 <dict>
 	<key>com.apple.security.device.audio-input</key>

@@ -630,7 +630,7 @@ impl Verifier for Codesign {
         // (What it finds goes to stderr.)
         let said = String::from_utf8_lossy(&out.stderr);
         if out.status.success() {
-            Ok(team_identifier(&said))
+            team_identifier(&said).with_context(|| format!("codesign on {}", exe.display()))
         } else if said.contains("not signed at all") {
             Ok(None)
         } else {
@@ -640,7 +640,7 @@ impl Verifier for Codesign {
 
     fn holds(&self, exe: &Path, team: &str) -> Result<bool> {
         // Apple's requirement for Developer ID programs: Apple's anchor, the Developer ID
-        // intermediate and leaf, and the team.
+        // intermediate and leaf, and the team. (The same as release.yml's Sign (macOS) step.)
         let requirement = format!("=anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = \"{team}\"");
         let status = std::process::Command::new(CODESIGN)
             .args(["--verify", "--strict", "--test-requirement"])
@@ -661,11 +661,17 @@ const VERIFIER: &dyn Verifier = &Codesign;
 #[cfg(not(target_os = "macos"))]
 const VERIFIER: &dyn Verifier = &NoSignatures;
 
-/// The `TeamIdentifier=` that `codesign -d --verbose=2` says (None when not set, or not a Team ID).
+/// The `TeamIdentifier=` that `codesign -d --verbose=2` says; None when not set (unsigned, ad
+/// hoc). A Developer ID without one, or one that is no Team ID, is an error, never "unsigned".
 #[cfg(any(target_os = "macos", test))]
-fn team_identifier(said: &str) -> Option<String> {
-    let team = said.lines().find_map(|l| l.strip_prefix("TeamIdentifier="))?.trim();
-    (!team.is_empty() && team.len() <= 20 && team.bytes().all(|b| b.is_ascii_alphanumeric())).then(|| team.to_string())
+fn team_identifier(said: &str) -> Result<Option<String>> {
+    let developer_id = said.lines().any(|l| l.starts_with("Authority=Developer ID"));
+    match said.lines().find_map(|l| l.strip_prefix("TeamIdentifier=")).map(str::trim) {
+        Some(team) if !team.is_empty() && team.len() <= 20 && team.bytes().all(|b| b.is_ascii_alphanumeric()) => Ok(Some(team.to_string())),
+        None | Some("not set") if !developer_id => Ok(None),
+        None | Some("not set") => bail!("a Developer ID signature without a Team ID"),
+        Some(team) => bail!("a Team ID that is none: {team:?}"),
+    }
 }
 
 /// `new` signed as `running` is: when `running` has a team's signature, `new` must carry the same
@@ -675,7 +681,7 @@ fn check_signer(verifier: &dyn Verifier, running: &Path, new: &Path) -> Result<(
     match verifier.team(new).context("could not read the new ttyak's signature; the old one stays")? {
         None => bail!("the new ttyak is not signed, but this one is (Team ID {team}); the old one stays"),
         Some(theirs) if theirs != team => bail!("the new ttyak is signed by Team ID {theirs}, not by this one's {team}; the old one stays"),
-        Some(_) => ensure!(verifier.holds(new, &team)?, "the new ttyak's signature does not hold as a Developer ID of Team ID {team}; the old one stays"),
+        Some(_) => ensure!(verifier.holds(new, &team).context("could not check the new ttyak's signature; the old one stays")?, "the new ttyak's signature does not hold as a Developer ID of Team ID {team}; the old one stays"),
     }
     Ok(())
 }
@@ -1377,18 +1383,22 @@ mod tests {
         assert_eq!((std::fs::read(&install.exe).unwrap(), temp.listing()), (b"old ttyak".to_vec(), vec!["install.json".to_string(), EXE.into()]));
     }
 
-    /// Signatures as the files say: one ending ` team <ID>` is signed by that team (`… team <ID>,
-    /// broken`: a signature that does not hold), anything else unsigned.
+    /// Signatures as the files say: one ending ` team <ID>` is signed by that team; a `, broken`
+    /// after it: a signature that does not hold; `, unreadable`: its team cannot be read; `, fails`:
+    /// checking it fails; anything else unsigned.
     struct Fake;
 
     impl Verifier for Fake {
         fn team(&self, exe: &Path) -> Result<Option<String>> {
             let text = String::from_utf8(std::fs::read(exe)?)?;
-            Ok(text.rsplit_once(" team ").map(|(_, t)| t.trim_end_matches(", broken").to_string()))
+            ensure!(!text.ends_with(", unreadable"), "codesign could not read {}", exe.display());
+            Ok(text.rsplit_once(" team ").map(|(_, t)| t.trim_end_matches(", broken").trim_end_matches(", fails").to_string()))
         }
 
         fn holds(&self, exe: &Path, team: &str) -> Result<bool> {
-            Ok(self.team(exe)?.as_deref() == Some(team) && !std::fs::read(exe)?.ends_with(b", broken"))
+            let text = std::fs::read(exe)?;
+            ensure!(!text.ends_with(b", fails"), "could not run codesign");
+            Ok(self.team(exe)?.as_deref() == Some(team) && !text.ends_with(b", broken"))
         }
     }
 
@@ -1411,17 +1421,29 @@ mod tests {
         // A build of one's own (unsigned): nothing checked.
         assert_eq!(check("ttyak", "ttyak team BBBBBBBBBB, broken"), Ok(()));
         assert_eq!(check("ttyak", "ttyak"), Ok(()));
+        // Whatever cannot be read or checked refuses (never taken as unsigned).
+        for (old, update, says) in [
+            ("ttyak team AAAAAAAAAA, unreadable", "ttyak team AAAAAAAAAA", "this ttyak's signature"),
+            ("ttyak team AAAAAAAAAA", "ttyak team AAAAAAAAAA, unreadable", "the new ttyak's signature"),
+            ("ttyak team AAAAAAAAAA", "ttyak team AAAAAAAAAA, fails", "could not run codesign"),
+        ] {
+            let e = check(old, update).unwrap_err();
+            assert!(e.contains(says), "{old} → {update}: {e}");
+        }
     }
 
     #[test]
     fn team_identifier_read_from_codesign() {
         let developer_id = "Executable=/x/ttyak\nIdentifier=ttyak\nFormat=Mach-O thin (arm64)\nCodeDirectory v=20500 size=1 flags=0x10000(runtime) hashes=1+2 location=embedded\nSignature size=9000\nAuthority=Developer ID Application: A (AAAAAAAAAA)\nAuthority=Developer ID Certification Authority\nAuthority=Apple Root CA\nTimestamp=23 Oct 2026 at 12:00:00\nInfo.plist=not bound\nTeamIdentifier=AAAAAAAAAA\nRuntime Version=15.0.0\n";
-        assert_eq!(team_identifier(developer_id).as_deref(), Some("AAAAAAAAAA"));
-        // Ad hoc (what the linker gives a build on Apple silicon).
-        assert_eq!(team_identifier("Identifier=ttyak-1a2b\nSignature=adhoc\nTeamIdentifier=not set\n"), None);
-        // Nothing that could be read into a code requirement.
-        assert_eq!(team_identifier("TeamIdentifier=AA\" or true\n"), None);
-        assert_eq!(team_identifier("Identifier=ttyak\n"), None);
+        assert_eq!(team_identifier(developer_id).unwrap().as_deref(), Some("AAAAAAAAAA"));
+        // Ad hoc (what the linker gives a build on Apple silicon); no line at all.
+        assert_eq!(team_identifier("Identifier=ttyak-1a2b\nSignature=adhoc\nTeamIdentifier=not set\n").unwrap(), None);
+        assert_eq!(team_identifier("Identifier=ttyak\n").unwrap(), None);
+        // A Developer ID without a Team ID that can be read, or one that could be read into a code
+        // requirement: an error, never "unsigned".
+        for said in [developer_id.replace("TeamIdentifier=AAAAAAAAAA\n", ""), developer_id.replace("TeamIdentifier=AAAAAAAAAA", "TeamIdentifier=not set"), "TeamIdentifier=AA\" or true\n".to_string(), developer_id.replace("=AAAAAAAAAA", "=")] {
+            assert!(team_identifier(&said).is_err(), "{said}");
+        }
     }
 
     #[tokio::test]
@@ -1441,6 +1463,20 @@ mod tests {
         std::fs::write(&install.exe, b"old ttyak team AAAAAAAAAA").unwrap();
         fixture.update_verified(&latest, &install, &Progress::default(), &Fake).await.unwrap();
         assert_eq!((std::fs::read(&install.exe).unwrap(), version_recorded(&temp)), (b"new ttyak team AAAAAAAAAA".to_vec(), "9.9.9".into()));
+    }
+
+    #[tokio::test]
+    async fn a_signature_that_cannot_be_checked_leaves_the_old_binary() {
+        for (old, new) in [("old ttyak team AAAAAAAAAA, unreadable", "new ttyak team AAAAAAAAAA"), ("old ttyak team AAAAAAAAAA", "new ttyak team AAAAAAAAAA, unreadable"), ("old ttyak team AAAAAAAAAA", "new ttyak team AAAAAAAAAA, fails")] {
+            let temp = Temp::new("unchecked-signer");
+            let zip = archive(&[(EXE, new.as_bytes())]);
+            let (install, latest, fixture) = release(&temp, zip.clone(), Some(sums_for(&zip)), None, None).await;
+            std::fs::write(&install.exe, old).unwrap();
+            let e = fixture.update_verified(&latest, &install, &Progress::default(), &Fake).await.unwrap_err();
+            assert!(format!("{e:#}").contains("old one stays"), "{old} → {new}: {e:#}");
+            assert_eq!(std::fs::read(&install.exe).unwrap(), old.as_bytes(), "{old} → {new}");
+            assert_eq!((temp.listing(), version_recorded(&temp)), (vec!["install.json".to_string(), EXE.into()], "0.9.9".into()), "{old} → {new}");
+        }
     }
 
     /// The real `codesign`: a build of one's own has no Developer ID; `TTYAK_TEST_SIGNED` names a
