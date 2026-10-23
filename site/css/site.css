@@ -178,7 +178,7 @@ p code, li code, h3 code { color: var(--yellow); }
 .copy:hover { color: var(--cream); border-color: var(--muted); }
 .copy:focus-visible { outline: 3px solid var(--yellow); outline-offset: 2px; }
 .copy[data-state=copied] { color: var(--green); border-color: var(--green); }
-.cmd > .copy, .dl-cmd > .copy { float: right; width: min(32px, 1lh); height: min(32px, 1lh); margin: 0 -10px 0 4px; }
+.cmd > .copy, .dl-cmd > .copy { float: right; width: 25px; height: 25px; width: min(32px, 1lh); height: min(32px, 1lh); margin: 0 -10px 0 4px; }
 .dl-cmd > .copy { width: 32px; height: 32px; margin: -4px -4px -4px 10px; }   /* one line there, from 760 px */
 .pkgs .copy { width: 24px; height: 24px; margin: -4px 0 0 6px; }
 .pkgs .copy svg { width: 14px; height: 14px; }
@@ -231,7 +231,7 @@ dialog.zoom .term { cursor: zoom-out; box-shadow: none; }
   #top > .dl-area { position: static; left: auto; top: auto; width: auto; transform: none; padding: 16px 0 4px; }
   .dl-area .dl { padding: 10px 22px; }
   .dl-area .dl-cmd { flex-basis: 100%; white-space: normal; overflow-wrap: anywhere; }
-  .dl-area .dl-cmd > .copy { width: 1lh; height: 1lh; margin: 0 -4px 0 10px; }
+  .dl-area .dl-cmd > .copy { width: 24px; height: 24px; width: 1lh; height: 1lh; margin: 0 -4px 0 10px; }
   .dl-area .dl-meta { flex-basis: 100%; font-size: 14px; }
   .dl-area .dl-meta a { display: inline-block; padding: 6px 0; }
 }
