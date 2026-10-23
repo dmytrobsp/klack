@@ -34,8 +34,10 @@ LATEST = "0.10.0"
 PLATFORM = "x86_64-windows"
 # version -> platforms with an archive; 6.6.6's SHA256SUMS lies about the Windows archive, 0.9.3's has no proper
 # checksum for it, 0.9.1 has no Windows build; 0.9.2's SHA256SUMS has CRLF line ends and `*` (binary) marks.
+# 0.9.4's archive has ttyak.exe in a subfolder only, 0.9.5's has an entry named ../../../evil.txt too.
 RELEASES = {"0.9.0": [PLATFORM], "0.9.1": ["x86_64-linux"], "0.9.2": [PLATFORM], "0.9.3": [PLATFORM],
-            "0.10.0": [PLATFORM, "x86_64-linux"], "0.11.0-rc.1": [PLATFORM], "6.6.6": [PLATFORM]}
+            "0.9.4": [PLATFORM], "0.9.5": [PLATFORM], "0.10.0": [PLATFORM, "x86_64-linux"], "0.11.0-rc.1": [PLATFORM],
+            "6.6.6": [PLATFORM]}
 STUB_CS = r"""
 using System;
 using System.IO;
@@ -65,6 +67,7 @@ static class Stub
 }
 """
 MANUAL_PATH_HINT = "Edit environment variables for your account"
+PSSA_VERSION = "1.24.0"
 
 
 def q(s):
@@ -145,7 +148,10 @@ def build_fixtures(root, stub):
         for platform in platforms:
             name = "ttyak-%s-%s.zip" % (version, platform)
             with zipfile.ZipFile(os.path.join(d, name), "w") as z:
-                z.writestr("ttyak.exe", stub + ("\nTTYAK-STUB %s %s\n" % (version, platform)).encode())
+                exe = stub + ("\nTTYAK-STUB %s %s\n" % (version, platform)).encode()
+                z.writestr("sub/ttyak.exe" if version == "0.9.4" else "ttyak.exe", exe)
+                if version == "0.9.5":
+                    z.writestr("../../../evil.txt", "evil\n")
                 for extra in ("README.md", "LICENSE-MIT", "LICENSE-APACHE"):
                     z.writestr(extra, extra + "\n")
             with open(os.path.join(d, name), "rb") as f:
@@ -334,12 +340,16 @@ class Run:
         return "\n".join(lines) + "\n"
 
     def run(self, *args, mode="file", cwd=None, home=None, prepend_path=None, before="", after="", tty=False, **env):
-        """Runs the script with args: mode "file" as a .ps1 file, "iex" as `irm … | iex`, "sb" as
-        `& ([scriptblock]::Create((irm …))) args`. Checks that TEMP is left empty."""
+        """Runs the script with args: mode "file" as a .ps1 file, "cli" as `powershell -File`, "iex" as
+        `irm … | iex`, "sb" as `& ([scriptblock]::Create((irm …))) args`. Checks that TEMP is left empty."""
         Handler.requests.clear()
-        argv = " ".join(a if re.fullmatch(r"-[A-Za-z]+", a) else q(a) for a in args)
+        argv = " ".join(a if re.fullmatch(r"-[A-Za-z]+(:\$(true|false))?", a) else q(a) for a in args)
         if mode == "file":
             call = "& %s %s" % (q(VM_ROOT + "\\install.ps1"), argv)
+        elif mode == "cli":
+            # powershell -File, as from cmd: every argument as text
+            call = "& (Get-Process -Id $PID).Path -NoProfile -ExecutionPolicy Bypass -File %s %s" % (
+                q(VM_ROOT + "\\install.ps1"), " ".join(q(a) for a in args))
         elif mode == "iex":
             call = "irm %s | iex" % q(BASE + "/install.ps1")
         else:
@@ -586,16 +596,28 @@ class InstallPs1:
             write_user_path({"kind": "String", "value": "C:\\ttyak-test-keep"})
             r.ok()
             self.assertEqual(read_user_path(), {"kind": "String", "value": r.dir + ";C:\\ttyak-test-keep"})
-        # on this session's PATH only: nothing added, and a note when another ttyak.exe comes first
+        # on this session's PATH only (an entry since removed): the registry decides, so it is added; with it there
+        # too, "Run: ttyak", and a note when another ttyak.exe comes first
         for r in self.runs(modify_path=True):
             write_user_path({"kind": "String", "value": "C:\\ttyak-test-keep"})
             p = r.ok(prepend_path=r.dir)
+            self.assertIn("Added %s to your user PATH" % r.dir, p.stdout)
+            self.assertEqual(read_user_path(), {"kind": "String", "value": r.dir + ";C:\\ttyak-test-keep"})
+            p = r.ok(prepend_path=r.dir)
             self.assertIn("Run: ttyak", p.stdout)
-            self.assertEqual(read_user_path(), {"kind": "String", "value": "C:\\ttyak-test-keep"})
             other = r.top + "\\other"
             r.ok("-Dir", other, "-NoModifyPath")
             p = r.ok(prepend_path=other + ";" + r.dir)
             self.assertIn("note: %s\\ttyak.exe comes before %s on PATH" % (other, r.dir), p.stderr)
+        # install, the entry removed (as by an uninstall), install again in the same window: the entry is back
+        for r in self.runs(modify_path=True):
+            write_user_path({"kind": "String", "value": "C:\\ttyak-test-keep"})
+            again = ("\n$k = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)\n"
+                     "$k.SetValue('Path', 'C:\\ttyak-test-keep', 'String'); $k.Close()\n"
+                     "irm %s | iex\n$code = $LASTEXITCODE" % q(BASE + "/install.ps1"))
+            p = r.ok(mode="iex", after=again)
+            self.assertEqual(p.stdout.count("Added %s to your user PATH" % r.dir), 2, p.stdout)
+            self.assertEqual(read_user_path(), {"kind": "String", "value": r.dir + ";C:\\ttyak-test-keep"})
 
     def test_no_modify_path(self):
         for r in self.runs(modify_path=True):
@@ -639,6 +661,12 @@ class InstallPs1:
                 self.assertIn("GET /gh/releases/download/v%s/ttyak-%s-x86_64-windows.zip" % (LATEST, LATEST), Handler.requests)
             p = r.fails("-Arch", "ARM64", "-Version", "0.9.0", mode="sb")
             self.assertIn("no Windows on ARM build", p.stderr)
+            # an x86 PowerShell on ARM64 Windows (WOW64) is told by PROCESSOR_ARCHITEW6432, before anything else
+            p = r.fails(PROCESSOR_ARCHITEW6432="ARM64")
+            self.assertIn("no Windows on ARM build", p.stderr)
+            self.assertEqual(Handler.requests, [])
+            r.ok(PROCESSOR_ARCHITEW6432="AMD64", PROCESSOR_ARCHITECTURE="x86")
+            self.assertEqual(r.state()["version"], "ttyak " + LATEST)
 
     def test_latest_falls_back_to_github(self):
         for r in self.runs():
@@ -728,8 +756,14 @@ class InstallPs1:
             # irm | iex: the environment only, and the session's own variables stay as they were
             mine = "$Version = 'mine'; $Dir = 'mine'; $Yes = 'mine'"
             shown = "\n[Console]::Out.WriteLine('vars:' + $Version + ',' + $Dir + ',' + $Yes)"
-            p = r.ok(mode="iex", TTYAK_DIR=r.top + "\\iex", before=mine, after=shown)
+            with open(SCRIPT) as f:
+                helpers = sorted(set(re.findall(r"^\s*function ([\w-]+)", f.read(), flags=re.M)) - {"Install-Ttyak"})
+            self.assertGreater(len(helpers), 10)
+            left = "\n[Console]::Out.WriteLine('functions:' + (@(%s | Where-Object { Test-Path ('function:' + $_) }) -join ','))" % (
+                ", ".join(q(h) for h in helpers))
+            p = r.ok(mode="iex", TTYAK_DIR=r.top + "\\iex", before=mine, after=shown + left)
             self.assertIn("vars:mine,mine,mine", p.stdout)
+            self.assertIn("functions:\n", p.stdout)
             self.assertRecord(r, LATEST, r.top + "\\iex")
             self.assertIn("GET /install.ps1", Handler.requests)
             # a failure: the session goes on, with the exit code in $LASTEXITCODE
@@ -777,10 +811,63 @@ class InstallPs1:
             self.assertIn("TTYAK_KEEP_DATA", p.stdout)
             self.assertIn("[scriptblock]::Create", p.stdout)
             self.assertEqual(Handler.requests, [])
-            p = r.run("-Bogus")
-            self.assertIn("Bogus", p.stderr)
-            self.assertEqual(Handler.requests, [])
+            for mode in ("file", "sb", "cli"):
+                for args, words in ((["-Bogus"], "unknown option: -Bogus (see -Help)"),
+                                    (["-Version"], "-Version needs a value"),
+                                    (["-Dir"], "-Dir needs a value"),
+                                    (["-Yes", "0.9.0"], "unexpected argument: 0.9.0 (see -Help)"),
+                                    (["-Yes:maybe"], "maybe (see -Help)")):
+                    p = r.fails(*args, mode=mode)
+                    self.assertEqual(p.returncode, 1, (mode, args))
+                    self.assertIn(words, p.stderr, (mode, args))
+                    self.assertEqual(Handler.requests, [] if mode != "sb" else ["GET /install.ps1"])
             self.assertFalse(r.exists(r.dir))
+            # names as short as they stay unique, any case
+            r.ok("-ver", "0.9.0", "-y")
+            self.assertEqual(r.state()["version"], "ttyak 0.9.0")
+
+    def test_switch_values(self):
+        for r in self.runs(modify_path=True):
+            write_user_path({"kind": "String", "value": "C:\\ttyak-test-keep"})
+            r.ok("-NoModifyPath")
+            args = r.dir + "\\uninstall-args"
+            for mode in ("file", "sb", "cli"):
+                # :$false turns a switch off: no uninstall here, an install over the copy
+                p = r.ok("-Uninstall:$false", "-Yes", "-NoModifyPath", mode=mode)
+                self.assertIn("Installed ttyak %s over the copy" % LATEST, p.stdout, mode)
+                self.assertFalse(r.exists(args), mode)
+                p = r.ok("-Yes:$false", "-NoModifyPath:$true", mode=mode)
+                self.assertIn("as asked, PATH was not changed", p.stdout, mode)
+                r.ok("-Uninstall:$true", "-Yes:$true", "-KeepData:$false", mode=mode)
+                self.assertEqual(r.read(args).splitlines()[0], "args:--yes", mode)
+                ps_ok("Remove-Item -LiteralPath %s" % q(args))
+            self.assertEqual(read_user_path(), {"kind": "String", "value": "C:\\ttyak-test-keep"})
+            p = r.ok("-NoModifyPath:$false")
+            self.assertIn("Added %s to your user PATH" % r.dir, p.stdout)
+            self.assertEqual(read_user_path(), {"kind": "String", "value": r.dir + ";C:\\ttyak-test-keep"})
+            self.assertEqual(r.state(r.top)["files"], ["local", "tmp"])
+
+    def test_archive_contents(self):
+        for r in self.runs():
+            p = r.fails("-Version", "0.9.4")
+            self.assertIn("ttyak-0.9.4-x86_64-windows.zip has no ttyak.exe in it", p.stderr)
+            self.assertFalse(r.exists(r.dir))
+            # only ttyak.exe is taken out of the archive
+            r.ok("-Version", "0.9.5")
+            self.assertEqual(r.state()["files"], ["install.json", "ttyak.exe"])
+            self.assertEqual(sorted(r.state(r.top)["files"]), ["local", "tmp"])
+
+    def test_brackets_in_paths(self):
+        # [ and ] are wildcards to many cmdlets in Windows PowerShell 5.1
+        for r in self.runs():
+            r.tmp = r.top + "\\t[x]"
+            ps_ok("[void][IO.Directory]::CreateDirectory(%s)" % q(r.tmp))
+            target = r.top + "\\b[1]"
+            r.ok("-Dir", target)
+            self.assertRecord(r, LATEST, target)
+            r.ok("-Dir", target, "-Version", "0.9.0")
+            self.assertRecord(r, "0.9.0", target)
+            self.assertEqual(r.state(target)["files"], ["install.json", "ttyak.exe"])
 
     def test_ascii_only(self):
         # Windows PowerShell 5.1 reads a .ps1 without a BOM in the ANSI code page
@@ -804,12 +891,12 @@ class ScriptAnalyzer(unittest.TestCase):
         self.addCleanup(shutil.rmtree, d)
         shutil.copy(SCRIPT, d)
         check = ("$ErrorActionPreference = 'Stop'\n"
-                 "Install-Module PSScriptAnalyzer -Scope CurrentUser -Force | Out-Null\n"
+                 "Install-Module PSScriptAnalyzer -RequiredVersion %s -Scope CurrentUser -Force | Out-Null\n"
                  "$found = @(Invoke-ScriptAnalyzer -Path /mnt/install.ps1 -Severity Information, Warning, Error)\n"
                  "$found | Format-Table -AutoSize -Wrap RuleName, Line, Message | Out-String -Width 200\n"
                  "'found: ' + $found.Count\n"
                  "& /mnt/install.ps1 2>&1 | Out-String\n"
-                 "'exit: ' + $LASTEXITCODE\n")
+                 "'exit: ' + $LASTEXITCODE\n") % PSSA_VERSION
         p = subprocess.run(["podman", "run", "--rm", "-v", d + ":/mnt:ro,Z", "mcr.microsoft.com/powershell:7.5-ubuntu-24.04",
                             "pwsh", "-NoProfile", "-Command", check], capture_output=True, text=True, timeout=600)
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
