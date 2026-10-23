@@ -36,6 +36,11 @@ test('choose: windows and linux', () => {
   assert.equal(choose('linux', rel).assets[0].platform, 'x86_64-linux');
 });
 
+test('choose: arm64 Linux never takes the Linux button', () => {
+  const r = { ...rel, assets: [{ name: 'x-aarch64-linux.zip', platform: 'aarch64-linux', url: 'https://example.invalid/a', size: 1 }, ...rel.assets] };
+  assert.deepEqual(choose('linux', r).assets.map(a => a.platform), ['x86_64-linux']);
+});
+
 test('choose: mobile and unknown go to all downloads', () => {
   for (const os of ['mobile', 'unknown']) {
     const c = choose(os, rel);

@@ -57,10 +57,13 @@ class FillTests(unittest.TestCase):
         r = copy.deepcopy(RELEASE)
         r["assets"].insert(0, {"name": f"ttyak-{VER}-riscv64-linux.zip", "platform": "riscv64-linux",
                                "url": "https://example.test/r.zip", "size": 5_000_000})
+        r["assets"].insert(0, {"name": f"ttyak-{VER}-aarch64-linux.zip", "platform": "aarch64-linux",
+                               "url": "https://example.test/a.zip", "size": 6_000_000})
         h = F.render_downloads(r, self.NEEDS)
-        pos = [h.index(p) for p in ("x86_64-linux.zip", "aarch64-macos.zip", "x86_64-macos.zip",
+        pos = [h.index(p) for p in ("x86_64-linux.zip", "aarch64-linux.zip", "aarch64-macos.zip", "x86_64-macos.zip",
                                     "x86_64-windows.zip", "riscv64-linux.zip")]
         self.assertEqual(pos, sorted(pos))
+        self.assertIn('href="https://example.test/a.zip">Linux (arm64)</a>', h)
         self.assertIn(F.fmt_size(RELEASE["assets"][0]["size"]), h)
         self.assertIn("5.0 MB", h)
         self.assertIn("glibc 2.34+", h)
@@ -122,12 +125,15 @@ class FillTests(unittest.TestCase):
             self._release_of("0.9.0", [f"{old}-0.9.0-x86_64-linux.zip", f"{old}-0.9.0-x86_64-windows.zip"])
 
     def test_assets_of_new_name_link(self):
-        base, r = self._release_of("0.10.0", ["ttyak-0.10.0-x86_64-linux.zip", "ttyak-0.10.0-aarch64-linux.zip",
-                                              "ttyak-0.9.0-x86_64-macos.zip", "ttyak_0.10.0_amd64.deb"])
-        self.assertEqual([a["platform"] for a in r["assets"]], ["x86_64-linux", "aarch64-linux"])
+        # the release's other files (packages, the recipes zip) are no downloads; arm64 Linux never takes the button
+        base, r = self._release_of("0.10.0", ["ttyak-0.10.0-aarch64-linux.zip", "ttyak-0.10.0-x86_64-linux.zip",
+                                              "ttyak-0.9.0-x86_64-macos.zip", "ttyak_0.10.0_amd64.deb",
+                                              "ttyak-0.10.0-1.aarch64.rpm", "ttyak-0.10.0-recipes.zip"])
+        self.assertEqual([a["platform"] for a in r["assets"]], ["aarch64-linux", "x86_64-linux"])
         button, table = F.render_download_button(r), F.render_downloads(r, {})
         self.assertIn(f'href="{base}ttyak-0.10.0-x86_64-linux.zip">DOWNLOAD FOR LINUX</a>', button)
-        self.assertIn(f'href="{base}ttyak-0.10.0-aarch64-linux.zip">aarch64-linux</a>', table)
+        self.assertIn(f'href="{base}ttyak-0.10.0-aarch64-linux.zip">Linux (arm64)</a>', table)
+        self.assertNotIn("recipes", button + table)
         self.assertNotIn("old-name", button + table)
 
     def test_fill_page(self):

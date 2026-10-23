@@ -138,7 +138,11 @@ class Structure(unittest.TestCase):
         r = json.loads((SITE / "data" / "release.json").read_text())
         v = r["version"]
         self.assertRegex(v, r"^\d+\.\d+\.\d+$")
-        self.assertEqual(len(r["assets"]), 4)
+        # one zip per platform; arm64 Linux comes with the first release that builds it
+        platforms = [a["platform"] for a in r["assets"]]
+        self.assertEqual(len(platforms), len(set(platforms)))
+        self.assertEqual(set(platforms) - {"aarch64-linux"},
+                         {"x86_64-linux", "aarch64-macos", "x86_64-macos", "x86_64-windows"})
         for a in r["assets"]:
             self.assertTrue(a["url"].startswith(OWN + "/releases/download/v%s/" % v))
             self.assertIsInstance(a["size"], int)

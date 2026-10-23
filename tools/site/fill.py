@@ -13,8 +13,8 @@ import urllib.request
 from pathlib import Path
 
 REPO = "dmytrobsp/ttyak"
-ORDER = ["x86_64-linux", "aarch64-macos", "x86_64-macos", "x86_64-windows"]
-NAMES = {"x86_64-linux": "Linux", "aarch64-macos": "macOS · Apple Silicon",
+ORDER = ["x86_64-linux", "aarch64-linux", "aarch64-macos", "x86_64-macos", "x86_64-windows"]
+NAMES = {"x86_64-linux": "Linux", "aarch64-linux": "Linux (arm64)", "aarch64-macos": "macOS · Apple Silicon",
          "x86_64-macos": "macOS · Intel", "x86_64-windows": "Windows"}
 
 
@@ -108,7 +108,7 @@ def release_from_api(repo, token, urlopen=urllib.request.urlopen):
                 sums = a["browser_download_url"]
                 continue
             m = re.fullmatch(rf"ttyak-{re.escape(version)}-(.+)\.zip", a["name"])
-            if m:
+            if m and m.group(1) != "recipes":  # the package recipes, no download
                 assets.append({"name": a["name"], "platform": m.group(1),
                                "url": a["browser_download_url"], "size": a["size"]})
         if not assets or not sums:
