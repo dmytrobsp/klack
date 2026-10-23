@@ -70,6 +70,8 @@ the name in (packages, domain, certificates) comes after.
   tag does everything; no session is needed per release.
 - **Package metadata** (user: "name + mail works"): maintainer / packager / owner / publisher fields carry the user's
   legal name (as on the certificates — the user supplies it; not guessed) and their email address.
+  **Amended 2026-10-23 (user):** the listings show the user's handle and email (`dmytrobsp`), not the legal name;
+  the legal name is only in the code-signing certificates. winget id `dmytrobsp.ttyak`.
 
 - Not doing (user): Flatpak and Snap (the sandbox fights sound, screen capture and reading browser profiles for the
   cookie lift), Homebrew casks, MSYS2 pacman, Microsoft Store, an own Windows installer (`.exe`/`.msi`).
