@@ -271,7 +271,8 @@ class Copy(unittest.TestCase):
             for s in ("install.sh", "install.ps1", "brew install", "scoop", "winget", "choco"):
                 self.assertNotIn(s, g, s)
             self.assertIn("quarantine", g)
-
+            self.assertIn("Signed builds are coming soon.", g)
+            self.assertFalse([e for e in by_id(self.root, "top").elements() if "dl-cmd" in e.classes])
 
     def test_footer(self):
         f = by_id(self.root, "footer")
@@ -300,6 +301,7 @@ class CopyFrom011(unittest.TestCase):
             fill.fill_page(site, needs={})
             t = Tree()
             t.feed((site / "index.html").read_text())
+        self.top = by_id(t.root, "top")
         self.get = by_id(t.root, "get")
         self.text = flat(self.get.text())
 
@@ -320,6 +322,19 @@ class CopyFrom011(unittest.TestCase):
         self.assertNotIn("None of them is signed", g)
         self.assertNotIn("yay", g)
         self.assertIn("attestation", g)
+        self.assertIn("Signed Windows and Linux builds are coming soon.", g)
+        self.assertIn("a few days after the release", g)
+
+    def test_hero_leads_with_the_one_liner_download_beside(self):
+        area = next(e for e in self.top.elements() if "dl-area" in e.classes)
+        first = next(e for e in area.elements())
+        self.assertEqual((first.tag, first.classes), ("code", ["dl-cmd"]))
+        self.assertEqual(flat(first.text()), "$ curl -fsSL https://ttyak.sh/install.sh | sh")
+        links = [e for e in area.elements() if e.tag == "a"]
+        dl = [a for a in links if "dl" in a.classes]
+        self.assertEqual(len(dl), 1)
+        self.assertTrue(dl[0].attrs["href"].endswith("-x86_64-linux.zip"))
+        self.assertIn("#get", [a.attrs.get("href") for a in links])
 
 
 class DeadCss(unittest.TestCase):

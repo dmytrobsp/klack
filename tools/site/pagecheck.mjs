@@ -6,7 +6,8 @@
 //
 // Per width (360, 390, 768, 1280): scrollWidth <= innerWidth (no sideways scroll), the first screen's
 // stage scale, the first screen's download button (rendered ≥ 40 px tall everywhere; below 760 px out of the
-// scaled stage, its meta line ≥ 14 px), console errors, requests to other hosts (there must be none), the transfer size.
+// scaled stage, its meta line ≥ 14 px), the hero's one-liner when the release has one (≥ 40 px tall, inside the
+// viewport, the whole call to action above the next section), console errors, requests to other hosts (there must be none), the transfer size.
 // Once, at 1280: the headline loop moves (or, under reduced motion, hangs still), it pauses while the
 // headline is off screen, and a capture opens enlarged and readable (at 390 too), the page behind doesn't scroll,
 // and it closes with Esc.
@@ -92,13 +93,18 @@ async function load(width) {
     const st = document.querySelector('.stage'), r = st ? st.getBoundingClientRect() : null;
     const dl = document.querySelector('.dl-area .dl'), b = dl ? dl.getBoundingClientRect() : null;
     const meta = document.querySelector('.dl-area .dl-meta');
+    const cmd = document.querySelector('.dl-area .dl-cmd'), c = cmd ? cmd.getBoundingClientRect() : null;
+    const area = document.querySelector('.dl-area'), feat = document.getElementById('features');
     const scaleOf = e => e.getBoundingClientRect().width / (e.offsetWidth || 1);   // rendered / layout size
     return { innerWidth, scrollWidth: document.documentElement.scrollWidth,
       stageScale: r ? Math.round(r.width / st.offsetWidth * 1000) / 1000 : null,
       stageBox: r ? [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)] : null,
       button: b ? { label: dl.textContent, box: [Math.round(b.left), Math.round(b.top), Math.round(b.width), Math.round(b.height)],
         inStage: !!dl.closest('.stage') } : null,
-      metaPx: meta ? Math.round(parseFloat(getComputedStyle(meta).fontSize) * scaleOf(meta) * 10) / 10 : null };
+      metaPx: meta ? Math.round(parseFloat(getComputedStyle(meta).fontSize) * scaleOf(meta) * 10) / 10 : null,
+      oneLiner: c ? { text: cmd.textContent, box: [Math.round(c.left), Math.round(c.top), Math.round(c.width), Math.round(c.height)],
+        inView: c.left >= 0 && c.right <= innerWidth } : null,
+      aboveNext: !area || !feat || area.getBoundingClientRect().bottom <= feat.getBoundingClientRect().top + 1 };
   })()`);
   // on a phone the layout viewport widens to whatever overflows, so compare with the device width too
   return { width, ...m, fits: m.scrollWidth <= m.innerWidth && m.innerWidth === width };
@@ -186,7 +192,9 @@ async function run() {
     if (opt.heroAt !== null) { await evaluate(`window.__clock = ${opt.heroAt * 1000}`); await sleep(400); }
     if (opt.shots) { mkdirSync(opt.shots, { recursive: true }); await shot(join(opt.shots, `w${w}.png`)); }
     out.widths.push({ width: r.width, innerWidth: r.innerWidth, scrollWidth: r.scrollWidth, fits: r.fits, stageScale: r.stageScale,
-      stageBox: r.stageBox, button: r.button, buttonOk: !!r.button && r.button.box[3] >= 40, metaPx: r.metaPx, errors: log.errors.length });
+      stageBox: r.stageBox, button: r.button, buttonOk: !!r.button && r.button.box[3] >= 40, metaPx: r.metaPx,
+      oneLiner: r.oneLiner, oneLinerOk: !r.oneLiner || (r.oneLiner.box[3] >= 40 && r.oneLiner.inView), aboveNext: r.aboveNext,
+      errors: log.errors.length });
     out.transferBytes[w] = log.bytes;
     out.consoleErrors.push(...log.errors.map(e => `${w}: ${e}`));
     out.foreignRequests.push(...log.foreign);
@@ -263,7 +271,8 @@ const heroOk = !out.hero || (opt.reduced ? out.hero.hangs && out.hero.handOpacit
 const zoomOk = !out.zoom || Object.values(out.zoom).every(z => z && z.focusable && z.hint && z.opens && z.zoomFontPx >= 11
   && z.pageFits && z.pageScrollLocked && z.closesOnEsc && z.focusBack);
 // the first screen's download button: a real button everywhere; off the scaled stage on phones, its links readable
-const buttonOk = out.widths.every(w => w.buttonOk && (w.width >= 760 || (!w.button.inStage && w.metaPx >= 14)));
+const buttonOk = out.widths.every(w => w.buttonOk && (w.width >= 760 || (!w.button.inStage && w.metaPx >= 14))
+  && w.oneLinerOk && w.aboveNext);
 out.ok = !out.fatal && out.widths.length === WIDTHS.length && out.widths.every(w => w.fits) && !out.consoleErrors.length
   && !out.foreignRequests.length && heroOk && zoomOk && buttonOk && out.browserStopped !== false;
 console.log(JSON.stringify(out, null, 1));

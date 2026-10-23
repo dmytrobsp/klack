@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { detectOS, choose, enhance } from '../../site/js/download.js';
+import { detectOS, choose, enhance, installs } from '../../site/js/download.js';
 
 const rel = JSON.parse(readFileSync(new URL('../../site/data/release.json', import.meta.url)));
 const UA = {
@@ -96,4 +96,64 @@ test('enhance shows no version rather than "vundefined"', () => {
     assert.doesNotMatch(d.area.innerHTML, /undefined/);
     assert.doesNotMatch(d.area.innerHTML, />v\d/);
   }
+});
+
+// From 0.11.0 (the first release the install scripts carry) the visitor's one-liner leads, the download beside it.
+const rel011 = JSON.parse(JSON.stringify(rel).replaceAll(rel.version, '0.11.0'));
+const url011 = p => rel011.assets.find(a => a.platform === p);
+
+test('installs: release versions from 0.11.0 only', () => {
+  for (const [v, want] of [['0.11.0', true], ['0.11.3', true], ['0.12.0', true], ['1.0.0', true], ['0.10.0', false],
+    ['0.10.9', false], ['0.9.12', false], ['0.11.0-rc.1', false], ['', false], [undefined, false], ['x', false]])
+    assert.equal(installs(v), want, String(v));
+});
+
+test('enhance from 0.11: Linux gets curl, the same region fill.py writes', () => {
+  const d = fakeDoc();
+  enhance(d, rel011, { userAgent: UA.linux, platform: 'Linux x86_64', maxTouchPoints: 0 });
+  const lin = url011('x86_64-linux');
+  // (test_fill.py's test_hero_from_0_11_leads_with_the_one_liner has the same string)
+  assert.equal(d.area.innerHTML,
+    '<code class="dl-cmd" data-os="linux"><span class="ps">$</span> curl -fsSL https://ttyak.sh/install.sh | sh</code>'
+    + `<a class="dl small" data-os="linux" href="${lin.url}">DOWNLOAD</a>`
+    + `<span class="dl-meta">v0.11.0 · zip ${(lin.size / 1e6).toFixed(1)} MB · <span class="dl-others">`
+    + '<a href="#get">other systems and ways to install</a></span></span>');
+});
+
+test('enhance from 0.11: macOS gets curl, the Apple Silicon zip beside, Intel in the line below', () => {
+  const d = fakeDoc();
+  enhance(d, rel011, { userAgent: UA.mac, platform: 'MacIntel', maxTouchPoints: 0 });
+  const h = d.area.innerHTML;
+  assert.ok(h.startsWith('<code class="dl-cmd" data-os="macos"><span class="ps">$</span> curl -fsSL https://ttyak.sh/install.sh | sh</code>'), h);
+  assert.ok(h.includes(`<a class="dl small" data-os="macos" href="${url011('aarch64-macos').url}">DOWNLOAD</a>`), h);
+  assert.ok(h.includes(`<a href="${url011('x86_64-macos').url}">Intel zip</a>`), h);
+  assert.ok(h.includes('Apple Silicon zip'), h);
+  assert.equal((h.match(/class="dl /g) || []).length, 1, 'one download button');
+});
+
+test('enhance from 0.11: Windows gets irm', () => {
+  const d = fakeDoc();
+  enhance(d, rel011, { userAgent: UA.win, platform: 'Win32', maxTouchPoints: 0 });
+  const h = d.area.innerHTML;
+  assert.ok(h.startsWith('<code class="dl-cmd" data-os="windows"><span class="ps">&gt;</span> irm https://ttyak.sh/install.ps1 | iex</code>'), h);
+  assert.ok(h.includes(`href="${url011('x86_64-windows').url}">DOWNLOAD</a>`), h);
+  assert.ok(!h.includes('curl'), h);
+  assert.ok(h.includes('href="#get"'), h);
+});
+
+test('enhance from 0.11: phones and the unknown get the way to #get, no command', () => {
+  for (const ua of [UA.android, '']) {
+    const d = fakeDoc();
+    enhance(d, rel011, { userAgent: ua, platform: '', maxTouchPoints: ua ? 5 : 0 });
+    assert.match(d.area.innerHTML, /^<a class="dl" data-os="(mobile|unknown)" href="#get">HOW TO INSTALL<\/a>/);
+    assert.ok(!d.area.innerHTML.includes('dl-cmd'));
+  }
+});
+
+test('enhance from 0.11: a missing zip leaves the one-liner without a download button', () => {
+  const d = fakeDoc();
+  enhance(d, { ...rel011, assets: rel011.assets.filter(a => a.platform !== 'x86_64-windows') }, { userAgent: UA.win, platform: 'Win32', maxTouchPoints: 0 });
+  assert.ok(d.area.innerHTML.includes('irm https://ttyak.sh/install.ps1 | iex'));
+  assert.ok(!d.area.innerHTML.includes('class="dl '), d.area.innerHTML);
+  assert.doesNotMatch(d.area.innerHTML, /undefined/);
 });

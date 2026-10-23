@@ -87,6 +87,10 @@ section h2 { font-family: 'Anton', sans-serif; font-weight: 400; font-size: 44px
   #top > .dl-area { left: calc(34px * var(--k)); top: calc(604px * var(--k)); transform: scale(var(--k)); }
 }
 .dl { font-family: 'Anton', sans-serif; font-size: 22px; letter-spacing: 1px; background: var(--yellow); color: var(--ink); padding: 9px 20px; box-shadow: 4px 4px 0 var(--pink); text-decoration: none; white-space: nowrap; }
+/* the hero from 0.11.0 (download.js installArea): the visitor's one-liner first, its zip beside it */
+.dl-cmd { font-family: 'Space Mono', monospace; font-size: 15px; line-height: 24px; color: var(--cream); background: #0b0b0d; border-left: 4px solid var(--green); box-shadow: 4px 4px 0 var(--pink); padding: 12px 14px; white-space: nowrap; }
+.dl-cmd .ps { color: var(--green); }
+.dl.small { font-size: 18px; padding: 10px 16px; }
 .dl-meta { flex: 1 1 220px; min-width: 0; font-size: 12px; color: var(--muted); line-height: 1.5; }
 .dl-meta a { color: inherit; }
 .hero-capture { position: absolute; left: 478px; top: 336px; width: 326px; transform: rotate(2deg); }
@@ -209,6 +213,7 @@ dialog.zoom .term { cursor: zoom-out; box-shadow: none; }
 @media (max-width: 759px) {
   #top > .dl-area { position: static; left: auto; top: auto; width: auto; transform: none; padding: 16px 0 4px; }
   .dl-area .dl { padding: 10px 22px; }
+  .dl-area .dl-cmd { flex-basis: 100%; white-space: normal; overflow-wrap: anywhere; }
   .dl-area .dl-meta { flex-basis: 100%; font-size: 14px; }
   .dl-area .dl-meta a { display: inline-block; padding: 6px 0; }
 }

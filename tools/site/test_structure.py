@@ -134,6 +134,11 @@ class Structure(unittest.TestCase):
         for cls in ("cut", "paper", "sticker", "scrawl", "jab", "term"):
             self.assertIn(".%s" % cls, css)
 
+    def test_hero_one_liner_styled(self):
+        css = (SITE / "css" / "site.css").read_text()
+        for sel in (".dl-cmd {", ".dl-cmd .ps", ".dl.small {"):
+            self.assertIn(sel, css)
+
     def test_release_json(self):
         r = json.loads((SITE / "data" / "release.json").read_text())
         v = r["version"]

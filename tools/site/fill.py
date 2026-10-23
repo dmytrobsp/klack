@@ -49,6 +49,8 @@ def _find(release, platform):
 
 
 def render_download_button(release):
+    if installs(release):
+        return render_hero_install(release)
     lin = _find(release, "x86_64-linux") or release["assets"][0]
     mac = _find(release, "aarch64-macos")
     win = _find(release, "x86_64-windows")
@@ -66,7 +68,7 @@ BY_HAND = ('<p class="lede">One zip per system, one binary inside. Unzip it, put
            'sign in:</p>\n    <pre class="cmd"><span class="ps">$</span> ttyak auth login</pre>')
 UNSIGNED = ("<li>None of them is signed, so your OS will have opinions. macOS: "
             "<code>xattr -d com.apple.quarantine ttyak</code> once, or allow it in System Settings → Privacy &amp; "
-            "Security. Windows: SmartScreen may ask once.</li>")
+            "Security. Windows: SmartScreen may ask once. Signed builds are coming soon.</li>")
 
 
 def installs(release):
@@ -102,13 +104,25 @@ def render_install(release):
         f'<div class="way"><h3>Linux · macOS</h3>{cmd("$", f"curl -fsSL {SITE}/install.sh | sh")}</div>'
         f'<div class="way"><h3>Windows</h3>{cmd("&gt;", f"irm {SITE}/install.ps1 | iex")}'
         '<p class="fine"><code>ttyak.exe</code> is not code-signed yet, so SmartScreen may warn the first time: '
-        "More info → Run anyway.</p></div></div>\n"
+        "More info → Run anyway. Signed Windows and Linux builds are coming soon.</p></div></div>\n"
         f'    <p>Then sign in:</p>\n    {cmd("$", "ttyak auth login")}\n'
         f'    <h3 class="or">Or with a package manager</h3>\n    <ul class="pkgs">\n      {pkgs}\n    </ul>\n'
-        '    <p class="verify">The macOS builds are signed and notarized by Apple. Every file of the release has its '
-        'line in SHA256SUMS and a GitHub attestation: '
+        '    <p class="fine">winget and Chocolatey review each new version: they can list it a few days after the '
+        'release.</p>\n'
+        '    <p class="verify">The macOS builds are signed and notarized by Apple. Every download has its line in '
+        'SHA256SUMS and a GitHub attestation: '
         f'<a href="https://github.com/{REPO}#verify">how to check</a>.</p>\n'
         '    <p class="lede">Or the zip by hand: unzip it, put <code>ttyak</code> on your PATH.</p>')
+
+
+def render_hero_install(release):
+    """The hero from 0.11.0: Linux's one-liner (download.js picks the visitor's), its zip beside, a way to the rest."""
+    lin = _find(release, "x86_64-linux")
+    button = f'<a class="dl small" data-os="linux" href="{esc(lin["url"])}">DOWNLOAD</a>' if lin else ""
+    size = f"zip {fmt_size(lin['size'])} · " if lin else ""
+    return (f'<code class="dl-cmd" data-os="linux"><span class="ps">$</span> {txt(f"curl -fsSL {SITE}/install.sh | sh")}</code>'
+            f'{button}<span class="dl-meta">v{esc(release["version"])} · {size}<span class="dl-others">'
+            '<a href="#get">other systems and ways to install</a></span></span>')
 
 
 def render_signing_note(release):

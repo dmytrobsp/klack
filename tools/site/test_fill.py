@@ -306,9 +306,46 @@ class InstallTests(unittest.TestCase):
     def test_signing_note_only_before_0_11(self):
         old = F.render_signing_note(release_at("0.10.0"))
         self.assertTrue(old.startswith("<li>") and old.endswith("</li>"))
-        for s in ("quarantine", "SmartScreen"):
+        for s in ("quarantine", "SmartScreen", "Signed builds are coming soon."):
             self.assertIn(s, old)
         self.assertEqual(F.render_signing_note(release_at("0.11.0")), "")
+
+    def test_from_0_11_signed_builds_coming_beside_the_windows_line(self):
+        h = F.render_install(release_at("0.11.0"))
+        self.assertIn("More info → Run anyway. Signed Windows and Linux builds are coming soon.</p>", h)
+        self.assertEqual(h.count("coming soon"), 1)
+
+    def test_from_0_11_every_download_is_summed(self):
+        h = F.render_install(release_at("0.11.0"))
+        self.assertIn("Every download has its line in SHA256SUMS and a GitHub attestation", h)
+        self.assertNotIn("Every file", h)
+
+    def test_from_0_11_winget_and_chocolatey_take_days(self):
+        h = F.render_install(release_at("0.11.0"))
+        text = re.sub(r"<[^>]+>", "", h)
+        self.assertIn("winget and Chocolatey review each new version: they can list it a few days after the release.", text)
+        self.assertLess(text.index("choco install ttyak"), text.index("a few days"))
+
+    def test_hero_before_0_11_is_as_it_was(self):
+        r = release_at("0.10.0")
+        url = {a["platform"]: a["url"] for a in r["assets"]}
+        size = next(a["size"] for a in r["assets"] if a["platform"] == "x86_64-linux")
+        self.assertEqual(F.render_download_button(r),
+                         f'<a class="dl" data-os="linux" href="{url["x86_64-linux"]}">DOWNLOAD FOR LINUX</a>'
+                         f'<span class="dl-meta">v0.10.0 · {F.fmt_size(size)} · <span class="dl-others">'
+                         f'<a href="{url["aarch64-macos"]}">macOS</a> · <a href="{url["x86_64-windows"]}">Windows</a> · '
+                         '<a href="#get">all downloads</a></span></span>')
+
+    def test_hero_from_0_11_leads_with_the_one_liner(self):
+        # the static region is what download.js writes for Linux (download.test.mjs has the same string)
+        r = release_at("0.11.0")
+        lin = next(a for a in r["assets"] if a["platform"] == "x86_64-linux")
+        self.assertEqual(F.render_download_button(r),
+                         '<code class="dl-cmd" data-os="linux"><span class="ps">$</span> '
+                         'curl -fsSL https://ttyak.sh/install.sh | sh</code>'
+                         f'<a class="dl small" data-os="linux" href="{lin["url"]}">DOWNLOAD</a>'
+                         f'<span class="dl-meta">v0.11.0 · zip {F.fmt_size(lin["size"])} · <span class="dl-others">'
+                         '<a href="#get">other systems and ways to install</a></span></span>')
 
     def test_fill_page_fills_the_install_regions(self):
         with tempfile.TemporaryDirectory() as d:
