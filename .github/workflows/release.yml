@@ -1,13 +1,19 @@
 # Release builds. A `v*` tag (matching the Cargo version) builds every platform, packages it (one zip per platform,
 # .deb and .rpm for both Linux architectures, the package recipes, SHA256SUMS over all of them), attests every file and
 # publishes a GitHub Release (a pre-release when the version has a `-`). A manual run does all of it but the release,
-# as version 0.0.0-dispatch.<run number>, and keeps the would-be release files as the run's `dist` artifact.
+# as version 0.0.0-dispatch.<run number>, and keeps the would-be release files as the run's `dist` artifact (7 days).
+# A tag signs and notarizes the macOS builds; a manual run only when asked (`sign`).
 name: Release
 
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      sign:
+        description: Sign and notarize the macOS builds
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -46,8 +52,9 @@ jobs:
           key: ${{ matrix.target }}
       - run: cargo build --locked --release --target ${{ matrix.target }}
       # macOS: the binary signed with the user's Developer ID (hardened runtime, Apple's timestamp) and notarized,
-      # before it is staged, so the zips, SHA256SUMS and attestations are of the signed one. Without the secrets (a
-      # fork, a pull request) it builds unsigned with a notice; a tag never publishes an unsigned build.
+      # before it is staged, so the zips, SHA256SUMS and attestations are of the signed one. A tag signs, a manual run
+      # only with `sign` true; either fails without the secrets (a tag never publishes an unsigned build). A manual
+      # run without `sign`, or anything else (a fork), builds unsigned with a notice.
       - name: Signing (macOS)
         id: signing
         if: runner.os == 'macOS'
@@ -56,14 +63,23 @@ jobs:
             ${{ secrets.APPLE_P12 != '' && secrets.APPLE_P12_PASSWORD != '' && secrets.APPLE_API_KEY != ''
             && secrets.APPLE_API_KEY_ID != '' && secrets.APPLE_API_ISSUER != '' && secrets.APPLE_TEAM_ID != '' }}
           TAG: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+          MANUAL: ${{ github.event_name == 'workflow_dispatch' }}
+          ASKED: ${{ github.event_name == 'workflow_dispatch' && inputs.sign }}
         run: |
-          if [ "$HAVE" = true ]; then
+          if [ "$TAG" = true ] || [ "$ASKED" = true ]; then
+            if [ "$HAVE" != true ]; then
+              if [ "$TAG" = true ]; then
+                echo "::error::the Apple signing secrets are missing: a release is never published unsigned"
+              else
+                echo "::error::the Apple signing secrets are missing, and sign=true asked for signing"
+              fi
+              exit 1
+            fi
             echo "sign=true" >> "$GITHUB_OUTPUT"
-          elif [ "$TAG" = true ]; then
-            echo "::error::the Apple signing secrets are missing: a release is never published unsigned"
-            exit 1
+          elif [ "$MANUAL" = true ]; then
+            echo "::notice::unsigned: manual run without sign=true"
           else
-            echo "::notice::no Apple signing secrets: ${{ matrix.name }} is built unsigned"
+            echo "::notice::not a tag: ${{ matrix.name }} is built unsigned"
           fi
       # A keychain of its own for the run (a random password, removed below); codesign picks the Developer ID
       # Application identity of the team by its SHA-1, and is let use the key without a prompt.
@@ -246,6 +262,8 @@ jobs:
         with:
           name: dist
           path: dist/*
+          # (A tag run's: the repository's default.)
+          retention-days: ${{ env.PUBLISH != 'true' && '7' || '' }}
       - name: Publish
         if: env.PUBLISH == 'true'
         env:
