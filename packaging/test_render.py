@@ -1,6 +1,8 @@
 """Tests for packaging/render.py: every recipe rendered from a fixture SHA256SUMS for 0.11.0.
 
-The .SRCINFO is also compared with `makepkg --printsrcinfo` in a podman archlinux container when podman is there."""
+Run: python3 -m unittest discover -s packaging -p 'test_*.py' (the folder is no package: `packaging` is a PyPI library).
+The .SRCINFO is also compared with `makepkg --printsrcinfo` in a podman archlinux container when podman is there (in
+CI, env CI set, only with TTYAK_PODMAN_TESTS=1)."""
 import hashlib
 import json
 import os
@@ -102,6 +104,8 @@ class AllPlatforms(unittest.TestCase):
             for inner, p in [("on_arm do", arm), ("on_intel do", intel)]:
                 self.assertEqual(block(outer, inner).split(), ["url", '"%s"' % url(p), "sha256", '"%s"' % SHA[p]], p)
         self.assertNotIn('depends_on "unzip"', rb, "Homebrew adds unzip itself where it is missing")
+        self.assertNotIn("depends_on arch:", rb, "both Linux archives")
+        self.assertNotRegex(rb, r"(?m)^  (url|sha256) ", "every url in its OS and CPU block")
         self.assertIn('bin.install "ttyak"', block(rb, "def install"))
         self.assertIn('assert_match version.to_s, shell_output("#{bin}/ttyak --version")', block(rb, "test do"))
         caveats = block(rb, "def caveats")
@@ -144,7 +148,14 @@ class AllPlatforms(unittest.TestCase):
         self.assertIn("unzipLocation  = $toolsDir", install)
         self.assertNotRegex(install, r"(?m)^\s*url\s*=", "64-bit only")
         uninstall = self.r.read("chocolatey/tools/chocolateyUninstall.ps1")
-        self.assertRegex(uninstall, r"(?m)^& \(Join-Path \$toolsDir 'ttyak\.exe'\) purge --yes$")
+        lines = [l.strip() for l in uninstall.splitlines()]
+        call = lines.index("$output = & $exe purge --yes 2>&1")
+        self.assertIn("$ErrorActionPreference = 'Continue'", lines[:call], "a purge writing to stderr is no error")
+        self.assertIn("$output | ForEach-Object { Write-Host $_ }", lines[call:])
+        self.assertTrue(any(l.startswith("if ($code -ne 0) {") for l in lines[call:]))
+        self.assertTrue(any(l.startswith("Write-Warning ") for l in lines[call:]), "a refused purge warns")
+        self.assertIn("} catch {", lines, "a purge that cannot start warns too")
+        self.assertNotIn("throw", uninstall)
         for ps1 in [install, uninstall]:
             self.assertNotIn("install.json", ps1)
 
@@ -238,6 +249,11 @@ class AllPlatforms(unittest.TestCase):
         with open(RUST_FEED, encoding="utf-8", newline="") as f:
             self.assertEqual(raw, f.read(), "crates/ttyak/testdata/latest.json is this render's output")
 
+    def test_winget_id_is_install_rs(self):
+        with open(os.path.join(ROOT, "crates", "ttyak", "src", "install.rs"), encoding="utf-8") as f:
+            m = re.search(r'macro_rules! winget_id \{\s*\(\) => \{\s*"([^"]+)"', f.read())
+        self.assertEqual(m.group(1), IDENTITY["winget_id"], "ttyak's winget commands name the id the manifests carry")
+
     def test_no_install_json_anywhere(self):
         for rel in self.r.files():
             self.assertNotIn("install.json", self.r.read(rel), rel)
@@ -281,9 +297,10 @@ class WithoutArmLinux(unittest.TestCase):
 
     def test_formula_linux_intel_only(self):
         rb = self.r.read("homebrew/ttyak.rb")
-        linux = block(rb, "on_linux do")
-        self.assertNotIn("on_arm", linux)
-        self.assertEqual(block(linux, "on_intel do").split(), ["url", '"%s"' % url("x86_64-linux"), "sha256", '"%s"' % SHA["x86_64-linux"]])
+        # `url` may not stand in on_linux and arm Linux needs one to load: the Intel archive at the top (macOS's blocks
+        # override it), arm Linux refused by depends_on (checked with brew audit and brew info --variations).
+        self.assertIn('\n  url "%s"\n  sha256 "%s"\n  license ' % (url("x86_64-linux"), SHA["x86_64-linux"]), rb)
+        self.assertEqual(block(rb, "on_linux do").split(), ["depends_on", "arch:", ":x86_64"], "brew refuses arm Linux, not fails to load")
         macos = block(rb, "on_macos do")
         self.assertIn("on_arm do", macos)
         self.assertIn("on_intel do", macos)
@@ -329,13 +346,42 @@ class Refusals(unittest.TestCase):
             (SHA["x86_64-linux"] + " ttyak-0.11.0-x86_64-linux.zip\n", "one space"),
             (SHA["x86_64-linux"] + "\tttyak-0.11.0-x86_64-linux.zip\n", "a tab"),
             (SHA["x86_64-linux"] + "  ttyak-0.10.0-x86_64-linux.zip\n", "another version"),
-            (SHA["x86_64-linux"] + "  ttyak-0.11.0-x86_64-linux.tar.gz\n", "not a zip"),
             (SHA["x86_64-linux"] + "  ttyak-0.11.0-riscv64-linux.zip\n", "an unknown platform"),
             (SHA["x86_64-linux"] + "  ttyak-0.11.0-x86_64-linux.zip\n", "a platform twice"),
             (SHA["x86_64-linux"] + "  dir/ttyak-0.11.0-x86_64-linux.zip\n", "a path"),
+            (SHA["x86_64-linux"] + "  dir/ttyak_0.11.0_amd64.deb\n", "a path to another file"),
+            (SHA["x86_64-linux"] + "  ..\\ttyak_0.11.0_amd64.deb\n", "a Windows path"),
+            (SHA["x86_64-linux"] + "  ttyak-0.11.0-rc.1-x86_64-linux.zip\n", "a pre-release's archive"),
+            (SHA["x86_64-linux"] + "  ttyak_0.11.0_amd64.deb\n" + SHA["x86_64-linux"] + "  ttyak_0.11.0_amd64.deb\n", "another file twice"),
+            (SHA["x86_64-linux"][:40] + "  ttyak_0.11.0_amd64.deb\n", "another file's short hash"),
             ("SHA256 (ttyak-0.11.0-x86_64-linux.zip) = " + SHA["x86_64-linux"] + "\n", "BSD style"),
         ]:
             self.refused(V, good + bad, "SHA256SUMS line")
+
+    def test_the_release_s_other_files_are_skipped(self):
+        """The release's full SHA256SUMS: packages, the recipes archive and signatures besides the archives."""
+        other = hashlib.sha256(b"other").hexdigest()
+        for version, deb in [(V, V), ("0.11.0-rc.1", "0.11.0~rc.1")]:
+            extra = ["ttyak_%s_amd64.deb" % deb, "ttyak_%s_arm64.deb" % deb, "ttyak-%s-1.x86_64.rpm" % deb,
+                     "ttyak-%s-1.aarch64.rpm" % deb, "ttyak-%s-recipes.zip" % version, "ttyak-%s-x86_64-linux.zip.sig" % version,
+                     "ttyak-%s-x86_64-windows.zip.intoto.jsonl" % version, "SHA256SUMS.asc"]
+            text = sums(version=version) + "".join("%s  %s\n" % (other, n) for n in extra)
+            self.assertEqual(render.parse_sums(text, version), SHA, version)
+            out = tempfile.mkdtemp(prefix="ttyak-render-")
+            self.addCleanup(shutil.rmtree, out)
+            render.render_all(version, text, out, DATE, IDENTITY)
+            with open(os.path.join(out, "latest.json")) as f:
+                self.assertEqual(sorted(json.load(f)["assets"]), sorted(PLATFORMS), version)
+        tar = SHA["x86_64-linux"] + "  ttyak-0.11.0-x86_64-linux.tar.gz\n"
+        self.assertEqual(render.parse_sums(sums() + tar, V), SHA, "not a zip: another file")
+
+    def test_out_must_be_empty(self):
+        with open(os.path.join(self.out, "stale.txt"), "w") as f:
+            f.write("x")
+        with self.assertRaises(render.Refused) as cm:
+            render.render_all(V, sums(), self.out, DATE, IDENTITY)
+        self.assertIn("not empty", str(cm.exception))
+        self.assertEqual(os.listdir(self.out), ["stale.txt"], "nothing written, nothing removed")
 
     def test_sums_forms_accepted(self):
         star = "".join("%s *ttyak-%s-%s.zip\r\n" % (SHA[p].upper(), V, p) for p in PLATFORMS) + "\n"
@@ -408,8 +454,13 @@ class Templates(unittest.TestCase):
         self.assertEqual(render.fill(t, "shell", vals, {"aarch64-linux"}), "a '1'\\''2'\nb '3'\n# c 1'2\n")
         self.assertEqual(render.fill(t, "shell", vals, set()), "a '1'\\''2'\n# c 1'2\n")
 
+    def test_unless_blocks(self):
+        t = "{{unless aarch64-linux}}\nonly x86\n{{end}}\nboth\n"
+        self.assertEqual(render.fill(t, "ruby", {}, set()), "only x86\nboth\n")
+        self.assertEqual(render.fill(t, "ruby", {}, {"aarch64-linux"}), "both\n")
+
     def test_unknown_placeholder_or_unbalanced_block(self):
-        for t in ["{{nope}}\n", "{{if aarch64-linux}}\nx\n", "x\n{{end}}\n", "{{if mars}}\nx\n{{end}}\n",
+        for t in ["{{nope}}\n", "{{if aarch64-linux}}\nx\n", "x\n{{end}}\n", "{{if mars}}\nx\n{{end}}\n", "{{unless mars}}\nx\n{{end}}\n", "{{if aarch64-linux}}\n{{unless aarch64-linux}}\n{{end}}\n{{end}}\n",
                   "a {{x:raw}}\n", "{{x:upper}}\n"]:
             with self.assertRaises(render.Refused, msg=t):
                 render.fill(t, "shell", {"x": "1"}, set())
@@ -455,11 +506,23 @@ class Cli(unittest.TestCase):
         self.assertIn("missing", r.stderr)
 
 
-def podman():
-    return shutil.which("podman")
+def podman_tests(env=None):
+    """Whether the podman-based tests run: when podman is there, and in CI (env CI set) only with
+    TTYAK_PODMAN_TESTS=1."""
+    env = os.environ if env is None else env
+    return bool(shutil.which("podman")) and (not env.get("CI") or env.get("TTYAK_PODMAN_TESTS") == "1")
 
 
-@unittest.skipUnless(podman(), "needs podman (makepkg runs in an archlinux container)")
+class PodmanSwitch(unittest.TestCase):
+    def test_ci_runs_them_only_when_asked(self):
+        if not shutil.which("podman"):
+            self.skipTest("needs podman on PATH")
+        self.assertTrue(podman_tests({}))
+        self.assertFalse(podman_tests({"CI": "true"}))
+        self.assertTrue(podman_tests({"CI": "true", "TTYAK_PODMAN_TESTS": "1"}))
+
+
+@unittest.skipUnless(podman_tests(), "needs podman (makepkg runs in an archlinux container); in CI only with TTYAK_PODMAN_TESTS=1")
 class SrcinfoMatchesMakepkg(unittest.TestCase):
     def test_byte_identical(self):
         for platforms in [PLATFORMS, [p for p in PLATFORMS if p != "aarch64-linux"]]:
@@ -467,7 +530,7 @@ class SrcinfoMatchesMakepkg(unittest.TestCase):
             try:
                 aur = os.path.join(r.dir, "aur")
                 out = subprocess.run(
-                    [podman(), "run", "--rm", "-v", aur + ":/w:ro,Z", "-w", "/w", "--user", "65534:65534",
+                    ["podman", "run", "--rm", "-v", aur + ":/w:ro,Z", "-w", "/w", "--user", "65534:65534",
                      "-e", "HOME=/tmp", "-e", "BUILDDIR=/tmp/b", "-e", "SRCDEST=/tmp/s", "-e", "PKGDEST=/tmp/p",
                      ARCH_IMAGE, "makepkg", "--printsrcinfo"], capture_output=True, text=True, timeout=600)
                 self.assertEqual(out.returncode, 0, out.stderr)

@@ -13,7 +13,7 @@ macro_rules! winget_id {
     };
 }
 
-/// The id the winget manifest uses (`winget_id` in packaging/identity.json).
+/// The id the winget manifest uses (`winget_id` in packaging/identity.json; packaging/test_render.py compares).
 #[allow(dead_code)] // the commands use `winget_id!`; only the tests read the constant
 pub const WINGET_ID: &str = winget_id!();
 
@@ -436,12 +436,6 @@ mod tests {
         assert_eq!(Method::Winget.uninstall_command(), Some(format!("winget uninstall {WINGET_ID}").as_str()));
         assert_eq!((Method::Aur.update_command(), Method::Deb.update_command()), (Some("yay -Syu ttyak-bin"), None));
         assert_eq!((Method::Script.uninstall_command(), Method::Rpm.uninstall_command()), (None, Some("sudo dnf remove ttyak")));
-    }
-
-    #[test]
-    fn the_winget_id_is_the_packages() {
-        let identity: serde_json::Value = serde_json::from_str(include_str!("../../../packaging/identity.json")).unwrap();
-        assert_eq!(identity["winget_id"], WINGET_ID, "the manifests packaging/render.py writes");
     }
 
     #[test]

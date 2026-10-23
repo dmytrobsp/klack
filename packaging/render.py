@@ -6,12 +6,14 @@ Usage: python3 packaging/render.py --version V --sums SHA256SUMS --out DIR [--da
 Writes DIR/homebrew/ttyak.rb, DIR/scoop/ttyak.json, DIR/chocolatey/{ttyak.nuspec,tools/*.ps1},
 DIR/aur/{PKGBUILD,.SRCINFO}, DIR/winget/manifests/<p>/<Publisher>/<Name>/<V>/*.yaml, DIR/nfpm.yaml and
 DIR/latest.json. A platform missing from SHA256SUMS (only aarch64-linux may be) is left out of every output.
-Refuses (exit 1, nothing written) a V that is not a release version, a SHA256SUMS line that is not
-`<64 hex>  ttyak-V-<platform>.zip`, a missing required platform, a bad --date.
+The release's other files listed in SHA256SUMS (packages, the recipes zip, signatures) are skipped. Refuses (exit 1,
+nothing written) a V that is not a release version, a malformed or repeated SHA256SUMS line, a path in it, a
+`ttyak-….zip` that is not one of V's archives, a missing required platform, a bad --date, a non-empty --out.
 
 Templates (packaging/templates) hold `{{key}}`, replaced by the value quoted for the template's format, and
 `{{key:raw}}` (comment lines only); a line `{{if <platform>}}` up to a line `{{end}}` is kept only when SHA256SUMS
-has that platform. Python 3 standard library only."""
+has that platform, `{{unless <platform>}}` … `{{end}}` only when it has not. --out must be empty or not there yet.
+Python 3 standard library only."""
 import argparse
 import datetime
 import json
@@ -82,19 +84,27 @@ def check_date(d):
 
 
 def parse_sums(text, version):
-    """{platform: lower-case sha256} from SHA256SUMS; every line must name one archive of `version`."""
-    out = {}
+    """{platform: lower-case sha256} of `version`'s archives from the release's SHA256SUMS. Every line must be
+    `<64 hex>  <file name>`, each name once; the release's other files (packages, `ttyak-V-recipes.zip`, signatures)
+    are skipped, but a `ttyak-….zip` that is not one of `version`'s archives is refused."""
+    out, seen = {}, set()
+    prefix, suffix = "ttyak-%s-" % version, ".zip"
     for n, line in enumerate(text.split("\n"), 1):
         line = line[:-1] if line.endswith("\r") else line
         if not line:
             continue
         m = SUMS_LINE.fullmatch(line)
-        prefix, suffix = "ttyak-%s-" % version, ".zip"
         name = m.group(2) if m else ""
-        platform = name[len(prefix):-len(suffix)] if name.startswith(prefix) and name.endswith(suffix) else None
-        if platform not in PLATFORMS or platform in out:
-            raise Refused("SHA256SUMS line %d is not `<64 hex>  ttyak-%s-<platform>.zip` for a platform not seen yet: %r"
-                          % (n, version, line))
+        if not m or "/" in name or "\\" in name or name in seen:
+            raise Refused("SHA256SUMS line %d is not `<64 hex>  <file name>` for a file not seen yet: %r" % (n, line))
+        seen.add(name)
+        if not (name.startswith("ttyak-") and name.endswith(suffix)):
+            continue
+        platform = name[len(prefix):-len(suffix)] if name.startswith(prefix) else None
+        if platform == "recipes":
+            continue
+        if platform not in PLATFORMS:
+            raise Refused("SHA256SUMS line %d names a zip that is not one of ttyak-%s-<platform>.zip: %r" % (n, version, line))
         out[platform] = m.group(1).lower()
     for p in REQUIRED:
         if p not in out:
@@ -148,25 +158,26 @@ def quote(fmt, value):
 
 
 PLACEHOLDER = re.compile(r"\{\{([a-z0-9_]+)(?::([a-z]+))?\}\}")
-BLOCK = re.compile(r"\s*\{\{(?:if ([a-z0-9_-]+)|(end))\}\}\s*")
+BLOCK = re.compile(r"\s*\{\{(?:(if|unless) ([a-z0-9_-]+)|(end))\}\}\s*")
 
 
 def fill(text, fmt, values, present):
-    """The template `text` with its placeholders filled and the blocks of platforms not `present` dropped."""
+    """The template `text` with its placeholders filled; an `if` block kept only when its platform is `present`, an
+    `unless` block only when it is not."""
     out, block = [], None
     for line in text.splitlines(keepends=True):
         m = BLOCK.fullmatch(line)
         if m and m.group(1):
-            if block is not None or m.group(1) not in PLATFORMS:
+            if block is not None or m.group(2) not in PLATFORMS:
                 raise Refused("a nested block or an unknown platform: %r" % line)
-            block = m.group(1)
+            block = (m.group(1), m.group(2))
             continue
         if m:
             if block is None:
-                raise Refused("{{end}} without {{if}}")
+                raise Refused("{{end}} without {{if}} or {{unless}}")
             block = None
             continue
-        if block is not None and block not in present:
+        if block is not None and (block[1] in present) != (block[0] == "if"):
             continue
 
         def sub(p):
@@ -184,7 +195,7 @@ def fill(text, fmt, values, present):
             raise Refused("a placeholder not understood: %r" % line)
         out.append(line)
     if block is not None:
-        raise Refused("{{if %s}} without {{end}}" % block)
+        raise Refused("{{%s %s}} without {{end}}" % block)
     return "".join(out)
 
 
@@ -256,6 +267,8 @@ def render_all(version, sums_text, out, date, identity):
     check_version(version)
     check_date(date)
     check_identity(identity)
+    if os.path.isdir(out) and os.listdir(out):
+        raise Refused("--out %s is not empty" % out)
     sha = parse_sums(sums_text, version)
     v = values_for(version, date, sha, identity)
     publisher, name = identity["winget_id"].split(".", 1)

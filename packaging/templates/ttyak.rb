@@ -3,6 +3,11 @@
 class Ttyak < Formula
   desc "Slack client for the terminal, with huddles"
   homepage {{homepage}}
+{{unless aarch64-linux}}
+  # This release has no arm Linux archive: the Intel one here, and arm Linux refused below.
+  url {{url_x86_64_linux}}
+  sha256 {{sha256_x86_64_linux}}
+{{end}}
   license any_of: [{{license_ids}}]
 
   on_macos do
@@ -22,11 +27,14 @@ class Ttyak < Formula
       url {{url_aarch64_linux}}
       sha256 {{sha256_aarch64_linux}}
     end
-{{end}}
     on_intel do
       url {{url_x86_64_linux}}
       sha256 {{sha256_x86_64_linux}}
     end
+{{end}}
+{{unless aarch64-linux}}
+    depends_on arch: :x86_64
+{{end}}
   end
 
   def install
