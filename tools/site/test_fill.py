@@ -61,7 +61,8 @@ class FillTests(unittest.TestCase):
         pos = [h.index(p) for p in ("x86_64-linux.zip", "aarch64-macos.zip", "x86_64-macos.zip",
                                     "x86_64-windows.zip", "riscv64-linux.zip")]
         self.assertEqual(pos, sorted(pos))
-        self.assertIn("12.7 MB", h)
+        self.assertIn(F.fmt_size(RELEASE["assets"][0]["size"]), h)
+        self.assertIn("5.0 MB", h)
         self.assertIn("glibc 2.34+", h)
         self.assertIn("libasound &lt;b&gt;", h)
         self.assertIn(RELEASE["sums_url"], h)

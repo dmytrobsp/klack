@@ -1,11 +1,31 @@
 {
-  "version": "0.8.0",
-  "url": "https://github.com/dmytrobsp/ttyak/releases/tag/v0.8.0",
-  "sums_url": "https://github.com/dmytrobsp/ttyak/releases/download/v0.8.0/SHA256SUMS",
+  "version": "0.10.0",
+  "url": "https://github.com/dmytrobsp/ttyak/releases/tag/v0.10.0",
+  "sums_url": "https://github.com/dmytrobsp/ttyak/releases/download/v0.10.0/SHA256SUMS",
   "assets": [
-    {"name": "klack-0.8.0-x86_64-linux.zip", "platform": "x86_64-linux", "url": "https://github.com/dmytrobsp/ttyak/releases/download/v0.8.0/klack-0.8.0-x86_64-linux.zip", "size": 12667135},
-    {"name": "klack-0.8.0-aarch64-macos.zip", "platform": "aarch64-macos", "url": "https://github.com/dmytrobsp/ttyak/releases/download/v0.8.0/klack-0.8.0-aarch64-macos.zip", "size": 10212267},
-    {"name": "klack-0.8.0-x86_64-macos.zip", "platform": "x86_64-macos", "url": "https://github.com/dmytrobsp/ttyak/releases/download/v0.8.0/klack-0.8.0-x86_64-macos.zip", "size": 11053375},
-    {"name": "klack-0.8.0-x86_64-windows.zip", "platform": "x86_64-windows", "url": "https://github.com/dmytrobsp/ttyak/releases/download/v0.8.0/klack-0.8.0-x86_64-windows.zip", "size": 11130843}
+    {
+      "name": "ttyak-0.10.0-aarch64-macos.zip",
+      "platform": "aarch64-macos",
+      "url": "https://github.com/dmytrobsp/ttyak/releases/download/v0.10.0/ttyak-0.10.0-aarch64-macos.zip",
+      "size": 10485124
+    },
+    {
+      "name": "ttyak-0.10.0-x86_64-linux.zip",
+      "platform": "x86_64-linux",
+      "url": "https://github.com/dmytrobsp/ttyak/releases/download/v0.10.0/ttyak-0.10.0-x86_64-linux.zip",
+      "size": 12979707
+    },
+    {
+      "name": "ttyak-0.10.0-x86_64-macos.zip",
+      "platform": "x86_64-macos",
+      "url": "https://github.com/dmytrobsp/ttyak/releases/download/v0.10.0/ttyak-0.10.0-x86_64-macos.zip",
+      "size": 11357408
+    },
+    {
+      "name": "ttyak-0.10.0-x86_64-windows.zip",
+      "platform": "x86_64-windows",
+      "url": "https://github.com/dmytrobsp/ttyak/releases/download/v0.10.0/ttyak-0.10.0-x86_64-windows.zip",
+      "size": 11434153
+    }
   ]
 }
