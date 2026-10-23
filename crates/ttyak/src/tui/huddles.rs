@@ -71,11 +71,8 @@ pub struct Huddles {
     keep: Option<String>,
     /// Lines of the list above the view.
     pub scroll: usize,
-    /// Bring the selection into view at the next draw (it moved by the keys, or the view was drawn at another size: a
-    /// re-wrap is not a scroll).
+    /// Bring the selection into view at the next draw (it moved by the keys).
     follow: bool,
-    /// The size (columns, rows) of the list at the last draw.
-    size: (u16, u16),
     /// Scrolled since the last draw (the keys and the wheel move the selection instead): only then does the selection
     /// follow the view.
     scrolled: bool,
@@ -249,10 +246,8 @@ impl Huddles {
             self.selected = self.order.first().cloned();
         }
         let height = inner.height as usize;
-        if self.size != (inner.width, inner.height) {
-            (self.size, self.follow) = ((inner.width, inner.height), true);
-        }
         let scrolled = std::mem::take(&mut self.scrolled);
+        // Not scrolled (the list changed, or it was drawn at another size): the selection on its row.
         if let Some(sel) = self.selected.as_ref().filter(|_| !self.follow && !scrolled) {
             let spot = self.spot.as_ref().map(|(s, row)| (s, *row));
             (self.scroll, self.follow) = super::threads::keep_spot(&owners, self.scroll, height, sel, spot);
@@ -623,6 +618,51 @@ mod tests {
         drawn(&mut h, &ws, 60, 12);
         let shown = on_screen(&h);
         assert!(shown[shown.len() - 2..].contains(h.selected.as_ref().unwrap()), "the bottom one");
+    }
+
+    #[test]
+    fn a_row_taller_than_the_view_scrolls_line_by_line() {
+        // Two lines each in a view one line high; no huddle live (its row would take the selection at the top).
+        let mut ws = ws();
+        ws.huddles.clear();
+        let media = Media::with(ratatui_image::picker::Picker::halfblocks());
+        let mut h = Huddles::default();
+        let first = h.reload();
+        h.add_page(first, false, (1..=6).map(|n| past(&format!("R{n}"), "C1", NOW - 3600 * n as i64, 60, &["U2"], &[], None)).collect(), None);
+        let tall = Row::Past(1);
+        let draw = |h: &mut Huddles, ws: &Workspace, width: u16| -> crate::tui::threads::OnScreen {
+            let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, 3)).unwrap();
+            terminal.draw(|f| h.draw(f, f.area(), ws, true, &media, None, NOW)).unwrap();
+            let text = crate::tui::threads::rows_text(terminal.backend().buffer(), h.list);
+            // (Above the first row only headers show: the selection stays where it is.)
+            let selection_shown = h.rows.contains(&h.selected) || h.rows.iter().all(Option::is_none);
+            crate::tui::threads::OnScreen { text, top: Some(h.scroll), tall_shown: h.rows.contains(&Some(tall.clone())), tall_selected: h.selected.as_ref() == Some(&tall), selection_shown }
+        };
+        draw(&mut h, &ws, 60);
+        h.selected = Some(tall.clone());
+        h.move_by(0);
+        let wheel = |h: &mut Huddles, lines: isize| (h.scroll, h.scrolled) = (h.scroll.saturating_add_signed(lines), true);
+        crate::tui::threads::wheel_through_tall(&mut h, |h| draw(h, &ws, 60), wheel);
+        // ↑ onto it (from the next one) and ↓ onto it (from the one above): its first line.
+        let place = " #social · 2 h ago";
+        h.selected = Some(tall.clone());
+        for (from, step) in [(1, -1), (-1, 1)] {
+            h.move_by(from);
+            draw(&mut h, &ws, 60);
+            h.move_by(step);
+            let seen = draw(&mut h, &ws, 60);
+            assert!(seen.tall_selected && seen.text[0].starts_with(place), "{step}: its first line {:?}", seen.text);
+        }
+        // Its second line on screen: a re-wrap (a resize) and a huddle starting above leave the view.
+        wheel(&mut h, 1);
+        let before = draw(&mut h, &ws, 60);
+        assert!(before.tall_selected && !before.text[0].starts_with(place), "its second line {:?}", before.text);
+        let after = draw(&mut h, &ws, 50);
+        assert_eq!((after.tall_selected, after.text[0].trim_end()), (true, before.text[0].trim_end()), "a re-wrap leaves the view");
+        let mut ws = ws;
+        ws.huddles.insert("D1".into(), Huddle { room: "R9".into(), participants: vec!["U2".into()], thread: None, start: NOW - 60 });
+        let again = draw(&mut h, &ws, 50);
+        assert_eq!((again.tall_selected, &again.text), (true, &after.text), "a huddle starting above leaves the view");
     }
 
     #[test]

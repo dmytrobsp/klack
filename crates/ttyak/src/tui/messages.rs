@@ -173,8 +173,6 @@ pub struct MessagePane {
     /// The selection (or message being edited) last brought into view: it is brought into view
     /// once, when it changes; after that a scroll carries the selection along instead.
     shown: Option<String>,
-    /// The size (width of the text, rows) the view was last drawn at.
-    size: (usize, usize),
     /// Back at the newest since the last draw ([`MessagePane::to_bottom`]).
     newest: bool,
     /// Scrolled by the keys or the wheel since the last draw.
@@ -463,16 +461,14 @@ impl MessagePane {
             add_gutter(&mut lines, &owners, &own, &system, &authors);
         }
         let total = lines.len();
-        // Bring a new selection (or, from the composer, the message being edited) into view; at another width (lines
-        // wrapped again: not a scroll) the selection again.
+        // Bring a new selection (or, from the composer, the message being edited) into view.
         // A re-wrap (another width or height: a resize, a thread opened beside, the composer growing) is not a scroll,
-        // and never changes whether the pane follows the newest: scrolled up, the selection is brought back into view.
-        let rewrap = self.size != (width, height);
-        self.size = (width, height);
+        // and never changes whether the pane follows the newest: scrolled up, a selection it put off screen is brought
+        // back into view (below).
         let (newest, scrolled) = (std::mem::take(&mut self.newest), std::mem::take(&mut self.scrolled));
         let keeps_selection = focused || self.editing.is_none();
         let keep = if keeps_selection { self.selected.clone() } else { self.editing.clone() };
-        if keep != self.shown || (rewrap && !following && !scrolled && keeps_selection) {
+        if keep != self.shown {
             self.shown = None;
         }
         if let Some(sel) = keep.as_ref().filter(|_| self.shown.is_none()) {
@@ -1883,18 +1879,83 @@ mod tests {
             pane.hover = if n % 2 == 0 { Some(tall.clone()) } else { None };
             assert_eq!(draw(&mut pane), first, "redraw {n} does not move the view");
         }
-        // The wheel scrolls through it, and it stays selected while it fills the view; past it, the selection follows.
+        // The wheel scrolls through it, and it stays selected while any of it shows (past it: line by line, below).
         pane.scroll_down(5);
         let down = draw(&mut pane);
         assert_ne!(down, first, "scrolled");
         assert_eq!(draw(&mut pane), down, "and stays scrolled");
         assert_eq!(pane.selected.as_deref(), Some(tall.as_str()), "still selected");
         pane.scroll_down(100);
-        assert!(draw(&mut pane).contains("after"), "scrolled past it to the bottom");
-        assert_eq!(pane.selected.as_deref(), Some("1700000120.000000"), "the selection on the one shown whole");
+        assert!(draw(&mut pane).contains("after"), "scrolled to the bottom");
+        assert_eq!(pane.selected.as_deref(), Some(tall.as_str()), "its end still shows: still selected");
         // Selecting another message brings that one into view.
         pane.selected = Some("1700000000.000000".into());
         assert!(draw(&mut pane).contains("before"));
+    }
+
+    /// The message pane (or the thread pane, `thread`) 60×22 over three messages, a tall one ([`threads::tall_text`]),
+    /// and twenty more; the tall one's ts.
+    fn tall_in(thread: bool) -> (Workspace, Timeline, String) {
+        let mut ws = Workspace::default();
+        ws.users.insert("U1".into(), slack_core::types::User { id: "U1".into(), name: "ann".into(), ..Default::default() });
+        let mut t = Timeline { loaded: true, ..Default::default() };
+        let parent = "1700000000.000000";
+        let at = |k: usize| format!("{}.000000", 1_700_000_000 + 600 * k);
+        for k in 0..24 {
+            let text = if k == 3 { super::super::threads::tall_text() } else { format!("message {k:02}") };
+            let mut m = msg(&at(k), "U1", &text);
+            if thread {
+                m.thread_ts = Some(parent.into());
+            }
+            t.upsert(m);
+        }
+        (ws, t, at(3))
+    }
+
+    #[test]
+    fn a_message_taller_than_the_view_scrolls_line_by_line() {
+        use super::super::threads::{OnScreen, rows_text, wheel_through_tall};
+        for thread in [false, true] {
+            let (ws, mut t, tall) = tall_in(thread);
+            let media = Media::with(ratatui_image::picker::Picker::halfblocks());
+            let draw = |pane: &mut MessagePane, t: &Timeline, height: u16| -> OnScreen {
+                let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, height)).unwrap();
+                terminal.draw(|f| pane.draw(f, f.area(), &Here::alone(&ws), "t", Some(t), true, &media)).unwrap();
+                let inner = pane.area.inner(ratatui::layout::Margin { horizontal: 1, vertical: 1 });
+                let text = rows_text(terminal.backend().buffer(), inner);
+                let shown = |ts: Option<&String>| ts.is_some_and(|ts| pane.rows.iter().flatten().any(|r| r == ts));
+                OnScreen { text, top: None, tall_shown: shown(Some(&tall)), tall_selected: pane.selected.as_ref() == Some(&tall), selection_shown: shown(pane.selected.as_ref()) }
+            };
+            let order: Vec<String> = shown_messages(&t, thread).map(|m| m.ts.clone()).collect();
+            let mut pane = if thread { MessagePane::thread() } else { MessagePane::default() };
+            draw(&mut pane, &t, 22);
+            pane.select(Some(tall.clone()));
+            wheel_through_tall(&mut pane, |pane| draw(pane, &t, 22), |pane, lines| if lines > 0 { pane.scroll_down(1) } else { pane.scroll_up(1) });
+            // ↑ onto it (from the one below, its start off screen) and ↓ onto it (from the one above): it shows from its
+            // start.
+            for (from, step) in [(1, -1), (-1, 1)] {
+                pane.move_selection(&order, from);
+                draw(&mut pane, &t, 22);
+                pane.move_selection(&order, step);
+                let seen = draw(&mut pane, &t, 22);
+                let first = seen.text.iter().position(|l| l.contains("tall 01"));
+                assert!(seen.tall_selected && first.is_some_and(|row| row <= 1), "thread {thread}, {step}: from its first line\n{}", seen.text.join("\n"));
+            }
+            // Its end on screen, with the next message whole: a re-wrap (the composer grows) and an arrival leave the view.
+            pane.scroll_down(30);
+            let before = draw(&mut pane, &t, 22);
+            assert!(before.tall_selected && before.text.iter().any(|l| l.contains("tall 40")), "thread {thread}: its end\n{}", before.text.join("\n"));
+            let after = draw(&mut pane, &t, 21);
+            assert_eq!((after.tall_selected, after.text.last()), (true, before.text.last()), "thread {thread}: a re-wrap leaves the view\n{}", after.text.join("\n"));
+            let before = after;
+            let mut arrived = msg("1800000000.000000", "U1", "brand new");
+            if thread {
+                arrived.thread_ts = Some("1700000000.000000".into());
+            }
+            t.upsert(arrived);
+            let after = draw(&mut pane, &t, 21);
+            assert_eq!((after.tall_selected, &after.text), (true, &before.text), "thread {thread}: an arrival leaves the view");
+        }
     }
 
     /// A conversation of `n` messages by one person, a second apart ("message 001", …; `text` after each number).
