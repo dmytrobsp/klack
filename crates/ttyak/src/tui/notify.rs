@@ -124,9 +124,9 @@ pub fn show(title: String, body: String, settings: &super::settings::Settings, o
 }
 
 /// Show a desktop notification without any sound, ttyak's or the desktop's (the update notice:
-/// quiet hours do not hold it back, so it must never sound).
-pub fn show_silent(title: String, body: String) {
-    post(notice(&title, &body, None), None);
+/// quiet hours do not hold it back, so it must never sound); `on_click` as in [`show`].
+pub fn show_silent(title: String, body: String, on_click: Option<Box<dyn FnOnce() + Send>>) {
+    post(notice(&title, &body, None), on_click);
 }
 
 /// Post `n` without blocking the UI; `on_click` as in [`show`].

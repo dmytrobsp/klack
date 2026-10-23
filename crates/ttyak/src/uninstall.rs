@@ -73,6 +73,7 @@ fn plan_in(install: &Install, keep_data: bool, home: &Path, zdotdir: Option<&Pat
         names.sort();
         remove.extend(names.iter().map(|n| dir.join(n)));
         remove.extend([".ttyak.exe.new", ".install.json.new"].map(|n| dir.join(n)));
+        remove.extend(update_leftovers(&dir));
         remove.retain(|p| p.symlink_metadata().is_ok());
         // The script's own folder (the default %LOCALAPPDATA%\Programs\ttyak); never a shared one.
         if dir.file_name().is_some_and(|n| n.eq_ignore_ascii_case("ttyak")) {
@@ -85,6 +86,7 @@ fn plan_in(install: &Install, keep_data: bool, home: &Path, zdotdir: Option<&Pat
     } else {
         // The folder stays: ~/.local/bin is shared.
         remove.extend([".ttyak.new", ".install.json.new"].map(|n| dir.join(n)));
+        remove.extend(update_leftovers(&dir));
         remove.retain(|p| p.symlink_metadata().is_ok());
         for file in startup_files(home, zdotdir, config) {
             let Ok(text) = std::fs::read(&file) else { continue };
@@ -112,9 +114,18 @@ fn plan_in(install: &Install, keep_data: bool, home: &Path, zdotdir: Option<&Pat
     Plan { remove, path_edits, by_hand, purge: !keep_data, notes }
 }
 
+/// What a self-update cut short (the power gone, the process killed) can leave in `dir`: the new
+/// executable and the download, `.ttyak-update-<pid>.zip`.
+fn update_leftovers(dir: &Path) -> Vec<PathBuf> {
+    let download = |n: &str| n.strip_prefix(".ttyak-update-").and_then(|r| r.strip_suffix(".zip")).is_some_and(|pid| !pid.is_empty() && pid.bytes().all(|b| b.is_ascii_digit()));
+    let mut names: Vec<String> = std::fs::read_dir(dir).into_iter().flatten().flatten().filter_map(|e| e.file_name().into_string().ok()).filter(|n| download(n)).collect();
+    names.sort();
+    std::iter::once(dir.join(".ttyak-new")).chain(names.iter().map(|n| dir.join(n))).collect()
+}
+
 /// Whether `name` is an old copy install.ps1 renamed aside during an update: `ttyak.old.exe`,
 /// `ttyak.old-<8 hex>.exe`.
-fn is_old_copy(name: &str) -> bool {
+pub(crate) fn is_old_copy(name: &str) -> bool {
     let Some(rest) = name.strip_prefix("ttyak.old").and_then(|r| r.strip_suffix(".exe")) else { return false };
     rest.is_empty() || rest.strip_prefix('-').is_some_and(|h| h.len() == 8 && h.bytes().all(|b| b.is_ascii_hexdigit()))
 }
@@ -353,17 +364,10 @@ fn describe(plan: &Plan) -> Vec<String> {
 /// What to do instead for a copy the install scripts did not put here: the package manager's command and the purge
 /// step, or where the file is.
 fn package_note(install: &Install) -> Option<String> {
-    let how = match install.method {
-        Method::Script => return None,
-        Method::Homebrew => "with Homebrew",
-        Method::Scoop => "with Scoop",
-        Method::Winget => "with winget",
-        Method::Chocolatey => "with Chocolatey",
-        Method::Aur => "from the AUR",
-        Method::Deb => "from a .deb package",
-        Method::Rpm => "from an .rpm package",
-        Method::Unknown => "",
-    };
+    if install.method == Method::Script {
+        return None;
+    }
+    let how = install.method.how();
     let purge = "To delete your settings, sign-ins and drafts too, first run: ttyak purge";
     let Some(command) = install.method.uninstall_command() else {
         return Some(format!("This ttyak was not put here by the install script or a package manager: delete {} yourself.\n{purge}", plain(&install.exe).display()));
@@ -374,7 +378,7 @@ fn package_note(install: &Install) -> Option<String> {
 }
 
 /// `path` without the `\\?\` that Windows puts before a resolved path, as people write paths.
-fn plain(path: &Path) -> PathBuf {
+pub(crate) fn plain(path: &Path) -> PathBuf {
     let Some(text) = path.to_str() else { return path.to_path_buf() };
     if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
         PathBuf::from(format!(r"\\{rest}"))
@@ -582,8 +586,9 @@ mod tests {
             let base = std::env::temp_dir().join(format!("ttyak-uninstall-{test}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&base);
             std::fs::create_dir_all(base.join("home")).unwrap();
-            // Without links on the way (macOS's /var is one), which the link checks would see.
-            Temp(base.canonicalize().unwrap())
+            // Without links on the way (macOS's /var is one), which the link checks would see; as people write
+            // it (no `\\?\` on Windows), as the plans do.
+            Temp(plain(&base.canonicalize().unwrap()))
         }
 
         fn home(&self) -> PathBuf {
@@ -607,8 +612,8 @@ mod tests {
         fn script(&self, folder: &str, exe: &str) -> Install {
             let dir = self.0.join(folder);
             write(&dir.join(exe), "program");
-            let record = format!(r#"{{"method":"script","version":"0.11.0","dir":"{}"}}"#, dir.display());
-            write(&dir.join("install.json"), &(record + "\n"));
+            let record = serde_json::json!({"method": "script", "version": "0.11.0", "dir": dir});
+            write(&dir.join("install.json"), &format!("{record}\n"));
             Install { method: Method::Script, exe: dir.join(exe), writable: true }
         }
     }
@@ -698,6 +703,22 @@ mod tests {
         assert!(home.join(".bash_profile").is_symlink());
         assert_eq!(read(&dotfiles.join("elvish/rc.elv")), format!("{}\n", marked("set paths = [~/.local/bin $@paths]")));
         assert_eq!(read(&home.join(".xonshrc")), "$PATH.insert(0, '~/bin')\n");
+    }
+
+    #[test]
+    fn a_self_update_cut_short_is_cleaned_up() {
+        let t = Temp::new("cut-short");
+        for windows in [false, true] {
+            let install = t.script("bin", if windows { "ttyak.exe" } else { "ttyak" });
+            let bin = t.0.join("bin");
+            for name in [".ttyak-new", ".ttyak-update-4242.zip", ".ttyak-update-.zip", ".ttyak-update-12a.zip", "ttyak-update-7.zip"] {
+                write(&bin.join(name), "x");
+            }
+            let plan = plan_in(&install, true, &t.home(), None, None, windows);
+            let names: Vec<String> = plan.remove.iter().filter_map(|p| p.strip_prefix(&bin).ok()).map(|p| p.display().to_string()).collect();
+            assert!(names.contains(&".ttyak-new".to_string()) && names.contains(&".ttyak-update-4242.zip".to_string()), "{windows}: {names:?}");
+            assert!(!names.iter().any(|n| n.ends_with(".zip") && n != ".ttyak-update-4242.zip"), "{windows}: only its own downloads: {names:?}");
+        }
     }
 
     #[cfg(unix)]
@@ -941,12 +962,12 @@ mod tests {
         }
         write(&t.home().join(".bashrc"), &format!("{}\n", marked("x")));
         let plan = plan_in(&install, false, &t.home(), None, None, true);
-        let names: Vec<String> = plan.remove.iter().map(|p| p.strip_prefix(&t.0).unwrap().display().to_string()).collect();
+        let names: Vec<String> = plan.remove.iter().map(|p| p.strip_prefix(&t.0).unwrap().display().to_string().replace('\\', "/")).collect();
         assert_eq!(names, ["Programs/ttyak/ttyak.exe", "Programs/ttyak/install.json", "Programs/ttyak/ttyak.old-0123abcd.exe", "Programs/ttyak/ttyak.old.exe", "Programs/ttyak/.ttyak.exe.new", "Programs/ttyak/.install.json.new", "Programs/ttyak"]);
         assert_eq!(plan.path_edits, [PathEdit::WindowsUserPath(dir.clone())], "no shell files on Windows");
         // install.json's own spelling of the folder, but only when it is the exe's folder.
         let spelled = dir.to_string_lossy().to_uppercase();
-        write(&dir.join("install.json"), &format!(r#"{{"method":"script","version":"0.11.0","dir":"{spelled}"}}"#));
+        write(&dir.join("install.json"), &serde_json::json!({"method": "script", "version": "0.11.0", "dir": spelled}).to_string());
         assert_eq!(plan_in(&install, false, &t.home(), None, None, true).path_edits, [PathEdit::WindowsUserPath(PathBuf::from(&spelled))]);
         write(&dir.join("install.json"), r#"{"method":"script","version":"0.11.0","dir":"C:\\Windows\\System32"}"#);
         assert_eq!(plan_in(&install, false, &t.home(), None, None, true).path_edits, [PathEdit::WindowsUserPath(dir.clone())], "another folder is not taken off PATH");

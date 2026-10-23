@@ -24,6 +24,14 @@ pub enum Ctl {
     KeysTemplate,
     /// Check a theme file and install it (as themes/<file name>), for F6 → Appearance.
     ThemeImport { path: std::path::PathBuf },
+    /// Update this ttyak to the newest release as the update screen's "Update now" does (where the
+    /// install script put it, in a folder it can write); it does not restart.
+    #[command(hide = true)]
+    SelfUpdate {
+        /// latest.json's address (default: $TTYAK_UPDATE_URL, else the site's).
+        #[arg(long)]
+        url: Option<String>,
+    },
     /// List conversations (`-` marks public channels you are not in).
     Channels,
     /// Join a public channel.
@@ -202,6 +210,30 @@ pub async fn resolve_channel(client: &Client, spec: &str) -> Result<String> {
     convs.into_iter().find(|c| c.name == name).map(|c| c.id).ok_or_else(|| anyhow!("no channel {spec}"))
 }
 
+/// `ctl self-update`: the newest release from `url`'s latest.json put in place, or what to do
+/// instead where ttyak cannot update itself.
+async fn self_update(url: Option<&str>) -> Result<()> {
+    use crate::tui::update_view::Offer;
+    let url = url.map(str::to_string).or_else(|| std::env::var(crate::update::URL_ENV).ok().filter(|u| !u.is_empty())).unwrap_or_else(|| crate::update::URL.to_string());
+    let platform = crate::install::platform().ok_or_else(|| anyhow!("ttyak is not released for this platform"))?;
+    let latest = crate::update::parse(&crate::update::fetch(&url).await?, platform)?;
+    let current = semver::Version::parse(env!("CARGO_PKG_VERSION"))?;
+    if !crate::update::newer(&current, &latest) {
+        println!("ttyak {current} is the newest");
+        return Ok(());
+    }
+    let install = crate::install::current();
+    match crate::tui::update_view::offer(&install, &latest) {
+        Offer::UpdateNow => {}
+        Offer::Command(command) => bail!("ttyak cannot update itself here; run: {command}"),
+        Offer::Download { url, .. } => bail!("ttyak cannot update itself here; download it from {url}"),
+    }
+    eprintln!("downloading ttyak {}…", latest.version);
+    let exe = crate::update::self_update(&latest, &install, &crate::update::Progress::default()).await?;
+    println!("ttyak {} is installed at {} — restart ttyak to use it", latest.version, crate::uninstall::plain(&exe).display());
+    Ok(())
+}
+
 pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
     // These need no Slack session, so they run before the client is built.
     match &cmd {
@@ -218,14 +250,15 @@ pub async fn run(profile: &str, team: Option<&str>, cmd: Ctl) -> Result<()> {
             std::fs::write(&target, text)?;
             println!("installed theme '{name}' at {} — choose it in F6 → Appearance", target.display());
         }
+        Ctl::SelfUpdate { url } => self_update(url.as_deref()).await?,
         _ => {}
     }
-    if matches!(cmd, Ctl::LocaleTemplate | Ctl::KeysTemplate | Ctl::ThemeTemplate { .. } | Ctl::ThemeImport { .. }) {
+    if matches!(cmd, Ctl::LocaleTemplate | Ctl::KeysTemplate | Ctl::ThemeTemplate { .. } | Ctl::ThemeImport { .. } | Ctl::SelfUpdate { .. }) {
         return Ok(());
     }
     let client = client(profile, team)?;
     match cmd {
-        Ctl::LocaleTemplate | Ctl::KeysTemplate | Ctl::ThemeTemplate { .. } | Ctl::ThemeImport { .. } => unreachable!("handled above"),
+        Ctl::LocaleTemplate | Ctl::KeysTemplate | Ctl::ThemeTemplate { .. } | Ctl::ThemeImport { .. } | Ctl::SelfUpdate { .. } => unreachable!("handled above"),
         Ctl::Whoami => {
             let a = client.auth_test().await?;
             println!("{} ({}) in {} ({}) — {}", a.user, a.user_id, a.team, a.team_id, a.url);

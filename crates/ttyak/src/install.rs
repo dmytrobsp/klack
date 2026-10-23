@@ -58,9 +58,22 @@ impl Method {
         Method::ALL.into_iter().find(|m| m.name() == name)
     }
 
+    /// How it was installed, as in "ttyak was installed with Homebrew" (empty for the install script and unknown).
+    pub fn how(self) -> &'static str {
+        match self {
+            Method::Homebrew => "with Homebrew",
+            Method::Scoop => "with Scoop",
+            Method::Winget => "with winget",
+            Method::Chocolatey => "with Chocolatey",
+            Method::Aur => "from the AUR",
+            Method::Deb => "from a .deb package",
+            Method::Rpm => "from an .rpm package",
+            Method::Script | Method::Unknown => "",
+        }
+    }
+
     /// The package manager's command that updates ttyak; None where ttyak updates itself or nothing does it in one
     /// command.
-    #[allow(dead_code)] // for the update screen (a later step)
     pub fn update_command(self) -> Option<&'static str> {
         match self {
             Method::Homebrew => Some("brew upgrade ttyak"),

@@ -130,8 +130,8 @@ enum Net {
     /// A history request failed: the conversation can be asked again.
     HistoryFailed { channel: String, error: String },
     Error(String),
-    /// The update check found a version not notified before.
-    UpdateAvailable(crate::update::Latest),
+    /// The update check found a version newer than this ttyak (perhaps notified before).
+    UpdateKnown(crate::update::Found),
 }
 
 enum Confirm {
@@ -253,10 +253,18 @@ struct App {
     history: super::history::History,
     /// The event moved through the sidebar (a run of such moves is one step back).
     browsed: bool,
-    /// The newer version notified this run (kept across workspace switches, see [`Update`]).
+    /// The newer version the update check knows of (kept across workspace switches, see [`Update`]).
     update_available: Option<crate::update::Latest>,
-    /// The status line shows `update_available` (until the update screen is opened).
+    /// The status line shows `update_available` (notified this run, until the update screen is opened).
     update_pill: bool,
+    /// The status line's update pill as last drawn (for the mouse; empty when not shown).
+    update_pill_area: Rect,
+    /// The update screen (kept across workspace switches, a download going on too).
+    update_view: Option<super::update_view::UpdateView>,
+    /// The version this run's self-update put in place (offered no more).
+    update_installed: Option<semver::Version>,
+    /// For the update notification's click and the self-update's end (see [`Update`]).
+    update_events: mpsc::UnboundedSender<super::update_view::UpdateEvent>,
     /// The Activity view (Ctrl+A), shown while `view` is Activity.
     activity: super::activity::Activity,
     /// The save dialog (`␣s`).
@@ -2776,17 +2784,106 @@ impl App {
         }
     }
 
-    /// The update check found `latest`, not notified before: a silent desktop notification (when
-    /// they are on; quiet hours and keywords are about messages, so it never sounds) and, for this
-    /// run, the status line's pill.
-    fn update_found(&mut self, latest: crate::update::Latest) {
-        if self.ws.settings.notifications.desktop {
-            let (title, body) = super::notify::update_notification(&latest, env!("CARGO_PKG_VERSION"));
-            super::notify::show_silent(title, body);
+    /// The update check found a newer ttyak: known from now on (for the update screen) and, when not
+    /// notified before, a silent desktop notification (when they are on; quiet hours and keywords
+    /// are about messages, so it never sounds; a click opens the update screen) and, for this run,
+    /// the status line's pill. One this run has put in place is offered no more.
+    fn update_found(&mut self, found: crate::update::Found) {
+        let crate::update::Found { latest, notify } = found;
+        if self.update_installed.as_ref().is_some_and(|v| latest.version.cmp_precedence(v).is_le()) {
+            return;
         }
-        tracing::info!(version = %latest.version, "a new version of ttyak");
+        if notify {
+            if self.ws.settings.notifications.desktop {
+                let (title, body) = super::notify::update_notification(&latest, env!("CARGO_PKG_VERSION"));
+                let events = self.update_events.clone();
+                super::notify::show_silent(title, body, Some(Box::new(move || drop(events.send(super::update_view::UpdateEvent::Clicked)))));
+            }
+            tracing::info!(version = %latest.version, "a new version of ttyak");
+            self.update_pill = true;
+        }
         self.update_available = Some(latest);
-        self.update_pill = true;
+    }
+
+    /// Open the update screen for the newer version known (the notification, the status line's
+    /// pill and F6 lead here); the pill goes. One already open (a download going on) stays as it is.
+    fn open_update_screen(&mut self) {
+        let Some(latest) = self.update_available.clone() else {
+            self.status = "no newer ttyak is known".into();
+            return;
+        };
+        self.update_pill = false;
+        if self.update_view.is_none() {
+            self.update_view = Some(super::update_view::UpdateView::new(latest, crate::install::current()));
+        }
+    }
+
+    /// Do what a key or click on the update screen asked for.
+    fn update_do(&mut self, todo: super::update_view::Do) {
+        use super::update_view::Do;
+        match todo {
+            Do::Start => self.start_update(),
+            Do::Copy(text) => {
+                let how = self.clipboard.copy(&text);
+                self.status = format!("copied {text} to the {how}");
+            }
+            Do::Open(url) => {
+                self.status = match super::open::open_url(&url) {
+                    Ok(()) => format!("opened {url}"),
+                    Err(e) => format!("could not open {url}: {e:#}"),
+                };
+            }
+            Do::Close => self.update_view = None,
+            Do::Nothing => {}
+        }
+    }
+
+    /// Start the self-update the update screen shows (its end comes back on `update_events`, even
+    /// after a workspace switch).
+    fn start_update(&mut self) {
+        let Some(view) = self.update_view.as_mut() else { return };
+        let (latest, install) = (view.latest.clone(), crate::install::current());
+        let progress = std::sync::Arc::new(crate::update::Progress::default());
+        let events = self.update_events.clone();
+        let task = tokio::spawn({
+            let progress = progress.clone();
+            async move {
+                let result = crate::update::self_update(&latest, &install, &progress).await;
+                match &result {
+                    Err(e) if progress.cancelled() => tracing::debug!("self-update to {}: {e:#}", latest.version),
+                    Err(e) => tracing::warn!("self-update to {}: {e:#}", latest.version),
+                    Ok(_) => {}
+                }
+                let _ = events.send(super::update_view::UpdateEvent::Finished { version: latest.version, result: result.map(drop).map_err(|e| format!("{e:#}")) });
+            }
+        });
+        view.started(progress, task.abort_handle());
+    }
+
+    /// The update notification was clicked, or a self-update ended.
+    fn update_event(&mut self, event: super::update_view::UpdateEvent) {
+        use super::update_view::UpdateEvent;
+        match event {
+            UpdateEvent::Clicked => self.open_update_screen(),
+            UpdateEvent::Finished { version, result } => {
+                if result.is_ok() {
+                    tracing::info!(%version, "ttyak updated itself; it runs on until restarted");
+                    self.update_installed = Some(version.clone());
+                    self.update_available = None;
+                    self.update_pill = false;
+                }
+                match self.update_view.as_mut().filter(|v| v.latest.version == version) {
+                    Some(view) => view.finished(result),
+                    // (The screen was closed meanwhile.)
+                    None => {
+                        self.status = match result {
+                            Ok(()) => super::i18n::tr(super::update_view::DONE).replace("{version}", &version.to_string()),
+                            Err(e) => super::i18n::tr(super::update_view::FAILED).replace("{error}", &e),
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// This workspace's session has ended: it is marked in the rail (and not switched back to), the
@@ -3566,6 +3663,10 @@ impl App {
     /// goes three rows, as in the message panes. False when none is open.
     fn wheel_in_popup(&mut self, down: bool) -> bool {
         let step = if down { 1 } else { -1 };
+        // The update screen does not scroll, and nothing under it moves.
+        if self.update_view.is_some() && self.help.is_none() {
+            return true;
+        }
         if let Some((picker, _, _)) = self.picker.as_mut() {
             let len = picker.candidates(&self.ws.custom_emoji).len();
             picker.move_by(step, len);
@@ -3662,7 +3763,9 @@ impl App {
     fn hover_dialog(&mut self, column: u16, row: u16) {
         self.clear_main_hover();
         self.clear_dialog_hover();
-        if let Some(p) = self.prefs.as_mut() {
+        if let Some(v) = self.update_view.as_mut() {
+            v.hover_at(column, row);
+        } else if let Some(p) = self.prefs.as_mut() {
             match p.picker.as_mut() {
                 Some(t) => t.hover_at(column, row),
                 None => p.hover_at(column, row),
@@ -3691,6 +3794,8 @@ impl App {
             m.area
         } else if let Some(h) = &self.help {
             h.area
+        } else if let Some(v) = &self.update_view {
+            v.area
         } else if let Some(p) = &self.prefs {
             p.picker.as_ref().map_or(p.area, |t| t.area)
         } else if let Some(s) = &self.switcher {
@@ -3724,6 +3829,10 @@ impl App {
             self.menu = None;
         } else if self.help.is_some() {
             self.help = None;
+        } else if let Some(v) = self.update_view.as_mut() {
+            if v.close() {
+                self.update_view = None;
+            }
         } else if let Some(p) = self.prefs.as_mut() {
             if p.recording.is_some() {
                 p.recording = None;
@@ -3770,6 +3879,8 @@ impl App {
             Some(Context::Menu)
         } else if self.help.is_some() {
             Some(Context::Help)
+        } else if self.update_view.is_some() {
+            Some(Context::Update)
         } else if let Some(p) = &self.prefs {
             Some(if p.editing.is_some() {
                 Context::TextField
@@ -4280,6 +4391,7 @@ impl App {
     fn covered(&self) -> bool {
         self.menu.is_some()
             || self.help.is_some()
+            || self.update_view.is_some()
             || self.prefs.is_some()
             || self.switcher.is_some()
             || self.mover.is_some()
@@ -4749,13 +4861,20 @@ fn wanted_index(profile: &slack_core::session::Profile, account: Option<(&str, &
         .unwrap_or(0)
 }
 
-/// The update check's findings for the whole run, kept while workspaces are switched.
+/// The update check's findings and the update screen for the whole run, kept while workspaces
+/// are switched.
 struct Update {
-    /// New versions to notify, from [`crate::update::spawn`].
-    found: mpsc::UnboundedReceiver<crate::update::Latest>,
-    /// `App::update_available` and `App::update_pill` while no workspace is shown.
+    /// Newer versions, from [`crate::update::spawn`].
+    found: mpsc::UnboundedReceiver<crate::update::Found>,
+    /// The update notification's clicks and the self-update's end.
+    events: mpsc::UnboundedReceiver<super::update_view::UpdateEvent>,
+    events_tx: mpsc::UnboundedSender<super::update_view::UpdateEvent>,
+    /// `App::update_available`, `update_pill`, `update_view` and `update_installed` while no
+    /// workspace is shown.
     available: Option<crate::update::Latest>,
     pill: bool,
+    screen: Option<super::update_view::UpdateView>,
+    installed: Option<semver::Version>,
 }
 
 /// Run the app on the profile's `account` (team id, user id; or its default workspace; the first
@@ -4791,7 +4910,8 @@ pub async fn run(profile: slack_core::session::Profile, account: Option<(&str, &
     // Once the screen is up, so the check never holds the start.
     let (found_tx, found) = mpsc::unbounded_channel();
     crate::update::spawn(found_tx);
-    let mut update = Update { found, available: None, pill: false };
+    let (events_tx, update_events) = mpsc::unbounded_channel();
+    let mut update = Update { found, events: update_events, events_tx, available: None, pill: false, screen: None, installed: None };
     // Each workspace's back and forward, kept while another is shown.
     let mut histories: std::collections::HashMap<usize, super::history::History> = std::collections::HashMap::new();
     loop {
@@ -4954,6 +5074,11 @@ impl App {
             browsed: false,
             update_available: None,
             update_pill: false,
+            update_pill_area: Rect::default(),
+            update_view: None,
+            update_installed: None,
+            // (The run's, from `run_workspace`.)
+            update_events: mpsc::unbounded_channel().0,
         }
     }
 }
@@ -4984,7 +5109,8 @@ async fn run_workspace(
     app.ws = Workspace { team_name, team_id: client.session.team_id.clone(), self_id: client.session.user_id.clone(), settings: settings.clone(), ..Default::default() };
     app.sidebar = Sidebar::for_account(&client.session.team_id, &client.session.user_id);
     app.resume_history(history);
-    (app.update_available, app.update_pill) = (update.available.take(), update.pill);
+    (app.update_available, app.update_pill, app.update_view, app.update_installed) = (update.available.take(), update.pill, update.screen.take(), update.installed.clone());
+    app.update_events = update.events_tx.clone();
 
     let mut tick = tokio::time::interval(Duration::from_millis(500));
     let mut video_tick = tokio::time::interval(Duration::from_millis(40));
@@ -5036,7 +5162,8 @@ async fn run_workspace(
                 went = if goes_somewhere(&msg) { Went::Yes } else { Went::No };
                 handle_net(&mut app, msg);
             }
-            Some(latest) = update.found.recv() => handle_net(&mut app, Net::UpdateAvailable(latest)),
+            Some(found) = update.found.recv() => handle_net(&mut app, Net::UpdateKnown(found)),
+            Some(event) = update.events.recv() => app.update_event(event),
             Some((index, target)) = clicks.recv() => {
                 went = Went::Yes;
                 if index == app.workspace {
@@ -5118,7 +5245,7 @@ async fn run_workspace(
     }
     app.save_drafts();
     *history = std::mem::take(&mut app.history);
-    (update.available, update.pill) = (app.update_available.take(), app.update_pill);
+    (update.available, update.pill, update.screen, update.installed) = (app.update_available.take(), app.update_pill, app.update_view.take(), app.update_installed.take());
     let App { switch_to, media, clipboard, .. } = app;
     Ok((switch_to, media, clipboard))
 }
@@ -5279,7 +5406,7 @@ fn handle_dialog(app: &mut App, ev: &Event) -> bool {
         // The reaction picker: a click on an emoji reacts with it, a click outside closes it.
         // The side buttons are no clicks: over the picker, the menu or the save dialog they do nothing.
         Event::Mouse(m) if matches!(m.kind, MouseEventKind::Down(MouseButton::Back | MouseButton::Forward)) && (app.picker.is_some() || app.menu.is_some() || app.save.is_some()) => {}
-        Event::Mouse(m) if app.picker.is_some() && matches!(m.kind, MouseEventKind::Down(_)) => {
+        Event::Mouse(m) if app.picker.is_some() && app.update_view.is_none() && matches!(m.kind, MouseEventKind::Down(_)) => {
             let Some((picker, _, _)) = app.picker.as_mut() else { return true };
             let len = picker.candidates(&app.ws.custom_emoji).len();
             match app.picker.as_ref().map(|(p, _, _)| (p.row_at(m.column, m.row).filter(|n| *n < len), p.area.contains((m.column, m.row).into()))) {
@@ -5333,6 +5460,29 @@ fn handle_dialog(app: &mut App, ev: &Event) -> bool {
                 Some(Action::HalfPageUp) => h.scroll_by(-(h.page() / 2).max(1)),
                 Some(Action::HalfPageDown) => h.scroll_by((h.page() / 2).max(1)),
                 Some(Action::Close) => app.help = None,
+                _ => {}
+            }
+        }
+        Event::Key(k) if k.kind != KeyEventKind::Release && app.update_view.is_some() => {
+            let action = app.action_in(Context::Update, &k);
+            let Some(v) = app.update_view.as_mut() else { return true };
+            let todo = action.map_or(super::update_view::Do::Nothing, |a| v.key(a));
+            app.update_do(todo);
+        }
+        // The update screen (above any dialog it was opened over): a click on a button presses it,
+        // one outside closes it as the close key does, nothing under it reacts.
+        Event::Mouse(m) if matches!(m.kind, MouseEventKind::Down(MouseButton::Left | MouseButton::Right | MouseButton::Middle)) && app.help.is_none() && app.update_view.is_some() => {
+            let Some(v) = app.update_view.as_mut() else { return true };
+            match v.button_at(m.column, m.row) {
+                Some(b) if m.kind == MouseEventKind::Down(MouseButton::Left) => {
+                    let todo = v.press(b);
+                    app.update_do(todo);
+                    app.closing_click = Some((std::time::Instant::now(), m.column, m.row));
+                }
+                _ if !v.area.contains((m.column, m.row).into()) => {
+                    app.close_dialog();
+                    app.closing_click = Some((std::time::Instant::now(), m.column, m.row));
+                }
                 _ => {}
             }
         }
@@ -5803,6 +5953,11 @@ fn handle_main(app: &mut App, ev: Event) -> bool {
             app.huddles.hover_at(c, r);
         }
         Event::Mouse(m) if m.kind == MouseEventKind::Down(MouseButton::Right) => app.open_menu(m.column, m.row),
+        // The status line's update pill opens the update screen.
+        Event::Mouse(m) if m.kind == MouseEventKind::Down(MouseButton::Left) && app.update_pill_area.contains((m.column, m.row).into()) => {
+            app.open_update_screen();
+            app.closing_click = Some((std::time::Instant::now(), m.column, m.row));
+        }
         // The mouse's side buttons, as the keys (NORMAL only; the press, not the release).
         Event::Mouse(m) if matches!(m.kind, MouseEventKind::Down(MouseButton::Back | MouseButton::Forward)) => {
             if app.mode() == Mode::Normal {
@@ -6906,7 +7061,7 @@ fn handle_net(app: &mut App, msg: Net) {
             app.loading = false;
             app.status = e;
         }
-        Net::UpdateAvailable(latest) => app.update_found(latest),
+        Net::UpdateKnown(found) => app.update_found(found),
         Net::Reacted { channel, ts, name, add, error, refused } => {
             app.reacting.remove(&(channel.clone(), ts.clone(), name.clone()));
             let Some(error) = error else { return };
@@ -7171,6 +7326,9 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     if let Some(p) = app.prefs.as_mut() {
         p.draw(f, body, &app.ws, app.current.as_deref(), &app.keys);
     }
+    if let Some(v) = app.update_view.as_mut() {
+        v.draw(f, body, &app.keys);
+    }
     if let Some(m) = app.menu.as_mut() {
         m.draw(f, body);
     }
@@ -7243,7 +7401,16 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         update: app.update_available.as_ref().filter(|_| app.update_pill).map(|l| l.version.to_string()),
     };
     let showcmd = app.keys.show(app.pending.typed());
-    f.render_widget(Paragraph::new(super::status::line(pill, &info, &showcmd, &hints, status.width)), status);
+    let line = super::status::line(pill, &info, &showcmd, &hints, status.width);
+    // The update pill ends the line when it is shown.
+    app.update_pill_area = match line.spans.last().filter(|s| info.update.is_some() && s.content.contains('⬆')) {
+        Some(last) => {
+            let (w, all) = (last.width() as u16, line.width() as u16);
+            Rect { x: status.x + all.saturating_sub(w), y: status.y, width: w, height: 1 }.intersection(status)
+        }
+        None => Rect::default(),
+    };
+    f.render_widget(Paragraph::new(line), status);
 }
 
 /// The view a sidebar row opens.
@@ -7306,6 +7473,7 @@ fn mode_label(top: Context, focus: Focus) -> super::status::Pill {
         Context::Viewer => Dialog("IMAGE"),
         Context::Confirm => Dialog("CONFIRM"),
         Context::Picker => Dialog("REACT"),
+        Context::Update => Dialog("UPDATE"),
         _ => match focus {
             Focus::Sidebar | Focus::Huddle | Focus::Messages | Focus::Thread => Normal,
             Focus::ThreadComposer | Focus::Composer => Insert,
@@ -8258,17 +8426,107 @@ mod tests {
             screen(&terminal).pop().unwrap()
         };
         assert!(!status(&mut app).contains('⬆'));
-        let latest = crate::update::Latest { version: semver::Version::new(9, 9, 9), date: "2026-11-01".into(), notes: String::new(), asset: crate::update::Asset { url: "u".into(), sha256: "s".into() } };
-        super::handle_net(&mut app, super::Net::UpdateAvailable(latest.clone()));
+        let latest = new_version();
+        super::handle_net(&mut app, super::Net::UpdateKnown(crate::update::Found { latest: latest.clone(), notify: true }));
         assert!(status(&mut app).ends_with("⬆ 9.9.9 "), "{}", status(&mut app));
         app.status = "copied a link to the message".into();
         let with_note = status(&mut app);
         assert!(with_note.contains("copied a link") && with_note.ends_with("⬆ 9.9.9 "), "a note leaves it: {with_note}");
         assert_eq!((app.update_available.as_ref(), app.update_pill), (Some(&latest), true));
-        // The update screen (a later step) takes the pill away; the version stays known.
-        app.update_pill = false;
+        // The update screen takes the pill away; the version stays known.
+        app.open_update_screen();
+        app.update_view = None;
         assert!(!status(&mut app).contains('⬆'));
         assert_eq!(app.update_available, Some(latest));
+    }
+
+    /// The release the update tests find.
+    fn new_version() -> crate::update::Latest {
+        crate::update::Latest { version: semver::Version::new(9, 9, 9), date: "2026-11-01".into(), notes: "https://example.invalid/notes".into(), asset: crate::update::Asset { url: "u".into(), sha256: "s".into() } }
+    }
+
+    #[tokio::test]
+    async fn a_version_notified_before_is_known_without_a_pill() {
+        let (mut app, _net) = test_app();
+        app.ws.settings.notifications.desktop = false;
+        super::handle_net(&mut app, super::Net::UpdateKnown(crate::update::Found { latest: new_version(), notify: false }));
+        assert_eq!((app.update_available.as_ref(), app.update_pill), (Some(&new_version()), false), "known for F6 → Updates");
+        app.open_update_screen();
+        assert!(app.update_view.is_some());
+    }
+
+    #[tokio::test]
+    async fn the_pill_click_opens_the_update_screen() {
+        let (mut app, _net) = test_app();
+        app.ws.settings.notifications.desktop = false;
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 24)).unwrap();
+        super::handle_net(&mut app, super::Net::UpdateKnown(crate::update::Found { latest: new_version(), notify: true }));
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        let pill = app.update_pill_area;
+        assert_eq!((pill.y, pill.right(), pill.width), (23, 120, 9), "{pill:?}");
+        // Beside it: nothing.
+        click(&mut app, pill.x - 1, pill.y);
+        assert!(app.update_view.is_none());
+        click(&mut app, pill.x + 2, pill.y);
+        assert!(app.update_view.is_some() && !app.update_pill, "open, the pill gone");
+        assert_eq!(app.overlay(), Some(crate::tui::keymap::Context::Update));
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        let text = screen(&terminal).join("\n");
+        assert!(text.contains("Update ttyak") && text.contains("ttyak 9.9.9 is out") && !text.contains('⬆') && text.contains("UPDATE"), "{text}");
+        // Esc closes it (nothing is downloading).
+        press(&mut app, crossterm::event::KeyCode::Esc, crossterm::event::KeyModifiers::NONE);
+        assert!(app.update_view.is_none());
+    }
+
+    #[tokio::test]
+    async fn the_update_screen_is_above_the_preferences() {
+        let (mut app, _net) = test_app();
+        app.ws.settings.notifications.desktop = false;
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40)).unwrap();
+        super::handle_net(&mut app, super::Net::UpdateKnown(crate::update::Found { latest: new_version(), notify: true }));
+        app.prefs = Some(super::super::prefs::Prefs::new());
+        app.open_update_screen();
+        assert_eq!(app.overlay(), Some(crate::tui::keymap::Context::Update));
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        let area = app.update_view.as_ref().unwrap().area;
+        let selected = app.prefs.as_ref().map(|p| p.selected);
+        // Inside it, off the buttons: nothing, above or below.
+        click(&mut app, area.x + 2, area.y + 1);
+        assert!(app.update_view.is_some());
+        assert_eq!(app.prefs.as_ref().map(|p| p.selected), selected);
+        // Outside it: it closes, the preferences stay.
+        click(&mut app, area.x.saturating_sub(3), area.y);
+        assert!(app.update_view.is_none() && app.prefs.is_some());
+    }
+
+    #[tokio::test]
+    async fn the_notification_click_opens_the_update_screen() {
+        let (mut app, _net) = test_app();
+        app.ws.settings.notifications.desktop = false;
+        app.update_event(super::super::update_view::UpdateEvent::Clicked);
+        assert!(app.update_view.is_none(), "nothing known yet");
+        super::handle_net(&mut app, super::Net::UpdateKnown(crate::update::Found { latest: new_version(), notify: true }));
+        app.update_event(super::super::update_view::UpdateEvent::Clicked);
+        assert!(app.update_view.is_some() && !app.update_pill);
+    }
+
+    #[tokio::test]
+    async fn a_finished_update_says_restart_and_is_offered_no_more() {
+        use super::super::update_view::{Stage, UpdateEvent};
+        let (mut app, _net) = test_app();
+        app.ws.settings.notifications.desktop = false;
+        super::handle_net(&mut app, super::Net::UpdateKnown(crate::update::Found { latest: new_version(), notify: true }));
+        app.open_update_screen();
+        app.update_event(UpdateEvent::Finished { version: semver::Version::new(9, 9, 9), result: Ok(()) });
+        assert!(matches!(app.update_view.as_ref().map(|v| &v.stage), Some(Stage::Done)));
+        assert_eq!((app.update_available.as_ref(), app.update_pill), (None, false));
+        // The next check finds the same version: this run has put it in place.
+        super::handle_net(&mut app, super::Net::UpdateKnown(crate::update::Found { latest: new_version(), notify: true }));
+        assert_eq!((app.update_available.as_ref(), app.update_pill), (None, false));
+        // Closed meanwhile: the status line says it.
+        app.update_view = None;
+        app.update_event(UpdateEvent::Finished { version: semver::Version::new(9, 9, 9), result: Ok(()) });
+        assert_eq!(app.status, "ttyak 9.9.9 is installed — restart ttyak to use it");
     }
 
     #[tokio::test]

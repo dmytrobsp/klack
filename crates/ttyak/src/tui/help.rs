@@ -143,7 +143,8 @@ mod tests {
         let titles = titles_of(&map);
         let want = ["Direct keys — everywhere", "Direct keys — sidebar", "Direct keys — messages and thread", "Direct keys — huddle view", "␣ on a message", "␣ on a conversation", "␣c conversation", "␣h huddle", "␣n new", "␣a availability", "␣f find", "Typing (INSERT)"];
         assert_eq!(titles[..want.len()], want, "{titles:?}");
-        assert_eq!(titles.last().map(String::as_str), Some("Save files"), "{titles:?}");
+        assert_eq!(titles.last().map(String::as_str), Some("Update screen"), "{titles:?}");
+        assert_eq!(keys_of(&map, "Update screen", "update now").as_deref(), Some("u"));
         assert!(titles.contains(&"Profile card".to_string()) && !titles.contains(&"Unbound".to_string()));
         assert_eq!(keys_of(&map, "␣ on a message", "react").as_deref(), Some("Space r"));
         assert_eq!(keys_of(&map, "␣h huddle", "mute").as_deref(), Some("Space h m"));

@@ -39,6 +39,10 @@ toml = "1.1.8"
 toml_edit = "0.25"
 # Versions in the update check's `latest.json` (already in the tree).
 semver = "1.0.28"
+# The self-update: the release archive read (deflate only; flate2 is already in the tree) and its SHA256
+# checked (sha2 already in the tree).
+zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
+sha2 = "0.10.9"
 chrono-tz = "0.10.4"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 aes = "0.8"

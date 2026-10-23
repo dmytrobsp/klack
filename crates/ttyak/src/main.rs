@@ -175,6 +175,8 @@ async fn run() -> Result<()> {
     // rustls and reqwest are built without a crypto provider of their own (one fewer to carry):
     // ring, as webrtc uses, is the one for every TLS connection.
     let _ = rustls::crypto::ring::default_provider().install_default();
+    // The copy a self-update renamed aside (Windows), once it is no longer running.
+    update::remove_old_copies();
     let cli = Cli::parse();
     let dirs = Dirs::system()?;
     let profile = match cli.profile {

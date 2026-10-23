@@ -196,10 +196,11 @@ pub enum Context {
     Menu,
     Save,
     Huddle,
+    Update,
 }
 
 impl Context {
-    pub const ALL: [Context; 24] = [
+    pub const ALL: [Context; 25] = [
         Context::Global,
         Context::Sidebar,
         Context::Messages,
@@ -224,6 +225,7 @@ impl Context {
         Context::Menu,
         Context::Save,
         Context::Huddle,
+        Context::Update,
     ];
 
     /// The table name in `keys.toml`.
@@ -253,6 +255,7 @@ impl Context {
             Context::Menu => "menu",
             Context::Save => "save",
             Context::Huddle => "huddle_view",
+            Context::Update => "update",
         }
     }
 
@@ -283,6 +286,7 @@ impl Context {
             Context::Menu => "Context menu (right-click)",
             Context::Save => "Save files",
             Context::Huddle => "Huddle view",
+            Context::Update => "Update screen",
         }
     }
 
@@ -425,6 +429,8 @@ pub enum Action {
     PauseNotifications,
     PauseFor,
     BrowseChannels,
+    UpdateNow,
+    ReleaseNotes,
 }
 
 macro_rules! actions {
@@ -757,6 +763,13 @@ actions! {
         HalfPageUp "half_page_up" "half a page up" "half page up" "⏫" ["ctrl+u"]
         HalfPageDown "half_page_down" "half a page down" "half page down" "⏬" ["ctrl+d"]
         Close "close" "close" "close" "❎" ["esc", "q", "f1", "?"]
+    }
+    Update {
+        Open "first_button" "the first button: update now, copy the command or open the download page" "first button" "👉" ["enter"]
+        UpdateNow "update_now" "download, check and put in the new version, when ttyak can update itself (it never restarts by itself)" "update now" "🔄" ["u"]
+        Copy "copy" "copy the command to run, or the download link" "copy" "📋" ["y"]
+        ReleaseNotes "release_notes" "open the release notes (the download page) in the browser" "release notes" "📰" ["o"]
+        Close "close" "close; while downloading: cancel the download" "close" "❎" ["esc", "q"]
     }
 }
 
@@ -1532,6 +1545,7 @@ pub fn hints_for(context: Context) -> &'static [(Action, &'static str)] {
         Context::Menu => &[(Open, "choose"), (Close, "close")],
         Context::Save => &[(Open, "save"), (Tick, "tick"), (TickAll, "all"), (Folder, "folder"), (Close, "close")],
         Context::Huddle => &[(Open, "maximize"), (NextTab, "next tile"), (Close, "back"), (Help, "help")],
+        Context::Update => &[(ReleaseNotes, "notes"), (Close, "close")],
     }
 }
 
