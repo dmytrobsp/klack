@@ -98,7 +98,7 @@ jobs:
             --entitlements packaging/macos/ttyak.entitlements --keychain "$kc" --sign "$id" "$EXE"
           codesign --verify --strict --verbose=2 "$EXE"
           codesign --verify --strict --test-requirement "=anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = \"$APPLE_TEAM_ID\"" "$EXE"
-          codesign -d --verbose=2 "$EXE" 2>&1 | grep -E '^(Identifier|Format|CodeDirectory|Timestamp|TeamIdentifier|Runtime Version)='
+          codesign -d --verbose=2 "$EXE" 2>&1 | grep -E '^(Identifier=|Format=|CodeDirectory |Timestamp=|TeamIdentifier=|Runtime Version=)'
       # Apple's notary service checks a zip of the binary; a bare binary cannot be stapled, so Gatekeeper looks the
       # ticket up online at the first start.
       - name: Notarize (macOS)
@@ -116,20 +116,27 @@ jobs:
           printf '%s\n' "$APPLE_API_KEY" > "$key"
           ditto -c -k --keepParent "$EXE" "$zip"
           auth=(--key "$key" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER")
-          code=0
-          xcrun notarytool submit "$zip" "${auth[@]}" --wait --timeout 30m --output-format json > "$RUNNER_TEMP/notary.json" || code=$?
-          read -r id status < <(python3 -c 'import json, sys; r = json.load(open(sys.argv[1])); print(r.get("id", "-"), r.get("status", "-"))' "$RUNNER_TEMP/notary.json") || true
-          echo "notarytool: submission ${id:-?} status ${status:-?} (exit $code)"
+          field() { python3 -c 'import json, sys; print(json.load(sys.stdin)[sys.argv[1]])' "$1"; }
+          # The submission's id first, so a wait that runs out still names it.
+          id=$(xcrun notarytool submit "$zip" "${auth[@]}" --output-format json | field id)
+          echo "notarytool: submitted $id"
+          xcrun notarytool wait "$id" "${auth[@]}" --timeout 30m || true
+          status=$(xcrun notarytool info "$id" "${auth[@]}" --output-format json | field status)
+          echo "notarytool: $id $status"
           if [ "$status" != Accepted ]; then
-            cat "$RUNNER_TEMP/notary.json"
-            [ "${id:--}" = - ] || xcrun notarytool log "$id" "${auth[@]}" || true
+            if [ "$status" = "In Progress" ]; then
+              xcrun notarytool history "${auth[@]}" | head -n 20 || true
+            else
+              xcrun notarytool log "$id" "${auth[@]}" || true
+            fi
+            echo "::error::notarization $id: $status"
             exit 1
           fi
       - name: Remove the signing files (macOS)
         if: always() && runner.os == 'macOS'
         run: |
           security delete-keychain "$RUNNER_TEMP/ttyak-signing.keychain-db" 2> /dev/null || true
-          rm -f "$RUNNER_TEMP/ttyak-signing.p12" "$RUNNER_TEMP/ttyak-notary.p8" "$RUNNER_TEMP/ttyak-notarize.zip" "$RUNNER_TEMP/notary.json"
+          rm -f "$RUNNER_TEMP/ttyak-signing.p12" "$RUNNER_TEMP/ttyak-notary.p8" "$RUNNER_TEMP/ttyak-notarize.zip"
       # The plain files, not an archive: GitHub zips every artifact itself, so a run's download is one zip with
       # the program and docs at its top. (Artifacts lose the executable bit; the release job puts it back.)
       - name: Stage
