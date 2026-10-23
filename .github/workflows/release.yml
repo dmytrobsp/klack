@@ -31,6 +31,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Packages (Linux)
         if: runner.os == 'Linux'
         run: >-
@@ -43,6 +45,91 @@ jobs:
         with:
           key: ${{ matrix.target }}
       - run: cargo build --locked --release --target ${{ matrix.target }}
+      # macOS: the binary signed with the user's Developer ID (hardened runtime, Apple's timestamp) and notarized,
+      # before it is staged, so the zips, SHA256SUMS and attestations are of the signed one. Without the secrets (a
+      # fork, a pull request) it builds unsigned with a notice; a tag never publishes an unsigned build.
+      - name: Signing (macOS)
+        id: signing
+        if: runner.os == 'macOS'
+        env:
+          HAVE: >-
+            ${{ secrets.APPLE_P12 != '' && secrets.APPLE_P12_PASSWORD != '' && secrets.APPLE_API_KEY != ''
+            && secrets.APPLE_API_KEY_ID != '' && secrets.APPLE_API_ISSUER != '' && secrets.APPLE_TEAM_ID != '' }}
+          TAG: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+        run: |
+          if [ "$HAVE" = true ]; then
+            echo "sign=true" >> "$GITHUB_OUTPUT"
+          elif [ "$TAG" = true ]; then
+            echo "::error::the Apple signing secrets are missing: a release is never published unsigned"
+            exit 1
+          else
+            echo "::notice::no Apple signing secrets: ${{ matrix.name }} is built unsigned"
+          fi
+      # A keychain of its own for the run (a random password, removed below); codesign picks the Developer ID
+      # Application identity of the team by its SHA-1, and is let use the key without a prompt.
+      - name: Sign (macOS)
+        if: steps.signing.outputs.sign == 'true'
+        env:
+          APPLE_P12: ${{ secrets.APPLE_P12 }}
+          APPLE_P12_PASSWORD: ${{ secrets.APPLE_P12_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          EXE: target/${{ matrix.target }}/release/${{ matrix.exe }}
+        run: |
+          set +x
+          umask 077
+          kc="$RUNNER_TEMP/ttyak-signing.keychain-db"
+          p12="$RUNNER_TEMP/ttyak-signing.p12"
+          pass=$(openssl rand -hex 32)
+          printf '%s' "$APPLE_P12" | base64 --decode > "$p12"
+          security create-keychain -p "$pass" "$kc"
+          security set-keychain-settings -lut 3600 "$kc"
+          security unlock-keychain -p "$pass" "$kc"
+          security import "$p12" -k "$kc" -f pkcs12 -P "$APPLE_P12_PASSWORD" -T /usr/bin/codesign > /dev/null
+          rm -f "$p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$pass" "$kc" > /dev/null
+          others=()
+          while IFS= read -r k; do others+=("$k"); done < <(security list-keychains -d user | sed -e 's/^ *"//' -e 's/"$//')
+          security list-keychains -d user -s "$kc" "${others[@]}"
+          # (Only the hash is taken: the identity's name is the user's.)
+          id=$(security find-identity -v -p codesigning "$kc" |
+            awk -v team="($APPLE_TEAM_ID)\"" 'index($0, "\"Developer ID Application: ") && index($0, team) { print $2; exit }')
+          [ -n "$id" ] || { echo "::error::the certificate has no Developer ID Application identity of the team"; exit 1; }
+          codesign --force --options runtime --timestamp --identifier ttyak \
+            --entitlements packaging/macos/ttyak.entitlements --keychain "$kc" --sign "$id" "$EXE"
+          codesign --verify --strict --verbose=2 "$EXE"
+          codesign --verify --strict --test-requirement "=anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = \"$APPLE_TEAM_ID\"" "$EXE"
+          codesign -d --verbose=2 "$EXE" 2>&1 | grep -E '^(Identifier|Format|CodeDirectory|Timestamp|TeamIdentifier|Runtime Version)='
+      # Apple's notary service checks a zip of the binary; a bare binary cannot be stapled, so Gatekeeper looks the
+      # ticket up online at the first start.
+      - name: Notarize (macOS)
+        if: steps.signing.outputs.sign == 'true'
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          EXE: target/${{ matrix.target }}/release/${{ matrix.exe }}
+        run: |
+          set +x
+          umask 077
+          key="$RUNNER_TEMP/ttyak-notary.p8"
+          zip="$RUNNER_TEMP/ttyak-notarize.zip"
+          printf '%s\n' "$APPLE_API_KEY" > "$key"
+          ditto -c -k --keepParent "$EXE" "$zip"
+          auth=(--key "$key" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER")
+          code=0
+          xcrun notarytool submit "$zip" "${auth[@]}" --wait --timeout 30m --output-format json > "$RUNNER_TEMP/notary.json" || code=$?
+          read -r id status < <(python3 -c 'import json, sys; r = json.load(open(sys.argv[1])); print(r.get("id", "-"), r.get("status", "-"))' "$RUNNER_TEMP/notary.json") || true
+          echo "notarytool: submission ${id:-?} status ${status:-?} (exit $code)"
+          if [ "$status" != Accepted ]; then
+            cat "$RUNNER_TEMP/notary.json"
+            [ "${id:--}" = - ] || xcrun notarytool log "$id" "${auth[@]}" || true
+            exit 1
+          fi
+      - name: Remove the signing files (macOS)
+        if: always() && runner.os == 'macOS'
+        run: |
+          security delete-keychain "$RUNNER_TEMP/ttyak-signing.keychain-db" 2> /dev/null || true
+          rm -f "$RUNNER_TEMP/ttyak-signing.p12" "$RUNNER_TEMP/ttyak-notary.p8" "$RUNNER_TEMP/ttyak-notarize.zip" "$RUNNER_TEMP/notary.json"
       # The plain files, not an archive: GitHub zips every artifact itself, so a run's download is one zip with
       # the program and docs at its top. (Artifacts lose the executable bit; the release job puts it back.)
       - name: Stage
@@ -74,6 +161,8 @@ jobs:
       NFPM_SHA256: 6d7f9a28b2f397934403950fcbba83f598b08d02edbe79a0815b3b4897341750
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       # A tag must match the Cargo version; a manual run gets a version that is semver and plainly no release.
       - name: Version
         run: |

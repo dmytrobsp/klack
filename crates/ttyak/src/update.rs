@@ -463,6 +463,8 @@ struct Release {
     platform: &'static str,
     max_zip: u64,
     max_sums: u64,
+    /// What the platform says of the executables' signatures.
+    verifier: &'static dyn Verifier,
 }
 
 impl Release {
@@ -470,7 +472,7 @@ impl Release {
     fn this() -> Result<Release> {
         let base = std::env::var(DOWNLOAD_URL_ENV).ok().filter(|u| !u.is_empty()).unwrap_or_else(|| DOWNLOAD_URL.to_string());
         let platform = crate::install::platform().context("ttyak is not released for this platform")?;
-        Ok(Release { base: base.trim_end_matches('/').to_string(), platform, max_zip: MAX_ZIP_BYTES, max_sums: MAX_SUMS_BYTES })
+        Ok(Release { base: base.trim_end_matches('/').to_string(), platform, max_zip: MAX_ZIP_BYTES, max_sums: MAX_SUMS_BYTES, verifier: VERIFIER })
     }
 
     /// `version`'s archive for this platform and its `SHA256SUMS`.
@@ -532,9 +534,10 @@ async fn self_update_from(latest: &Latest, install: &Install, progress: &Progres
     progress.begin_install()?;
     // Unpacking and moving files: off the async threads, and no longer cancelled.
     let version = latest.version.to_string();
+    let verifier = release.verifier;
     tokio::task::spawn_blocking(move || {
         let leftovers = leftovers;
-        install_from(&download, &exe, &version)?;
+        install_from(&download, &exe, &version, verifier)?;
         drop(leftovers);
         Ok(exe)
     })
@@ -542,13 +545,13 @@ async fn self_update_from(latest: &Latest, install: &Install, progress: &Progres
     .context("the update stopped")?
 }
 
-/// The executable from the archive `zip` put in place of `exe` and `version` written into the
-/// `install.json` beside it.
-fn install_from(zip: &Path, exe: &Path, version: &str) -> Result<()> {
+/// The executable from the archive `zip` put in place of `exe` (once `verifier` finds it signed as
+/// `exe` is) and `version` written into the `install.json` beside it.
+fn install_from(zip: &Path, exe: &Path, version: &str, verifier: &dyn Verifier) -> Result<()> {
     let dir = exe.parent().context("the executable's folder")?;
     let staged = staged(dir);
     unpack(zip, &staged)?;
-    // (The signing tasks check the new executable's signature here.)
+    check_signer(verifier, exe, &staged)?;
     let record = dir.join(crate::install::RECORD_FILE);
     let new_record = crate::install::Record::read(dir, &crate::install::System).map(|r| crate::install::Record { version: version.to_string(), ..r });
     let staged_record = staged_record(dir);
@@ -586,6 +589,93 @@ fn unpack(zip: &Path, to: &Path) -> Result<()> {
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(to, std::fs::Permissions::from_mode(0o755)).with_context(|| format!("could not make {} executable", to.display()))?;
+    }
+    Ok(())
+}
+
+/// What the platform says of an executable's signature.
+trait Verifier: Sync {
+    /// The Team ID `exe` is signed with; None when it is not signed by a team (unsigned, ad hoc).
+    fn team(&self, exe: &Path) -> Result<Option<String>>;
+    /// Whether `exe`'s signature holds, strictly checked, and is a Developer ID of `team`.
+    fn holds(&self, exe: &Path, team: &str) -> Result<bool>;
+}
+
+/// No signatures checked: a platform ttyak is not signed for here.
+#[cfg(any(not(target_os = "macos"), test))]
+struct NoSignatures;
+
+#[cfg(any(not(target_os = "macos"), test))]
+impl Verifier for NoSignatures {
+    fn team(&self, _: &Path) -> Result<Option<String>> {
+        Ok(None)
+    }
+
+    fn holds(&self, _: &Path, _: &str) -> Result<bool> {
+        Ok(true)
+    }
+}
+
+/// macOS's `codesign`.
+#[cfg(target_os = "macos")]
+struct Codesign;
+
+#[cfg(target_os = "macos")]
+const CODESIGN: &str = "/usr/bin/codesign";
+
+#[cfg(target_os = "macos")]
+impl Verifier for Codesign {
+    fn team(&self, exe: &Path) -> Result<Option<String>> {
+        let out = std::process::Command::new(CODESIGN).args(["-d", "--verbose=2"]).arg(exe).stdin(std::process::Stdio::null()).output().context("could not run codesign")?;
+        // (What it finds goes to stderr.)
+        let said = String::from_utf8_lossy(&out.stderr);
+        if out.status.success() {
+            Ok(team_identifier(&said))
+        } else if said.contains("not signed at all") {
+            Ok(None)
+        } else {
+            bail!("codesign could not read {}: {}", exe.display(), said.trim())
+        }
+    }
+
+    fn holds(&self, exe: &Path, team: &str) -> Result<bool> {
+        // Apple's requirement for Developer ID programs: Apple's anchor, the Developer ID
+        // intermediate and leaf, and the team.
+        let requirement = format!("=anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = \"{team}\"");
+        let status = std::process::Command::new(CODESIGN)
+            .args(["--verify", "--strict", "--test-requirement"])
+            .arg(requirement)
+            .arg(exe)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .context("could not run codesign")?;
+        Ok(status.success())
+    }
+}
+
+/// This platform's signatures.
+#[cfg(target_os = "macos")]
+const VERIFIER: &dyn Verifier = &Codesign;
+#[cfg(not(target_os = "macos"))]
+const VERIFIER: &dyn Verifier = &NoSignatures;
+
+/// The `TeamIdentifier=` that `codesign -d --verbose=2` says (None when not set, or not a Team ID).
+#[cfg(any(target_os = "macos", test))]
+fn team_identifier(said: &str) -> Option<String> {
+    let team = said.lines().find_map(|l| l.strip_prefix("TeamIdentifier="))?.trim();
+    (!team.is_empty() && team.len() <= 20 && team.bytes().all(|b| b.is_ascii_alphanumeric())).then(|| team.to_string())
+}
+
+/// `new` signed as `running` is: when `running` has a team's signature, `new` must carry the same
+/// team's, and it must hold; an unsigned `running` (a build of one's own) checks nothing.
+fn check_signer(verifier: &dyn Verifier, running: &Path, new: &Path) -> Result<()> {
+    let Some(team) = verifier.team(running).context("could not read this ttyak's signature; the old one stays")? else { return Ok(()) };
+    match verifier.team(new).context("could not read the new ttyak's signature; the old one stays")? {
+        None => bail!("the new ttyak is not signed, but this one is (Team ID {team}); the old one stays"),
+        Some(theirs) if theirs != team => bail!("the new ttyak is signed by Team ID {theirs}, not by this one's {team}; the old one stays"),
+        Some(_) => ensure!(verifier.holds(new, &team)?, "the new ttyak's signature does not hold as a Developer ID of Team ID {team}; the old one stays"),
     }
     Ok(())
 }
@@ -676,7 +766,7 @@ mod tests {
         for platform in ["x86_64-linux", "aarch64-linux", "x86_64-macos", "aarch64-macos", "x86_64-windows"] {
             let l = parse(rendered, platform).unwrap();
             assert_eq!((&l.version, l.date.as_str(), l.notes.as_str()), (&v("0.11.0"), "2026-11-01", "https://github.com/dmytrobsp/ttyak/releases/tag/v0.11.0"));
-            let release = Release { base: DOWNLOAD_URL.into(), platform, max_zip: MAX_ZIP_BYTES, max_sums: MAX_SUMS_BYTES };
+            let release = Release { base: DOWNLOAD_URL.into(), platform, max_zip: MAX_ZIP_BYTES, max_sums: MAX_SUMS_BYTES, verifier: &NoSignatures };
             assert_eq!(l.asset.url, release.urls(&l.version).0, "{platform}");
             assert!(l.asset.sha256.len() == 64 && l.asset.sha256.bytes().all(|b| b.is_ascii_hexdigit()), "{platform}");
         }
@@ -1052,7 +1142,12 @@ mod tests {
         }
 
         async fn update_with(&self, latest: &Latest, install: &Install, progress: &Progress, max_zip: u64, max_sums: u64) -> Result<PathBuf> {
-            self_update_from(latest, install, progress, &Release { base: self.base.clone(), platform: "x86_64-linux", max_zip, max_sums }).await
+            self_update_from(latest, install, progress, &Release { base: self.base.clone(), platform: "x86_64-linux", max_zip, max_sums, verifier: &NoSignatures }).await
+        }
+
+        /// [`Fixture::update`] with signatures as `verifier` says.
+        async fn update_verified(&self, latest: &Latest, install: &Install, progress: &Progress, verifier: &'static dyn Verifier) -> Result<PathBuf> {
+            self_update_from(latest, install, progress, &Release { base: self.base.clone(), platform: "x86_64-linux", max_zip: MAX_ZIP_BYTES, max_sums: MAX_SUMS_BYTES, verifier }).await
         }
 
         fn requests(&self) -> usize {
@@ -1235,7 +1330,7 @@ mod tests {
             assert_eq!((std::fs::read(&install.exe).unwrap(), temp.listing()), (b"old ttyak".to_vec(), vec!["install.json".to_string(), EXE.into()]), "{case}");
         }
         // An https release refuses the same address over http.
-        let github = Release { base: "https://github.com/dmytrobsp/ttyak/releases/download".into(), platform: "x86_64-linux", max_zip: MAX_ZIP_BYTES, max_sums: MAX_SUMS_BYTES };
+        let github = Release { base: "https://github.com/dmytrobsp/ttyak/releases/download".into(), platform: "x86_64-linux", max_zip: MAX_ZIP_BYTES, max_sums: MAX_SUMS_BYTES, verifier: &NoSignatures };
         assert_eq!(github.urls(&v("9.9.9")), ("https://github.com/dmytrobsp/ttyak/releases/download/v9.9.9/ttyak-9.9.9-x86_64-linux.zip".to_string(), "https://github.com/dmytrobsp/ttyak/releases/download/v9.9.9/SHA256SUMS".to_string()));
         let mut plain_http = latest("9.9.9");
         plain_http.asset.url = "http://github.com/dmytrobsp/ttyak/releases/download/v9.9.9/ttyak-9.9.9-x86_64-linux.zip".into();
@@ -1280,6 +1375,94 @@ mod tests {
         let e = fixture.update(&latest, &install, &Progress::default()).await.unwrap_err();
         assert!(format!("{e:#}").contains("SHA256SUMS") && format!("{e:#}").contains("too big"), "{e:#}");
         assert_eq!((std::fs::read(&install.exe).unwrap(), temp.listing()), (b"old ttyak".to_vec(), vec!["install.json".to_string(), EXE.into()]));
+    }
+
+    /// Signatures as the files say: one ending ` team <ID>` is signed by that team (`… team <ID>,
+    /// broken`: a signature that does not hold), anything else unsigned.
+    struct Fake;
+
+    impl Verifier for Fake {
+        fn team(&self, exe: &Path) -> Result<Option<String>> {
+            let text = String::from_utf8(std::fs::read(exe)?)?;
+            Ok(text.rsplit_once(" team ").map(|(_, t)| t.trim_end_matches(", broken").to_string()))
+        }
+
+        fn holds(&self, exe: &Path, team: &str) -> Result<bool> {
+            Ok(self.team(exe)?.as_deref() == Some(team) && !std::fs::read(exe)?.ends_with(b", broken"))
+        }
+    }
+
+    #[test]
+    fn signer_checked_when_the_running_one_is_signed() {
+        let temp = Temp::new("signer");
+        let (running, new) = (temp.0.join("bin/running"), temp.0.join("bin/new"));
+        let check = |old: &str, update: &str| {
+            std::fs::write(&running, old).unwrap();
+            std::fs::write(&new, update).unwrap();
+            check_signer(&Fake, &running, &new).map_err(|e| format!("{e:#}"))
+        };
+        assert_eq!(check("ttyak team AAAAAAAAAA", "ttyak team AAAAAAAAAA"), Ok(()), "the same team");
+        let other = check("ttyak team AAAAAAAAAA", "ttyak team BBBBBBBBBB").unwrap_err();
+        assert!(other.contains("BBBBBBBBBB") && other.contains("AAAAAAAAAA") && other.contains("old one stays"), "{other}");
+        let unsigned = check("ttyak team AAAAAAAAAA", "ttyak").unwrap_err();
+        assert!(unsigned.contains("not signed") && unsigned.contains("old one stays"), "{unsigned}");
+        let broken = check("ttyak team AAAAAAAAAA", "ttyak team AAAAAAAAAA, broken").unwrap_err();
+        assert!(broken.contains("does not hold") && broken.contains("old one stays"), "{broken}");
+        // A build of one's own (unsigned): nothing checked.
+        assert_eq!(check("ttyak", "ttyak team BBBBBBBBBB, broken"), Ok(()));
+        assert_eq!(check("ttyak", "ttyak"), Ok(()));
+    }
+
+    #[test]
+    fn team_identifier_read_from_codesign() {
+        let developer_id = "Executable=/x/ttyak\nIdentifier=ttyak\nFormat=Mach-O thin (arm64)\nCodeDirectory v=20500 size=1 flags=0x10000(runtime) hashes=1+2 location=embedded\nSignature size=9000\nAuthority=Developer ID Application: A (AAAAAAAAAA)\nAuthority=Developer ID Certification Authority\nAuthority=Apple Root CA\nTimestamp=23 Oct 2026 at 12:00:00\nInfo.plist=not bound\nTeamIdentifier=AAAAAAAAAA\nRuntime Version=15.0.0\n";
+        assert_eq!(team_identifier(developer_id).as_deref(), Some("AAAAAAAAAA"));
+        // Ad hoc (what the linker gives a build on Apple silicon).
+        assert_eq!(team_identifier("Identifier=ttyak-1a2b\nSignature=adhoc\nTeamIdentifier=not set\n"), None);
+        // Nothing that could be read into a code requirement.
+        assert_eq!(team_identifier("TeamIdentifier=AA\" or true\n"), None);
+        assert_eq!(team_identifier("Identifier=ttyak\n"), None);
+    }
+
+    #[tokio::test]
+    async fn another_signer_leaves_the_old_binary() {
+        let temp = Temp::new("other-signer");
+        let zip = archive(&[(EXE, b"new ttyak team BBBBBBBBBB")]);
+        let (install, latest, fixture) = release(&temp, zip.clone(), Some(sums_for(&zip)), None, None).await;
+        std::fs::write(&install.exe, b"old ttyak team AAAAAAAAAA").unwrap();
+        let e = fixture.update_verified(&latest, &install, &Progress::default(), &Fake).await.unwrap_err();
+        assert!(format!("{e:#}").contains("BBBBBBBBBB"), "{e:#}");
+        assert_eq!(std::fs::read(&install.exe).unwrap(), b"old ttyak team AAAAAAAAAA");
+        assert_eq!((temp.listing(), version_recorded(&temp)), (vec!["install.json".to_string(), EXE.into()], "0.9.9".into()), "nothing staged left");
+        // The same team: put in place.
+        let temp = Temp::new("same-signer");
+        let zip = archive(&[(EXE, b"new ttyak team AAAAAAAAAA")]);
+        let (install, latest, fixture) = release(&temp, zip.clone(), Some(sums_for(&zip)), None, None).await;
+        std::fs::write(&install.exe, b"old ttyak team AAAAAAAAAA").unwrap();
+        fixture.update_verified(&latest, &install, &Progress::default(), &Fake).await.unwrap();
+        assert_eq!((std::fs::read(&install.exe).unwrap(), version_recorded(&temp)), (b"new ttyak team AAAAAAAAAA".to_vec(), "9.9.9".into()));
+    }
+
+    /// The real `codesign`: a build of one's own has no Developer ID; `TTYAK_TEST_SIGNED` names a
+    /// release ttyak (signed) to check it against, when given.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn codesign_reads_signatures() {
+        let me = std::env::current_exe().unwrap();
+        assert_eq!(Codesign.team(&me).unwrap(), None, "this test program");
+        let temp = Temp::new("codesign");
+        let text = temp.0.join("bin/ttyak");
+        std::fs::write(&text, b"not a program").unwrap();
+        assert_eq!(Codesign.team(&text).unwrap(), None);
+        assert!(!Codesign.holds(&text, "AAAAAAAAAA").unwrap());
+        if let Some(signed) = std::env::var_os("TTYAK_TEST_SIGNED") {
+            let signed = PathBuf::from(signed);
+            let team = Codesign.team(&signed).unwrap().expect("a Developer ID signature");
+            assert!(Codesign.holds(&signed, &team).unwrap());
+            assert!(!Codesign.holds(&signed, "AAAAAAAAAA").unwrap(), "another team");
+            assert!(!Codesign.holds(&me, &team).unwrap(), "ad hoc");
+            assert!(check_signer(&Codesign, &signed, &me).is_err() && check_signer(&Codesign, &me, &signed).is_ok());
+        }
     }
 
     #[cfg(windows)]
