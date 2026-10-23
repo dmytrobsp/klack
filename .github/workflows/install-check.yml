@@ -1,0 +1,158 @@
+# Checks a published release (pre-releases too), started by hand, on x86_64 and aarch64 Linux: the files it
+# downloads match SHA256SUMS and their attestations from release.yml at the tag; install.sh from the site installs
+# that version (`ttyak --version` says it, a new bash finds it on PATH) and `ttyak uninstall --yes` leaves no program
+# and no PATH line; the .deb installs and removes in ubuntu:24.04, the .rpm in fedora:latest. It publishes nothing
+# and writes nothing outside its runners.
+name: Install check
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: The released version to check, e.g. 0.11.0-rc.1
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: check (${{ matrix.platform }})
+    if: github.repository == 'dmytrobsp/ttyak'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: x86_64-linux, os: ubuntu-24.04, deb: amd64, rpm: x86_64 }
+          - { platform: aarch64-linux, os: ubuntu-24.04-arm, deb: arm64, rpm: aarch64 }
+    runs-on: ${{ matrix.os }}
+    # (ALSA's apt can take up to 22 minutes.)
+    timeout-minutes: 45
+    permissions:
+      contents: read # the release and its files
+      attestations: read # gh attestation verify
+    defaults:
+      run:
+        shell: bash
+    env:
+      VERSION: ${{ inputs.version }}
+      PLATFORM: ${{ matrix.platform }}
+      DEB_ARCH: ${{ matrix.deb }}
+      RPM_ARCH: ${{ matrix.rpm }}
+    steps:
+      # Semver (a pre-release part allowed, no leading v) before the version goes into any name.
+      - name: Version
+        timeout-minutes: 1
+        run: |
+          semver='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+          [[ $VERSION =~ $semver ]] || { echo "::error::the input version is not X.Y.Z or X.Y.Z-pre"; exit 1; }
+          {
+            echo "ZIP=ttyak-$VERSION-$PLATFORM.zip"
+            echo "DEB=ttyak_${VERSION}_$DEB_ARCH.deb"
+            echo "RPM=ttyak-$VERSION-1.$RPM_ARCH.rpm"
+          } >> "$GITHUB_ENV"
+          echo "version $VERSION, $PLATFORM"
+      - name: Download
+        timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "v$VERSION" -R dmytrobsp/ttyak --json tagName,isPrerelease,isDraft,publishedAt \
+            --jq '"\(.tagName): prerelease \(.isPrerelease), draft \(.isDraft), published \(.publishedAt)"'
+          gh release download "v$VERSION" -R dmytrobsp/ttyak -D dl -p SHA256SUMS -p "$ZIP" -p "$DEB" -p "$RPM"
+          ls -l dl
+      # (--ignore-missing skips the lines of files not downloaded; each downloaded file must have its line.)
+      - name: Checksums
+        timeout-minutes: 1
+        run: |
+          (cd dl && sha256sum -c SHA256SUMS --ignore-missing) | tee sums.out
+          for f in "$ZIP" "$DEB" "$RPM"; do
+            grep -qxF "$f: OK" sums.out || { echo "::error::$f is not in SHA256SUMS"; exit 1; }
+          done
+      # Built by release.yml at the tag; a changed copy must fail.
+      - name: Attestations
+        timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          verify() {
+            gh attestation verify "$1" -R dmytrobsp/ttyak --source-ref "refs/tags/v$VERSION" \
+              --signer-workflow dmytrobsp/ttyak/.github/workflows/release.yml
+          }
+          for f in SHA256SUMS "$ZIP" "$DEB" "$RPM"; do
+            verify "dl/$f"
+            echo "$f: attested by release.yml at v$VERSION"
+          done
+          cp "dl/$ZIP" changed.zip
+          printf x >> changed.zip
+          if verify changed.zip > /dev/null 2>&1; then echo "::error::a changed copy of $ZIP passed"; exit 1; fi
+          echo "a changed copy of $ZIP: refused"
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      # The zip needs ALSA's library (README: on every desktop Linux); a runner may lack it.
+      - name: ALSA
+        timeout-minutes: 23
+        run: |
+          if ldconfig -p | grep -q 'libasound\.so\.2 '; then
+            echo "libasound.so.2 is there"
+          else
+            echo "no libasound.so.2: installing libasound2t64"
+            bash tools/ci/apt-install.sh /tmp/ttyak-apt libasound2t64
+          fi
+      # PATH without ~/.local/bin (the runner has it), so the installer adds its line to ~/.bashrc.
+      - name: install.sh
+        timeout-minutes: 5
+        run: |
+          marker='# added by the ttyak installer; "ttyak uninstall" removes this line'
+          bin=$HOME/.local/bin
+          path=$(tr ':' '\n' <<< "$PATH" | grep -vxF -e "$bin" -e "$HOME/.local/bin/" | paste -sd: -)
+          echo "install.sh served: $(curl -fsSL https://ttyak.sh/install.sh | sha256sum | cut -d' ' -f1)"
+          curl -fsSL https://ttyak.sh/install.sh | env PATH="$path" SHELL=/bin/bash sh -s -- --yes --version "$VERSION"
+          got=$("$bin/ttyak" --version)
+          echo "$got"
+          [ "$got" = "ttyak $VERSION" ] || { echo "::error::installed ttyak says '$got', not 'ttyak $VERSION'"; exit 1; }
+          cat "$bin/install.json"
+          grep -nF "$marker" ~/.bashrc || { echo "::error::no PATH line in ~/.bashrc"; exit 1; }
+          found=$(env -i HOME="$HOME" PATH="$path" bash -ic 'command -v ttyak' 2> /dev/null || true)
+          [ "$found" = "$bin/ttyak" ] || { echo "::error::a new bash finds '$found', not $bin/ttyak"; exit 1; }
+          echo "a new bash finds $found"
+          "$bin/ttyak" uninstall --yes
+          for f in "$bin/ttyak" "$bin/install.json"; do
+            if [ -e "$f" ]; then echo "::error::$f is still there"; exit 1; fi
+          done
+          for f in ~/.bashrc ~/.profile ~/.bash_profile; do
+            if [ -f "$f" ] && grep -nF "$marker" "$f"; then echo "::error::the PATH line is still in $f"; exit 1; fi
+          done
+          echo "uninstalled: no program, no PATH line"
+      - name: .deb in ubuntu:24.04
+        timeout-minutes: 10
+        run: |
+          docker run --rm -e VERSION -e DEB -v "$PWD/dl:/dl:ro" ubuntu:24.04 bash -euo pipefail -c '
+            export DEBIAN_FRONTEND=noninteractive
+            timeout 300 apt-get update -qq
+            timeout 300 apt-get install -y --no-install-recommends "/dl/$DEB"
+            got=$(ttyak --version)
+            echo "$got"
+            [ "$got" = "ttyak $VERSION" ] || { echo "::error::the .deb ttyak says \"$got\""; exit 1; }
+            dpkg -L ttyak
+            apt-get remove -y ttyak
+            if [ -e /usr/bin/ttyak ] || dpkg-query -W -f "\${db:Status-Status}\n" ttyak 2> /dev/null | grep -qx installed; then
+              echo "::error::ttyak is still installed after apt-get remove"; exit 1
+            fi
+            echo "removed"
+          '
+      - name: .rpm in fedora:latest
+        timeout-minutes: 10
+        run: |
+          docker run --rm -e VERSION -e RPM -v "$PWD/dl:/dl:ro" fedora:latest bash -euo pipefail -c '
+            timeout 480 dnf install -y "/dl/$RPM"
+            got=$(ttyak --version)
+            echo "$got"
+            [ "$got" = "ttyak $VERSION" ] || { echo "::error::the .rpm ttyak says \"$got\""; exit 1; }
+            rpm -ql ttyak
+            dnf remove -y ttyak
+            if [ -e /usr/bin/ttyak ] || rpm -q ttyak; then echo "::error::ttyak is still installed after dnf remove"; exit 1; fi
+            echo "removed"
+          '
