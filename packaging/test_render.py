@@ -95,7 +95,7 @@ class AllPlatforms(unittest.TestCase):
     def test_formula(self):
         rb = self.r.read("homebrew/ttyak.rb")
         self.assertRegex(rb, r'(?m)^class Ttyak < Formula$')
-        self.assertIn('  homepage "https://dmytrobsp.github.io/ttyak/"\n', rb)
+        self.assertIn('  homepage "https://ttyak.sh/"\n', rb)
         self.assertNotIn("  version ", rb, "brew reads the version from the urls")
         self.assertIn('  license any_of: ["MIT", "Apache-2.0"]\n', rb)
         for os_block, arm, intel in [("on_macos do", "aarch64-macos", "x86_64-macos"),
@@ -116,7 +116,7 @@ class AllPlatforms(unittest.TestCase):
     def test_scoop(self):
         m = json.loads(self.r.read("scoop/ttyak.json"))
         self.assertEqual((m["version"], m["url"], m["hash"], m["bin"]), (V, url("x86_64-windows"), SHA["x86_64-windows"], "ttyak.exe"))
-        self.assertEqual((m["homepage"], m["license"]), ("https://dmytrobsp.github.io/ttyak/", "MIT|Apache-2.0"))
+        self.assertEqual((m["homepage"], m["license"]), ("https://ttyak.sh/", "MIT|Apache-2.0"))
         for absent in ["checkver", "autoupdate", "extract_dir", "architecture", "installer", "pre_uninstall", "post_uninstall"]:
             self.assertNotIn(absent, m)
         self.assertIn("deletes your ttyak data", " ".join(m["notes"]))
@@ -134,7 +134,7 @@ class AllPlatforms(unittest.TestCase):
         meta = ET.fromstring(self.r.read("chocolatey/ttyak.nuspec").encode()).find("n:metadata", ns)
         get = lambda tag: meta.find("n:" + tag, ns).text
         self.assertEqual((get("id"), get("version"), get("authors"), get("owners")), ("ttyak", V, IDENTITY["name"], IDENTITY["name"]))
-        self.assertEqual(get("projectUrl"), "https://dmytrobsp.github.io/ttyak/")
+        self.assertEqual(get("projectUrl"), "https://ttyak.sh/")
         self.assertEqual(get("releaseNotes"), "https://github.com/dmytrobsp/ttyak/releases/tag/v0.11.0")
         self.assertTrue(get("licenseUrl").startswith("https://github.com/dmytrobsp/ttyak"))
         self.assertIn("slack", get("tags").split())
@@ -182,7 +182,7 @@ class AllPlatforms(unittest.TestCase):
     def test_srcinfo(self):
         want = ("pkgbase = ttyak-bin\n"
                 "\tpkgdesc = %s\n" % render.AUR["pkgdesc"] +
-                "\tpkgver = 0.11.0\n\tpkgrel = 1\n\turl = https://dmytrobsp.github.io/ttyak/\n"
+                "\tpkgver = 0.11.0\n\tpkgrel = 1\n\turl = https://ttyak.sh/\n"
                 "\tarch = x86_64\n\tarch = aarch64\n\tlicense = MIT OR Apache-2.0\n"
                 "\tdepends = alsa-lib\n\tdepends = glibc\n\tdepends = libgcc\n\tdepends = libstdc++\n"
                 "\tprovides = ttyak\n\tconflicts = ttyak\n\toptions = !debug\n\toptions = !strip\n"
@@ -210,7 +210,7 @@ class AllPlatforms(unittest.TestCase):
                      '    InstallerSha256: "%s"' % SHA["x86_64-windows"].upper()]:
             self.assertIn("\n" + line + "\n", installer)
         for line in ['Publisher: "%s"' % IDENTITY["name"], 'Author: "%s"' % IDENTITY["name"],
-                     'PublisherUrl: "https://dmytrobsp.github.io/ttyak/"', 'License: "MIT OR Apache-2.0"',
+                     'PublisherUrl: "https://ttyak.sh/"', 'License: "MIT OR Apache-2.0"',
                      'ReleaseNotesUrl: "https://github.com/dmytrobsp/ttyak/releases/tag/v0.11.0"', "PackageLocale: en-US",
                      "PackageName: ttyak"]:
             self.assertIn("\n" + line + "\n", locale)
@@ -221,7 +221,7 @@ class AllPlatforms(unittest.TestCase):
         y = self.r.read("nfpm.yaml")
         for line in ["name: ttyak", 'version: "0.11.0"', "arch: ${TTYAK_ARCH}",
                      'maintainer: "%s <%s>"' % (IDENTITY["name"], IDENTITY["email"]),
-                     'homepage: "https://dmytrobsp.github.io/ttyak/"', 'license: "MIT OR Apache-2.0"',
+                     'homepage: "https://ttyak.sh/"', 'license: "MIT OR Apache-2.0"',
                      "  - src: ${TTYAK_DIR}/ttyak", "    dst: /usr/bin/ttyak", "      mode: 0755",
                      "    dst: /usr/share/doc/ttyak/README.md", "    dst: /usr/share/doc/ttyak/LICENSE-MIT",
                      "    dst: /usr/share/doc/ttyak/LICENSE-APACHE"]:

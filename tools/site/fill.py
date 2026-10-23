@@ -59,6 +59,63 @@ def render_download_button(release):
             f'<a href="#get">all downloads</a></span></span>')
 
 
+# The install scripts and the package managers carry ttyak from this release on: before it, unzip by hand.
+INSTALLS_FROM = (0, 11, 0)
+SITE = "https://ttyak.sh"
+BY_HAND = ('<p class="lede">One zip per system, one binary inside. Unzip it, put <code>ttyak</code> on your PATH, '
+           'sign in:</p>\n    <pre class="cmd"><span class="ps">$</span> ttyak auth login</pre>')
+UNSIGNED = ("<li>None of them is signed, so your OS will have opinions. macOS: "
+            "<code>xattr -d com.apple.quarantine ttyak</code> once, or allow it in System Settings → Privacy &amp; "
+            "Security. Windows: SmartScreen may ask once.</li>")
+
+
+def installs(release):
+    """Whether the one-liners and package managers carry this release (a release version, 0.11.0 or later)."""
+    m = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", str(release.get("version", "")))
+    return bool(m) and tuple(int(x) for x in m.groups()) >= INSTALLS_FROM
+
+
+def render_install(release):
+    """The top of Get it: from 0.11.0 the one-liners first, then the package managers; before, the zip by hand."""
+    if not installs(release):
+        return BY_HAND
+    v = esc(release["version"])
+    recipes = esc(release["sums_url"].rsplit("/", 1)[0] + f"/ttyak-{release['version']}-recipes.zip")
+    cmd = lambda ps, c: f'<pre class="cmd"><span class="ps">{ps}</span> {txt(c)}</pre>'
+    code = lambda c: f"<code>{txt(c)}</code>"
+    # one per line: the privacy check reads a line's text across tags, so a name never runs into the next one
+    pkgs = "\n      ".join([
+        f"<li><b>Homebrew</b> (macOS, Linux) {code('brew install dmytrobsp/ttyak/ttyak')}</li>",
+        f"<li><b>Scoop</b> {code('scoop bucket add ttyak https://github.com/dmytrobsp/scoop-ttyak')} "
+        f"{code('scoop install ttyak')}</li>",
+        f"<li><b>winget</b> {code('winget install dmytrobsp.ttyak')}</li>",
+        f"<li><b>Chocolatey</b> {code('choco install ttyak')}</li>",
+        f'<li><b>Debian, Ubuntu, Fedora, RHEL</b> the .deb or .rpm (amd64, arm64) from the '
+        f'<a href="{esc(release["url"])}">release</a>: {code(f"sudo apt install ./ttyak_{v}_amd64.deb")} '
+        f'{code(f"sudo dnf install ./ttyak-{v}-1.x86_64.rpm")}</li>',
+        f'<li><b>Arch</b> not in the AUR yet: unzip <a href="{recipes}">ttyak-{v}-recipes.zip</a> and run '
+        f"{code('makepkg -si')} in its <code>aur</code> folder</li>"])
+    return (
+        '<p class="lede">One line in a terminal: it fetches the latest release, checks it against SHA256SUMS and '
+        'puts <code>ttyak</code> on your PATH.</p>\n'
+        '    <div class="ways">'
+        f'<div class="way"><h3>Linux · macOS</h3>{cmd("$", f"curl -fsSL {SITE}/install.sh | sh")}</div>'
+        f'<div class="way"><h3>Windows</h3>{cmd("&gt;", f"irm {SITE}/install.ps1 | iex")}'
+        '<p class="fine"><code>ttyak.exe</code> is not code-signed yet, so SmartScreen may warn the first time: '
+        "More info → Run anyway.</p></div></div>\n"
+        f'    <p>Then sign in:</p>\n    {cmd("$", "ttyak auth login")}\n'
+        f'    <h3 class="or">Or with a package manager</h3>\n    <ul class="pkgs">\n      {pkgs}\n    </ul>\n'
+        '    <p class="verify">The macOS builds are signed and notarized by Apple. Every file of the release has its '
+        'line in SHA256SUMS and a GitHub attestation: '
+        f'<a href="https://github.com/{REPO}#verify">how to check</a>.</p>\n'
+        '    <p class="lede">Or the zip by hand: unzip it, put <code>ttyak</code> on your PATH.</p>')
+
+
+def render_signing_note(release):
+    """Before 0.11.0 nothing was signed (a note under the table); from then Get it says it with the install."""
+    return "" if installs(release) else UNSIGNED
+
+
 def _plain(s):
     s = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", s)
     return s.replace("`", "").strip()
@@ -294,6 +351,8 @@ def fill_page(site, release=None, numbers=None, needs=None):
     html = page.read_text()
     html = fill(html, "download-button", render_download_button(release))
     html = fill(html, "downloads", render_downloads(release, needs))
+    html = fill(html, "install", render_install(release))
+    html = fill(html, "signing-note", render_signing_note(release))
     html = fill_captures(html, site / "captures")
     if numbers is None and (site / "data/numbers.json").is_file():
         numbers = json.loads((site / "data/numbers.json").read_text())

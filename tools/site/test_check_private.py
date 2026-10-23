@@ -93,6 +93,25 @@ class RepoAddress(unittest.TestCase):
             (Path(d) / "a.html").write_text(text)
             self.assertEqual(sorted({h[1] for h in scan(d, ["Yaksh"], allow=allowed_forms(None))}), [3, 4])
 
+    def test_the_package_names_pass(self):
+        # the install commands name the owner too: the Homebrew tap, the Scoop bucket, the winget id, `gh -R`
+        text = ("brew install alicesmith/ttyak/ttyak\n"
+                "scoop bucket add ttyak https://github.com/alicesmith/scoop-ttyak\n"
+                "https://github.com/alicesmith/homebrew-ttyak\n"
+                "winget install alicesmith.ttyak\n"
+                "gh attestation verify ttyak-1.0.0-x86_64-linux.zip -R alicesmith/ttyak\n"
+                "<code>winget upgrade alicesmith.ttyak</code>\n")
+        self.assertEqual(self.hits(text), [])
+
+    def test_names_like_the_package_names_are_hits(self):
+        text = ("brew install alicesmith/other\nalicesmith.ttyakx\nalicesmith/ttyakfoo\n"
+                "github.com/alicesmith/scoop-other\nxalicesmith/ttyak\nalicesmith.ttyak.evil.example\n"
+                "brew install alicesmith/ttyak/Alice\nwinget install xalicesmith.ttyak\n")
+        self.assertEqual(self.hits(text), [1, 2, 3, 4, 5, 6, 7, 8])
+
+    def test_the_package_names_need_an_owner(self):
+        self.assertEqual(self.hits("brew install alicesmith/ttyak/ttyak\nalicesmith.ttyak\n", owner=None), [1, 2])
+
     def test_the_old_repo_address_is_not_allowed(self):
         self.assertEqual(self.hits("https://github.com/alicesmith/" + "k" + "lack\n"), [1])
 

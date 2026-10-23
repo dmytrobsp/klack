@@ -1,8 +1,10 @@
 import copy
 import hashlib
+import html
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -13,6 +15,7 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import check_private as P  # noqa: E402
 import fill as F  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -20,6 +23,8 @@ RELEASE = json.loads((ROOT / "site/data/release.json").read_text())
 VER = RELEASE["version"]
 LINUX = next(a["url"] for a in RELEASE["assets"] if a["platform"] == "x86_64-linux")
 LINUX_SIZE = next(a["size"] for a in RELEASE["assets"] if a["platform"] == "x86_64-linux")
+# the release regions every page has besides the button and the table
+MORE = "<!-- fill:install --><!-- /fill:install --><!-- fill:signing-note --><!-- /fill:signing-note -->"
 
 
 class Resp(io.BytesIO):
@@ -144,7 +149,7 @@ class FillTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             site = Path(d)
             (site / "data").mkdir()
-            (site / "index.html").write_text("<!-- fill:download-button -->x<!-- /fill:download-button --><!-- fill:downloads --><!-- /fill:downloads -->")
+            (site / "index.html").write_text("<!-- fill:download-button -->x<!-- /fill:download-button --><!-- fill:downloads --><!-- /fill:downloads -->" + MORE)
             (site / "data/release.json").write_text(json.dumps(RELEASE))
             F.fill_page(site)
             out = (site / "index.html").read_text()
@@ -158,8 +163,8 @@ class FillTests(unittest.TestCase):
         (site / "data").mkdir()
         (site / "data/release.json").write_text(json.dumps(RELEASE))
         marks = "".join(f"<!-- fill:{m} -->old<!-- /fill:{m} -->" for m in
-                        ["download-button", "downloads", "hero-capture", "capture-huddle", "capture-signin",
-                         "capture-keys"])
+                        ["download-button", "downloads", "install", "signing-note", "hero-capture", "capture-huddle",
+                         "capture-signin", "capture-keys"])
         (site / "index.html").write_text(marks)
         (site / "captures").mkdir()
         for n in names:
@@ -190,7 +195,7 @@ class FillTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             site = self._capture_site(d, ["signin"])
             (site / "index.html").write_text("<!-- fill:download-button --><!-- /fill:download-button -->"
-                                             "<!-- fill:downloads --><!-- /fill:downloads -->")
+                                             "<!-- fill:downloads --><!-- /fill:downloads -->" + MORE)
             with self.assertRaises(KeyError) as c:
                 F.fill_page(site)
             self.assertIn("capture-signin", str(c.exception))
@@ -205,7 +210,7 @@ class FillTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             site = Path(d)
             (site / "data").mkdir()
-            (site / "index.html").write_text("<!-- fill:download-button --><!-- /fill:download-button --><!-- fill:downloads --><!-- /fill:downloads -->")
+            (site / "index.html").write_text("<!-- fill:download-button --><!-- /fill:download-button --><!-- fill:downloads --><!-- /fill:downloads -->" + MORE)
             raw = (ROOT / "site/data/release.json").read_bytes()
             (site / "data/release.json").write_bytes(raw)
             def boom(req, timeout=None):
@@ -221,7 +226,7 @@ class FillTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             site = Path(d)
             (site / "data").mkdir()
-            page = "<!-- fill:download-button -->old<!-- /fill:download-button --><!-- fill:downloads --><!-- /fill:downloads -->"
+            page = "<!-- fill:download-button -->old<!-- /fill:download-button --><!-- fill:downloads --><!-- /fill:downloads -->" + MORE
             (site / "index.html").write_text(page)
             raw = (ROOT / "site/data/release.json").read_bytes()
             (site / "data/release.json").write_bytes(raw)
@@ -235,9 +240,101 @@ class FillTests(unittest.TestCase):
             self.assertEqual((site / "data/release.json").read_bytes(), raw)
 
 
+def release_at(version):
+    """The site's release data as if it were `version`'s."""
+    return json.loads(json.dumps(RELEASE).replace(VER, version))
+
+
+class InstallTests(unittest.TestCase):
+    """The Get it section: the one-liners and package managers lead from 0.11.0, the first release they carry."""
+    COMMANDS = ["curl -fsSL https://ttyak.sh/install.sh | sh", "irm https://ttyak.sh/install.ps1 | iex",
+                "brew install dmytrobsp/ttyak/ttyak", "scoop bucket add ttyak https://github.com/dmytrobsp/scoop-ttyak",
+                "scoop install ttyak", "winget install dmytrobsp.ttyak", "choco install ttyak", "makepkg -si",
+                "ttyak auth login"]
+
+    def test_installs_from_0_11_0(self):
+        for v, want in [("0.11.0", True), ("0.11.3", True), ("0.12.0", True), ("1.0.0", True), ("0.10.0", False),
+                        ("0.10.9", False), ("0.9.12", False), ("0.11.0-rc.1", False), ("", False), ("x", False)]:
+            self.assertEqual(F.installs({"version": v}), want, v)
+        self.assertFalse(F.installs({}))
+
+    def test_before_0_11_unzip_by_hand(self):
+        h = F.render_install(release_at("0.10.0"))
+        self.assertIn("Unzip it, put <code>ttyak</code> on your PATH, sign in:", h)
+        self.assertIn("ttyak auth login", h)
+        for s in ("ttyak.sh", "brew", "scoop", "winget", "choco", "SmartScreen"):
+            self.assertNotIn(s, h, s)
+
+    def test_from_0_11_the_one_liners_lead(self):
+        r = release_at("0.11.0")
+        h = F.render_install(r)
+        text = html.unescape(re.sub(r"<[^>]+>", "", h))
+        for c in self.COMMANDS:
+            self.assertIn(c, text, c)
+        self.assertLess(text.index("install.sh"), text.index("brew install"))
+        self.assertLess(text.index("install.ps1"), text.index("brew install"))
+        self.assertIn("Unzip", F.render_install(release_at("0.10.0")))
+
+    def test_from_0_11_the_packages_of_the_release(self):
+        r = release_at("0.11.0")
+        h = F.render_install(r)
+        base = r["sums_url"].rsplit("/", 1)[0] + "/"
+        self.assertIn(f'href="{base}ttyak-0.11.0-recipes.zip"', h)
+        self.assertIn("ttyak_0.11.0_amd64.deb", h)
+        self.assertIn("ttyak-0.11.0-1.x86_64.rpm", h)
+        self.assertIn(f'href="{r["url"]}"', h)
+        self.assertIn("AUR", h)
+        self.assertNotIn("yay", h)  # not in the AUR yet: its PKGBUILD is in the recipes zip
+
+    def test_from_0_11_what_is_signed_said_once(self):
+        h = F.render_install(release_at("0.11.0"))
+        self.assertEqual(h.count("SmartScreen"), 1)
+        self.assertIn("not code-signed", h)
+        self.assertIn("More info → Run anyway", h)
+        self.assertIn("notarized", h)
+        self.assertIn("SHA256SUMS", h)
+        self.assertIn("attestation", h)
+        self.assertIn('href="https://github.com/dmytrobsp/ttyak#verify"', h)
+
+    def test_from_0_11_the_owner_shows_only_in_allowed_names(self):
+        # check_private joins a line's text across tags: a name must not run into the next item's words
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "index.html").write_text(F.render_install(release_at("0.11.0")))
+            owner = F.REPO.split("/")[0]
+            self.assertEqual(P.scan(d, [owner], allow=P.allowed_forms(owner)), [])
+
+    def test_signing_note_only_before_0_11(self):
+        old = F.render_signing_note(release_at("0.10.0"))
+        self.assertTrue(old.startswith("<li>") and old.endswith("</li>"))
+        for s in ("quarantine", "SmartScreen"):
+            self.assertIn(s, old)
+        self.assertEqual(F.render_signing_note(release_at("0.11.0")), "")
+
+    def test_fill_page_fills_the_install_regions(self):
+        with tempfile.TemporaryDirectory() as d:
+            site = Path(d)
+            (site / "data").mkdir()
+            (site / "data/release.json").write_text(json.dumps(release_at("0.11.0")))
+            page = ("<!-- fill:download-button --><!-- /fill:download-button --><!-- fill:downloads -->"
+                    "<!-- /fill:downloads --><!-- fill:install -->old<!-- /fill:install -->"
+                    "<!-- fill:signing-note -->old<!-- /fill:signing-note -->")
+            (site / "index.html").write_text(page)
+            F.fill_page(site)
+            out = (site / "index.html").read_text()
+            self.assertIn("install.sh", out)
+            self.assertIn("<!-- fill:signing-note --><!-- /fill:signing-note -->", out)
+            F.fill_page(site)
+            self.assertEqual((site / "index.html").read_text(), out)
+            (site / "data/release.json").write_text(json.dumps(RELEASE))
+            F.fill_page(site)
+            out = (site / "index.html").read_text()
+            self.assertNotIn("install.sh", out)
+            self.assertIn("quarantine", out)
+
+
 class LatestJsonTests(unittest.TestCase):
     """site/latest.json (the update check's feed) is the one inside the release's recipes zip."""
-    PAGE = "<!-- fill:download-button --><!-- /fill:download-button --><!-- fill:downloads --><!-- /fill:downloads -->"
+    PAGE = "<!-- fill:download-button --><!-- /fill:download-button --><!-- fill:downloads --><!-- /fill:downloads -->" + MORE
 
     def feed(self, version):
         return (json.dumps({"name": "ttyak", "version": version, "date": "2026-10-24", "assets": {
@@ -566,7 +663,7 @@ class SheetTests(unittest.TestCase):
             (site / "data/release.json").write_text(json.dumps(RELEASE))
             (site / "data/numbers.json").write_text(json.dumps(NUMBERS))
             (site / "index.html").write_text("".join(f"<!-- fill:{m} -->old<!-- /fill:{m} -->" for m in
-                                                     ["download-button", "downloads", "sheet", "measured-note"]))
+                                                     ["download-button", "downloads", "install", "signing-note", "sheet", "measured-note"]))
             F.fill_page(site)
             out = (site / "index.html").read_text()
             self.assertIn("7.5× less", out)

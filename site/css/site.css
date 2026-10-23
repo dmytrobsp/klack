@@ -153,6 +153,16 @@ p code, li code, h3 code { color: var(--yellow); }
 .standin-note { border: 2px dashed #3a2a3b; padding: 40px 20px; text-align: center; color: var(--dim); margin: 0; }
 
 .cmd { font-size: 20px; color: var(--cream); background: #0b0b0d; border-left: 4px solid var(--green); padding: 10px 16px; margin: 8px 0 18px; max-width: 420px; }
+/* Get it from 0.11.0 (fill.py render_install): a one-liner per system, then the package managers */
+.ways { display: grid; grid-template-columns: 1fr 1fr; gap: 0 28px; max-width: 900px; }
+.way h3, #get h3.or { font-family: 'Anton', sans-serif; font-weight: 400; font-size: 20px; letter-spacing: .5px; text-transform: uppercase; margin: 14px 0 0; color: var(--green); }
+.way .cmd { font-size: 16px; max-width: none; margin-bottom: 8px; }
+.fine { font-size: 12.5px; color: var(--muted); margin: 0 0 12px; }
+.pkgs { list-style: none; margin: 8px 0 14px; padding: 0; font-size: 13.5px; color: #e8dcc4; }
+.pkgs li { margin-bottom: 8px; overflow-wrap: anywhere; }
+.pkgs b { color: var(--cream); margin-right: 6px; }
+.pkgs code { margin-right: 6px; }
+.verify { font-size: 13px; color: #e8dcc4; max-width: 720px; }
 .table-wrap { overflow-x: auto; }
 .downloads { width: 100%; border-collapse: collapse; font-size: 12.5px; line-height: 1.45; }
 .downloads thead th { font-family: 'Anton', sans-serif; font-weight: 400; font-size: 15px; letter-spacing: .6px; text-transform: uppercase; text-align: left; color: var(--muted); border-bottom: 2px solid var(--pink); padding: 6px 10px; }
@@ -207,6 +217,7 @@ dialog.zoom .term { cursor: zoom-out; box-shadow: none; }
   .topnav { flex-direction: column; align-items: flex-start; gap: 2px; }
   .topnav span a { margin: 0 16px 0 0; }
   .feature { grid-template-columns: 1fr; gap: 22px; }
+  .ways { grid-template-columns: 1fr; }
   .feature.flip .words { order: 0; }
   .closer { font-size: 16px; padding: 14px 16px 16px; }
   .cool-kids { font-size: 18px; margin-left: 4px; }

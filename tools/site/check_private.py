@@ -24,14 +24,17 @@ def owner_from_remote(url):
 
 def allowed_forms(owner):
     """Patterns of the allowed addresses, the bare prefixes only (whatever follows is scanned): ttyak.sh, and with an
-    owner github.com/<owner>/ttyak, <owner>.github.io/ttyak and <owner>.github.io. Case-insensitive."""
+    owner github.com/<owner>/ttyak (also scoop-ttyak, homebrew-ttyak), <owner>.github.io/ttyak, <owner>.github.io,
+    and the install commands' names: the repo <owner>/ttyak (`gh -R`, the Homebrew tap) and the winget id
+    <owner>.ttyak. Case-insensitive."""
     end = r"(?![\w.-])"
     site = re.compile(rf"(?<![\w.-])ttyak\.sh{end}", re.I)
     if not owner:
         return (site,)
     o = re.escape(owner)
-    return (site, re.compile(rf"(?<![\w.-])github\.com/{o}/ttyak{end}", re.I),
-            re.compile(rf"(?<![\w-]){o}\.github\.io(?:/ttyak{end})?{end}", re.I))
+    return (site, re.compile(rf"(?<![\w.-])github\.com/{o}/(?:scoop-|homebrew-)?ttyak{end}", re.I),
+            re.compile(rf"(?<![\w-]){o}\.github\.io(?:/ttyak{end})?{end}", re.I),
+            re.compile(rf"(?<![\w./-]){o}(?:/|\.)ttyak{end}", re.I))
 
 
 def _allow(line, allow):

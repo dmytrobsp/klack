@@ -6,7 +6,7 @@ from pathlib import Path
 
 SITE = Path(__file__).resolve().parents[2] / "site"
 SECTIONS = ["top", "features", "numbers", "get", "footer"]
-FILLS = ["hero-capture", "download-button", "downloads", "sheet", "measured-note",
+FILLS = ["hero-capture", "download-button", "downloads", "install", "signing-note", "sheet", "measured-note",
          "capture-huddle", "capture-signin", "capture-keys"]
 OWN = "https://github.com/dmytrobsp/ttyak"
 

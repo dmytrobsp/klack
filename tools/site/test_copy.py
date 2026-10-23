@@ -1,5 +1,9 @@
 """The page's words: approved lines verbatim, jabs only at Slack, honest claims (LP5, the user's reviews LP12a/b)."""
+import json
 import re
+import shutil
+import sys
+import tempfile
 import unittest
 from html.parser import HTMLParser
 from pathlib import Path
@@ -7,6 +11,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 SITE = ROOT / "site"
 README = (ROOT / "README.md").read_text()
+RELEASE = json.loads((SITE / "data/release.json").read_text())
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import fill  # noqa: E402
 
 APPROVED = ["SLACK,", "MINUS THE", "BULLSHIT.", "BROWSER.", "YOUR TERMINAL JUST LEARNED TO HUDDLE.",
             "Yes, really.", "NO CHROMIUM WAS HARMED", "Quit with Ctrl+Q. We're not monsters.",
@@ -249,9 +257,21 @@ class Copy(unittest.TestCase):
 
     def test_get_section(self):
         g = flat(by_id(self.root, "get").text())
-        for s in ("ttyak auth login", "SHA256SUMS", "quarantine", "SmartScreen", "Linux", "macOS", "Windows",
+        for s in ("ttyak auth login", "SHA256SUMS", "SmartScreen", "Linux", "macOS", "Windows",
                   "screen sharing", "camera"):
             self.assertIn(s, g, s)
+
+    def test_get_section_follows_its_release(self):
+        # the one-liners and package managers carry ttyak from 0.11.0: never shown for an older release
+        g = flat(by_id(self.root, "get").text())
+        if fill.installs(RELEASE):
+            self.assertIn("curl -fsSL https://ttyak.sh/install.sh | sh", g)
+            self.assertNotIn("quarantine", g)
+        else:
+            for s in ("install.sh", "install.ps1", "brew install", "scoop", "winget", "choco"):
+                self.assertNotIn(s, g, s)
+            self.assertIn("quarantine", g)
+
 
     def test_footer(self):
         f = by_id(self.root, "footer")
@@ -267,6 +287,39 @@ class Copy(unittest.TestCase):
         for parent in [self.root, *self.root.elements()]:
             for c in parent.children:
                 self.assertFalse(c.kind == "comment" and c.data.strip() == "draft", "a <!-- draft --> is left")
+
+
+class CopyFrom011(unittest.TestCase):
+    """The page as fill.py makes it for 0.11.0: install first, and what is signed said plainly."""
+
+    def setUp(self):
+        with tempfile.TemporaryDirectory() as d:
+            site = Path(d) / "site"
+            shutil.copytree(SITE, site, ignore=shutil.ignore_patterns("captures", "fonts", "img"))
+            (site / "data/release.json").write_text(json.dumps(RELEASE).replace(RELEASE["version"], "0.11.0"))
+            fill.fill_page(site, needs={})
+            t = Tree()
+            t.feed((site / "index.html").read_text())
+        self.get = by_id(t.root, "get")
+        self.text = flat(self.get.text())
+
+    def test_one_liners_first(self):
+        g = self.text
+        for c in ("curl -fsSL https://ttyak.sh/install.sh | sh", "irm https://ttyak.sh/install.ps1 | iex",
+                  "brew install dmytrobsp/ttyak/ttyak", "winget install dmytrobsp.ttyak", "choco install ttyak",
+                  "scoop bucket add ttyak https://github.com/dmytrobsp/scoop-ttyak", "scoop install ttyak"):
+            self.assertIn(c, g, c)
+        self.assertLess(g.index("install.sh"), g.index("Download"))  # before the table
+
+    def test_signing_said_once_and_honestly(self):
+        g = self.text
+        self.assertEqual(g.count("SmartScreen"), 1)
+        self.assertIn("not code-signed", g)
+        self.assertIn("notarized", g)
+        self.assertNotIn("quarantine", g)
+        self.assertNotIn("None of them is signed", g)
+        self.assertNotIn("yay", g)
+        self.assertIn("attestation", g)
 
 
 class DeadCss(unittest.TestCase):
