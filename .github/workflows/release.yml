@@ -42,7 +42,7 @@ jobs:
     # (macOS: notarization is waited for up to 10 minutes.)
     timeout-minutes: ${{ startsWith(matrix.os, 'macos') && 45 || 30 }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       # Bounded and verbose: an apt-get that hangs (it once sat silent for 84 minutes) fails here and shows where.
@@ -200,7 +200,7 @@ jobs:
           mkdir stage
           cp "target/${{ matrix.target }}/release/${{ matrix.exe }}" README.md LICENSE-MIT LICENSE-APACHE stage/
           ls -l stage
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ttyak-${{ matrix.name }}
           path: stage/*
@@ -225,7 +225,7 @@ jobs:
       # nfpm_2.48.0_Linux_x86_64.tar.gz in https://github.com/goreleaser/nfpm/releases/download/v2.48.0/checksums.txt
       NFPM_SHA256: 6d7f9a28b2f397934403950fcbba83f598b08d02edbe79a0815b3b4897341750
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       # A tag must match the Cargo version; a manual run gets a version that is semver and plainly no release.
@@ -242,7 +242,7 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "DATE=$(date -u +%Y-%m-%d)" >> "$GITHUB_ENV"
           echo "version $version"
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: ttyak-*
           path: staged
@@ -295,7 +295,7 @@ jobs:
       - uses: actions/attest-build-provenance@v4
         with:
           subject-path: dist/*
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist/*
@@ -317,7 +317,7 @@ jobs:
     env:
       V: ${{ needs.release.outputs.version }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist
@@ -422,7 +422,7 @@ jobs:
     env:
       V: ${{ needs.registries.outputs.version }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist
@@ -478,7 +478,7 @@ jobs:
     env:
       V: ${{ needs.registries.outputs.version }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist
@@ -532,7 +532,7 @@ jobs:
     env:
       V: ${{ needs.registries.outputs.version }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist
@@ -576,7 +576,7 @@ jobs:
       # komac-2.17.1-x86_64-unknown-linux-gnu.tar.gz in https://github.com/russellbanks/Komac/releases/download/v2.17.1/SHA256SUMS
       KOMAC_SHA256: e694e79cd451afabf47bead66ed34586fef4814f7b94e4b61a098f419978d5d7
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist
