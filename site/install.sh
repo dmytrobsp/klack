@@ -11,6 +11,8 @@ DOWNLOAD_URL=${TTYAK_DOWNLOAD_URL:-https://github.com/dmytrobsp/ttyak/releases/d
 tmp=''
 # A file being put in place in the install folder, removed when the script stops before it is moved.
 staged=''
+# Set when root runs for a user's HOME (sudo): nothing in HOME is touched then.
+sudo_run=''
 
 usage() {
 	cat <<'EOF'
@@ -135,7 +137,7 @@ fetch() {
 		case $1 in https://*) proto='=https' ;; esac
 		curl -fsSL ${proto:+--proto "$proto"} --connect-timeout 15 ${3:+--max-time "$3"} -o "$2" "$1" </dev/null
 	else
-		wget -q --timeout=15 -O "$2" "$1" </dev/null
+		wget -q --timeout=15 --tries=2 -O "$2" "$1" </dev/null
 	fi
 }
 
@@ -168,9 +170,11 @@ version_from_github() {
 	releases=${DOWNLOAD_URL%/download}
 	[ "$releases" != "$DOWNLOAD_URL" ] || return 0
 	if [ "$fetcher" = curl ]; then
-		headers=$(curl -sSI --connect-timeout 15 --max-time 30 "$releases/latest" </dev/null 2>/dev/null || true)
+		proto=''
+		case $releases in https://*) proto='=https' ;; esac
+		headers=$(curl -sSI ${proto:+--proto "$proto"} --connect-timeout 15 --max-time 30 "$releases/latest" </dev/null 2>/dev/null || true)
 	else
-		headers=$(wget -S --timeout=15 --max-redirect=0 -O /dev/null "$releases/latest" </dev/null 2>&1 || true)
+		headers=$(wget -S --timeout=15 --tries=2 --max-redirect=0 -O /dev/null "$releases/latest" </dev/null 2>&1 || true)
 	fi
 	tag=$(printf '%s\n' "$headers" | tr -d '\r' | awk 'tolower($1) == "location:" { loc = $2 } END { print loc }' |
 		sed -n 's|^.*/releases/tag/\([^/?#]*\)$|\1|p')
@@ -224,6 +228,26 @@ suggest() {
 	say "  $2"
 }
 
+# For a shell whose files the installer never edits: $1 its name, $2 where the line goes, $3 the line (in words
+# instead when $other is empty: the folder cannot be quoted for it simply).
+hint_other() {
+	if [ -n "$other" ]; then
+		suggest "$dir is not on PATH, and the installer does not edit $1's files: add a line like this to $2 (a suggestion):" "$3 $MARKER"
+	else
+		say "$dir is not on PATH, and the installer does not edit $1's files: add $dir to PATH in $2."
+	fi
+}
+
+# Whether a folder between $home and the file $1 is a link (dotfiles kept elsewhere).
+linked_on_the_way() {
+	p=${1%/*}
+	while [ -n "$p" ] && [ "$p" != "$home" ] && [ "$p" != / ]; do
+		[ ! -L "$p" ] || return 0
+		p=${p%/*}
+	done
+	return 1
+}
+
 # Puts $dir on PATH in the shell's startup file when it is not on PATH already, once. Only files whose syntax is
 # known, and never one that is a link or not writable (dotfiles kept elsewhere): otherwise it says what to add where.
 add_to_path() {
@@ -244,7 +268,8 @@ add_to_path() {
 		# shellcheck disable=SC2016
 		fish_line='contains -- ~/.local/bin $PATH; or set -gx PATH ~/.local/bin $PATH'
 		# shellcheck disable=SC2088 # shown as the user would type it
-		shown='~/.local/bin'
+		other='~/.local/bin'
+		xonsh_dir="'~/.local/bin'"
 		# shellcheck disable=SC2016
 		nu_line='$env.PATH = ($env.PATH | prepend ($nu.home-path | path join .local bin))'
 	else
@@ -252,12 +277,18 @@ add_to_path() {
 		posix_line="case \":\$PATH:\" in *:$quoted:*) ;; *) export PATH=$quoted:\"\$PATH\" ;; esac"
 		quoted=$(fish_quote "$dir")
 		fish_line="contains -- $quoted \$PATH; or set -gx PATH $quoted \$PATH"
-		shown=$(sh_quote "$dir")
-		nu_line="\$env.PATH = (\$env.PATH | prepend $shown)"
+		# The other shells' quoting differs: a folder with a quote or a backslash gets words, not a line.
+		case $dir in
+		*\'* | *\"* | *\\*) other='' ;;
+		*) other="'$dir'" ;;
+		esac
+		xonsh_dir=$other
+		nu_line="\$env.PATH = (\$env.PATH | prepend $other)"
 	fi
 	shell_name=${SHELL:-}
 	shell_name=${shell_name##*/}
 	line=$posix_line
+	# shellcheck disable=SC2088 # the ~ paths here are printed for the user, not used
 	case $shell_name in
 	sh | dash | ksh | ksh93 | mksh | yash) profile=$home/.profile ;;
 	bash)
@@ -279,19 +310,19 @@ add_to_path() {
 		line=$fish_line
 		;;
 	csh | tcsh)
-		suggest "$dir is not on PATH, and the installer does not edit $shell_name's files: add a line like this to ~/.${shell_name}rc (a suggestion):" "set path = ( $shown \$path ) $MARKER"
+		hint_other "$shell_name" "~/.${shell_name}rc" "set path = ( $other \$path )"
 		return 0
 		;;
 	nu)
-		suggest "$dir is not on PATH, and the installer does not edit nushell's files: add a line like this to its env.nu (see \$nu.env-path; a suggestion):" "$nu_line $MARKER"
+		hint_other nushell "its env.nu (see \$nu.env-path)" "$nu_line"
 		return 0
 		;;
 	elvish)
-		suggest "$dir is not on PATH, and the installer does not edit elvish's files: add a line like this to ~/.config/elvish/rc.elv (a suggestion):" "set paths = [$shown \$@paths] $MARKER"
+		hint_other elvish "~/.config/elvish/rc.elv" "set paths = [$other \$@paths]"
 		return 0
 		;;
 	xonsh)
-		suggest "$dir is not on PATH, and the installer does not edit xonsh's files: add a line like this to ~/.xonshrc (a suggestion):" "\$PATH.insert(0, $(sh_quote "$shown")) $MARKER"
+		hint_other xonsh "~/.xonshrc" "\$PATH.insert(0, $xonsh_dir)"
 		return 0
 		;;
 	*)
@@ -307,16 +338,23 @@ add_to_path() {
 		suggest "$dir is not on PATH; as asked, no file was changed: add this line to $profile:" "$line $MARKER"
 		return 0
 	fi
-	if [ -L "$profile" ] || { [ -e "$profile" ] && [ ! -w "$profile" ]; }; then
-		suggest "$dir is not on PATH; $profile is a link or not writable, so it was left alone: add this line to it (or to where it comes from):" "$line $MARKER"
+	if [ -n "$sudo_run" ]; then
+		suggest "$dir is not on PATH; the installer ran with sudo, so nothing in $home was changed: add this line to $profile as yourself:" "$line $MARKER"
 		return 0
 	fi
-	if ! (umask 077 && mkdir -p -- "${profile%/*}") 2>/dev/null; then
-		suggest "$dir is not on PATH; could not create ${profile%/*}: add this line to $profile:" "$line $MARKER"
+	if [ -L "$profile" ] || { [ -e "$profile" ] && [ ! -w "$profile" ]; } || linked_on_the_way "$profile"; then
+		suggest "$dir is not on PATH; $profile is (or lies in) a link, or is not writable, so it was left alone: add this line to it (or to where it comes from):" "$line $MARKER"
+		return 0
+	fi
+	if ! (umask 077 && mkdir -p -- "${profile%/*}") 2>/dev/null || { [ ! -e "$profile" ] && [ ! -w "${profile%/*}" ]; }; then
+		suggest "$dir is not on PATH; cannot write in ${profile%/*}: add this line to $profile:" "$line $MARKER"
 		return 0
 	fi
 	if [ -s "$profile" ] && [ -n "$(tail -c 1 -- "$profile")" ]; then printf '\n' >>"$profile"; fi
-	printf '%s %s\n' "$line" "$MARKER" >>"$profile"
+	if ! printf '%s %s\n' "$line" "$MARKER" 2>/dev/null >>"$profile"; then
+		suggest "$dir is not on PATH; could not write $profile: add this line to it:" "$line $MARKER"
+		return 0
+	fi
 	say "Added $dir to PATH in $profile; other shells you use need the same in their own startup files."
 	suggest "Open a new terminal to use ttyak, or run this in this one first:" "$line"
 }
@@ -326,8 +364,9 @@ root_gate() {
 	# sudo that keeps the user's HOME (macOS, sudo -E) would leave root's files in it.
 	# shellcheck disable=SC2012 # only the numeric owner, which ls -n prints the same everywhere
 	home_owner=$(ls -ldn -- "$home" 2>/dev/null | awk '{ print $3 }')
-	if [ -z "$dir_given" ] && { [ -n "${SUDO_USER:-}" ] || { [ -n "$home_owner" ] && [ "$home_owner" != 0 ]; }; }; then
-		die "you ran the installer with sudo: run it as yourself, no sudo needed (or pass --dir PATH to install as root into another folder)"
+	if [ -n "${SUDO_USER:-}" ] || { [ -n "$home_owner" ] && [ "$home_owner" != 0 ]; }; then
+		[ -n "$dir_given" ] || die "you ran the installer with sudo: run it as yourself, no sudo needed (or pass --dir PATH to install as root into another folder)"
+		sudo_run=1
 	fi
 	if [ -n "$dir_given" ] || is_on "$yes"; then
 		warn "running as root: installing into $dir"

@@ -455,6 +455,45 @@ class InstallSh:
                 self.assertNotIn("Added", p.stdout)
                 self.assertEqual(sorted(os.listdir(r.home)), [".local"])
 
+    def test_other_shells_hints_for_another_folder(self):
+        for r in self.runs():
+            plain = os.path.join(r.top, "plain dir")
+            for shell_path, line in (("/bin/tcsh", "set path = ( '%s' $path )"), ("/usr/bin/nu", "$env.PATH = ($env.PATH | prepend '%s')"),
+                                     ("/usr/bin/elvish", "set paths = ['%s' $@paths]"), ("/usr/bin/xonsh", "$PATH.insert(0, '%s')")):
+                p = r.ok("--dir", plain, SHELL=shell_path)
+                self.assertIn("  " + line % plain + " " + MARKER + "\n", p.stdout)
+                # a folder with a quote or a backslash: words, no line to paste
+                for odd in ("it's", 'say "x"', "back\\slash"):
+                    target = os.path.join(r.top, odd)
+                    p = r.ok("--dir", target, SHELL=shell_path)
+                    self.assertIn("add %s to PATH in " % target, p.stdout)
+                    self.assertNotIn(MARKER, p.stdout)
+            self.assertEqual(os.listdir(r.home), [])
+
+    def test_startup_folder_not_writable_or_linked(self):
+        # an absent startup file whose folder cannot be written: the line is printed, the install stands
+        for r in self.runs():
+            zdot = os.path.join(r.top, "zdot")
+            os.mkdir(zdot, 0o500)
+            r.test.addCleanup(os.chmod, zdot, 0o700)
+            p = r.ok(SHELL="/bin/zsh", ZDOTDIR=zdot)
+            self.assertIn("  " + posix_line() + " " + MARKER + "\n", p.stdout)
+            self.assertIn("cannot write in %s: add this line to %s/.zshrc" % (zdot, zdot), p.stdout)
+            self.assertEqual(os.listdir(zdot), [])
+            self.assertEqual(r.installed(), "ttyak " + LATEST)
+        # a linked folder on the way (dotfiles kept elsewhere): nothing written through it
+        for r in self.runs():
+            dotfiles = os.path.join(r.top, "dotfiles")
+            os.makedirs(os.path.join(dotfiles, "fish"))
+            os.makedirs(os.path.join(dotfiles, "zsh"))
+            os.symlink(dotfiles, os.path.join(r.home, ".config"))
+            p = r.ok(SHELL="/usr/bin/fish")
+            self.assertIn("  " + fish_line() + " " + MARKER + "\n", p.stdout)
+            p = r.ok(SHELL="/bin/zsh", ZDOTDIR=os.path.join(r.home, ".config", "zsh"))
+            self.assertIn("  " + posix_line() + " " + MARKER + "\n", p.stdout)
+            self.assertEqual(sorted(os.listdir(os.path.join(dotfiles, "fish"))), [])
+            self.assertEqual(sorted(os.listdir(os.path.join(dotfiles, "zsh"))), [])
+
     def test_profile_link_or_read_only_left_alone(self):
         for r in self.runs():
             real = os.path.join(r.top, "dotfiles-bashrc")
@@ -612,12 +651,21 @@ class InstallSh:
             self.assertIn("no sudo needed", p.stderr)
             self.assertEqual(os.listdir(r.home), [])
             self.assertEqual(Handler.requests, [])
+            # with --dir it installs there, and still touches nothing in the user's HOME
             other = os.path.join(r.top, "opt")
-            r.ok("--dir", other, SUDO_USER="me")
-            self.assertRecord(r, LATEST, other)
+            for shell_path in ("/usr/bin/fish", "/bin/bash", "/bin/sh"):
+                p = r.ok("--dir", other, SUDO_USER="me", SHELL=shell_path)
+                self.assertRecord(r, LATEST, other)
+                self.assertEqual(os.listdir(r.home), [])
+                self.assertIn(MARKER + "\n", p.stdout)
+                self.assertIn("sudo", p.stdout)
         for r in self.runs(root=True, home_owner=None):
             p = r.fails("--yes")
             self.assertIn("you ran the installer with sudo", p.stderr)
+            self.assertEqual(os.listdir(r.home), [])
+            other = os.path.join(r.top, "opt")
+            r.ok("--dir", other, SHELL="/usr/bin/fish")
+            self.assertRecord(r, LATEST, other)
             self.assertEqual(os.listdir(r.home), [])
 
     def test_picks_platform(self):
