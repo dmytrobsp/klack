@@ -83,7 +83,7 @@ class FillTests(unittest.TestCase):
     def test_readme_needs(self):
         text = (ROOT / "README.md").read_text()
         n = F.readme_needs(text)
-        self.assertEqual(set(n), {"x86_64-linux", "aarch64-macos", "x86_64-macos", "x86_64-windows"})
+        self.assertEqual(set(n), {"x86_64-linux", "aarch64-linux", "aarch64-macos", "x86_64-macos", "x86_64-windows"})
         runs, needs = n["x86_64-linux"]
         self.assertIn("glibc 2.34", runs)
         self.assertNotIn("`", needs)

@@ -1,7 +1,8 @@
 # ttyak distribution: the accounts you set up
 
 This page lists the accounts, keys and certificates that ttyak's releases need. Only a person can do these steps
-(identity checks, payment, captchas). Claude does the rest: DNS records, repositories, workflows, signing in CI.
+(identity checks, payment, captchas). Claude does the rest: repositories, workflows, signing in CI, the site's domain
+settings.
 
 Prices and steps were checked on **2026-10-23**. Websites change. Where a step could not be confirmed, it says
 **(verify)**: if what you see is different, do what the site says and tell Claude what was different.
@@ -29,16 +30,16 @@ Start the slow ones first. They wait for other people.
 |---|---|---|---|---|
 | 1 | SSL.com certificate (Windows) | ~30 min | ID checks: 3–5 days ("standard validation") | $129/year + eSigner $180/year |
 | 2 | Apple Developer Program (macOS) | ~20 min | review: often ~2 days, sometimes weeks (verify) | 99 USD/year |
-| 3 | Domain `ttyak.sh` at Porkbun | ~15 min | none (DNS: minutes to hours) | $31.20 first year, then $46.65/year |
+| 3 | Domain `ttyak.sh` at Namecheap (done) | ~15 min | DNS: minutes to hours | your Namecheap order |
 | 4 | AUR account (Arch Linux) | ~10 min | none | free |
 | 5 | Chocolatey account (Windows) | ~10 min | email confirmation | free |
 | 6 | GitHub: fork of winget-pkgs, two tokens | ~15 min | the token for the tap and bucket waits until Claude makes those repositories | free |
 | later | Apple API key and certificate | ~20 min | after Apple approves you | — |
 | later | SSL.com eSigner enrolment | ~15 min | after SSL.com validates you | — |
 
-Total per year, roughly: $46.65 + $99 + $129 + $180 ≈ **$455**.
+Total per year, roughly: $99 + $129 + $180 ≈ **$408**, plus the domain's renewal.
 
-Start 1 and 2 today. 3 to 6 can be done any time, in any order.
+Start 1 and 2 today. 3 is done; 4 to 6 can be done any time, in any order.
 
 ## All the secrets
 
@@ -61,10 +62,6 @@ secrets are missing.
 | `ES_PASSWORD` | your SSL.com account password | you | Windows signing |
 | `ES_CREDENTIAL_ID` | the eSigner credential ID of the certificate | you | Windows signing |
 | `ES_TOTP_SECRET` | the eSigner TOTP "secret code" | you | Windows signing |
-
-Not a GitHub secret: the Porkbun API key. It goes into a file on this machine,
-`~/.config/ttyak-site/porkbun.json` (see the Porkbun section). Claude's DNS script reads it from there and never prints
-it.
 
 Claude's scripts never print a secret. They pipe it straight into `gh secret set`.
 
@@ -195,50 +192,43 @@ before then stay valid.
 
 ---
 
-## 3. Porkbun: the domain `ttyak.sh`
+## 3. Namecheap: the domain `ttyak.sh` (done)
 
 **What it is for.** The site and the install one-liners live at `https://ttyak.sh` (for example
-`curl -fsSL https://ttyak.sh/install.sh | sh`). Claude sets the DNS records with Porkbun's API.
+`curl -fsSL https://ttyak.sh/install.sh | sh`), served by GitHub Pages.
 
-**Price (2026-10-23).** $31.20 for the first year, then $46.65 per year. WHOIS privacy is free. On 2026-10-22 the `.sh`
-registry said `ttyak.sh` was not registered.
+**What was done.** Porkbun refused the ID, so you bought `ttyak.sh` at **Namecheap** and set its DNS records there
+by hand. No DNS script and no API key: nothing about the domain is kept on this machine.
+No paid extras either (email, hosting, SSL): GitHub Pages gives the site a free certificate from Let's Encrypt.
 
-**Steps.**
+The records (9), as GitHub's Pages docs give them for an apex domain plus `www`:
 
-1. Go to <https://porkbun.com>, make an account, and turn on two-factor login in the account settings.
-2. Search for `ttyak.sh`. Add it to the cart. Keep **WHOIS privacy** on. Turn **auto-renew** on. Do not buy extras
-   (email, hosting, SSL: GitHub gives the site a free certificate).
-3. Pay.
-4. Turn on API access for the domain: **ACCOUNT** (top right) → **Domain Management** → find `ttyak.sh` → **Details**
-   → turn **API Access** on.
-5. Make the key: **ACCOUNT** → **API Access**.
-   - Title: `ttyak dns`.
-   - Permissions: **Manage, but no purchases**. It must be able to change DNS records.
-   - Limit it to the domain `ttyak.sh`. Do not limit it to an IP address (your home IP can change).
-   - Click **Create API Key**.
-6. A box shows the **API Key** and the **Secret Key**. The Secret Key is shown **only this one time**. Do not close the
-   page yet.
-7. In your terminal, make the private file (these lines work in fish and bash):
+| Type | Host | Value |
+|---|---|---|
+| A | `@` | `185.199.108.153` |
+| A | `@` | `185.199.109.153` |
+| A | `@` | `185.199.110.153` |
+| A | `@` | `185.199.111.153` |
+| AAAA | `@` | `2606:50c0:8000::153` |
+| AAAA | `@` | `2606:50c0:8001::153` |
+| AAAA | `@` | `2606:50c0:8002::153` |
+| AAAA | `@` | `2606:50c0:8003::153` |
+| CNAME | `www` | `dmytrobsp.github.io.` |
 
-   ```
-   mkdir -p ~/.config/ttyak-site
-   chmod 700 ~/.config/ttyak-site
-   touch ~/.config/ttyak-site/porkbun.json
-   chmod 600 ~/.config/ttyak-site/porkbun.json
-   ```
+Namecheap's parking records (what a new domain points to) were deleted, so only these answer.
 
-8. Open `~/.config/ttyak-site/porkbun.json` in your editor (for example `nano ~/.config/ttyak-site/porkbun.json`).
-   Write exactly this, with your two keys between the quotes, and save:
+**The verified domain.** On GitHub, your account's **Settings → Pages → Add a domain** → `ttyak.sh` gave a TXT record,
+`_github-pages-challenge-dmytrobsp` with a value of its own, which you added at Namecheap too (a 10th record). Then
+**Verify**. Keep the TXT record: while it is there, only your repositories can publish a Pages site on `ttyak.sh` and
+its subdomains (no one can take the domain over if the site is ever switched off).
 
-   ```
-   {"apikey": "YOUR_API_KEY", "secretapikey": "YOUR_SECRET_KEY"}
-   ```
+**Remember.** Keep auto-renew on for `ttyak.sh` at Namecheap (verify that it is on). If the domain lapses, the site, the
+install one-liners and ttyak's update check (`https://ttyak.sh/latest.json`) stop working.
 
-9. Now you can close the Porkbun page. If you lose the Secret Key, delete the key on Porkbun and make a new one.
-10. Tell Claude the domain and the key file are ready.
-
-**Claude then:** checks the file's mode, sets the records for GitHub Pages, sets the custom domain and HTTPS
-(the domain setup). The script only reads the file; it never prints the keys.
+**Claude then:** once public DNS shows the records, sets `ttyak.sh` as the custom domain of the repository's Pages site
+(through GitHub's API), waits for the certificate and turns on **Enforce HTTPS**. The site is deployed by the Pages
+workflow (GitHub Actions), and for that GitHub ignores a `CNAME` file: the domain is a repository setting, so the repo
+has no `site/CNAME`. GitHub then redirects `dmytrobsp.github.io/ttyak` and `www.ttyak.sh` to `https://ttyak.sh`.
 
 ---
 
@@ -350,10 +340,14 @@ winget.
 
 Checked on 2026-10-23.
 
-- Porkbun API keys and per-domain API access: <https://kb.porkbun.com/article/190-getting-started-with-the-porkbun-api>
-- Porkbun API reference (host `api.porkbun.com`, fields `apikey` / `secretapikey`):
-  <https://porkbun.com/api/json/v3/documentation>
-- Porkbun `.sh` price: <https://porkbun.com/tld/sh>
+- GitHub Pages' A and AAAA records for an apex domain, the `www` CNAME, and the redirects between them:
+  <https://docs.github.com/en/pages/configuring-a-custom-domain-for-your-github-pages-site/managing-a-custom-domain-for-your-github-pages-site>
+- "If you are publishing from a custom GitHub Actions workflow, any CNAME file is ignored and is not required":
+  <https://docs.github.com/en/pages/configuring-a-custom-domain-for-your-github-pages-site/troubleshooting-custom-domains-and-github-pages>
+- Verifying a domain (`_github-pages-challenge-<user>`, domain takeovers):
+  <https://docs.github.com/en/pages/configuring-a-custom-domain-for-your-github-pages-site/verifying-your-custom-domain-for-github-pages>
+- HTTPS for a custom domain (Let's Encrypt, Enforce HTTPS):
+  <https://docs.github.com/en/pages/getting-started-with-github-pages/securing-your-github-pages-site-with-https>
 - Apple enrolment requirements and fee: <https://developer.apple.com/programs/enroll/>
 - Apple Developer app enrolment steps: <https://developer.apple.com/support/app-account/>
 - Apple two-factor authentication: <https://support.apple.com/en-us/102660>

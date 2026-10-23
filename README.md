@@ -1,7 +1,6 @@
 # ttyak
 
-**[dmytrobsp.github.io/ttyak](https://dmytrobsp.github.io/ttyak/)** — what it does, the numbers against the official
-app, and the downloads.
+**[ttyak.sh](https://ttyak.sh/)** — what it does, the numbers against the official app, and the downloads.
 
 A Slack client for the terminal, written in Rust (ratatui + crossterm). Messaging with
 threads, reactions, autocomplete and formatting; inline images, an image viewer and video with
@@ -14,21 +13,96 @@ cookie). It is not an official Slack app.
 
 ## Install
 
-Ready-made builds are on the [releases page](https://github.com/dmytrobsp/ttyak/releases): each is one zip with
-`ttyak` (`ttyak.exe`), the README and the licences at its top. Unzip it and put `ttyak` somewhere on your PATH. None of
-them is signed.
+From 0.11.0 on, one line installs ttyak, or your package manager does (0.10.0 and older: only the zips on the
+[releases page](https://github.com/dmytrobsp/ttyak/releases)).
+
+Linux and macOS:
+
+```sh
+curl -fsSL https://ttyak.sh/install.sh | sh
+```
+
+Windows (PowerShell):
+
+```powershell
+irm https://ttyak.sh/install.ps1 | iex
+```
+
+The script takes the latest release's zip for your system, checks it against the release's `SHA256SUMS` and puts
+`ttyak` in `~/.local/bin` (Windows: `%LOCALAPPDATA%\Programs\ttyak`) and on your PATH; `--help` (`-Help`) lists its
+flags (another version, another folder, PATH left alone). Then `ttyak auth login`, or plain `ttyak`, signs you in.
+
+The macOS builds are signed and notarized by Apple. `ttyak.exe` is **not code-signed** yet (a later release will be),
+so SmartScreen may warn the first time you run it: **More info → Run anyway**.
+
+Or with a package manager:
+
+| Package manager | |
+|---|---|
+| Homebrew (macOS, Linux) | `brew install dmytrobsp/ttyak/ttyak` |
+| Scoop | `scoop bucket add ttyak https://github.com/dmytrobsp/scoop-ttyak`, then `scoop install ttyak` |
+| winget | `winget install dmytrobsp.ttyak` |
+| Chocolatey | `choco install ttyak` |
+| Debian, Ubuntu | the release's `.deb`: `sudo apt install ./ttyak_<version>_amd64.deb` (arm: `_arm64.deb`) |
+| Fedora, RHEL | the release's `.rpm`: `sudo dnf install ./ttyak-<version>-1.x86_64.rpm` (arm: `.aarch64.rpm`) |
+| Arch | not in the AUR yet (its sign-up is closed for now): unzip the release's `ttyak-<version>-recipes.zip` and run `makepkg -si` in its `aur` folder |
+
+Or by hand: each release has one zip per system with `ttyak` (`ttyak.exe`), the README and the licences at its top.
+Unzip it and put `ttyak` somewhere on your PATH. (Releases before 0.11.0 are not signed: on macOS run
+`xattr -d com.apple.quarantine ttyak` once, or allow it in System Settings → Privacy & Security.)
 
 | Download | Runs on | Needs |
 |---|---|---|
 | `x86_64-linux.zip` | glibc 2.34 or newer (Ubuntu 22.04, Debian 12, Fedora 35, RHEL 9 and later) | `libasound.so.2` (ALSA), `libstdc++` — on every desktop Linux |
-| `aarch64-macos.zip` | Apple Silicon Macs, macOS 11 or newer | nothing (system frameworks only); unsigned: `xattr -d com.apple.quarantine ttyak` once, or allow it in System Settings → Privacy & Security |
+| `aarch64-linux.zip` | 64-bit Arm Linux with glibc 2.34 or newer (as above; Raspberry Pi OS 12) | as above |
+| `aarch64-macos.zip` | Apple Silicon Macs, macOS 11 or newer | nothing (system frameworks only) |
 | `x86_64-macos.zip` | Intel Macs, macOS 11 or newer | as above |
-| `x86_64-windows.zip` | 64-bit Windows 10 / 11 | nothing (Windows system DLLs only, no MinGW runtime); unsigned, so SmartScreen may ask once |
+| `x86_64-windows.zip` | 64-bit Windows 10 / 11 | nothing (Windows system DLLs only, no MinGW runtime) |
 
 Optional everywhere: `ffmpeg` / `ffprobe` on PATH for video, cameras and screen sharing; a terminal
-with graphics for real pictures (see below). To build it yourself instead, read on.
+with graphics for real pictures (see below). To build it yourself instead, see below.
 
-## Requirements
+## Verify
+
+Every file of a release from 0.11.0 on (the zips, the `.deb` and `.rpm`, the recipes zip) has its line in the
+release's `SHA256SUMS` and a GitHub attestation of where it was built. The install script checks the SHA256 itself. For
+files you downloaded, put `SHA256SUMS` next to them and run
+
+```sh
+sha256sum -c SHA256SUMS --ignore-missing           # Linux
+shasum -a 256 -c SHA256SUMS --ignore-missing       # macOS
+```
+
+which says `OK` for each of them. The attestation, with the [GitHub CLI](https://cli.github.com) (for version 0.11.0):
+
+```sh
+gh attestation verify ttyak-0.11.0-x86_64-linux.zip -R dmytrobsp/ttyak --source-ref refs/tags/v0.11.0
+```
+
+passes only for a file this repository's release workflow built from the tag `v0.11.0`.
+
+## Update
+
+ttyak says once when a new version is out (see [Updates](#updates)), and F6 → Updates shows what to run for the way
+it was installed:
+
+- the install script: F6 → Updates → Update (it downloads the new version, checks it and puts it in place; start
+  ttyak again), or run the one-liner again
+- `brew upgrade ttyak` · `scoop update ttyak` · `winget upgrade dmytrobsp.ttyak` · `choco upgrade ttyak`
+- `.deb`, `.rpm`: install the new release's package as above; Arch: `makepkg -si` with the new release's recipes zip
+- by hand: the new zip's `ttyak` over the old one
+
+## Uninstall
+
+- the install script: `ttyak uninstall` removes the program and the PATH line it added, and asks whether to keep your
+  settings, sign-ins and drafts (`--yes` for scripts; more under [Signing in](#signing-in))
+- `brew uninstall ttyak` · `winget uninstall dmytrobsp.ttyak` · `sudo apt remove ttyak` · `sudo dnf remove ttyak` ·
+  Arch: `sudo pacman -Rns ttyak-bin` — these leave your ttyak data (settings, sign-ins, drafts, caches) in your home
+  folder: run `ttyak purge` first to delete it
+- `scoop uninstall ttyak` and `choco uninstall ttyak` delete your ttyak data too, as `ttyak purge` does
+- by hand: `ttyak purge` (if you want your data gone), then delete `ttyak`
+
+## Build it yourself
 
 To build: a recent stable Rust toolchain (edition 2024; [rustup](https://rustup.rs)), a C/C++
 compiler, `pkg-config`, **cmake** (the bundled Opus codec is built with it) and the **ALSA headers**
