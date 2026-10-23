@@ -265,6 +265,8 @@ struct App {
     update_installed: Option<semver::Version>,
     /// For the update notification's click and the self-update's end (see [`Update`]).
     update_events: mpsc::UnboundedSender<super::update_view::UpdateEvent>,
+    /// Asks the background check for a check at once (F6 → Updates → Check now).
+    update_asks: mpsc::UnboundedSender<()>,
     /// The Activity view (Ctrl+A), shown while `view` is Activity.
     activity: super::activity::Activity,
     /// The save dialog (`␣s`).
@@ -2818,6 +2820,32 @@ impl App {
         }
     }
 
+    /// A Check now ended: said on its row, or with F6 closed in the status line.
+    fn update_checked(&mut self, checked: crate::update::Checked) {
+        match self.prefs.as_mut() {
+            Some(p) => p.update.check = super::prefs::CheckNow::Done(checked),
+            None => self.status = super::prefs::checked_note(&checked),
+        }
+    }
+
+    /// Enter on a row of F6 → Updates that is no setting: Check now asks the background check
+    /// (it answers on `update_checked`), the command is copied, Update opens the update screen.
+    fn update_preference(&mut self) {
+        use super::prefs::{CheckNow, UpdateAction};
+        let Some(p) = self.prefs.as_mut() else { return };
+        match p.update_action(&self.keys) {
+            Some(UpdateAction::CheckNow) => {
+                p.update.check = match self.update_asks.send(()) {
+                    Ok(()) => CheckNow::Running,
+                    Err(_) => CheckNow::Done(crate::update::Checked::Failed(super::i18n::tr(super::prefs::NOT_RUNNING).into_owned())),
+                };
+            }
+            Some(UpdateAction::Copy(text)) => self.update_do(super::update_view::Do::Copy(text)),
+            Some(UpdateAction::Open) => self.open_update_screen(),
+            None => {}
+        }
+    }
+
     /// Do what a key or click on the update screen asked for.
     fn update_do(&mut self, todo: super::update_view::Do) {
         use super::update_view::Do;
@@ -3380,6 +3408,10 @@ impl App {
             if let Some(change) = p.group_edit(&self.keys) {
                 self.save_keys(&change);
             }
+            return;
+        }
+        if let Some(super::prefs::Field::UpdateVersion | super::prefs::Field::UpdateCheckNow | super::prefs::Field::UpdateCommand | super::prefs::Field::UpdateOpen) = field {
+            self.update_preference();
             return;
         }
         let on_slack = p.on_slack(&self.keys);
@@ -4864,8 +4896,10 @@ fn wanted_index(profile: &slack_core::session::Profile, account: Option<(&str, &
 /// The update check's findings and the update screen for the whole run, kept while workspaces
 /// are switched.
 struct Update {
-    /// Newer versions, from [`crate::update::spawn`].
-    found: mpsc::UnboundedReceiver<crate::update::Found>,
+    /// Newer versions and how a Check now ended, from [`crate::update::spawn`].
+    found: mpsc::UnboundedReceiver<crate::update::Report>,
+    /// Check now's requests, to [`crate::update::spawn`].
+    asks: mpsc::UnboundedSender<()>,
     /// The update notification's clicks and the self-update's end.
     events: mpsc::UnboundedReceiver<super::update_view::UpdateEvent>,
     events_tx: mpsc::UnboundedSender<super::update_view::UpdateEvent>,
@@ -4909,9 +4943,10 @@ pub async fn run(profile: slack_core::session::Profile, account: Option<(&str, &
     let mut events = EventStream::new();
     // Once the screen is up, so the check never holds the start.
     let (found_tx, found) = mpsc::unbounded_channel();
-    crate::update::spawn(found_tx);
+    let (asks, asked) = mpsc::unbounded_channel();
+    crate::update::spawn(found_tx, asked);
     let (events_tx, update_events) = mpsc::unbounded_channel();
-    let mut update = Update { found, events: update_events, events_tx, available: None, pill: false, screen: None, installed: None };
+    let mut update = Update { found, asks, events: update_events, events_tx, available: None, pill: false, screen: None, installed: None };
     // Each workspace's back and forward, kept while another is shown.
     let mut histories: std::collections::HashMap<usize, super::history::History> = std::collections::HashMap::new();
     loop {
@@ -5079,6 +5114,7 @@ impl App {
             update_installed: None,
             // (The run's, from `run_workspace`.)
             update_events: mpsc::unbounded_channel().0,
+            update_asks: mpsc::unbounded_channel().0,
         }
     }
 }
@@ -5111,6 +5147,7 @@ async fn run_workspace(
     app.resume_history(history);
     (app.update_available, app.update_pill, app.update_view, app.update_installed) = (update.available.take(), update.pill, update.screen.take(), update.installed.clone());
     app.update_events = update.events_tx.clone();
+    app.update_asks = update.asks.clone();
 
     let mut tick = tokio::time::interval(Duration::from_millis(500));
     let mut video_tick = tokio::time::interval(Duration::from_millis(40));
@@ -5162,7 +5199,10 @@ async fn run_workspace(
                 went = if goes_somewhere(&msg) { Went::Yes } else { Went::No };
                 handle_net(&mut app, msg);
             }
-            Some(found) = update.found.recv() => handle_net(&mut app, Net::UpdateKnown(found)),
+            Some(report) = update.found.recv() => match report {
+                crate::update::Report::Found(found) => handle_net(&mut app, Net::UpdateKnown(found)),
+                crate::update::Report::Checked(checked) => app.update_checked(checked),
+            },
             Some(event) = update.events.recv() => app.update_event(event),
             Some((index, target)) = clicks.recv() => {
                 went = Went::Yes;
@@ -7324,6 +7364,7 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         m.draw(f, body, &app.ws);
     }
     if let Some(p) = app.prefs.as_mut() {
+        p.sync_update(app.update_available.as_ref());
         p.draw(f, body, &app.ws, app.current.as_deref(), &app.keys);
     }
     if let Some(v) = app.update_view.as_mut() {
@@ -8497,6 +8538,55 @@ mod tests {
         // Outside it: it closes, the preferences stay.
         click(&mut app, area.x.saturating_sub(3), area.y);
         assert!(app.update_view.is_none() && app.prefs.is_some());
+    }
+
+    #[tokio::test]
+    async fn check_now_sends_the_check() {
+        use super::super::prefs::{CATEGORIES, CheckNow, Field, Prefs};
+        use crate::update::Checked;
+        let (mut app, _net) = test_app();
+        app.ws.settings.notifications.desktop = false;
+        let (asks_tx, mut asks) = tokio::sync::mpsc::unbounded_channel();
+        app.update_asks = asks_tx;
+        let select = |app: &mut super::App, field: Field| {
+            let p = app.prefs.as_mut().unwrap();
+            p.selected = p.fields(&super::Keymap::default()).iter().position(|f| *f == field).unwrap();
+        };
+        let mut p = Prefs::default();
+        p.category = CATEGORIES.iter().position(|c| c.0 == "Updates").unwrap();
+        app.prefs = Some(p);
+        select(&mut app, Field::UpdateCheckNow);
+        app.change_preference();
+        assert!(asks.try_recv().is_ok(), "asked for at once");
+        assert_eq!(app.prefs.as_ref().unwrap().update.check, CheckNow::Running);
+        app.change_preference();
+        assert!(asks.try_recv().is_err(), "a press while one runs is ignored");
+        // The answer: a newer version found (never notified: no pill), then what the check says, on its row.
+        super::handle_net(&mut app, super::Net::UpdateKnown(crate::update::Found { latest: new_version(), notify: false }));
+        app.update_checked(Checked::Out(semver::Version::new(9, 9, 9)));
+        assert_eq!(app.prefs.as_ref().unwrap().update_value(Field::UpdateCheckNow).as_deref(), Some("ttyak 9.9.9 is out"));
+        assert!(!app.update_pill);
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(150, 40)).unwrap();
+        terminal.draw(|f| super::draw(f, &mut app)).unwrap();
+        let text = screen(&terminal).join("\n");
+        assert!(text.contains("ttyak 9.9.9 (2026-11-01): open the update screen…") && !text.contains('⬆'), "{text}");
+        // Enter on the Update row: the update screen, above the preferences.
+        select(&mut app, Field::UpdateOpen);
+        app.change_preference();
+        assert!(app.update_view.is_some() && app.prefs.is_some());
+        app.update_view = None;
+        // The background check is not running: said on the row.
+        app.update_asks = tokio::sync::mpsc::unbounded_channel().0;
+        app.prefs.as_mut().unwrap().update.check = CheckNow::Idle;
+        select(&mut app, Field::UpdateCheckNow);
+        app.change_preference();
+        assert!(matches!(&app.prefs.as_ref().unwrap().update.check, CheckNow::Done(Checked::Failed(_))));
+        // F6 closed meanwhile: the status line says it.
+        app.prefs = None;
+        app.update_checked(Checked::UpToDate);
+        assert_eq!(app.status, "ttyak is up to date");
+        app.update_checked(Checked::Failed("offline".into()));
+        assert_eq!(app.status, "could not check for a new ttyak: offline");
     }
 
     #[tokio::test]

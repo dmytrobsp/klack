@@ -52,7 +52,14 @@ pub fn parse(json: &str, platform: &str) -> Result<Latest> {
     let mut feed: Feed = serde_json::from_str(json).context("latest.json")?;
     let version = Version::parse(&feed.version).with_context(|| format!("latest.json: version {:?}", feed.version))?;
     let asset = feed.assets.remove(platform).with_context(|| format!("latest.json: no archive for {platform}"))?;
-    Ok(Latest { version, date: feed.date, notes: feed.notes, asset })
+    let asset = Asset { url: printable(&asset.url), sha256: printable(&asset.sha256) };
+    Ok(Latest { version, date: printable(&feed.date), notes: printable(&feed.notes), asset })
+}
+
+/// `text` without control characters (C0 with ESC, DEL and C1), so text from the feed can never
+/// steer the terminal it is shown in.
+pub fn printable(text: &str) -> String {
+    text.chars().filter(|c| !c.is_control()).collect()
 }
 
 /// Whether `latest` is newer than `current` (build metadata does not count); a pre-release is
@@ -67,6 +74,24 @@ pub struct Found {
     pub latest: Latest,
     /// Not notified before: the notification and the status line's pill.
     pub notify: bool,
+}
+
+/// What a check asked for (F6 → Updates → Check now) found.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Checked {
+    UpToDate,
+    /// This version, newer than this ttyak, is out.
+    Out(Version),
+    /// No answer, or none that could be read: why.
+    Failed(String),
+}
+
+/// What the background check tells the app.
+#[derive(Debug)]
+pub enum Report {
+    Found(Found),
+    /// A check asked for ended (after its [`Report::Found`], if any).
+    Checked(Checked),
 }
 
 /// What `updates.json` keeps between runs.
@@ -160,6 +185,26 @@ where
     Some(after_check(state, now, current, result))
 }
 
+/// A check asked for (F6 → Updates → Check now) of `url` for `platform`: due or not, with the check
+/// off too. What [`after_check`] gives, the newer version never to notify (the page shows it, so it
+/// counts as notified), and what to say.
+pub async fn check_now<F, Fut>(state: &State, now: u64, current: &Version, platform: Option<&str>, url: &str, fetch: F) -> (State, Option<Found>, Checked)
+where
+    F: FnOnce(String) -> Fut,
+    Fut: Future<Output = Result<String>>,
+{
+    let Some(platform) = platform else { return (state.clone(), None, Checked::Failed("ttyak is not released for this platform".into())) };
+    let result = fetch(url.to_string()).await.and_then(|json| parse(&json, platform));
+    let failed = result.as_ref().err().map(|e| format!("{e:#}"));
+    let (next, found) = after_check(state, now, current, result);
+    let checked = match (&found, failed) {
+        (_, Some(e)) => Checked::Failed(e),
+        (Some(f), None) => Checked::Out(f.latest.version.clone()),
+        (None, None) => Checked::UpToDate,
+    };
+    (next, found.map(|f| Found { notify: false, ..f }), checked)
+}
+
 /// A client that sends ttyak's name and version as the User-Agent and nothing else (no cookies),
 /// with `limits`' timeouts.
 fn client(limits: impl Fn(slack_core::reqwest::ClientBuilder) -> slack_core::reqwest::ClientBuilder) -> Result<slack_core::reqwest::Client> {
@@ -179,21 +224,32 @@ fn wait(settings: &crate::tui::settings::Updates, state: &State, now: u64) -> Du
 }
 
 /// Check in the background, the first time at once when due, then as it comes due (the settings
-/// read again each time; a broken settings.toml means the defaults, as everywhere in ttyak); each
-/// newer version a check finds is sent on `found`, to be notified only once written down.
-pub fn spawn(found: tokio::sync::mpsc::UnboundedSender<Found>) {
-    let (Some(path), Some(platform)) = (state_path(), crate::install::platform()) else { return };
+/// read again each time; a broken settings.toml means the defaults, as everywhere in ttyak), and at
+/// once on each request on `asks` (Check now; requests that came meanwhile are answered by the same
+/// check). Each newer version a check finds is sent on `reports`, to be notified only once written
+/// down; a check asked for also says how it ended.
+pub fn spawn(reports: tokio::sync::mpsc::UnboundedSender<Report>, mut asks: tokio::sync::mpsc::UnboundedReceiver<()>) {
+    let Some(path) = state_path() else { return };
+    let platform = crate::install::platform();
     let current = Version::parse(env!("CARGO_PKG_VERSION")).expect("the package version is semver");
     let url = std::env::var(URL_ENV).ok().filter(|u| !u.is_empty()).unwrap_or_else(|| URL.to_string());
     tokio::spawn(async move {
         // What this run last wrote (or tried to): a floor under what the file says.
         let mut kept = State::default();
+        let mut asked = false;
         loop {
             let settings = crate::tui::settings::load().0.updates;
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
             // Read each time: another ttyak (another profile) may have checked meanwhile.
             let mut state = with_floor(load_state(&path), &kept);
-            if let Some((next, newer)) = check(&settings, &state, now, &current, Some(platform), &url, |u| async move { fetch(&u).await }).await {
+            let get = |u: String| async move { fetch(&u).await };
+            let ran = if asked {
+                let (next, newer, checked) = check_now(&state, now, &current, platform, &url, get).await;
+                Some((next, newer, Some(checked)))
+            } else {
+                check(&settings, &state, now, &current, platform, &url, get).await.map(|(next, newer)| (next, newer, None))
+            };
+            if let Some((next, newer, checked)) = ran {
                 kept = next.clone();
                 // Only once it is written: never notified twice.
                 let saved = save_state(&path, &next);
@@ -201,13 +257,28 @@ pub fn spawn(found: tokio::sync::mpsc::UnboundedSender<Found>) {
                     tracing::debug!("update check: {}: {e:#}", path.display());
                 }
                 if let Some(Found { latest, notify }) = newer {
-                    if found.send(Found { latest, notify: notify && saved.is_ok() }).is_err() {
+                    if reports.send(Report::Found(Found { latest, notify: notify && saved.is_ok() })).is_err() {
+                        return;
+                    }
+                }
+                if let Some(checked) = checked {
+                    if reports.send(Report::Checked(checked)).is_err() {
                         return;
                     }
                 }
                 state = next;
             }
-            tokio::time::sleep(wait(&settings, &state, now)).await;
+            asked = tokio::select! {
+                () = tokio::time::sleep(wait(&settings, &state, now)) => false,
+                ask = asks.recv() => match ask {
+                    Some(()) => {
+                        while asks.try_recv().is_ok() {}
+                        true
+                    }
+                    // The app is gone.
+                    None => return,
+                },
+            };
         }
     });
 }
@@ -689,6 +760,43 @@ mod tests {
         let (next, shown) = check(&on, &old, 1_000_000, &now, Some("x86_64-linux"), "http://127.0.0.1:9/latest.json", fetch).await.unwrap();
         assert_eq!((next.last_check, notified(shown).map(|l| l.version)), (1_000_000, Some(v("0.10.2"))));
         assert_eq!(asked.load(std::sync::atomic::Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn check_now_never_pops_a_notice() {
+        let fetch = |_url: String| async { Ok(FEED.to_string()) };
+        let now = v("0.10.0");
+        // Not due and never notified: checked all the same, known, never to notify; seen on the
+        // page, it counts as notified (no notice for it later).
+        let recent = State { last_check: 999_000, notified: None };
+        let (next, found, checked) = check_now(&recent, 1_000_000, &now, Some("x86_64-linux"), URL, fetch).await;
+        assert_eq!(checked, Checked::Out(v("0.10.2")));
+        assert_eq!(found.map(|f| (f.latest.version, f.notify)), Some((v("0.10.2"), false)));
+        assert_eq!(next, State { last_check: 1_000_000, notified: Some("0.10.2".into()) });
+        let (_, later) = after_check(&next, 2_000_000, &now, parse(FEED, "x86_64-linux"));
+        assert!(later.is_some_and(|f| !f.notify), "the next check says nothing");
+        // Notified before: still never to notify.
+        let (_, found, _) = check_now(&State { last_check: 0, notified: Some("0.10.1".into()) }, 5, &now, Some("x86_64-linux"), URL, fetch).await;
+        assert!(found.is_some_and(|f| !f.notify));
+        // Up to date; no answer; no release for this platform (nothing fetched).
+        let (_, found, checked) = check_now(&recent, 1_000_000, &v("0.10.2"), Some("x86_64-linux"), URL, fetch).await;
+        assert_eq!((found, checked), (None, Checked::UpToDate));
+        let (next, found, checked) = check_now(&recent, 1_000_000, &now, Some("x86_64-linux"), URL, |_| async { Err(anyhow::anyhow!("offline")) }).await;
+        assert_eq!((next.last_check, found, checked), (1_000_000, None, Checked::Failed("offline".into())));
+        let (next, found, checked) = check_now(&recent, 1_000_000, &now, None, URL, |_| async { panic!("fetched") }).await;
+        assert_eq!((next, found, checked), (recent.clone(), None, Checked::Failed("ttyak is not released for this platform".into())));
+    }
+
+    #[test]
+    fn feed_text_is_sanitised() {
+        // ESC sequences (clear the screen, a hidden link), BEL, a C1 CSI, NUL and line ends.
+        let feed = r#"{"version":"9.9.9","date":"2026-11-01\u001b[2J","notes":"https://x.invalid/\u001b]8;;https://evil.invalid\u0007notes\u009b31m",
+            "assets":{"x86_64-linux":{"url":"https://x.invalid/a.zip\u0000","sha256":"ab12\r\n"}}}"#;
+        let l = parse(feed, "x86_64-linux").unwrap();
+        assert_eq!(l.date, "2026-11-01[2J");
+        assert_eq!(l.notes, "https://x.invalid/]8;;https://evil.invalidnotes31m");
+        assert_eq!((l.asset.url.as_str(), l.asset.sha256.as_str()), ("https://x.invalid/a.zip", "ab12"));
+        assert_eq!(printable("a\u{1b}b\u{7f}c\u{85}d\u{9f}e\tf ü 🎉"), "abcdef ü 🎉", "C0, DEL and C1 go; the rest stays");
     }
 
     #[tokio::test]

@@ -87,10 +87,19 @@ pub enum Offer {
     Download { package: Option<&'static str>, url: String },
 }
 
+/// The newest release's page, for a download while no newer version is known.
+pub const RELEASES_PAGE: &str = "https://github.com/dmytrobsp/ttyak/releases/latest";
+
 /// What `install` can do about `latest`: update itself only when the install script put it in a
 /// folder it can write.
 pub fn offer(install: &Install, latest: &Latest) -> Offer {
-    let download = |package| Offer::Download { package, url: latest.notes.clone() };
+    offer_with(install, &latest.notes)
+}
+
+/// [`offer`] for a release whose page is `page` (also where F6 → Updates sends a download, with
+/// no newer version known yet).
+pub fn offer_with(install: &Install, page: &str) -> Offer {
+    let download = |package| Offer::Download { package, url: page.to_string() };
     match install.method {
         Method::Script if install.writable => Offer::UpdateNow,
         Method::Script => {

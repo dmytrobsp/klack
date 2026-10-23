@@ -347,6 +347,33 @@ fn build(field: Field, _ws: &Workspace, keys: &Keymap, tr: &dyn Fn(&'static str)
             b.text("How long you may be alone in a huddle before the reminder starts.").blank();
             b.step("30 s, 1, 2, 3, 5, 10 or 15 minutes");
         }
+        // Updates
+        Field::UpdateVersion => {
+            b.text("This ttyak's version and how it was installed: with the install script, by a package manager (Homebrew, Scoop, winget, Chocolatey, the AUR, a .deb or an .rpm package), or unknown — a copy downloaded by hand. How it was installed decides how it is updated.");
+        }
+        Field::UpdateCheck => {
+            b.text("Looks for a new version of ttyak now and then: a plain request for the site's latest.json, which sends nothing about you but ttyak's name and version. A new version is told once: a desktop notification (when they are on) and ⬆ in the status line. Off: no check at all, unless you ask for one (Check now).");
+        }
+        Field::UpdateEvery => {
+            b.text("How often the check runs at most, in seconds; a check that got no answer counts too.").blank();
+            b.step("1, 6 or 12 hours, or 1, 3 or 7 days");
+        }
+        Field::UpdateTimeout => {
+            b.text("The update screen's download gives up when no data has come for this long; the old ttyak stays as it was.").blank();
+            b.step("10, 15, 30, 60, 120 or 300 seconds");
+        }
+        Field::UpdateCheckNow => {
+            b.text("Looks for a new version at once, whether a check is due or not, with the check off too. It never shows a desktop notification: what it finds is said here, and a new version adds the Update row below.").blank();
+            b.change("check now (a press while one runs does nothing)");
+        }
+        Field::UpdateCommand => {
+            b.text("How to update ttyak for the way it was installed: the package manager's command, the install script's for a folder ttyak cannot write, or the page to download a new .deb, .rpm or archive from. A copy the install script put in a folder ttyak can write updates itself: Update, once a new version is out.").blank();
+            b.change("copy the command or the link");
+        }
+        Field::UpdateOpen => {
+            b.text("A newer ttyak is out: the update screen updates this one, or says what to run.").blank();
+            b.change("open the update screen");
+        }
         // Keys, above the bindings
         Field::WhichKeyShow => {
             b.text("The panel that lists the keys that can come next while you press a sequence of keys.");

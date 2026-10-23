@@ -12,6 +12,9 @@ use std::time::{Duration, Instant};
 use super::keymap::{ACTIONS, Action, Key, Keymap};
 use super::settings::Settings;
 use super::state::{LEVELS, Workspace, level_label};
+use super::update_view::{Offer, RELEASES_PAGE};
+use crate::install::{Install, Method};
+use crate::update::{Checked, Latest};
 use slack_core::dnd::{DayHours, ScheduleDays, ScheduleEdit};
 
 /// Day-separator formats offered (strftime).
@@ -95,6 +98,20 @@ pub enum Field {
     AutoDecline,
     AloneSound,
     AloneSecs,
+    /// Updates: this ttyak's version and how it was installed (shown only).
+    UpdateVersion,
+    /// Updates: the background check on or off.
+    UpdateCheck,
+    /// Updates: how often it checks at most.
+    UpdateEvery,
+    /// Updates: the update screen's download gives up after this long without data.
+    UpdateTimeout,
+    /// Updates: check at once.
+    UpdateCheckNow,
+    /// Updates: what to run (or where to download) to update this install.
+    UpdateCommand,
+    /// Updates: open the update screen (only while a newer version is known).
+    UpdateOpen,
 }
 
 /// How long you may be alone in a huddle before the reminder, in seconds.
@@ -113,6 +130,11 @@ const THREAD_READ: &[u32] = &[0, 1, 2, 3, 5, 10];
 /// Days without a message before a conversation leaves the sidebar (0: never).
 const HIDE_INACTIVE: &[u32] = &[0, 1, 7, 14, 30, 60, 90];
 
+/// How often the update check may run, in seconds.
+const UPDATE_EVERY: &[u64] = &[3600, 21_600, 43_200, 86_400, 259_200, 604_800];
+/// Seconds without data before the update screen's download gives up.
+const DOWNLOAD_TIMEOUTS: &[u64] = &[10, 15, 30, 60, 120, 300];
+
 /// Pause lengths + and - step through, in minutes.
 const PAUSES: &[u64] = &[30, 60, 120, 480];
 
@@ -130,6 +152,8 @@ pub const CATEGORIES: &[(&str, &[Field])] = &[
     ("Notifications", &[Field::Desktop, Field::Sound, Field::ConversationLevel, Field::ChannelDefault, Field::Keywords, Field::Vips]),
     ("Audio & video", &[Field::Input, Field::Output, Field::HuddleVolume, Field::SoundVolume, Field::MicGain, Field::SpeakingThreshold, Field::NoiseSuppression, Field::EchoCancellation, Field::Camera]),
     ("Huddles", &[Field::JoinSound, Field::SomeoneJoined, Field::SomeoneLeft, Field::RingSound, Field::RingTimeout, Field::AutoDecline, Field::AloneSound, Field::AloneSecs]),
+    // The Update row only while a newer version is known (see `Prefs::fields`).
+    ("Updates", &[Field::UpdateVersion, Field::UpdateCheck, Field::UpdateEvery, Field::UpdateTimeout, Field::UpdateCheckNow, Field::UpdateCommand, Field::UpdateOpen]),
 ];
 
 /// The Keys category's settings above the bindings.
@@ -226,6 +250,13 @@ impl Field {
             Field::AutoDecline => "Then decline it on Slack",
             Field::AloneSound => "Alone in a huddle, loop",
             Field::AloneSecs => "Start it after",
+            Field::UpdateVersion => "Version",
+            Field::UpdateCheck => "Check for new versions",
+            Field::UpdateEvery => "Check at most every",
+            Field::UpdateTimeout => "A download gives up after",
+            Field::UpdateCheckNow => "Check now",
+            Field::UpdateCommand => "To update it",
+            Field::UpdateOpen => "Update",
         }
     }
 
@@ -356,6 +387,14 @@ impl Field {
             Field::AutoDecline => yes(s.huddle.auto_decline),
             Field::AloneSound => s.huddle.alone_sound.clone(),
             Field::AloneSecs => format!("{} s alone", s.huddle.alone_secs),
+            Field::UpdateCheck => yes(s.updates.check),
+            Field::UpdateEvery => match in_words(s.updates.check_every_secs) {
+                Some(words) => format!("{} s ({words})", s.updates.check_every_secs),
+                None => format!("{} s", s.updates.check_every_secs),
+            },
+            Field::UpdateTimeout => format!("{} s without data", s.updates.download_timeout_secs),
+            // Drawn from the page (see `Prefs::update_value`).
+            Field::UpdateVersion | Field::UpdateCheckNow | Field::UpdateCommand | Field::UpdateOpen => String::new(),
         }
     }
 
@@ -372,6 +411,8 @@ impl Field {
             Field::StatusRefresh => s.messages.status_refresh_secs = step(STATUS_REFRESH, s.messages.status_refresh_secs, up, wrap),
             Field::ThreadRead => s.threads.read_after_secs = step(THREAD_READ, s.threads.read_after_secs, up, wrap),
             Field::HideInactive => s.appearance.hide_inactive_days = step(HIDE_INACTIVE, s.appearance.hide_inactive_days, up, wrap),
+            Field::UpdateEvery => s.updates.check_every_secs = step(UPDATE_EVERY, s.updates.check_every_secs, up, wrap),
+            Field::UpdateTimeout => s.updates.download_timeout_secs = step(DOWNLOAD_TIMEOUTS, s.updates.download_timeout_secs, up, wrap),
             Field::MicGain => a.mic_gain = step(GAINS, a.mic_gain, up, wrap),
             Field::SpeakingThreshold => a.speaking_threshold_db = step(THRESHOLDS, a.speaking_threshold_db, up, wrap),
             // 0.1 s steps from 0 to 5 s.
@@ -481,8 +522,82 @@ impl Field {
             Field::HuddleVolume | Field::SoundVolume | Field::MicGain | Field::SpeakingThreshold => {
                 self.adjust(s, true, true);
             }
+            Field::UpdateCheck => s.updates.check ^= true,
+            Field::UpdateEvery | Field::UpdateTimeout => {
+                self.adjust(s, true, true);
+            }
+            // Not settings: see `Prefs::update_action`.
+            Field::UpdateVersion | Field::UpdateCheckNow | Field::UpdateCommand | Field::UpdateOpen => {}
         }
     }
+}
+
+/// `secs` in days, hours or minutes when it is a whole number of them.
+fn in_words(secs: u64) -> Option<String> {
+    match secs {
+        0 => None,
+        86_400 => Some("1 day".into()),
+        s if s % 86_400 == 0 => Some(format!("{} days", s / 86_400)),
+        s if s % 3600 == 0 => Some(format!("{} h", s / 3600)),
+        s if s % 60 == 0 => Some(format!("{} min", s / 60)),
+        _ => None,
+    }
+}
+
+/// F6 → Updates' words beyond the labels.
+const VERSION_ROW: &str = "ttyak {version} · {how}";
+const BY_SCRIPT: &str = "with the install script";
+const BY_HAND: &str = "unknown (a manual download)";
+const UPDATE_BELOW: &str = "none needed: use Update below";
+const UPDATE_ITSELF: &str = "none needed: ttyak updates itself once a new version is out";
+const CHECK_IDLE: &str = "look for a new version now";
+const CHECKING: &str = "checking…";
+const UP_TO_DATE: &str = "ttyak is up to date";
+const IS_OUT: &str = "ttyak {version} is out";
+const NOT_CHECKED: &str = "could not check for a new ttyak: {error}";
+/// Why Check now got no answer when the background check is not running.
+pub const NOT_RUNNING: &str = "the update check is not running";
+const OPEN_UPDATE: &str = "ttyak {version} ({date}): open the update screen…";
+const UPDATE_WORDS: &[&str] = &[VERSION_ROW, BY_SCRIPT, BY_HAND, UPDATE_BELOW, UPDATE_ITSELF, CHECK_IDLE, CHECKING, UP_TO_DATE, IS_OUT, NOT_CHECKED, NOT_RUNNING, OPEN_UPDATE];
+
+/// What a Check now found, in words (its row, or the status line with F6 closed).
+pub fn checked_note(checked: &Checked) -> String {
+    use super::i18n::tr;
+    match checked {
+        Checked::UpToDate => tr(UP_TO_DATE).into_owned(),
+        Checked::Out(version) => tr(IS_OUT).replace("{version}", &version.to_string()),
+        Checked::Failed(e) => tr(NOT_CHECKED).replace("{error}", e),
+    }
+}
+
+/// Where the last Check now has got to.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub enum CheckNow {
+    #[default]
+    Idle,
+    Running,
+    Done(Checked),
+}
+
+/// What F6 → Updates shows besides the settings.
+#[derive(Debug, Clone, Default)]
+pub struct UpdatePage {
+    /// How this ttyak was installed (looked at as F6 opens; None: unknown).
+    pub install: Option<Install>,
+    /// The newer version the app knows of (see `Prefs::sync_update`).
+    pub available: Option<Latest>,
+    pub check: CheckNow,
+}
+
+/// What Enter on a row of F6 → Updates that is no setting asks the app for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpdateAction {
+    /// Run a check at once.
+    CheckNow,
+    /// Copy the command (or the link).
+    Copy(String),
+    /// Open the update screen.
+    Open,
 }
 
 /// A change to make on Slack (applied locally at once by the caller).
@@ -603,9 +718,10 @@ pub fn translatable() -> Vec<String> {
         Field::Theme, Field::WorkspaceTheme, Field::Compact, Field::HideInactive, Field::InlineImages, Field::Avatars, Field::LargeAvatars, Field::PreviewRefresh, Field::StatusRefresh, Field::ThreadRead, Field::Graphics, Field::EmojiAsNames, Field::CustomEmojiPictures, Field::SaveDir, Field::Clock24, Field::DateFormat, Field::TimeZone, Field::Language, Field::Desktop, Field::Sound,
         Field::ConversationLevel, Field::ChannelDefault, Field::Keywords, Field::Vips, Field::Status, Field::Away, Field::Notifications, Field::Schedule, Field::ScheduleHours, Field::Input, Field::Output,
         Field::HuddleVolume, Field::SoundVolume, Field::MicGain, Field::SpeakingThreshold, Field::NoiseSuppression, Field::EchoCancellation, Field::Camera, Field::JoinSound, Field::SomeoneJoined, Field::SomeoneLeft, Field::RingSound, Field::RingTimeout, Field::AutoDecline, Field::AloneSound, Field::AloneSecs,
+        Field::UpdateVersion, Field::UpdateCheck, Field::UpdateEvery, Field::UpdateTimeout, Field::UpdateCheckNow, Field::UpdateCommand, Field::UpdateOpen,
     ];
     let all = [&all[..], &(0..7).map(Field::ScheduleDay).collect::<Vec<_>>()].concat();
-    CATEGORIES.iter().map(|c| c.0).chain(["Keys", LEADER_LABEL, INSERT_LEADER_LABEL, RECORD_START, RECORD_DONE, "filter", "to filter", "to change", "Enter keep · Esc clear"]).chain(all.iter().chain(KEYS_SETTINGS).map(|f| f.fixed_label())).chain(super::prefs_help::strings()).map(String::from).collect()
+    CATEGORIES.iter().map(|c| c.0).chain(["Keys", LEADER_LABEL, INSERT_LEADER_LABEL, RECORD_START, RECORD_DONE, "filter", "to filter", "to change", "Enter keep · Esc clear"]).chain(UPDATE_WORDS.iter().copied()).chain(all.iter().chain(KEYS_SETTINGS).map(|f| f.fixed_label())).chain(super::prefs_help::strings()).map(String::from).collect()
 }
 
 #[derive(Debug, Default)]
@@ -646,6 +762,8 @@ pub struct Prefs {
     pub hover_category: Option<usize>,
     /// The notification schedule's kind at the last `sync`: which of its rows Availability shows.
     schedule: Option<slack_core::dnd::ScheduleDays>,
+    /// F6 → Updates beyond the settings.
+    pub update: UpdatePage,
 }
 
 impl Prefs {
@@ -653,7 +771,8 @@ impl Prefs {
         let id = |d: &String| d.split(" — ").next().unwrap_or(d).to_string();
         let devices = huddle::devices::list_devices().map(|(i, o)| (i.iter().map(id).collect(), o.iter().map(id).collect())).unwrap_or_default();
         let cameras = huddle::camera::list_cameras().into_iter().map(|c| c.name).collect();
-        Prefs { devices, cameras, ..Default::default() }
+        let update = UpdatePage { install: Some(crate::install::current()), ..Default::default() };
+        Prefs { devices, cameras, update, ..Default::default() }
     }
 
     pub fn fields(&self, keys: &Keymap) -> Vec<Field> {
@@ -676,7 +795,72 @@ impl Prefs {
         if self.availability_shown() {
             out.extend(self.schedule_rows());
         }
+        if self.update.available.is_none() {
+            out.retain(|f| *f != Field::UpdateOpen);
+        }
         out
+    }
+
+    /// Follow the newer version the app knows of: the Update row comes and goes with it, the
+    /// selection kept on a row shown.
+    pub fn sync_update(&mut self, available: Option<&Latest>) {
+        self.update.available = available.cloned();
+        if CATEGORIES.get(self.category).is_some_and(|c| c.0 == "Updates") {
+            let rows = CATEGORIES[self.category].1.iter().filter(|f| **f != Field::UpdateOpen || available.is_some()).count();
+            self.selected = self.selected.min(rows - 1);
+        }
+    }
+
+    /// What a row of F6 → Updates that is no setting shows (None for the other rows).
+    pub fn update_value(&self, field: Field) -> Option<String> {
+        use super::i18n::tr;
+        let u = &self.update;
+        Some(match field {
+            Field::UpdateVersion => {
+                let how = match u.install.as_ref().map_or(Method::Unknown, |i| i.method) {
+                    Method::Script => BY_SCRIPT,
+                    Method::Unknown => BY_HAND,
+                    method => method.how(),
+                };
+                tr(VERSION_ROW).replace("{version}", env!("CARGO_PKG_VERSION")).replace("{how}", &tr(how))
+            }
+            Field::UpdateCheckNow => match &u.check {
+                CheckNow::Idle => tr(CHECK_IDLE).into_owned(),
+                CheckNow::Running => tr(CHECKING).into_owned(),
+                CheckNow::Done(checked) => checked_note(checked),
+            },
+            Field::UpdateCommand => self.update_command().0,
+            Field::UpdateOpen => {
+                let latest = u.available.as_ref()?;
+                tr(OPEN_UPDATE).replace("{version}", &latest.version.to_string()).replace("{date}", &latest.date)
+            }
+            _ => return None,
+        })
+    }
+
+    /// The update command row: what it shows and what Enter copies (the update screen's offer for
+    /// this install; nothing to copy where ttyak updates itself).
+    fn update_command(&self) -> (String, Option<String>) {
+        use super::i18n::tr;
+        let u = &self.update;
+        let install = u.install.clone().unwrap_or(Install { method: Method::Unknown, exe: Default::default(), writable: false });
+        let page = u.available.as_ref().map_or(RELEASES_PAGE, |l| l.notes.as_str());
+        match super::update_view::offer_with(&install, page) {
+            Offer::UpdateNow if u.available.is_some() => (tr(UPDATE_BELOW).into_owned(), None),
+            Offer::UpdateNow => (tr(UPDATE_ITSELF).into_owned(), None),
+            Offer::Command(text) | Offer::Download { url: text, .. } => (text.clone(), Some(text)),
+        }
+    }
+
+    /// Enter on the selected row of F6 → Updates that is no setting: what to do (None: nothing,
+    /// a Check now already under way too).
+    pub fn update_action(&self, keys: &Keymap) -> Option<UpdateAction> {
+        match self.selected_field(keys)? {
+            Field::UpdateCheckNow if self.update.check != CheckNow::Running => Some(UpdateAction::CheckNow),
+            Field::UpdateCommand => self.update_command().1.map(UpdateAction::Copy),
+            Field::UpdateOpen => Some(UpdateAction::Open),
+            _ => None,
+        }
     }
 
     /// Whether Availability is shown (its rows follow the schedule).
@@ -1115,7 +1299,7 @@ impl Prefs {
                     // A group's icon (`i` changes it).
                     Field::GroupHeader(s) => sections.get(*s).and_then(|s| keys.group(s.prefix.as_ref()?)).map(|g| g.1).unwrap_or_default(),
                     Field::Binding(i) if keys_shown => tree_row(*i).map(|r| r.keys.clone()).filter(|k| !k.is_empty()).unwrap_or_else(|| "(unbound)".into()),
-                    _ => field.value(ws, current, keys),
+                    _ => self.update_value(*field).unwrap_or_else(|| field.value(ws, current, keys)),
                 },
             };
             let line = match field {
@@ -1128,7 +1312,9 @@ impl Prefs {
                     let value = fit(&value, value_w, typing);
                     let label = fit(&label_of(field), label_w.saturating_sub(1), false);
                     let left = value_w.saturating_sub(value.width() + 2);
-                    let mut spans = vec![Span::raw(format!(" {label}{}", " ".repeat(label_w.saturating_sub(label.width())))), Span::styled(value, good)];
+                    // Only shown, never changed: dim.
+                    let style = if *field == Field::UpdateVersion { dim } else { good };
+                    let mut spans = vec![Span::raw(format!(" {label}{}", " ".repeat(label_w.saturating_sub(label.width())))), Span::styled(value, style)];
                     // A binding's description, dim, where there is room.
                     if let (Field::Binding(i), true, true) = (field, keys_shown, left > 4) {
                         spans.push(Span::styled(format!("  {}", fit(&tr(ACTIONS[*i].description), left, false)), dim));
@@ -1940,5 +2126,124 @@ mod tests {
         assert_eq!((p.hover, p.hover_category, p.selected, p.category), (None, Some(2), 4, 1), "a category");
         p.hover_at(33, 20);
         assert_eq!((p.hover, p.hover_category), (None, None));
+    }
+
+    fn updates_prefs() -> Prefs {
+        Prefs { category: CATEGORIES.iter().position(|c| c.0 == "Updates").unwrap(), ..Default::default() }
+    }
+
+    fn new_version() -> crate::update::Latest {
+        crate::update::Latest { version: semver::Version::new(9, 9, 9), date: "2026-11-01".into(), notes: "https://github.com/dmytrobsp/ttyak/releases/tag/v9.9.9".into(), asset: crate::update::Asset { url: "u".into(), sha256: "s".into() } }
+    }
+
+    fn installed(method: crate::install::Method, writable: bool) -> Option<crate::install::Install> {
+        Some(crate::install::Install { method, exe: "/home/u/.local/bin/ttyak".into(), writable })
+    }
+
+    #[test]
+    fn updates_category_lists_its_fields() {
+        let keys = Keymap::default();
+        let p = updates_prefs();
+        assert_eq!(p.category_name(), "Updates");
+        assert_eq!(p.fields(&keys), [Field::UpdateVersion, Field::UpdateCheck, Field::UpdateEvery, Field::UpdateTimeout, Field::UpdateCheckNow, Field::UpdateCommand]);
+        assert_eq!(p.category + 1, CATEGORIES.len(), "the last before Keys");
+        let words = translatable();
+        for want in ["Updates", Field::UpdateCheckNow.fixed_label(), Field::UpdateOpen.fixed_label(), UPDATE_ITSELF] {
+            assert!(words.iter().any(|t| t == want), "{want}");
+        }
+    }
+
+    #[test]
+    fn version_row_names_method() {
+        use crate::install::Method;
+        let mut p = updates_prefs();
+        let v = env!("CARGO_PKG_VERSION");
+        for (method, says) in [(Method::Script, "with the install script"), (Method::Homebrew, "with Homebrew"), (Method::Aur, "from the AUR"), (Method::Deb, "from a .deb package"), (Method::Unknown, "unknown (a manual download)")] {
+            p.update.install = installed(method, false);
+            assert_eq!(p.update_value(Field::UpdateVersion), Some(format!("ttyak {v} · {says}")), "{method:?}");
+        }
+        p.update.install = None;
+        assert_eq!(p.update_value(Field::UpdateVersion), Some(format!("ttyak {v} · unknown (a manual download)")), "not looked at");
+        // The command for this install, the same as the update screen's; Enter copies it.
+        let keys = Keymap::default();
+        p.selected = p.fields(&keys).iter().position(|f| *f == Field::UpdateCommand).unwrap();
+        p.update.install = installed(Method::Homebrew, false);
+        assert_eq!(p.update_value(Field::UpdateCommand).as_deref(), Some("brew upgrade ttyak"));
+        assert_eq!(p.update_action(&keys), Some(UpdateAction::Copy("brew upgrade ttyak".into())));
+        p.update.install = installed(Method::Deb, false);
+        assert_eq!(p.update_value(Field::UpdateCommand).as_deref(), Some(RELEASES_PAGE), "no version known: the latest release's page");
+        p.sync_update(Some(&new_version()));
+        assert_eq!(p.update_value(Field::UpdateCommand), Some(new_version().notes), "the new release's page");
+        p.update.install = installed(Method::Script, true);
+        assert_eq!(p.update_value(Field::UpdateCommand).as_deref(), Some(UPDATE_BELOW), "it updates itself");
+        assert_eq!(p.update_action(&keys), None, "nothing to copy");
+        p.sync_update(None);
+        assert_eq!(p.update_value(Field::UpdateCommand).as_deref(), Some(UPDATE_ITSELF));
+        p.update.install = installed(Method::Script, false);
+        assert!(p.update_value(Field::UpdateCommand).unwrap().starts_with("curl -fsSL https://ttyak.sh/install.sh |") || cfg!(windows), "a folder ttyak cannot write: the script's command");
+    }
+
+    #[test]
+    fn check_toggle_writes_settings() {
+        let keys = Keymap::default();
+        let mut ws = Workspace::default();
+        let mut p = updates_prefs();
+        p.selected = 1;
+        assert_eq!((p.selected_field(&keys), Field::UpdateCheck.value(&ws, None, &keys).as_str()), (Some(Field::UpdateCheck), "on"));
+        assert_eq!(p.change(&mut ws, None, &keys), None);
+        assert!(!ws.settings.updates.check && !p.on_slack(&keys), "kept in settings.toml (the caller saves it)");
+        let text = toml::to_string(&ws.settings).unwrap();
+        assert!(text.contains("[updates]\ncheck = false\n"), "{text}");
+        assert_eq!(Field::UpdateCheck.value(&ws, None, &keys), "off");
+        // How often: in seconds, said in days or hours too.
+        assert_eq!(Field::UpdateEvery.value(&ws, None, &keys), "86400 s (1 day)");
+        assert!(Field::UpdateEvery.adjust(&mut ws.settings, true, false));
+        assert_eq!(Field::UpdateEvery.value(&ws, None, &keys), "259200 s (3 days)");
+        Field::UpdateEvery.adjust(&mut ws.settings, false, false);
+        Field::UpdateEvery.adjust(&mut ws.settings, false, false);
+        assert_eq!(Field::UpdateEvery.value(&ws, None, &keys), "43200 s (12 h)");
+        ws.settings.updates.check_every_secs = 100;
+        assert_eq!(Field::UpdateEvery.value(&ws, None, &keys), "100 s", "a hand-edited value as it is");
+        ws.settings.updates.check_every_secs = 604_800;
+        Field::UpdateEvery.change(&mut ws.settings, &Default::default());
+        assert_eq!(ws.settings.updates.check_every_secs, 3600, "Enter wraps around");
+    }
+
+    #[test]
+    fn timeout_row_writes_settings() {
+        let keys = Keymap::default();
+        let mut ws = Workspace::default();
+        let mut p = updates_prefs();
+        p.selected = 3;
+        assert_eq!((p.selected_field(&keys), Field::UpdateTimeout.value(&ws, None, &keys).as_str()), (Some(Field::UpdateTimeout), "30 s without data"));
+        p.change(&mut ws, None, &keys);
+        assert_eq!(ws.settings.updates.download_timeout_secs, 60);
+        assert!(!p.on_slack(&keys));
+        assert!(Field::UpdateTimeout.adjust(&mut ws.settings, true, false));
+        assert_eq!(ws.settings.updates.download_timeout_secs, 120);
+        Field::UpdateTimeout.adjust(&mut ws.settings, false, false);
+        assert!(toml::to_string(&ws.settings).unwrap().contains("download_timeout_secs = 60\n"));
+        ws.settings.updates.download_timeout_secs = 300;
+        Field::UpdateTimeout.adjust(&mut ws.settings, true, false);
+        assert_eq!(ws.settings.updates.download_timeout_secs, 300, "+ stops at the top");
+    }
+
+    #[test]
+    fn update_row_only_when_available() {
+        let keys = Keymap::default();
+        let mut p = updates_prefs();
+        assert!(!p.fields(&keys).contains(&Field::UpdateOpen));
+        p.sync_update(Some(&new_version()));
+        assert_eq!(p.fields(&keys).last(), Some(&Field::UpdateOpen));
+        p.selected = p.fields(&keys).len() - 1;
+        assert_eq!(p.update_value(Field::UpdateOpen).as_deref(), Some("ttyak 9.9.9 (2026-11-01): open the update screen…"));
+        assert_eq!(p.update_action(&keys), Some(UpdateAction::Open));
+        // No longer offered (this run put it in place): the selection stays on a row shown.
+        p.sync_update(None);
+        assert_eq!(p.selected_field(&keys), Some(Field::UpdateCommand));
+        // Another category keeps its selection.
+        let mut other = Prefs { category: 1, selected: 3, ..Default::default() };
+        other.sync_update(None);
+        assert_eq!(other.selected, 3);
     }
 }
