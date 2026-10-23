@@ -378,6 +378,8 @@ mod tests {
             ("/opt/homebrew/Cellar/ttyak/0.11.0/bin/ttyak", Method::Homebrew),
             ("/usr/local/Cellar/ttyak/0.11.0/bin/ttyak", Method::Homebrew),
             ("/home/linuxbrew/.linuxbrew/Cellar/ttyak/0.11.0/bin/ttyak", Method::Homebrew),
+            // The program behind the formula's Linux launcher.
+            ("/home/linuxbrew/.linuxbrew/Cellar/ttyak/0.11.0/libexec/ttyak", Method::Homebrew),
             ("/home/u/.linuxbrew/bin/ttyak", Method::Homebrew),
             ("/opt/homebrew/bin/ttyak", Method::Homebrew),
             (r"C:\Users\u\scoop\apps\ttyak\0.11.0\ttyak.exe", Method::Scoop),

@@ -217,9 +217,9 @@ pub fn run(plan: &Plan) -> Vec<(String, io::Result<()>)> {
 }
 
 /// After a purge on Windows: deletes the folders ttyak's own were in (`%APPDATA%\ttyak`, `%LOCALAPPDATA%\ttyak`) once
-/// nothing is left in them, saying so.
-pub(crate) fn remove_emptied_parents(targets: &[PathBuf]) {
-    for (what, result) in emptied_parents(targets, &std::env::temp_dir(), cfg!(windows)) {
+/// nothing is left in them, saying so; `failed` are the targets that could not be deleted.
+pub(crate) fn remove_emptied_parents(deleted: &[PathBuf], failed: &[PathBuf]) {
+    for (what, result) in emptied_parents(deleted, failed, &std::env::temp_dir(), cfg!(windows)) {
         match result {
             Ok(()) => println!("{what}"),
             Err(e) => eprintln!("{what}: {e}"),
@@ -227,16 +227,17 @@ pub(crate) fn remove_emptied_parents(targets: &[PathBuf]) {
     }
 }
 
-/// `remove_emptied_parents` for the purged `targets`: each parent named ttyak (any case) once, not the temporary
-/// folder `temp`, and only on Windows (elsewhere they are shared: `~/.config`, `~/.cache`). One with anything in it,
-/// or a link, stays.
-fn emptied_parents(targets: &[PathBuf], temp: &Path, windows: bool) -> Vec<(String, io::Result<()>)> {
+/// `remove_emptied_parents` for the `deleted` targets: each parent named ttyak (any case) once, not the temporary
+/// folder `temp`, not one a `failed` target is in (that failure was said already), and only on Windows (elsewhere they
+/// are shared: `~/.config`, `~/.cache`). One with anything in it, or a link, stays.
+fn emptied_parents(deleted: &[PathBuf], failed: &[PathBuf], temp: &Path, windows: bool) -> Vec<(String, io::Result<()>)> {
     if !windows {
         return Vec::new();
     }
-    let mut seen = std::collections::HashSet::new();
+    // Counted as seen already: the folders a failed target is in.
+    let mut seen: std::collections::HashSet<PathBuf> = failed.iter().filter_map(|t| t.parent()).map(Path::to_path_buf).collect();
     let ttyak = |p: &&Path| *p != temp && p.file_name().is_some_and(|n| n.eq_ignore_ascii_case("ttyak"));
-    let parents = targets.iter().filter_map(|t| t.parent()).filter(ttyak).filter(|p| seen.insert(p.to_path_buf()));
+    let parents = deleted.iter().filter_map(|t| t.parent()).filter(ttyak).filter(|p| seen.insert(p.to_path_buf()));
     let mut done = Vec::new();
     for dir in parents.filter(|p| p.symlink_metadata().is_ok_and(|m| m.is_dir())) {
         let shown = dir.display();
@@ -884,9 +885,9 @@ mod tests {
             temp.join("ttyak-1-x.mp4"),
             t.0.join("Gone").join("ttyak").join("config"),
         ];
-        assert!(emptied_parents(&targets, &temp, false).is_empty());
+        assert!(emptied_parents(&targets, &[], &temp, false).is_empty());
         assert!(roaming.is_dir());
-        let done = emptied_parents(&targets, &temp, true);
+        let done = emptied_parents(&targets, &[], &temp, true);
         let said: Vec<(String, bool)> = done.into_iter().map(|(what, result)| (what, result.is_ok())).collect();
         assert_eq!(said, [(format!("deleted {}", roaming.display()), true), (format!("kept {}: other files are in it", local.display()), true)]);
         assert!(!roaming.exists());
@@ -903,8 +904,19 @@ mod tests {
         std::fs::create_dir_all(t.0.join("Roaming")).unwrap();
         let link = t.0.join("Roaming").join("ttyak");
         std::os::unix::fs::symlink(&elsewhere, &link).unwrap();
-        assert!(emptied_parents(&[link.join("config")], &t.0.join("Temp"), true).is_empty());
+        assert!(emptied_parents(&[link.join("config")], &[], &t.0.join("Temp"), true).is_empty());
         assert!(link.is_symlink() && elsewhere.is_dir());
+    }
+
+    #[test]
+    fn a_ttyak_folder_with_a_target_that_failed_is_not_spoken_of() {
+        let t = Temp::new("failed-parent");
+        // config went; data could not be deleted (a file held open), so it is still there.
+        let roaming = t.0.join("Roaming").join("ttyak");
+        write(&roaming.join("data").join("layout.json"), "{}");
+        let done = emptied_parents(&[roaming.join("config")], &[roaming.join("data")], &t.0.join("Temp"), true);
+        assert!(done.is_empty(), "{:?}", done.iter().map(|(what, _)| what).collect::<Vec<_>>());
+        assert_eq!(read(&roaming.join("data").join("layout.json")), "{}");
     }
 
     #[test]
