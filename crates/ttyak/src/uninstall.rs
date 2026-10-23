@@ -216,6 +216,39 @@ pub fn run(plan: &Plan) -> Vec<(String, io::Result<()>)> {
     done
 }
 
+/// After a purge on Windows: deletes the folders ttyak's own were in (`%APPDATA%\ttyak`, `%LOCALAPPDATA%\ttyak`) once
+/// nothing is left in them, saying so.
+pub(crate) fn remove_emptied_parents(targets: &[PathBuf]) {
+    for (what, result) in emptied_parents(targets, &std::env::temp_dir(), cfg!(windows)) {
+        match result {
+            Ok(()) => println!("{what}"),
+            Err(e) => eprintln!("{what}: {e}"),
+        }
+    }
+}
+
+/// `remove_emptied_parents` for the purged `targets`: each parent named ttyak (any case) once, not the temporary
+/// folder `temp`, and only on Windows (elsewhere they are shared: `~/.config`, `~/.cache`). One with anything in it,
+/// or a link, stays.
+fn emptied_parents(targets: &[PathBuf], temp: &Path, windows: bool) -> Vec<(String, io::Result<()>)> {
+    if !windows {
+        return Vec::new();
+    }
+    let mut seen = std::collections::HashSet::new();
+    let ttyak = |p: &&Path| *p != temp && p.file_name().is_some_and(|n| n.eq_ignore_ascii_case("ttyak"));
+    let parents = targets.iter().filter_map(|t| t.parent()).filter(ttyak).filter(|p| seen.insert(p.to_path_buf()));
+    let mut done = Vec::new();
+    for dir in parents.filter(|p| p.symlink_metadata().is_ok_and(|m| m.is_dir())) {
+        let shown = dir.display();
+        if std::fs::read_dir(dir).is_ok_and(|mut d| d.next().is_some()) {
+            done.push((format!("kept {shown}: other files are in it"), Ok(())));
+        } else {
+            done.push(outcome(format!("deleted {shown}"), format!("could not delete {shown}"), std::fs::remove_dir(dir)));
+        }
+    }
+    done
+}
+
 /// `result` with the words for success or for an error.
 fn outcome(ok: String, failed: String, result: io::Result<()>) -> (String, io::Result<()>) {
     match result {
@@ -827,6 +860,51 @@ mod tests {
             assert!(d.is_dir(), "{}", d.display());
         }
         assert_eq!(read(&t.dirs().data.join("drafts.json")), "{}");
+    }
+
+    #[test]
+    fn a_purge_takes_the_emptied_ttyak_folders_on_windows() {
+        let t = Temp::new("parents");
+        // %APPDATA%\ttyak\{config,data} and %LOCALAPPDATA%\ttyak\{cache,data} as `purge` lists them, once deleted.
+        let roaming = t.0.join("Roaming").join("ttyak");
+        let local = t.0.join("Local").join("TTYAK");
+        let shared = t.0.join("Shared");
+        // A temporary folder that happens to be named ttyak.
+        let temp = t.0.join("Temp").join("ttyak");
+        for d in [&roaming, &shared, &temp] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        write(&local.join("notes.txt"), "not ttyak's");
+        let targets = vec![
+            roaming.join("config"),
+            roaming.join("data"),
+            local.join("cache"),
+            local.join("data"),
+            shared.join("config"),
+            temp.join("ttyak-1-x.mp4"),
+            t.0.join("Gone").join("ttyak").join("config"),
+        ];
+        assert!(emptied_parents(&targets, &temp, false).is_empty());
+        assert!(roaming.is_dir());
+        let done = emptied_parents(&targets, &temp, true);
+        let said: Vec<(String, bool)> = done.into_iter().map(|(what, result)| (what, result.is_ok())).collect();
+        assert_eq!(said, [(format!("deleted {}", roaming.display()), true), (format!("kept {}: other files are in it", local.display()), true)]);
+        assert!(!roaming.exists());
+        assert_eq!(read(&local.join("notes.txt")), "not ttyak's");
+        assert!(shared.is_dir() && temp.is_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_ttyak_folder_stays() {
+        let t = Temp::new("linked-parent");
+        let elsewhere = t.0.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::create_dir_all(t.0.join("Roaming")).unwrap();
+        let link = t.0.join("Roaming").join("ttyak");
+        std::os::unix::fs::symlink(&elsewhere, &link).unwrap();
+        assert!(emptied_parents(&[link.join("config")], &t.0.join("Temp"), true).is_empty());
+        assert!(link.is_symlink() && elsewhere.is_dir());
     }
 
     #[test]

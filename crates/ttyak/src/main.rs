@@ -295,7 +295,8 @@ fn list_purge_targets(targets: &[std::path::PathBuf]) {
     }
 }
 
-/// Deletes `targets`, saying how each went; returns how many could not be deleted.
+/// Deletes `targets`, saying how each went, then on Windows the ttyak folders they were in once empty; returns how
+/// many targets could not be deleted.
 fn delete_purge_targets(targets: &[std::path::PathBuf]) -> usize {
     let mut failed = 0;
     for (path, result) in profiles::purge(targets) {
@@ -308,6 +309,7 @@ fn delete_purge_targets(targets: &[std::path::PathBuf]) -> usize {
             }
         }
     }
+    uninstall::remove_emptied_parents(targets);
     failed
 }
 
