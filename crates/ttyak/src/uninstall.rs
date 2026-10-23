@@ -114,13 +114,14 @@ fn plan_in(install: &Install, keep_data: bool, home: &Path, zdotdir: Option<&Pat
     Plan { remove, path_edits, by_hand, purge: !keep_data, notes }
 }
 
-/// What a self-update cut short (the power gone, the process killed) can leave in `dir`: the new
-/// executable and the download, `.ttyak-update-<pid>.zip`.
+/// What a self-update cut short (the power gone, the process killed) can leave in `dir`, each with
+/// its process id: `.ttyak-update-<pid>.zip`, `.ttyak-new-<pid>`, `.install.json.new-<pid>`.
 fn update_leftovers(dir: &Path) -> Vec<PathBuf> {
-    let download = |n: &str| n.strip_prefix(".ttyak-update-").and_then(|r| r.strip_suffix(".zip")).is_some_and(|pid| !pid.is_empty() && pid.bytes().all(|b| b.is_ascii_digit()));
-    let mut names: Vec<String> = std::fs::read_dir(dir).into_iter().flatten().flatten().filter_map(|e| e.file_name().into_string().ok()).filter(|n| download(n)).collect();
+    let pid = |p: Option<&str>| p.is_some_and(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
+    let ours = |n: &str| pid(n.strip_prefix(".ttyak-update-").and_then(|r| r.strip_suffix(".zip"))) || pid(n.strip_prefix(".ttyak-new-")) || pid(n.strip_prefix(".install.json.new-"));
+    let mut names: Vec<String> = std::fs::read_dir(dir).into_iter().flatten().flatten().filter_map(|e| e.file_name().into_string().ok()).filter(|n| ours(n)).collect();
     names.sort();
-    std::iter::once(dir.join(".ttyak-new")).chain(names.iter().map(|n| dir.join(n))).collect()
+    names.iter().map(|n| dir.join(n)).collect()
 }
 
 /// Whether `name` is an old copy install.ps1 renamed aside during an update: `ttyak.old.exe`,
@@ -711,13 +712,14 @@ mod tests {
         for windows in [false, true] {
             let install = t.script("bin", if windows { "ttyak.exe" } else { "ttyak" });
             let bin = t.0.join("bin");
-            for name in [".ttyak-new", ".ttyak-update-4242.zip", ".ttyak-update-.zip", ".ttyak-update-12a.zip", "ttyak-update-7.zip"] {
+            let ours = [".install.json.new-4242", ".ttyak-new-4242", ".ttyak-new-77", ".ttyak-update-4242.zip"];
+            for name in ours.iter().chain(&[".ttyak-new", ".ttyak-new-", ".ttyak-new-12a", ".ttyak-update-.zip", ".ttyak-update-12a.zip", "ttyak-update-7.zip", ".install.json.new-x"]) {
                 write(&bin.join(name), "x");
             }
             let plan = plan_in(&install, true, &t.home(), None, None, windows);
-            let names: Vec<String> = plan.remove.iter().filter_map(|p| p.strip_prefix(&bin).ok()).map(|p| p.display().to_string()).collect();
-            assert!(names.contains(&".ttyak-new".to_string()) && names.contains(&".ttyak-update-4242.zip".to_string()), "{windows}: {names:?}");
-            assert!(!names.iter().any(|n| n.ends_with(".zip") && n != ".ttyak-update-4242.zip"), "{windows}: only its own downloads: {names:?}");
+            let mut names: Vec<String> = plan.remove.iter().filter_map(|p| p.strip_prefix(&bin).ok()).map(|p| p.display().to_string()).filter(|n| n.contains("-")).collect();
+            names.sort();
+            assert_eq!(names, ours, "{windows}: a self-update's own names, a pid after each");
         }
     }
 

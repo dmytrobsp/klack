@@ -214,10 +214,16 @@ pub fn spawn(found: tokio::sync::mpsc::UnboundedSender<Found>) {
 
 /// The executable in the release archive (its top level).
 const EXE: &str = if cfg!(windows) { "ttyak.exe" } else { "ttyak" };
-/// The new executable while it is checked and put in place, beside the old one.
-const STAGED: &str = ".ttyak-new";
-/// `install.json`'s new text while the new executable is put in place.
-const STAGED_RECORD: &str = ".install.json.new";
+/// The new executable in `dir`, beside the old one, while it is checked and put in place (this
+/// process's own: another ttyak updating at the same time has another).
+fn staged(dir: &Path) -> PathBuf {
+    dir.join(format!(".ttyak-new-{}", std::process::id()))
+}
+
+/// `install.json`'s new text in `dir` while the new executable is put in place.
+fn staged_record(dir: &Path) -> PathBuf {
+    dir.join(format!(".install.json.new-{}", std::process::id()))
+}
 /// Where Windows keeps the running executable once the new one is in place (deleted at the next start).
 #[cfg(windows)]
 const ASIDE: &str = "ttyak.old.exe";
@@ -306,6 +312,19 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// The text `request` is answered with, at most `max` bytes.
+async fn bounded_text(request: slack_core::reqwest::RequestBuilder, max: u64) -> Result<String> {
+    let mut response = request.send().await?.error_for_status()?;
+    let too_big = || format!("it is too big (more than {max} bytes)");
+    ensure!(response.content_length().is_none_or(|n| n <= max), too_big());
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        body.extend_from_slice(&chunk);
+        ensure!(body.len() as u64 <= max, too_big());
+    }
+    Ok(String::from_utf8(body)?)
+}
+
 /// The SHA256 that `sums` (a `SHA256SUMS` file) gives for the file named exactly `name`.
 fn listed_sha256<'a>(sums: &'a str, name: &str) -> Option<&'a str> {
     sums.lines().find_map(|line| {
@@ -315,35 +334,85 @@ fn listed_sha256<'a>(sums: &'a str, name: &str) -> Option<&'a str> {
     })
 }
 
-/// Download `latest`'s archive into the folder of `install`'s executable, check it (its SHA256
+/// Download `latest`'s archive (only the release's own for that version, newer than this ttyak,
+/// from [`DOWNLOAD_URL`] or [`DOWNLOAD_URL_ENV`]'s) into the folder of `install`'s executable, check it (its SHA256
 /// against `latest.json`'s and against its line in the release's `SHA256SUMS`), unpack the
 /// executable beside the old one and put it in place (Windows: the running one renamed aside),
 /// then write the new version into `install.json`; the new executable's path. It never starts
 /// it. Any failure, a cancel too, leaves the old executable as it was and the folder without the
 /// files it made, and says what failed.
 pub async fn self_update(latest: &Latest, install: &Install, progress: &Progress) -> Result<PathBuf> {
+    self_update_from(latest, install, progress, &Release::this()?).await
+}
+
+/// The release folders' parent on GitHub.
+pub const DOWNLOAD_URL: &str = "https://github.com/dmytrobsp/ttyak/releases/download";
+/// Overrides [`DOWNLOAD_URL`] (a local server in tests), as for the install scripts.
+pub const DOWNLOAD_URL_ENV: &str = "TTYAK_DOWNLOAD_URL";
+/// More than a release archive ever is (13 MB now).
+const MAX_ZIP_BYTES: u64 = 200 << 20;
+/// More than a `SHA256SUMS` ever is.
+const MAX_SUMS_BYTES: u64 = 64 << 10;
+
+/// Where a self-update may download from, and how much it takes.
+struct Release {
+    /// The release folders' parent: `<base>/v<version>/…`.
+    base: String,
+    platform: &'static str,
+    max_zip: u64,
+    max_sums: u64,
+}
+
+impl Release {
+    /// GitHub's releases ([`DOWNLOAD_URL_ENV`] overrides them) for this build's platform.
+    fn this() -> Result<Release> {
+        let base = std::env::var(DOWNLOAD_URL_ENV).ok().filter(|u| !u.is_empty()).unwrap_or_else(|| DOWNLOAD_URL.to_string());
+        let platform = crate::install::platform().context("ttyak is not released for this platform")?;
+        Ok(Release { base: base.trim_end_matches('/').to_string(), platform, max_zip: MAX_ZIP_BYTES, max_sums: MAX_SUMS_BYTES })
+    }
+
+    /// `version`'s archive for this platform and its `SHA256SUMS`.
+    fn urls(&self, version: &Version) -> (String, String) {
+        let folder = format!("{}/v{version}", self.base);
+        (format!("{folder}/ttyak-{version}-{}.zip", self.platform), format!("{folder}/SHA256SUMS"))
+    }
+}
+
+/// [`self_update`] from `release`.
+async fn self_update_from(latest: &Latest, install: &Install, progress: &Progress, release: &Release) -> Result<PathBuf> {
     ensure!(install.method == Method::Script && install.writable, "ttyak can update itself only where the install script put it, in a folder it can write");
+    let current = Version::parse(env!("CARGO_PKG_VERSION")).expect("the package version is semver");
+    ensure!(newer(&current, latest), "ttyak {} is not newer than this one ({current}): nothing was downloaded", latest.version);
+    // Only the release's own archive for this version: a feed naming anything else (another
+    // host, version or platform) gets nothing downloaded.
+    let (asset_url, sums_url) = release.urls(&latest.version);
+    ensure!(latest.asset.url == asset_url, "latest.json names {} for ttyak {}, not the release's {asset_url}: nothing was downloaded", latest.asset.url, latest.version);
     let exe = install.exe.clone();
     let dir = exe.parent().filter(|d| !d.as_os_str().is_empty()).context("the executable's folder")?.to_path_buf();
     let download = dir.join(format!(".ttyak-update-{}.zip", std::process::id()));
-    let leftovers = Leftovers(vec![download.clone(), dir.join(STAGED), dir.join(STAGED_RECORD)]);
-    let url = slack_core::reqwest::Url::parse(&latest.asset.url).with_context(|| format!("latest.json: archive {:?}", latest.asset.url))?;
-    let name = url.path_segments().and_then(|mut s| s.next_back()).filter(|n| !n.is_empty()).context("latest.json: the archive's address names no file")?.to_string();
-    let stall = Duration::from_secs(crate::tui::settings::load().0.updates.download_timeout_secs.max(1));
-    let http = client(|b| b.connect_timeout(Duration::from_secs(15)).read_timeout(stall))?;
+    let leftovers = Leftovers(vec![download.clone(), staged(&dir), staged_record(&dir)]);
+    let name = format!("ttyak-{}-{}.zip", latest.version, release.platform);
+    // Connecting and every wait for data alike.
+    let timeout = Duration::from_secs(crate::tui::settings::load().0.updates.download_timeout_secs.max(1));
+    let http = client(|b| b.connect_timeout(timeout).read_timeout(timeout))?;
 
     // The archive, its SHA256 taken as it comes.
     let sha256 = {
         use sha2::Digest;
         use std::io::Write;
         let mut file = create_fresh(&download).with_context(|| format!("could not write in {}", dir.display()))?;
-        let mut response = http.get(url.clone()).send().await.and_then(|r| r.error_for_status()).with_context(|| format!("could not download {name}"))?;
+        let mut response = http.get(&asset_url).send().await.and_then(|r| r.error_for_status()).with_context(|| format!("could not download {name}"))?;
+        let too_big = || format!("{name} is too big to be ttyak's archive (more than {} MB)", release.max_zip >> 20);
+        ensure!(response.content_length().is_none_or(|n| n <= release.max_zip), too_big());
         progress.total.store(response.content_length().unwrap_or(0), Ordering::Relaxed);
         let mut hasher = sha2::Sha256::new();
+        let mut got = 0;
         while let Some(chunk) = response.chunk().await.with_context(|| format!("could not download {name}"))? {
             if progress.cancelled() {
                 bail!("cancelled");
             }
+            got += chunk.len() as u64;
+            ensure!(got <= release.max_zip, too_big());
             hasher.update(&chunk);
             file.write_all(&chunk).with_context(|| format!("could not write {}", download.display()))?;
             progress.got.fetch_add(chunk.len() as u64, Ordering::Relaxed);
@@ -352,8 +421,7 @@ pub async fn self_update(latest: &Latest, install: &Install, progress: &Progress
         hex(&hasher.finalize())
     };
     ensure!(sha256.eq_ignore_ascii_case(latest.asset.sha256.trim()), "the download does not match the SHA256 in latest.json");
-    let sums_url = url.join("SHA256SUMS").context("the release's SHA256SUMS")?;
-    let sums = async { http.get(sums_url).send().await?.error_for_status()?.text().await }.await.context("could not download the release's SHA256SUMS")?;
+    let sums = bounded_text(http.get(&sums_url), release.max_sums).await.context("could not download the release's SHA256SUMS")?;
     match listed_sha256(&sums, &name) {
         Some(listed) if listed.eq_ignore_ascii_case(&sha256) => {}
         Some(_) => bail!("the download does not match the SHA256 in the release's SHA256SUMS"),
@@ -376,12 +444,12 @@ pub async fn self_update(latest: &Latest, install: &Install, progress: &Progress
 /// `install.json` beside it.
 fn install_from(zip: &Path, exe: &Path, version: &str) -> Result<()> {
     let dir = exe.parent().context("the executable's folder")?;
-    let staged = dir.join(STAGED);
+    let staged = staged(dir);
     unpack(zip, &staged)?;
     // (The signing tasks check the new executable's signature here.)
     let record = dir.join(crate::install::RECORD_FILE);
     let new_record = crate::install::Record::read(dir, &crate::install::System).map(|r| crate::install::Record { version: version.to_string(), ..r });
-    let staged_record = dir.join(STAGED_RECORD);
+    let staged_record = staged_record(dir);
     if let Some(r) = &new_record {
         use std::io::Write;
         let mut file = create_fresh(&staged_record).with_context(|| format!("could not write {}", staged_record.display()))?;
@@ -699,17 +767,30 @@ mod tests {
         zip.finish().unwrap().into_inner()
     }
 
-    /// Serves `files` (path, body) on a local port, 404 for any other path; with `stall`, that path
-    /// sends its first 64 KB of a promised megabytes and then nothing more. The address.
-    async fn serve(files: Vec<(String, Vec<u8>)>, stall: Option<&'static str>) -> String {
+    /// How the fixture server answers for one path.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Quirk {
+        /// The first 64 KB of a promised 50 MB, then nothing more.
+        Stall,
+        /// The body without a length (read until the connection closes).
+        NoLength,
+        /// A length of 300 MB, and then only the body.
+        ClaimsHuge,
+    }
+
+    /// Serves `files` (path, body) on a local port, 404 for any other path, `quirk`'s path as it
+    /// says. The address, and how many requests came.
+    async fn serve(files: Vec<(String, Vec<u8>)>, quirk: Option<(String, Quirk)>) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let _ = rustls::crypto::ring::default_provider().install_default();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let files = std::sync::Arc::new(files);
+        let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = asked.clone();
         tokio::spawn(async move {
             while let Ok((mut sock, _)) = listener.accept().await {
-                let files = files.clone();
+                let (files, quirk, counter) = (files.clone(), quirk.clone(), counter.clone());
                 tokio::spawn(async move {
                     let mut req = Vec::new();
                     let mut buf = [0u8; 4096];
@@ -719,29 +800,60 @@ mod tests {
                             Ok(n) => req.extend_from_slice(&buf[..n]),
                         }
                     }
+                    counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     let path = String::from_utf8_lossy(&req).split(' ').nth(1).unwrap_or("").to_string();
-                    if stall == Some(path.as_str()) {
+                    let quirk = quirk.filter(|(p, _)| *p == path).map(|(_, q)| q);
+                    if quirk == Some(Quirk::Stall) {
                         let _ = sock.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 50000000\r\n\r\n").await;
                         let _ = sock.write_all(&[7u8; 65536]).await;
                         tokio::time::sleep(Duration::from_secs(600)).await;
                         return;
                     }
                     let reply = match files.iter().find(|(p, _)| *p == path) {
-                        Some((_, body)) => [format!("HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n", body.len()).into_bytes(), body.clone()].concat(),
+                        Some((_, body)) => {
+                            let length = match quirk {
+                                Some(Quirk::NoLength) => String::new(),
+                                Some(Quirk::ClaimsHuge) => "content-length: 300000000\r\n".into(),
+                                _ => format!("content-length: {}\r\n", body.len()),
+                            };
+                            [format!("HTTP/1.1 200 OK\r\n{length}connection: close\r\n\r\n").into_bytes(), body.clone()].concat()
+                        }
                         None => b"HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n".to_vec(),
                     };
                     let _ = sock.write_all(&reply).await;
                 });
             }
         });
-        base
+        (base, asked)
+    }
+
+    /// A fixture release: its address (the release folders' parent) and how many requests it had.
+    struct Fixture {
+        base: String,
+        asked: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl Fixture {
+        /// [`self_update`] from this release, for x86_64-linux, with the real size limits.
+        async fn update(&self, latest: &Latest, install: &Install, progress: &Progress) -> Result<PathBuf> {
+            self.update_with(latest, install, progress, MAX_ZIP_BYTES, MAX_SUMS_BYTES).await
+        }
+
+        async fn update_with(&self, latest: &Latest, install: &Install, progress: &Progress, max_zip: u64, max_sums: u64) -> Result<PathBuf> {
+            self_update_from(latest, install, progress, &Release { base: self.base.clone(), platform: "x86_64-linux", max_zip, max_sums }).await
+        }
+
+        fn requests(&self) -> usize {
+            self.asked.load(std::sync::atomic::Ordering::SeqCst)
+        }
     }
 
     const ASSET: &str = "ttyak-9.9.9-x86_64-linux.zip";
 
     /// A script install of an old ttyak in `<temp>/bin`, and the release of 9.9.9 whose archive is
-    /// `zip`, with `sums` as its SHA256SUMS (None: none at all) and `sha256` in latest.json.
-    async fn release(temp: &Temp, zip: Vec<u8>, sums: Option<String>, sha256: Option<String>, stall: bool) -> (Install, Latest) {
+    /// `zip`, with `sums` as its SHA256SUMS (None: none at all), `sha256` in latest.json and the
+    /// archive's `quirk`.
+    async fn release(temp: &Temp, zip: Vec<u8>, sums: Option<String>, sha256: Option<String>, quirk: Option<Quirk>) -> (Install, Latest, Fixture) {
         let dir = temp.0.join("bin");
         let exe = dir.join(EXE);
         std::fs::write(&exe, b"old ttyak").unwrap();
@@ -760,9 +872,9 @@ mod tests {
         let sha = sha256.unwrap_or_else(|| sha256_hex(&zip));
         let mut files = vec![(format!("/v9.9.9/{ASSET}"), zip)];
         files.extend(sums.map(|s| ("/v9.9.9/SHA256SUMS".to_string(), s.into_bytes())));
-        let base = serve(files, stall.then_some("/v9.9.9/ttyak-9.9.9-x86_64-linux.zip")).await;
+        let (base, asked) = serve(files, quirk.map(|q| (format!("/v9.9.9/{ASSET}"), q))).await;
         let latest = Latest { version: v("9.9.9"), date: "2026-11-01".into(), notes: format!("{base}/notes"), asset: Asset { url: format!("{base}/v9.9.9/{ASSET}"), sha256: sha } };
-        (Install { method: Method::Script, exe, writable: true }, latest)
+        (Install { method: Method::Script, exe, writable: true }, latest, Fixture { base, asked })
     }
 
     /// `SHA256SUMS` as the release workflow writes it, `zip`'s line among the others.
@@ -782,21 +894,22 @@ mod tests {
         let zip = archive(&[("README.md", b"read me"), ("../ttyak", b"climbed out"), ("sub/ttyak", b"nested"), (EXE, b"new ttyak"), ("LICENSE", b"MIT")]);
         // Windows line ends and a binary-mode `*` are read too.
         let sums = format!("{}  ttyak-9.9.9-aarch64-linux.zip\r\n{} *{ASSET}\r\n", "cd".repeat(32), sha256_hex(&zip));
-        let (install, latest) = release(&temp, zip.clone(), Some(sums), None, false).await;
+        let (install, latest, fixture) = release(&temp, zip.clone(), Some(sums), None, None).await;
         let dir = temp.0.join("bin");
         // A stale staged file that is a link elsewhere: replaced, never followed.
         #[cfg(unix)]
         {
             std::fs::write(temp.0.join("elsewhere"), b"keep me").unwrap();
-            std::os::unix::fs::symlink(temp.0.join("elsewhere"), dir.join(STAGED)).unwrap();
+            std::os::unix::fs::symlink(temp.0.join("elsewhere"), staged(&dir)).unwrap();
         }
         let progress = Progress::default();
-        let exe = self_update(&latest, &install, &progress).await.unwrap();
+        let exe = fixture.update(&latest, &install, &progress).await.unwrap();
         assert_eq!(exe, install.exe);
         assert_eq!(std::fs::read(&exe).unwrap(), b"new ttyak");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
+            // The new executable is 755, whatever the old one's mode was (700 here).
             assert_eq!(std::fs::metadata(&exe).unwrap().permissions().mode() & 0o777, 0o755);
             assert_eq!(std::fs::read(temp.0.join("elsewhere")).unwrap(), b"keep me", "the link was not followed");
         }
@@ -818,8 +931,8 @@ mod tests {
     async fn sha_mismatch_leaves_the_old_binary() {
         let temp = Temp::new("sha-mismatch");
         let zip = archive(&[(EXE, b"new ttyak")]);
-        let (install, latest) = release(&temp, zip.clone(), Some(sums_for(&zip)), Some("00".repeat(32)), false).await;
-        let e = self_update(&latest, &install, &Progress::default()).await.unwrap_err();
+        let (install, latest, fixture) = release(&temp, zip.clone(), Some(sums_for(&zip)), Some("00".repeat(32)), None).await;
+        let e = fixture.update(&latest, &install, &Progress::default()).await.unwrap_err();
         assert!(format!("{e:#}").contains("SHA256"), "{e:#}");
         assert_eq!(std::fs::read(&install.exe).unwrap(), b"old ttyak");
         assert_eq!((temp.listing(), version_recorded(&temp)), (vec!["install.json".to_string(), EXE.into()], "0.9.9".into()));
@@ -837,8 +950,8 @@ mod tests {
         let unnamed = format!("{}  ./{ASSET}\n{}  {ASSET}.old\n", sha256_hex(&zip), sha256_hex(&zip));
         for (case, sums, says) in [("another SHA256", Some(other), "SHA256SUMS"), ("no line of its exact name", Some(unnamed), "SHA256SUMS"), ("no SHA256SUMS", None, "SHA256SUMS")] {
             let temp = Temp::new("sums-mismatch");
-            let (install, latest) = release(&temp, zip.clone(), sums, None, false).await;
-            let e = self_update(&latest, &install, &Progress::default()).await.unwrap_err();
+            let (install, latest, fixture) = release(&temp, zip.clone(), sums, None, None).await;
+            let e = fixture.update(&latest, &install, &Progress::default()).await.unwrap_err();
             assert!(format!("{e:#}").contains(says), "{case}: {e:#}");
             assert_eq!(std::fs::read(&install.exe).unwrap(), b"old ttyak", "{case}");
             assert_eq!((temp.listing(), version_recorded(&temp)), (vec!["install.json".to_string(), EXE.into()], "0.9.9".into()), "{case}");
@@ -849,8 +962,8 @@ mod tests {
     async fn an_archive_without_ttyak_leaves_the_old_binary() {
         let temp = Temp::new("no-exe");
         let zip = archive(&[("README.md", b"read me"), ("bin/ttyak", b"nested")]);
-        let (install, latest) = release(&temp, zip.clone(), Some(sums_for(&zip)), None, false).await;
-        let e = self_update(&latest, &install, &Progress::default()).await.unwrap_err();
+        let (install, latest, fixture) = release(&temp, zip.clone(), Some(sums_for(&zip)), None, None).await;
+        let e = fixture.update(&latest, &install, &Progress::default()).await.unwrap_err();
         assert!(format!("{e:#}").contains(EXE), "{e:#}");
         assert_eq!((std::fs::read(&install.exe).unwrap(), temp.listing()), (b"old ttyak".to_vec(), vec!["install.json".to_string(), EXE.into()]));
     }
@@ -859,9 +972,9 @@ mod tests {
     async fn only_a_writable_script_install_updates_itself() {
         let temp = Temp::new("not-ours");
         let zip = archive(&[(EXE, b"new ttyak")]);
-        let (install, latest) = release(&temp, zip.clone(), Some(sums_for(&zip)), None, false).await;
+        let (install, latest, fixture) = release(&temp, zip.clone(), Some(sums_for(&zip)), None, None).await;
         for other in [Install { writable: false, ..install.clone() }, Install { method: Method::Homebrew, ..install.clone() }] {
-            assert!(self_update(&latest, &other, &Progress::default()).await.is_err(), "{other:?}");
+            assert!(fixture.update(&latest, &other, &Progress::default()).await.is_err(), "{other:?}");
         }
         assert_eq!((std::fs::read(&install.exe).unwrap(), temp.listing()), (b"old ttyak".to_vec(), vec!["install.json".to_string(), EXE.into()]));
     }
@@ -870,11 +983,11 @@ mod tests {
     async fn a_cancel_removes_the_download() {
         let temp = Temp::new("cancel");
         let zip = archive(&[(EXE, b"new ttyak")]);
-        let (install, latest) = release(&temp, zip.clone(), Some(sums_for(&zip)), None, true).await;
+        let (install, latest, fixture) = release(&temp, zip.clone(), Some(sums_for(&zip)), None, Some(Quirk::Stall)).await;
         let progress = std::sync::Arc::new(Progress::default());
         let task = {
             let progress = progress.clone();
-            tokio::spawn(async move { self_update(&latest, &install, &progress).await })
+            tokio::spawn(async move { fixture.update(&latest, &install, &progress).await })
         };
         let started = std::time::Instant::now();
         while progress.bytes().0 < 65536 {
@@ -888,6 +1001,73 @@ mod tests {
         assert!(task.await.unwrap_err().is_cancelled());
         assert_eq!(temp.listing(), ["install.json", EXE]);
         assert_eq!(std::fs::read(temp.0.join("bin").join(EXE)).unwrap(), b"old ttyak");
+    }
+
+    #[tokio::test]
+    async fn only_the_release_s_own_archive_is_downloaded() {
+        let zip = archive(&[(EXE, b"new ttyak")]);
+        for (case, url) in [
+            ("another host", "https://example.invalid/v9.9.9/ttyak-9.9.9-x86_64-linux.zip"),
+            ("another version's archive", "{base}/v0.9.0/ttyak-0.9.0-x86_64-linux.zip"),
+            ("another platform's", "{base}/v9.9.9/ttyak-9.9.9-x86_64-windows.zip"),
+            ("another scheme", "{http}/v9.9.9/ttyak-9.9.9-x86_64-linux.zip"),
+            ("a path trick", "{base}/v9.9.9/../v0.9.0/ttyak-9.9.9-x86_64-linux.zip"),
+            ("a query", "{base}/v9.9.9/ttyak-9.9.9-x86_64-linux.zip?v=1"),
+        ] {
+            let temp = Temp::new("pinned");
+            let (install, mut latest, fixture) = release(&temp, zip.clone(), Some(sums_for(&zip)), None, None).await;
+            latest.asset.url = url.replace("{base}", &fixture.base).replace("{http}", &fixture.base.replacen("http://", "ftp://", 1));
+            let e = fixture.update(&latest, &install, &Progress::default()).await.unwrap_err();
+            assert!(format!("{e:#}").contains("not the release's"), "{case}: {e:#}");
+            assert_eq!(fixture.requests(), 0, "{case}: nothing downloaded");
+            assert_eq!((std::fs::read(&install.exe).unwrap(), temp.listing()), (b"old ttyak".to_vec(), vec!["install.json".to_string(), EXE.into()]), "{case}");
+        }
+        // An https release refuses the same address over http.
+        let github = Release { base: "https://github.com/dmytrobsp/ttyak/releases/download".into(), platform: "x86_64-linux", max_zip: MAX_ZIP_BYTES, max_sums: MAX_SUMS_BYTES };
+        assert_eq!(github.urls(&v("9.9.9")), ("https://github.com/dmytrobsp/ttyak/releases/download/v9.9.9/ttyak-9.9.9-x86_64-linux.zip".to_string(), "https://github.com/dmytrobsp/ttyak/releases/download/v9.9.9/SHA256SUMS".to_string()));
+        let mut plain_http = latest("9.9.9");
+        plain_http.asset.url = "http://github.com/dmytrobsp/ttyak/releases/download/v9.9.9/ttyak-9.9.9-x86_64-linux.zip".into();
+        let temp = Temp::new("pinned-http");
+        let install = Install { method: Method::Script, exe: temp.0.join("bin").join(EXE), writable: true };
+        std::fs::write(&install.exe, b"old ttyak").unwrap();
+        let e = self_update_from(&plain_http, &install, &Progress::default(), &github).await.unwrap_err();
+        assert!(format!("{e:#}").contains("not the release's"), "{e:#}");
+        // An older release, its own archive and all: never put in (no downgrade).
+        let temp = Temp::new("pinned-old");
+        let (install, mut latest, fixture) = release(&temp, zip.clone(), Some(sums_for(&zip)), None, None).await;
+        latest.version = v("0.1.0");
+        latest.asset.url = format!("{}/v0.1.0/ttyak-0.1.0-x86_64-linux.zip", fixture.base);
+        let e = fixture.update(&latest, &install, &Progress::default()).await.unwrap_err();
+        assert!(format!("{e:#}").contains("not newer"), "{e:#}");
+        assert_eq!(fixture.requests(), 0);
+    }
+
+    #[tokio::test]
+    async fn too_big_is_refused() {
+        let zip = archive(&[(EXE, b"new ttyak")]);
+        let limit = zip.len() as u64 - 1;
+        for (case, quirk) in [("a length above the limit", Some(Quirk::ClaimsHuge)), ("more bytes than the limit, no length", Some(Quirk::NoLength)), ("a length just above the limit", None)] {
+            let temp = Temp::new("too-big");
+            let (install, latest, fixture) = release(&temp, zip.clone(), Some(sums_for(&zip)), None, quirk).await;
+            let max_zip = if quirk == Some(Quirk::ClaimsHuge) { MAX_ZIP_BYTES } else { limit };
+            let e = fixture.update_with(&latest, &install, &Progress::default(), max_zip, MAX_SUMS_BYTES).await.unwrap_err();
+            assert!(format!("{e:#}").contains("too big"), "{case}: {e:#}");
+            assert_eq!((std::fs::read(&install.exe).unwrap(), temp.listing()), (b"old ttyak".to_vec(), vec!["install.json".to_string(), EXE.into()]), "{case}");
+        }
+        // Within the limit, no length given: fine.
+        let temp = Temp::new("unsized");
+        let (install, latest, fixture) = release(&temp, zip.clone(), Some(sums_for(&zip)), None, Some(Quirk::NoLength)).await;
+        let progress = Progress::default();
+        fixture.update_with(&latest, &install, &progress, zip.len() as u64, MAX_SUMS_BYTES).await.unwrap();
+        assert_eq!((progress.bytes(), std::fs::read(&install.exe).unwrap()), ((zip.len() as u64, None), b"new ttyak".to_vec()));
+        // A SHA256SUMS of more than 64 KB.
+        let temp = Temp::new("big-sums");
+        let padded = format!("{}{}", format!("{}  ttyak-0.0.0-x86_64-linux.zip\n", "00".repeat(32)).repeat(1000), sums_for(&zip));
+        assert!(padded.len() as u64 > MAX_SUMS_BYTES);
+        let (install, latest, fixture) = release(&temp, zip.clone(), Some(padded), None, None).await;
+        let e = fixture.update(&latest, &install, &Progress::default()).await.unwrap_err();
+        assert!(format!("{e:#}").contains("SHA256SUMS") && format!("{e:#}").contains("too big"), "{e:#}");
+        assert_eq!((std::fs::read(&install.exe).unwrap(), temp.listing()), (b"old ttyak".to_vec(), vec!["install.json".to_string(), EXE.into()]));
     }
 
     #[cfg(windows)]
@@ -904,7 +1084,7 @@ mod tests {
         }
         let temp = Temp::new("windows-swap");
         let dir = temp.0.join("bin");
-        let (exe, staged) = (dir.join(EXE), dir.join(STAGED));
+        let (exe, staged) = (dir.join(EXE), staged(&dir));
         std::fs::copy(PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join(r"System32\PING.EXE"), &exe).unwrap();
         let old = std::fs::read(&exe).unwrap();
         let running = Running(std::process::Command::new(&exe).args(["-n", "60", "127.0.0.1"]).stdout(std::process::Stdio::null()).spawn().unwrap());

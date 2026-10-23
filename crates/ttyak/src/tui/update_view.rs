@@ -21,6 +21,7 @@ const NOTES: &str = "Release notes: {url}";
 const WHAT_HAPPENS: &str = "Update now downloads it, checks it and puts it in place of {exe}. ttyak does not restart by itself: restart it when you are ready.";
 const MANAGED: &str = "ttyak was installed {how}. To update it, run:";
 const UNWRITABLE: &str = "ttyak cannot write {dir}, so it cannot update itself. To update it, run (as someone who can write there):";
+const UNWRITABLE_YOURS: &str = "ttyak cannot write {dir}, so it cannot update itself. Once you can write there (it is your folder), run:";
 const PACKAGE: &str = "ttyak was installed {how}: download the new {package} from";
 const MANUAL: &str = "ttyak cannot tell how it was installed: download it from";
 const DOWNLOADING: &str = "Downloading… {got} of {total}";
@@ -46,6 +47,7 @@ pub const WORDS: &[&str] = &[
     WHAT_HAPPENS,
     MANAGED,
     UNWRITABLE,
+    UNWRITABLE_YOURS,
     PACKAGE,
     MANUAL,
     DOWNLOADING,
@@ -91,7 +93,10 @@ pub fn offer(install: &Install, latest: &Latest) -> Offer {
     let download = |package| Offer::Download { package, url: latest.notes.clone() };
     match install.method {
         Method::Script if install.writable => Offer::UpdateNow,
-        Method::Script => Offer::Command(script_command(install.exe.parent().unwrap_or(Path::new("")))),
+        Method::Script => {
+            let dir = install.exe.parent().unwrap_or(Path::new(""));
+            Offer::Command(script_command(dir, !yours(dir)))
+        }
         Method::Deb => download(Some(".deb")),
         Method::Rpm => download(Some(".rpm")),
         method => match method.update_command() {
@@ -291,7 +296,8 @@ impl UpdateView {
             Offer::Command(command) => {
                 out.push(tr(NOTES).replace("{url}", &self.latest.notes));
                 let dir = self.install.exe.parent().map(shown).unwrap_or_default();
-                out.push(if self.install.method == Method::Script { tr(UNWRITABLE).replace("{dir}", &dir) } else { tr(MANAGED).replace("{how}", &how) });
+                let script = if self.install.exe.parent().is_some_and(yours) { UNWRITABLE_YOURS } else { UNWRITABLE };
+                out.push(if self.install.method == Method::Script { tr(script).replace("{dir}", &dir) } else { tr(MANAGED).replace("{how}", &how) });
                 out.push(format!("`{command}"));
             }
             Offer::Download { package, url } => {
@@ -387,15 +393,32 @@ fn shown(path: &Path) -> String {
     crate::uninstall::plain(path).display().to_string()
 }
 
-/// The install script's command that puts the new version in `dir`.
-fn script_command(dir: &Path) -> String {
+/// Whether `dir` belongs to whoever runs ttyak (Unix; elsewhere: taken as not).
+fn yours(dir: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        // SAFETY: getuid has no preconditions and cannot fail.
+        std::fs::metadata(dir).is_ok_and(|m| m.uid() == unsafe { libc::getuid() })
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = dir;
+        false
+    }
+}
+
+/// The install script's command that puts the new version in `dir`; through sudo when `as_root`
+/// (Unix: a folder someone else owns).
+fn script_command(dir: &Path, as_root: bool) -> String {
     let dir = shown(dir);
     if cfg!(windows) {
         format!("& ([scriptblock]::Create((irm https://ttyak.sh/install.ps1))) -Dir '{}'", dir.replace('\'', "''"))
     } else {
         let safe = !dir.is_empty() && dir.chars().all(|c| c.is_ascii_alphanumeric() || "/._-+~".contains(c));
         let quoted = if safe { dir } else { format!("'{}'", dir.replace('\'', r"'\''")) };
-        format!("curl -fsSL https://ttyak.sh/install.sh | sudo sh -s -- --dir {quoted}")
+        let sudo = if as_root { "sudo " } else { "" };
+        format!("curl -fsSL https://ttyak.sh/install.sh | {sudo}sh -s -- --dir {quoted}")
     }
 }
 
@@ -462,7 +485,25 @@ mod tests {
         let text = screen(&mut v).join("\n");
         // (Wrapped on the screen; the button copies it whole.)
         assert!(text.contains("ttyak cannot write /home/u/.local/bin") && text.contains(&command[..30]) && text.contains("[ Copy the command (y) ]"), "{text}");
-        assert_eq!(script_command(Path::new("/opt/it's mine")), if cfg!(windows) { "& ([scriptblock]::Create((irm https://ttyak.sh/install.ps1))) -Dir '/opt/it''s mine'".to_string() } else { r"curl -fsSL https://ttyak.sh/install.sh | sudo sh -s -- --dir '/opt/it'\''s mine'".to_string() });
+        assert_eq!(script_command(Path::new("/opt/it's mine"), true), if cfg!(windows) { "& ([scriptblock]::Create((irm https://ttyak.sh/install.ps1))) -Dir '/opt/it''s mine'".to_string() } else { r"curl -fsSL https://ttyak.sh/install.sh | sudo sh -s -- --dir '/opt/it'\''s mine'".to_string() });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sudo_only_for_someone_else_s_folder() {
+        let mine = std::env::temp_dir().join(format!("ttyak-test-yours-{}", std::process::id()));
+        std::fs::create_dir_all(&mine).unwrap();
+        assert!(yours(&mine) && !yours(&mine.join("not there")));
+        // SAFETY: getuid has no preconditions and cannot fail.
+        if unsafe { libc::getuid() } != 0 {
+            assert!(!yours(Path::new("/")), "root's folder");
+        }
+        let mut v = UpdateView::new(latest(), Install { method: Method::Script, exe: mine.join("ttyak"), writable: false });
+        assert_eq!(v.offer, Offer::Command(format!("curl -fsSL https://ttyak.sh/install.sh | sh -s -- --dir {}", mine.display())), "your own folder: no sudo");
+        let text = screen(&mut v).join("\n");
+        assert!(text.contains("Once you can write there (it is your folder), run:") && !text.contains("as someone"), "{text}");
+        assert_eq!(script_command(Path::new("/usr/local/bin"), true), "curl -fsSL https://ttyak.sh/install.sh | sudo sh -s -- --dir /usr/local/bin");
+        std::fs::remove_dir(&mine).unwrap();
     }
 
     #[test]
