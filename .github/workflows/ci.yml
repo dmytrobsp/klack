@@ -13,6 +13,7 @@ env:
 jobs:
   linux:
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: No old name
@@ -24,8 +25,14 @@ jobs:
         # A run of their own: next to the others, the folder packaging/ would be imported as the PyPI library
         # of that name.
         run: python3 -m unittest discover -s packaging -p 'test_*.py'
+      # Bounded and verbose: an apt-get that hangs (it once sat silent for 84 minutes) fails here and shows where.
       - name: Packages
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq pkg-config cmake libasound2-dev
+        timeout-minutes: 10
+        run: |
+          apt=(sudo env DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30
+            -o DPkg::Lock::Timeout=120)
+          "${apt[@]}" update -qq
+          "${apt[@]}" install -y --no-install-recommends pkg-config cmake libasound2-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --locked
@@ -33,6 +40,7 @@ jobs:
 
   macos:
     runs-on: macos-14
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -42,10 +50,16 @@ jobs:
 
   windows-cross:
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Packages
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq cmake mingw-w64
+        timeout-minutes: 10
+        run: |
+          apt=(sudo env DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30
+            -o DPkg::Lock::Timeout=120)
+          "${apt[@]}" update -qq
+          "${apt[@]}" install -y --no-install-recommends cmake mingw-w64
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-gnu

@@ -35,15 +35,23 @@ jobs:
           # 22.04's MinGW (gcc 10) lacks what Opus and the static C runtime need; CI builds on 24.04 too.
           - { name: x86_64-windows, os: ubuntu-24.04, target: x86_64-pc-windows-gnu, exe: ttyak.exe }
     runs-on: ${{ matrix.os }}
+    # (macOS: notarization is waited for up to 10 minutes.)
+    timeout-minutes: ${{ startsWith(matrix.os, 'macos') && 45 || 30 }}
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      # Bounded and verbose: an apt-get that hangs (it once sat silent for 84 minutes) fails here and shows where.
       - name: Packages (Linux)
         if: runner.os == 'Linux'
-        run: >-
-          sudo apt-get update -qq && sudo apt-get install -y -qq pkg-config cmake libasound2-dev
-          ${{ matrix.name == 'x86_64-windows' && 'mingw-w64' || '' }}
+        timeout-minutes: 10
+        env:
+          MINGW: ${{ matrix.name == 'x86_64-windows' && 'mingw-w64' || '' }}
+        run: |
+          apt=(sudo env DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30
+            -o DPkg::Lock::Timeout=120)
+          "${apt[@]}" update -qq
+          "${apt[@]}" install -y --no-install-recommends pkg-config cmake libasound2-dev ${MINGW:+"$MINGW"}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -177,6 +185,7 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     permissions:
       contents: write # the release
       id-token: write # the attestations' Sigstore certificate
