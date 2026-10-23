@@ -558,7 +558,7 @@ impl Threads {
         let start = self.scroll.min(feed.lines.len());
         let end = (start + height).min(feed.lines.len());
         // Scrolled off the selection by you (the wheel): it follows onto the screen; the view stays.
-        if let Some(next) = self.selected.as_ref().filter(|_| scrolled).and_then(|s| follow_view(&feed.owners, start, end, s)) {
+        if let Some(next) = self.selected.as_ref().filter(|_| scrolled).and_then(|s| follow_view(&feed.owners, start, end, height, s)) {
             self.selected = Some(next);
         }
         self.spot = self.selected.clone().and_then(|s| Some((feed.owners.iter().position(|o| o.as_ref() == Some(&s))? as isize - start as isize, s))).map(|(row, s)| (s, row));
@@ -615,14 +615,14 @@ pub(super) fn bring_into_view(scroll: usize, height: usize, first: usize, last: 
     }
 }
 
-/// The item to select instead of `sel` once a list (`owners`: the item of each of its lines) shows lines `start..end`:
-/// none while `sel` is on screen (all of it, or any of it when it is taller than the view), or is not in the list; else
-/// the nearest one on screen ([`view_edge`]): the top one when `sel` is above the view, the bottom one when it is below;
-/// none when that is `sel` itself (nothing else shows whole).
-pub(super) fn follow_view<T: PartialEq + Clone>(owners: &[Option<T>], start: usize, end: usize, sel: &T) -> Option<T> {
+/// The item to select instead of `sel` once a list (`owners`: the item of each of its lines) shows lines `start..end`
+/// in a view `height` rows high: none while `sel` is on screen (all of it, or any of it when it is taller than the
+/// view), or is not in the list; else the nearest one on screen ([`view_edge`]): the top one when `sel` is above the
+/// view, the bottom one when it is below; none when that is `sel` itself (nothing else shows whole).
+pub(super) fn follow_view<T: PartialEq + Clone>(owners: &[Option<T>], start: usize, end: usize, height: usize, sel: &T) -> Option<T> {
     let (first, last) = span(owners, sel)?;
     let shown = first < end && last >= start;
-    if (first >= start && last < end) || (shown && last + 1 - first > end - start) {
+    if (first >= start && last < end) || (shown && last + 1 - first > height) {
         return None;
     }
     view_edge(owners, start, end, first < start).filter(|next| next != sel)
@@ -649,7 +649,7 @@ pub(super) fn keep_spot<T: PartialEq + Clone>(owners: &[Option<T>], scroll: usiz
     if let (Some((_, row)), Some((first, _))) = (spot.filter(|(was, _)| *was == sel), span(owners, sel)) {
         scroll = (first as isize - row).max(0) as usize;
     }
-    let off = follow_view(owners, scroll, (scroll + height).min(owners.len()), sel).is_some();
+    let off = follow_view(owners, scroll, (scroll + height).min(owners.len()), height, sel).is_some();
     (scroll, off)
 }
 
@@ -665,10 +665,32 @@ pub(super) struct OnScreen {
     pub text: Vec<String>,
     /// The list's line at its top row, for a list that counts its lines from the top.
     pub top: Option<usize>,
-    /// Any row of the tall item is on screen; it is selected; any row of the selection is on screen.
+    /// The list's first line is on screen.
+    pub at_top: bool,
+    /// The list's last line is on screen.
+    pub at_end: bool,
+    /// Any row of the tall item is on screen.
     pub tall_shown: bool,
+    /// The tall item is selected.
     pub tall_selected: bool,
+    /// Any row of the selection is on screen.
     pub selection_shown: bool,
+}
+
+/// What a test does to a list before it draws it again (for [`wheel_through_tall`] and [`keys_and_changes_on_tall`]).
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+pub(super) enum Act {
+    /// Nothing: a redraw.
+    Draw,
+    /// The wheel, by lines (down: more).
+    Wheel(isize),
+    /// The keys, by items (↓: more).
+    Key(isize),
+    /// From now on drawn at another size (wrapped again).
+    Rewrap,
+    /// Something comes in above the view (or after the newest, in a message pane).
+    Arrive,
 }
 
 /// The rows of `area` in a drawn buffer, as text.
@@ -683,20 +705,19 @@ pub(super) fn tall_text() -> String {
     (1..=40).map(|n| format!("tall {n:02}")).collect::<Vec<_>>().join("\n")
 }
 
-/// The wheel line by line over `list` (`wheel(1)`: a line down) from a selected item taller than the view, drawn
-/// (`draw`) from its start, down to the list's end and back up to its top: each line moves the view by one line, and a
+/// The wheel line by line over `list` (`act`: does an [`Act`] and draws) from a selected item taller than the view,
+/// drawn from its start, down to the list's end and back up to its top: each line moves the view by one line, and a
 /// redraw moves nothing; the selection stays on the tall item while any of it is on screen, follows the view once it is
 /// off, and is on it again on the way back while it shows.
 #[cfg(test)]
-pub(super) fn wheel_through_tall<L>(list: &mut L, mut draw: impl FnMut(&mut L) -> OnScreen, mut wheel: impl FnMut(&mut L, isize)) {
-    let mut was = draw(list);
+pub(super) fn wheel_through_tall<L>(list: &mut L, mut act: impl FnMut(&mut L, Act) -> OnScreen) {
+    let mut was = act(list, Act::Draw);
     assert!(was.tall_shown && was.tall_selected, "starts on the tall item:\n{}", was.text.join("\n"));
     for down in [true, false] {
         let (way, step) = if down { ("down", 1) } else { ("up", -1) };
         let (mut lines, mut left, mut back) = (0, false, false);
         loop {
-            wheel(list, step);
-            let seen = draw(list);
+            let seen = act(list, Act::Wheel(step));
             let moved = match (was.top, seen.top) {
                 (Some(a), Some(b)) => a != b,
                 _ => seen.text != was.text,
@@ -724,13 +745,38 @@ pub(super) fn wheel_through_tall<L>(list: &mut L, mut draw: impl FnMut(&mut L) -
             }
             left |= !seen.tall_shown;
             back |= seen.tall_selected;
-            let again = draw(list);
+            let again = act(list, Act::Draw);
             assert_eq!((&again.text, again.top, again.tall_selected), (&seen.text, seen.top, seen.tall_selected), "a redraw moves nothing: {screen}");
             was = seen;
         }
-        assert!(down || back, "up: selected again on the way back\n{}", was.text.join("\n"));
-        assert!(!down || left, "down: scrolled past it\n{}", was.text.join("\n"));
+        // (The wheel stopped: at the list's end, not stuck before it.)
+        if down {
+            assert!(was.at_end && left, "down: at the end, past it\n{}", was.text.join("\n"));
+        } else {
+            assert!(was.at_top && back, "up: at the top, selected again on the way\n{}", was.text.join("\n"));
+        }
     }
+}
+
+/// With the tall item of `list` selected (`act` as in [`wheel_through_tall`]): ↑ onto it (from the next one) and ↓ onto
+/// it (from the one before) show its first line (`first`, among the top three rows); then, wheeled `to_end` lines on
+/// (its start off screen, its end on), a re-wrap and an arrival leave the view and the selection: the same top row (the
+/// bottom row, `bottom_anchored`: a message pane) and the same screen after the arrival.
+#[cfg(test)]
+pub(super) fn keys_and_changes_on_tall<L>(list: &mut L, mut act: impl FnMut(&mut L, Act) -> OnScreen, first: &str, to_end: isize, bottom_anchored: bool) {
+    let shows_first = |seen: &OnScreen| seen.text.iter().take(3).any(|l| l.contains(first));
+    for (from, step) in [(1, -1), (-1, 1)] {
+        act(list, Act::Key(from));
+        let seen = act(list, Act::Key(step));
+        assert!(seen.tall_selected && shows_first(&seen), "{step}: from its first line\n{}", seen.text.join("\n"));
+    }
+    let before = act(list, Act::Wheel(to_end));
+    assert!(before.tall_selected && before.tall_shown && !shows_first(&before), "its end on screen\n{}", before.text.join("\n"));
+    let after = act(list, Act::Rewrap);
+    let edge = |seen: &OnScreen| if bottom_anchored { seen.text.last() } else { seen.text.first() }.map(|l| l.trim_end().to_string());
+    assert_eq!((after.tall_selected, edge(&after)), (true, edge(&before)), "a re-wrap leaves the view\n{}", after.text.join("\n"));
+    let again = act(list, Act::Arrive);
+    assert_eq!((again.tall_selected, &again.text), (true, &after.text), "an arrival leaves the view");
 }
 
 #[cfg(test)]
@@ -1277,16 +1323,17 @@ mod tests {
         assert_eq!(bring_into_view(20, 10, 10, 60), 20, "taller, filling the view: left alone");
         // Lines 0..3 a, 3..18 t (taller than the view), 18..20 b, 20..30 c.
         let owners: Vec<Option<char>> = [('a', 3), ('t', 15), ('b', 2), ('c', 10)].iter().flat_map(|&(c, n)| std::iter::repeat_n(Some(c), n)).collect();
-        assert_eq!(follow_view(&owners, 10, 20, &'t'), None, "taller, its end on screen: it stays");
-        assert_eq!(follow_view(&owners, 17, 27, &'t'), None, "its last line");
-        assert_eq!(follow_view(&owners, 18, 28, &'t'), Some('b'), "off screen: the top one");
+        assert_eq!(follow_view(&owners, 10, 20, 10, &'t'), None, "taller, its end on screen: it stays");
+        assert_eq!(follow_view(&owners, 17, 27, 10, &'t'), None, "its last line");
+        assert_eq!(follow_view(&owners, 18, 28, 10, &'t'), Some('b'), "off screen: the top one");
         // Lines 0..8 m, 8..16 n: in a 10-line view from line 4 neither shows whole: the selection stays.
         let owners: Vec<Option<char>> = [('m', 8), ('n', 8)].iter().flat_map(|&(c, n)| std::iter::repeat_n(Some(c), n)).collect();
-        assert_eq!((follow_view(&owners, 4, 14, &'m'), follow_view(&owners, 4, 14, &'n')), (None, None));
+        assert_eq!((follow_view(&owners, 4, 14, 10, &'m'), follow_view(&owners, 4, 14, 10, &'n')), (None, None));
     }
 
     #[test]
     fn a_message_taller_than_the_view_scrolls_line_by_line() {
+        use super::{Act, OnScreen};
         let ws = Workspace::default();
         let media = Media::with(ratatui_image::picker::Picker::halfblocks());
         let mut entries: Vec<Entry> = (1..=12).map(|n| thread(n, false)).collect();
@@ -1294,36 +1341,35 @@ mod tests {
         let mut t = Threads::default();
         t.add_page(entries, false);
         let tall = ("C1".to_string(), "2.000100".to_string());
-        let draw = |t: &mut Threads, height: u16| -> super::OnScreen {
+        // (The feed cuts a long message after a dozen lines: a view of ten, then eight.)
+        let mut height = 12;
+        let mut act = |t: &mut Threads, act: Act| -> OnScreen {
+            match act {
+                Act::Draw => {}
+                Act::Wheel(lines) => t.scroll_by(lines),
+                Act::Key(by) => t.move_by(by),
+                Act::Rewrap => height = 10,
+                Act::Arrive => assert!(t.add_reply("C1", &reply(1, 3), true)),
+            }
             let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, height)).unwrap();
             terminal.draw(|f| t.draw(f, f.area(), &Here::alone(&ws), true, &media)).unwrap();
             let shown = |m: Option<&(String, String)>| m.is_some_and(|m| t.rows.iter().flatten().any(|r| r == m));
             let text = super::rows_text(terminal.backend().buffer(), t.list);
-            super::OnScreen { text, top: Some(t.visible.start), tall_shown: shown(Some(&tall)), tall_selected: t.selected.as_ref() == Some(&tall), selection_shown: shown(t.selected.as_ref()) }
+            let (at_top, at_end) = (t.visible.start == 0, t.visible.end == t.feed.lines.len());
+            OnScreen { text, top: Some(t.visible.start), at_top, at_end, tall_shown: shown(Some(&tall)), tall_selected: t.selected.as_ref() == Some(&tall), selection_shown: shown(t.selected.as_ref()) }
         };
-        // (The feed cuts a long message after a dozen lines: a view of ten.)
-        draw(&mut t, 12);
+        act(&mut t, Act::Draw);
         // The first parent, its reply, then the tall parent.
-        t.move_by(2);
-        super::wheel_through_tall(&mut t, |t| draw(t, 12), |t, lines| t.scroll_by(lines));
-        // ↑ onto it (from its reply, its start off screen) and ↓ onto it (from the reply above): it shows from its start.
+        act(&mut t, Act::Key(2));
+        super::wheel_through_tall(&mut t, &mut act);
+        // ↑/↓ onto it; its end on screen (8 lines on, its reply whole): a re-wrap, a reply above.
         t.selected = Some(tall.clone());
-        for (from, step) in [(1, -1), (-1, 1)] {
-            t.move_by(from);
-            draw(&mut t, 12);
-            t.move_by(step);
-            let seen = draw(&mut t, 12);
-            let first = seen.text.iter().position(|l| l.contains("tall 01"));
-            assert!(seen.tall_selected && first.is_some_and(|row| row <= 2), "{step}: from its first line\n{}", seen.text.join("\n"));
-        }
-        // Its end on screen, with its reply whole: a re-wrap (a resize) and a reply above leave the view.
-        t.scroll_by(8);
-        let before = draw(&mut t, 12);
-        assert!(before.tall_selected && before.text.iter().any(|l| l.contains("… more")), "its end\n{}", before.text.join("\n"));
-        let after = draw(&mut t, 10);
-        assert_eq!((after.tall_selected, after.text.first()), (true, before.text.first()), "a re-wrap leaves the view\n{}", after.text.join("\n"));
-        assert!(t.add_reply("C1", &reply(1, 3), true));
-        let again = draw(&mut t, 10);
-        assert_eq!((again.tall_selected, &again.text), (true, &after.text), "a reply above leaves the view");
+        super::keys_and_changes_on_tall(&mut t, &mut act, "tall 01", 8, false);
+        // A click on it while only its end shows (its reply selected): the view stays (in a pane too).
+        let before = act(&mut t, Act::Key(1));
+        let row = t.rows.iter().position(|r| r.as_ref() == Some(&tall)).expect("its end on screen") as u16;
+        t.selected = t.message_at(5, t.list.y + row);
+        let after = act(&mut t, Act::Draw);
+        assert_eq!((after.tall_selected, &after.text), (true, &before.text), "clicked: the view stays");
     }
 }

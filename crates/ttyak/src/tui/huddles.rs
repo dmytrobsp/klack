@@ -266,7 +266,7 @@ impl Huddles {
         let start = self.scroll.min(lines.len());
         let end = (start + height).min(lines.len());
         // Scrolled off the selection: it follows onto the screen; the view stays.
-        if let Some(next) = self.selected.as_ref().filter(|_| scrolled).and_then(|s| super::threads::follow_view(&owners, start, end, s)) {
+        if let Some(next) = self.selected.as_ref().filter(|_| scrolled).and_then(|s| super::threads::follow_view(&owners, start, end, height, s)) {
             self.selected = Some(next);
         }
         self.spot = self.selected.clone().and_then(|s| Some((owners.iter().position(|o| o.as_ref() == Some(&s))? as isize - start as isize, s))).map(|(row, s)| (s, row));
@@ -622,6 +622,7 @@ mod tests {
 
     #[test]
     fn a_row_taller_than_the_view_scrolls_line_by_line() {
+        use crate::tui::threads::{Act, OnScreen};
         // Two lines each in a view one line high; no huddle live (its row would take the selection at the top).
         let mut ws = ws();
         ws.huddles.clear();
@@ -630,39 +631,31 @@ mod tests {
         let first = h.reload();
         h.add_page(first, false, (1..=6).map(|n| past(&format!("R{n}"), "C1", NOW - 3600 * n as i64, 60, &["U2"], &[], None)).collect(), None);
         let tall = Row::Past(1);
-        let draw = |h: &mut Huddles, ws: &Workspace, width: u16| -> crate::tui::threads::OnScreen {
+        let mut width = 60;
+        let mut act = |h: &mut Huddles, act: Act| -> OnScreen {
+            match act {
+                Act::Draw => {}
+                Act::Wheel(lines) => (h.scroll, h.scrolled) = (h.scroll.saturating_add_signed(lines), true),
+                Act::Key(by) => h.move_by(by),
+                Act::Rewrap => width = 50,
+                Act::Arrive => _ = ws.huddles.insert("D1".into(), Huddle { room: "R9".into(), participants: vec!["U2".into()], thread: None, start: NOW - 60 }),
+            }
             let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, 3)).unwrap();
-            terminal.draw(|f| h.draw(f, f.area(), ws, true, &media, None, NOW)).unwrap();
+            terminal.draw(|f| h.draw(f, f.area(), &ws, true, &media, None, NOW)).unwrap();
             let text = crate::tui::threads::rows_text(terminal.backend().buffer(), h.list);
             // (Above the first row only headers show: the selection stays where it is.)
             let selection_shown = h.rows.contains(&h.selected) || h.rows.iter().all(Option::is_none);
-            crate::tui::threads::OnScreen { text, top: Some(h.scroll), tall_shown: h.rows.contains(&Some(tall.clone())), tall_selected: h.selected.as_ref() == Some(&tall), selection_shown }
+            let lines = build(&ws, &ws.live_list(None), h.past.as_deref().unwrap_or_default(), None, &h.replies, None, width, NOW).0.len();
+            let tall_shown = h.rows.contains(&Some(tall.clone()));
+            OnScreen { text, top: Some(h.scroll), at_top: h.scroll == 0, at_end: h.scroll + 1 >= lines, tall_shown, tall_selected: h.selected.as_ref() == Some(&tall), selection_shown }
         };
-        draw(&mut h, &ws, 60);
+        act(&mut h, Act::Draw);
         h.selected = Some(tall.clone());
-        h.move_by(0);
-        let wheel = |h: &mut Huddles, lines: isize| (h.scroll, h.scrolled) = (h.scroll.saturating_add_signed(lines), true);
-        crate::tui::threads::wheel_through_tall(&mut h, |h| draw(h, &ws, 60), wheel);
-        // ↑ onto it (from the next one) and ↓ onto it (from the one above): its first line.
-        let place = " #social · 2 h ago";
+        act(&mut h, Act::Key(0));
+        crate::tui::threads::wheel_through_tall(&mut h, &mut act);
+        // ↑/↓ onto it; its second line on screen: a re-wrap (a resize), a huddle starting above.
         h.selected = Some(tall.clone());
-        for (from, step) in [(1, -1), (-1, 1)] {
-            h.move_by(from);
-            draw(&mut h, &ws, 60);
-            h.move_by(step);
-            let seen = draw(&mut h, &ws, 60);
-            assert!(seen.tall_selected && seen.text[0].starts_with(place), "{step}: its first line {:?}", seen.text);
-        }
-        // Its second line on screen: a re-wrap (a resize) and a huddle starting above leave the view.
-        wheel(&mut h, 1);
-        let before = draw(&mut h, &ws, 60);
-        assert!(before.tall_selected && !before.text[0].starts_with(place), "its second line {:?}", before.text);
-        let after = draw(&mut h, &ws, 50);
-        assert_eq!((after.tall_selected, after.text[0].trim_end()), (true, before.text[0].trim_end()), "a re-wrap leaves the view");
-        let mut ws = ws;
-        ws.huddles.insert("D1".into(), Huddle { room: "R9".into(), participants: vec!["U2".into()], thread: None, start: NOW - 60 });
-        let again = draw(&mut h, &ws, 50);
-        assert_eq!((again.tall_selected, &again.text), (true, &after.text), "a huddle starting above leaves the view");
+        crate::tui::threads::keys_and_changes_on_tall(&mut h, &mut act, " #social · 2 h ago", 1, false);
     }
 
     #[test]

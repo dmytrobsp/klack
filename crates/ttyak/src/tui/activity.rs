@@ -848,7 +848,7 @@ impl Activity {
         let start = self.scroll.min(built.lines.len());
         let end = (start + height).min(built.lines.len());
         // Scrolled off the selection: it follows onto the screen; the view stays.
-        if let Some(next) = super::threads::follow_view(owners, start, end, &self.selected).filter(|_| scrolled) {
+        if let Some(next) = super::threads::follow_view(owners, start, end, height, &self.selected).filter(|_| scrolled) {
             self.selected = next;
         }
         let first = owners.iter().position(|o| *o == Some(self.selected));
@@ -2092,6 +2092,7 @@ mod tests {
 
     #[test]
     fn an_item_taller_than_the_view_scrolls_line_by_line() {
+        use super::super::threads::{Act, OnScreen};
         let ws = ws();
         let media = super::super::media::Media::with(ratatui_image::picker::Picker::halfblocks());
         let it = |key: &str| item(key, Kind::Mention("at_user".into()), "C1", key, None, false, noon(0));
@@ -2099,37 +2100,31 @@ mod tests {
         a.set_items(Tab::All, (1..=20).map(|n| it(&n.to_string())).collect(), None);
         let key = a.items.as_ref().unwrap()[2].message_key();
         a.add_message(key.clone(), Some(Message { ts: key.1.clone(), user: Some("U2".into()), text: super::super::threads::tall_text(), ..Default::default() }));
-        let draw = |a: &mut Activity, height: u16| -> super::super::threads::OnScreen {
+        // (An item shows the first lines of its message: a view of four, then three.)
+        let mut height = 7;
+        let mut act = |a: &mut Activity, act: Act| -> OnScreen {
+            match act {
+                Act::Draw => {}
+                Act::Wheel(lines) => (a.scroll, a.scrolled) = (a.scroll.saturating_add_signed(lines), true),
+                Act::Key(by) => a.move_by(by),
+                Act::Rewrap => height = 6,
+                Act::Arrive => {
+                    let top = a.items.as_ref().unwrap()[0].message_key();
+                    a.add_message(top.clone(), Some(Message { ts: top.1.clone(), user: Some("U2".into()), text: "one\ntwo\nthree".into(), ..Default::default() }));
+                }
+            }
             let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, height)).unwrap();
             terminal.draw(|f| a.draw(f, f.area(), &Here::alone(&ws), true, &media)).unwrap();
             let text = super::super::threads::rows_text(terminal.backend().buffer(), a.list);
             let shown = |n: usize| a.rows.contains(&Some(n));
-            super::super::threads::OnScreen { text, top: Some(a.scroll), tall_shown: shown(2), tall_selected: a.selected == 2, selection_shown: shown(a.selected) }
+            let at_end = a.cache.as_ref().is_some_and(|c| a.scroll + a.list.height as usize >= c.built.lines.len());
+            OnScreen { text, top: Some(a.scroll), at_top: a.scroll == 0, at_end, tall_shown: shown(2), tall_selected: a.selected == 2, selection_shown: shown(a.selected) }
         };
-        // (An item shows the first lines of its message: a view of four.)
-        draw(&mut a, 7);
-        a.move_by(2);
-        let wheel = |a: &mut Activity, lines: isize| (a.scroll, a.scrolled) = (a.scroll.saturating_add_signed(lines), true);
-        super::super::threads::wheel_through_tall(&mut a, |a| draw(a, 7), wheel);
-        // ↑ onto it (from the next one, its start off screen) and ↓ onto it (from the one above): it shows from its start.
+        act(&mut a, Act::Draw);
+        act(&mut a, Act::Key(2));
+        super::super::threads::wheel_through_tall(&mut a, &mut act);
+        // ↑/↓ onto it; its end on screen (3 lines on, the next one whole): a re-wrap, a message coming in above.
         a.selected = 2;
-        for (from, step) in [(1, -1), (-1, 1)] {
-            a.move_by(from);
-            draw(&mut a, 7);
-            a.move_by(step);
-            let seen = draw(&mut a, 7);
-            let first = seen.text.iter().position(|l| l.contains("tall 01"));
-            assert!(seen.tall_selected && first.is_some_and(|row| row <= 2), "{step}: from its first line\n{}", seen.text.join("\n"));
-        }
-        // Its end on screen, with the next one whole: a re-wrap (a resize) and a message coming in above leave the view.
-        wheel(&mut a, 3);
-        let before = draw(&mut a, 7);
-        assert!(before.tall_selected && before.text.iter().any(|l| l.trim() == "…"), "its end\n{}", before.text.join("\n"));
-        let after = draw(&mut a, 6);
-        assert_eq!((after.tall_selected, after.text.first()), (true, before.text.first()), "a re-wrap leaves the view\n{}", after.text.join("\n"));
-        let top = a.items.as_ref().unwrap()[0].message_key();
-        a.add_message(top.clone(), Some(Message { ts: top.1.clone(), user: Some("U2".into()), text: "one\ntwo\nthree".into(), ..Default::default() }));
-        let again = draw(&mut a, 6);
-        assert_eq!((again.tall_selected, &again.text), (true, &after.text), "a message above leaves the view");
+        super::super::threads::keys_and_changes_on_tall(&mut a, &mut act, "tall 01", 3, false);
     }
 }
