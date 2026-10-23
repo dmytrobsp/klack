@@ -114,7 +114,7 @@ before W starts; the rest of queue V comes after W.
    to it and toggles its mark** (user), like Space; Enter then signs in to the marked ones.
 6. Drawn inline in the terminal (crossterm raw mode, ratatui's inline viewport or plain crossterm — builder's call; no
    new dependency); when done the list is erased and only result lines stay:
-   `✓ Signed in to Acme Corp as Dmytro Dudnyk — profile default saved.` (one per workspace; a failure says why).
+   `✓ Signed in to Acme Corp as A — profile default saved.` (one per workspace; a failure says why).
 7. Reading Chrome's key: Linux Secret Service, macOS Keychain (macOS asks once). Windows Chrome encrypts its cookies so
    only Chrome can read them — Chrome isn't listed on Windows (Firefox, the window and the cookie are). A browser whose
    key can't be read (locked keyring, refused) is listed as a dim heading with the reason, not an error that stops
