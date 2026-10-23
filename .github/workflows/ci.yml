@@ -2,10 +2,13 @@
 # CONTRIBUTING.md describes (its tests cannot run there).
 name: CI
 
+# Not for a change of docs alone: the name check runs over the whole repo at the next push that changes anything else.
 on:
   push:
     branches: [master]
+    paths-ignore: ["**.md", "docs/**"]
   pull_request:
+    paths-ignore: ["**.md", "docs/**"]
 
 env:
   CARGO_TERM_COLOR: always
