@@ -237,7 +237,7 @@ mod tests {
 
     #[test]
     fn the_update_notice() {
-        let latest = crate::update::Latest { version: semver::Version::new(9, 9, 9), date: String::new(), notes: String::new(), asset: crate::update::Asset { url: String::new(), sha256: String::new() } };
+        let latest = crate::update::Latest { version: semver::Version::new(9, 9, 9), date: String::new(), asset: crate::update::Asset { url: String::new(), sha256: String::new() } };
         assert_eq!(update_notification(&latest, "0.10.0"), ("ttyak 9.9.9 is out".into(), "You have 0.10.0. See F6 → Updates.".into()));
     }
 

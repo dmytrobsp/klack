@@ -96,8 +96,8 @@ it was installed:
 
 - the install script: F6 → Updates → Update (it downloads the new version, checks it and puts it in place; start
   ttyak again), or run the one-liner again
-- `brew upgrade ttyak` · `scoop update ttyak` · `winget upgrade dmytrobsp.ttyak` · `choco upgrade ttyak` (winget
-  and Chocolatey review each new version: they can list it a few days after the release)
+- `brew upgrade dmytrobsp/ttyak/ttyak` · `scoop update ttyak` · `winget upgrade dmytrobsp.ttyak` ·
+  `choco upgrade ttyak` (winget and Chocolatey review each new version: they can list it a few days after the release)
 - `.deb`, `.rpm`: install the new release's package as above; Arch: `makepkg -si` with the new release's recipes zip
 - by hand: the new zip's `ttyak` over the old one
 
@@ -528,13 +528,14 @@ once, ever — a desktop notification (when they are on; on Linux a click opens 
 in the status line for that run — and the last one told is kept in `updates.json` in ttyak's data folder.
 F6 → Updates shows the version and how this ttyak was installed (the install script, Homebrew, Scoop,
 winget, Chocolatey, the Arch package, a .deb or .rpm package, or manual download for a copy downloaded by hand), turns
-the check on or off and sets how often it runs (`[updates] check`, `check_every_secs` in `settings.toml`)
-and how long the update screen's download waits for data (`download_timeout_secs`). Check now looks at
+the check on or off and sets how often it runs (`[updates] check`, `check_every_secs` in `settings.toml`),
+how long it waits for an answer (`check_timeout_secs`, 10 seconds) and how long the update screen's download waits
+for data (`download_timeout_secs`). Check now looks at
 once, due or not and with the check off too, and says what it found on its row — never with a desktop
 notification; a version it finds counts as told, so no notification or `⬆` comes for it later either, but
 whenever a check finds it again (the daily one in a later run too) the Update row is back. Hand-edited
-seconds below the least F6 offers count as it (an hour between checks, 10 s for the download, which waits a
-day at most). The page also shows what to run to update this install (Enter copies it), and while a
+seconds below the least F6 offers count as it (an hour between checks, 5 s for the check's answer, which waits
+10 minutes at most, 10 s for the download, which waits a day at most). The page also shows what to run to update this install (Enter copies it), and while a
 newer version is known an Update row that opens the update screen: a copy the install script put in a
 folder ttyak can write updates itself there (downloaded, checked against the release's SHA256s, put in
 place; ttyak never restarts by itself), any other says the command or the page to download from.

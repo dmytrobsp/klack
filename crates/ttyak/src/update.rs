@@ -23,14 +23,25 @@ pub const URL_ENV: &str = "TTYAK_UPDATE_URL";
 const LOOK_AGAIN_SECS: u64 = 3600;
 /// The least `check_every_secs` used (the shortest F6 offers); a hand-edited one below it counts as it.
 pub const MIN_CHECK_EVERY_SECS: u64 = 3600;
+/// The least and the most `check_timeout_secs` used.
+pub const MIN_CHECK_TIMEOUT_SECS: u64 = 5;
+pub const MAX_CHECK_TIMEOUT_SECS: u64 = 600;
 /// The least and the most `download_timeout_secs` used.
 pub const MIN_DOWNLOAD_TIMEOUT_SECS: u64 = 10;
 pub const MAX_DOWNLOAD_TIMEOUT_SECS: u64 = 86_400;
+/// More than `latest.json` ever is.
+const MAX_FEED_BYTES: u64 = 64 << 10;
 
-/// `[updates]` as used: hand-edited seconds brought within [`MIN_CHECK_EVERY_SECS`] and
+/// `[updates]` as used: hand-edited seconds brought within [`MIN_CHECK_EVERY_SECS`],
+/// [`MIN_CHECK_TIMEOUT_SECS`]–[`MAX_CHECK_TIMEOUT_SECS`] and
 /// [`MIN_DOWNLOAD_TIMEOUT_SECS`]–[`MAX_DOWNLOAD_TIMEOUT_SECS`].
 pub fn sane(u: crate::tui::settings::Updates) -> crate::tui::settings::Updates {
-    crate::tui::settings::Updates { check_every_secs: u.check_every_secs.max(MIN_CHECK_EVERY_SECS), download_timeout_secs: u.download_timeout_secs.clamp(MIN_DOWNLOAD_TIMEOUT_SECS, MAX_DOWNLOAD_TIMEOUT_SECS), ..u }
+    crate::tui::settings::Updates {
+        check_every_secs: u.check_every_secs.max(MIN_CHECK_EVERY_SECS),
+        check_timeout_secs: u.check_timeout_secs.clamp(MIN_CHECK_TIMEOUT_SECS, MAX_CHECK_TIMEOUT_SECS),
+        download_timeout_secs: u.download_timeout_secs.clamp(MIN_DOWNLOAD_TIMEOUT_SECS, MAX_DOWNLOAD_TIMEOUT_SECS),
+        ..u
+    }
 }
 
 /// `[updates]` from settings.toml as read now, [`sane`].
@@ -44,9 +55,25 @@ pub struct Latest {
     pub version: Version,
     /// `YYYY-MM-DD`.
     pub date: String,
-    /// The release notes' link.
-    pub notes: String,
     pub asset: Asset,
+}
+
+impl Latest {
+    /// The release's page (its notes and downloads): built from the version, never the feed's link.
+    pub fn page(&self) -> String {
+        let base = std::env::var(PAGES_URL_ENV).ok().filter(|u| !u.is_empty()).unwrap_or_else(|| PAGES_URL.to_string());
+        page_at(&base, &self.version)
+    }
+}
+
+/// The release pages' parent on GitHub: `<base>/v<version>` (what packaging/render.py writes as the feed's `notes`).
+pub const PAGES_URL: &str = "https://github.com/dmytrobsp/ttyak/releases/tag";
+/// Overrides [`PAGES_URL`] (a local server in tests), as [`DOWNLOAD_URL_ENV`] does the downloads'.
+pub const PAGES_URL_ENV: &str = "TTYAK_PAGES_URL";
+
+/// `version`'s page under the release pages' parent `base`.
+fn page_at(base: &str, version: &Version) -> String {
+    format!("{}/v{version}", base.trim_end_matches('/'))
 }
 
 /// This platform's archive.
@@ -58,11 +85,11 @@ pub struct Asset {
 
 /// The newest release described in `json`, with `platform`'s archive (an error when it has none).
 pub fn parse(json: &str, platform: &str) -> Result<Latest> {
+    // (Its `notes` link is not read: the release's page is built from the version.)
     #[derive(Deserialize)]
     struct Feed {
         version: String,
         date: String,
-        notes: String,
         assets: std::collections::HashMap<String, Asset>,
     }
     let mut feed: Feed = serde_json::from_str(json).context("latest.json")?;
@@ -70,7 +97,7 @@ pub fn parse(json: &str, platform: &str) -> Result<Latest> {
     let asset = feed.assets.remove(platform).with_context(|| format!("latest.json: no archive for {platform}"))?;
     // What is downloaded and checked is refused, never cleaned up.
     ensure!(!asset.url.chars().chain(asset.sha256.chars()).any(hidden), "latest.json: a control character or an invisible format character in the archive's address or SHA256");
-    Ok(Latest { version, date: printable(&feed.date), notes: printable(&feed.notes), asset })
+    Ok(Latest { version, date: printable(&feed.date), asset })
 }
 
 /// A character that is not shown as itself: a control (C0 with ESC, DEL, C1), a format character
@@ -95,8 +122,10 @@ pub fn newer(current: &Version, latest: &Latest) -> bool {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Found {
     pub latest: Latest,
-    /// Not notified before: the notification and the status line's pill.
+    /// Not notified before: the status line's pill for this run.
     pub notify: bool,
+    /// And the desktop notification: only once `updates.json` says so, so no later run notifies it again.
+    pub desktop: bool,
 }
 
 /// What a check asked for (F6 → Updates → Check now) found.
@@ -189,7 +218,7 @@ pub fn after_check(state: &State, now: u64, current: &Version, result: Result<La
     if notify {
         next.notified = Some(latest.version.to_string());
     }
-    (next, Some(Found { latest, notify }))
+    (next, Some(Found { latest, notify, desktop: notify }))
 }
 
 /// A check of `url` when one is due under `settings`, for `platform`: what [`after_check`] gives;
@@ -225,7 +254,7 @@ where
         (Some(f), None) => Checked::Out(f.latest.version.clone()),
         (None, None) => Checked::UpToDate,
     };
-    (next, found.map(|f| Found { notify: false, ..f }), checked)
+    (next, found.map(|f| Found { notify: false, desktop: false, ..f }), checked)
 }
 
 /// A client that sends ttyak's name and version as the User-Agent and nothing else (no cookies),
@@ -234,10 +263,11 @@ fn client(limits: impl Fn(slack_core::reqwest::ClientBuilder) -> slack_core::req
     slack_core::api::http_client(|| limits(slack_core::reqwest::Client::builder().user_agent(concat!("ttyak/", env!("CARGO_PKG_VERSION")))))
 }
 
-/// `latest.json` at `url`: a GET with ttyak's name and version as the User-Agent, nothing else.
+/// `latest.json` at `url` (at most [`MAX_FEED_BYTES`], within `check_timeout_secs`): a GET with
+/// ttyak's name and version as the User-Agent, nothing else.
 pub async fn fetch(url: &str) -> Result<String> {
-    let http = client(|b| b.timeout(Duration::from_secs(10)))?;
-    Ok(http.get(url).send().await?.error_for_status()?.text().await?)
+    let http = client(|b| b.timeout(Duration::from_secs(settings().check_timeout_secs)))?;
+    bounded_text(http.get(url), MAX_FEED_BYTES).await.context("latest.json")
 }
 
 /// How long until whether a check is due is looked at again.
@@ -288,8 +318,10 @@ where
             if let Err(e) = &saved {
                 tracing::debug!("update check: {}: {e:#}", path.display());
             }
-            if let Some(Found { latest, notify }) = newer {
-                if reports.send(Report::Found(Found { latest, notify: notify && saved.is_ok() })).is_err() {
+            if let Some(found) = newer {
+                // Not written: no desktop notice (a later run would notify it again); the pill for
+                // this run all the same (`kept` keeps a second one from this run).
+                if reports.send(Report::Found(Found { desktop: found.desktop && saved.is_ok(), ..found })).is_err() {
                     return;
                 }
             }
@@ -410,6 +442,11 @@ fn create_fresh(path: &Path) -> std::io::Result<std::fs::File> {
     options.open(path)
 }
 
+/// `path` as people write it (without Windows' `\\?\`), for what a self-update says.
+fn shown(path: &Path) -> String {
+    crate::uninstall::plain(path).display().to_string()
+}
+
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -504,7 +541,7 @@ async fn self_update_from(latest: &Latest, install: &Install, progress: &Progres
     let sha256 = {
         use sha2::Digest;
         use std::io::Write;
-        let mut file = create_fresh(&download).with_context(|| format!("could not write in {}", dir.display()))?;
+        let mut file = create_fresh(&download).with_context(|| format!("could not write in {}", shown(&dir)))?;
         let mut response = http.get(&asset_url).send().await.and_then(|r| r.error_for_status()).with_context(|| format!("could not download {name}"))?;
         let too_big = || format!("{name} is too big to be ttyak's archive (more than {} MB)", release.max_zip >> 20);
         ensure!(response.content_length().is_none_or(|n| n <= release.max_zip), too_big());
@@ -518,10 +555,10 @@ async fn self_update_from(latest: &Latest, install: &Install, progress: &Progres
             got += chunk.len() as u64;
             ensure!(got <= release.max_zip, too_big());
             hasher.update(&chunk);
-            file.write_all(&chunk).with_context(|| format!("could not write {}", download.display()))?;
+            file.write_all(&chunk).with_context(|| format!("could not write {}", shown(&download)))?;
             progress.got.fetch_add(chunk.len() as u64, Ordering::Relaxed);
         }
-        file.sync_all().with_context(|| format!("could not write {}", download.display()))?;
+        file.sync_all().with_context(|| format!("could not write {}", shown(&download)))?;
         hex(&hasher.finalize())
     };
     ensure!(sha256.eq_ignore_ascii_case(latest.asset.sha256.trim()), "the download does not match the SHA256 in latest.json");
@@ -557,11 +594,11 @@ fn install_from(zip: &Path, exe: &Path, version: &str, verifier: &dyn Verifier) 
     let staged_record = staged_record(dir);
     if let Some(r) = &new_record {
         use std::io::Write;
-        let mut file = create_fresh(&staged_record).with_context(|| format!("could not write {}", staged_record.display()))?;
-        file.write_all(format!("{}\n", serde_json::to_string(r)?).as_bytes()).and_then(|()| file.sync_all()).with_context(|| format!("could not write {}", staged_record.display()))?;
+        let mut file = create_fresh(&staged_record).with_context(|| format!("could not write {}", shown(&staged_record)))?;
+        file.write_all(format!("{}\n", serde_json::to_string(r)?).as_bytes()).and_then(|()| file.sync_all()).with_context(|| format!("could not write {}", shown(&staged_record)))?;
         // (The old file's mode kept.)
         if let Ok(old) = std::fs::metadata(&record) {
-            std::fs::set_permissions(&staged_record, old.permissions()).with_context(|| format!("could not write {}", staged_record.display()))?;
+            std::fs::set_permissions(&staged_record, old.permissions()).with_context(|| format!("could not write {}", shown(&staged_record)))?;
         }
     }
     swap(&staged, exe)?;
@@ -577,18 +614,18 @@ fn install_from(zip: &Path, exe: &Path, version: &str, verifier: &dyn Verifier) 
 /// name can lead out of the folder) written to `to`, executable.
 fn unpack(zip: &Path, to: &Path) -> Result<()> {
     use std::io::Read;
-    let file = std::fs::File::open(zip).with_context(|| format!("could not read {}", zip.display()))?;
+    let file = std::fs::File::open(zip).with_context(|| format!("could not read {}", shown(zip)))?;
     let mut archive = zip::ZipArchive::new(file).context("the download is not a zip archive")?;
     let index = (0..archive.len()).find(|&i| archive.by_index(i).is_ok_and(|e| e.is_file() && e.name().is_ok_and(|n| n == EXE))).with_context(|| format!("the archive has no {EXE}"))?;
     let mut entry = archive.by_index(index).with_context(|| format!("could not unpack {EXE}"))?;
-    let mut out = create_fresh(to).with_context(|| format!("could not write {}", to.display()))?;
+    let mut out = create_fresh(to).with_context(|| format!("could not write {}", shown(to)))?;
     let copied = std::io::copy(&mut (&mut entry).take(MAX_EXE_BYTES + 1), &mut out).with_context(|| format!("could not unpack {EXE}"))?;
     ensure!(copied <= MAX_EXE_BYTES, "the archive's {EXE} is too big to be ttyak");
-    out.sync_all().with_context(|| format!("could not write {}", to.display()))?;
+    out.sync_all().with_context(|| format!("could not write {}", shown(to)))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(to, std::fs::Permissions::from_mode(0o755)).with_context(|| format!("could not make {} executable", to.display()))?;
+        std::fs::set_permissions(to, std::fs::Permissions::from_mode(0o755)).with_context(|| format!("could not make {} executable", shown(to)))?;
     }
     Ok(())
 }
@@ -703,11 +740,11 @@ fn swap(staged: &Path, exe: &Path) -> Result<()> {
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
         aside = dir.join(format!("ttyak.old-{:08x}.exe", nanos ^ std::process::id()));
     }
-    std::fs::rename(exe, &aside).with_context(|| format!("could not move {} aside; the old one stays", crate::uninstall::plain(exe).display()))?;
+    std::fs::rename(exe, &aside).with_context(|| format!("could not move {} aside; the old one stays", shown(exe)))?;
     if let Err(e) = std::fs::rename(staged, exe) {
         return Err(match std::fs::rename(&aside, exe) {
             Ok(()) => anyhow::Error::new(e).context("could not put the new ttyak.exe in place; the old one stays"),
-            Err(_) => anyhow::Error::new(e).context(format!("could not put the new ttyak.exe in place; the old one is now {}", crate::uninstall::plain(&aside).display())),
+            Err(_) => anyhow::Error::new(e).context(format!("could not put the new ttyak.exe in place; the old one is now {}", shown(&aside))),
         });
     }
     // Gone at once unless it is running (this ttyak): then at the next start.
@@ -743,7 +780,7 @@ mod tests {
                   "aarch64-macos":{"url":"https://example.invalid/mac.zip","sha256":"cd34"}}}"#;
 
     fn latest(v: &str) -> Latest {
-        Latest { version: Version::parse(v).unwrap(), date: "2026-11-01".into(), notes: String::new(), asset: Asset { url: "u".into(), sha256: "s".into() } }
+        Latest { version: Version::parse(v).unwrap(), date: "2026-11-01".into(), asset: Asset { url: "u".into(), sha256: "s".into() } }
     }
 
     /// The version a check's result notifies, if any.
@@ -759,7 +796,8 @@ mod tests {
     fn parses_latest() {
         let l = parse(FEED, "x86_64-linux").unwrap();
         assert_eq!(l.version, v("0.10.2"));
-        assert_eq!((l.date.as_str(), l.notes.as_str()), ("2026-11-01", "https://github.com/dmytrobsp/ttyak/releases/tag/v0.10.2"));
+        assert_eq!(l.date, "2026-11-01");
+        assert_eq!(page_at(PAGES_URL, &l.version), "https://github.com/dmytrobsp/ttyak/releases/tag/v0.10.2");
         assert_eq!(l.asset, Asset { url: "https://github.com/dmytrobsp/ttyak/releases/download/v0.10.2/ttyak-0.10.2-x86_64-linux.zip".into(), sha256: "ab12".into() });
         assert_eq!(parse(FEED, "aarch64-macos").unwrap().asset.sha256, "cd34");
     }
@@ -771,7 +809,10 @@ mod tests {
         let rendered = include_str!("../testdata/latest.json");
         for platform in ["x86_64-linux", "aarch64-linux", "x86_64-macos", "aarch64-macos", "x86_64-windows"] {
             let l = parse(rendered, platform).unwrap();
-            assert_eq!((&l.version, l.date.as_str(), l.notes.as_str()), (&v("0.11.0"), "2026-11-01", "https://github.com/dmytrobsp/ttyak/releases/tag/v0.11.0"));
+            assert_eq!((&l.version, l.date.as_str()), (&v("0.11.0"), "2026-11-01"));
+            // The page ttyak builds from the version is the one render.py names.
+            let notes = serde_json::from_str::<serde_json::Value>(rendered).unwrap()["notes"].as_str().unwrap().to_string();
+            assert_eq!(page_at(PAGES_URL, &l.version), notes);
             let release = Release { base: DOWNLOAD_URL.into(), platform, max_zip: MAX_ZIP_BYTES, max_sums: MAX_SUMS_BYTES, verifier: &NoSignatures };
             assert_eq!(l.asset.url, release.urls(&l.version).0, "{platform}");
             assert!(l.asset.sha256.len() == 64 && l.asset.sha256.bytes().all(|b| b.is_ascii_hexdigit()), "{platform}");
@@ -858,7 +899,7 @@ mod tests {
         assert_eq!(serde_json::from_str::<serde_json::Value>(&text).unwrap(), serde_json::json!({"last_check": 50, "notified": "0.10.1"}));
         let (again, shown) = after_check(&load_state(&path), 90_000, &v("0.10.0"), Ok(latest("0.10.1")));
         assert_eq!((again.last_check, again.notified.as_deref()), (90_000, Some("0.10.1")));
-        assert_eq!(shown, Some(Found { latest: latest("0.10.1"), notify: false }), "the next run knows of it and says nothing");
+        assert_eq!(shown, Some(Found { latest: latest("0.10.1"), notify: false, desktop: false }), "the next run knows of it and says nothing");
         std::fs::write(&path, "not json").unwrap();
         assert_eq!(load_state(&path), State::default(), "a broken file starts afresh");
         std::fs::remove_dir_all(&dir.0).unwrap();
@@ -876,7 +917,7 @@ mod tests {
         let (next, shown) = after_check(&old, 700, &v("0.10.2"), Ok(latest("0.10.2")));
         assert_eq!((next.notified.as_deref(), shown), (Some("0.10.1"), None), "not newer than this ttyak");
         let (next, shown) = after_check(&old, 800, &v("0.10.0"), Ok(latest("0.10.1")));
-        assert_eq!((next.notified.as_deref(), shown), (Some("0.10.1"), Some(Found { latest: latest("0.10.1"), notify: false })), "notified before: known, not notified again");
+        assert_eq!((next.notified.as_deref(), shown), (Some("0.10.1"), Some(Found { latest: latest("0.10.1"), notify: false, desktop: false })), "notified before: known, not notified again");
     }
 
     #[tokio::test]
@@ -936,7 +977,7 @@ mod tests {
             "assets":{"x86_64-linux":{"url":"https://x.invalid/a.zip","sha256":"ab12"}}}"#;
         let l = parse(feed, "x86_64-linux").unwrap();
         assert_eq!(l.date, "2026-11-01[2J");
-        assert_eq!(l.notes, "https://x.invalid/]8;;https://evil.invalidnotes31m");
+        assert!(!format!("{l:?}").contains("evil"), "the feed's link is not kept: {l:?}");
         assert_eq!(printable("a\u{1b}b\u{7f}c\u{85}d\u{9f}e\tf\u{202a}\u{202d}\u{2067}\u{200e}\u{ad} ü 🎉"), "abcdef ü 🎉", "C0, DEL, C1 and format characters go; the rest stays");
         // In what is downloaded and checked: refused, never cleaned up.
         for (url, sha) in [("https://x.invalid/a.zip\\u0000", "ab12"), ("https://x.invalid/a.zip", "ab12\\r\\n"), ("https://x.invalid/\\u001b[2Ja.zip", "ab12"), ("https://x.invalid/a.zip", "ab\\u202e12")] {
@@ -948,22 +989,23 @@ mod tests {
 
     #[test]
     fn hand_edited_seconds_are_floored() {
-        let read = |every, timeout| sane(Updates { check: true, check_every_secs: every, download_timeout_secs: timeout });
-        assert_eq!((read(0, 0).check_every_secs, read(0, 0).download_timeout_secs), (MIN_CHECK_EVERY_SECS, MIN_DOWNLOAD_TIMEOUT_SECS));
-        assert_eq!((MIN_CHECK_EVERY_SECS, MIN_DOWNLOAD_TIMEOUT_SECS), (3600, 10), "the shortest F6 offers");
-        let max = read(u64::MAX, u64::MAX);
-        assert_eq!((max.check_every_secs, max.download_timeout_secs), (u64::MAX, MAX_DOWNLOAD_TIMEOUT_SECS));
-        assert_eq!(read(86_400, 30), Updates::default(), "the defaults as they are");
+        let read = |every, check, download| sane(Updates { check: true, check_every_secs: every, check_timeout_secs: check, download_timeout_secs: download });
+        let least = read(0, 0, 0);
+        assert_eq!((least.check_every_secs, least.check_timeout_secs, least.download_timeout_secs), (MIN_CHECK_EVERY_SECS, MIN_CHECK_TIMEOUT_SECS, MIN_DOWNLOAD_TIMEOUT_SECS));
+        assert_eq!((MIN_CHECK_EVERY_SECS, MIN_CHECK_TIMEOUT_SECS, MIN_DOWNLOAD_TIMEOUT_SECS), (3600, 5, 10), "the shortest F6 offers");
+        let max = read(u64::MAX, u64::MAX, u64::MAX);
+        assert_eq!((max.check_every_secs, max.check_timeout_secs, max.download_timeout_secs), (u64::MAX, MAX_CHECK_TIMEOUT_SECS, MAX_DOWNLOAD_TIMEOUT_SECS));
+        assert_eq!(read(86_400, 10, 30), Updates::default(), "the defaults as they are");
         let s = State { last_check: 1_000, notified: None };
         assert_eq!(wait(&max, &s, 1_000), Duration::from_secs(3_600), "no overflow: at most an hour");
-        assert_eq!(wait(&read(0, 0), &s, 1_000), Duration::from_secs(3_600), "0: an hour, never a tight loop");
+        assert_eq!(wait(&least, &s, 1_000), Duration::from_secs(3_600), "0: an hour, never a tight loop");
         assert!(!due(&s, 2_000, u64::MAX) && due(&s, 999, u64::MAX));
     }
 
     #[tokio::test]
     async fn queued_check_nows_are_answered_by_one_check() {
-        let dir = std::env::temp_dir().join(format!("ttyak-test-asks-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        // (Removed even when an assertion fails.)
+        let dir = Temp::new("asks");
         let (reports_tx, mut reports) = tokio::sync::mpsc::unbounded_channel();
         let (asks_tx, asks) = tokio::sync::mpsc::unbounded_channel();
         let fetched = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -983,7 +1025,7 @@ mod tests {
             }
         };
         let off = || Updates { check: false, ..Default::default() };
-        let task = tokio::spawn(run(dir.join("updates.json"), Some("x86_64-linux"), "http://127.0.0.1:9/latest.json".into(), v("0.10.0"), reports_tx, asks, fetch, off));
+        let task = tokio::spawn(run(dir.0.join("updates.json"), Some("x86_64-linux"), "http://127.0.0.1:9/latest.json".into(), v("0.10.0"), reports_tx, asks, fetch, off));
         async fn next(r: &mut tokio::sync::mpsc::UnboundedReceiver<Report>) -> Result<Option<Report>, tokio::time::error::Elapsed> {
             tokio::time::timeout(Duration::from_secs(5), r.recv()).await
         }
@@ -996,7 +1038,6 @@ mod tests {
         assert!(matches!(next(&mut reports).await, Ok(Some(Report::Found(_)))));
         drop(asks_tx);
         tokio::time::timeout(Duration::from_secs(5), task).await.unwrap().unwrap();
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
@@ -1020,6 +1061,52 @@ mod tests {
         let mut headers: Vec<&str> = request.lines().skip(1).filter(|l| !l.is_empty()).map(|l| l.split(':').next().unwrap()).collect();
         headers.sort();
         assert_eq!(headers, ["accept", "host", "user-agent"], "no cookies, nothing about you: {request}");
+    }
+
+    #[tokio::test]
+    async fn the_feed_is_read_up_to_64_kb() {
+        let at_most = vec![b' '; 64 << 10];
+        let more = vec![b' '; (64 << 10) + 1];
+        let (base, _) = serve(vec![("/fits".into(), at_most.clone()), ("/big".into(), more.clone()), ("/unsized".into(), more)], Some(("/unsized".into(), Quirk::NoLength))).await;
+        assert_eq!(fetch(&format!("{base}/fits")).await.unwrap().len(), at_most.len());
+        for path in ["/big", "/unsized"] {
+            let e = fetch(&format!("{base}{path}")).await.unwrap_err();
+            assert!(format!("{e:#}").contains("too big"), "{path}: {e:#}");
+        }
+    }
+
+    /// Windows' `\\?\` never shows in what a self-update says.
+    #[test]
+    fn paths_in_errors_are_plain() {
+        let temp = Temp::new("plain");
+        let e = unpack(Path::new(r"\\?\C:\ttyak-nowhere\update.zip"), &temp.0.join("bin/staged")).unwrap_err();
+        let said = format!("{e:#}");
+        assert!(said.contains(r"C:\ttyak-nowhere\update.zip") && !said.contains(r"\\?\"), "{said}");
+    }
+
+    #[tokio::test]
+    async fn a_failed_save_drops_only_the_desktop_notice() {
+        let temp = Temp::new("unsaved");
+        // updates.json cannot be written: its folder would be a file.
+        std::fs::write(temp.0.join("file"), b"").unwrap();
+        let (reports_tx, mut reports) = tokio::sync::mpsc::unbounded_channel();
+        let (asks_tx, asks) = tokio::sync::mpsc::unbounded_channel();
+        let task = tokio::spawn(run(temp.0.join("file/updates.json"), Some("x86_64-linux"), "http://127.0.0.1:9/latest.json".into(), v("0.10.0"), reports_tx, asks, |_url: String| async { Ok(FEED.to_string()) }, Updates::default));
+        let found = tokio::time::timeout(Duration::from_secs(5), reports.recv()).await.unwrap();
+        let Some(Report::Found(found)) = found else { panic!("{found:?}") };
+        assert_eq!(found.latest.version, v("0.10.2"));
+        assert!(found.notify, "the status line's pill for this run");
+        assert!(!found.desktop, "no desktop notice: a later run would not know of it");
+        drop(asks_tx);
+        tokio::time::timeout(Duration::from_secs(5), task).await.unwrap().unwrap();
+        // Written: both.
+        let (reports_tx, mut reports) = tokio::sync::mpsc::unbounded_channel();
+        let (asks_tx, asks) = tokio::sync::mpsc::unbounded_channel();
+        let task = tokio::spawn(run(temp.0.join("updates.json"), Some("x86_64-linux"), "http://127.0.0.1:9/latest.json".into(), v("0.10.0"), reports_tx, asks, |_url: String| async { Ok(FEED.to_string()) }, Updates::default));
+        let found = tokio::time::timeout(Duration::from_secs(5), reports.recv()).await.unwrap();
+        assert!(matches!(found, Some(Report::Found(Found { notify: true, desktop: true, .. }))), "{found:?}");
+        drop(asks_tx);
+        tokio::time::timeout(Duration::from_secs(5), task).await.unwrap().unwrap();
     }
 
     #[test]
@@ -1186,7 +1273,7 @@ mod tests {
         let mut files = vec![(format!("/v9.9.9/{ASSET}"), zip)];
         files.extend(sums.map(|s| ("/v9.9.9/SHA256SUMS".to_string(), s.into_bytes())));
         let (base, asked) = serve(files, quirk.map(|q| (format!("/v9.9.9/{ASSET}"), q))).await;
-        let latest = Latest { version: v("9.9.9"), date: "2026-11-01".into(), notes: format!("{base}/notes"), asset: Asset { url: format!("{base}/v9.9.9/{ASSET}"), sha256: sha } };
+        let latest = Latest { version: v("9.9.9"), date: "2026-11-01".into(), asset: Asset { url: format!("{base}/v9.9.9/{ASSET}"), sha256: sha } };
         (Install { method: Method::Script, exe, writable: true }, latest, Fixture { base, asked })
     }
 

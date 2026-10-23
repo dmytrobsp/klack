@@ -158,6 +158,11 @@ const FISH_FILE: &str = "ttyak.fish";
 /// Carries out `plan`'s removals and PATH edits (not the purge), every one even when another fails. Returns what
 /// happened to each, said for the user: on an error the words that go before it.
 pub fn run(plan: &Plan) -> Vec<(String, io::Result<()>)> {
+    run_in(plan, cfg!(windows), spawn_cleanup)
+}
+
+/// `run`, for Windows or not, with `spawn` starting the cleanup of what a running ttyak holds.
+fn run_in(plan: &Plan, windows: bool, spawn: impl Fn(&str) -> io::Result<()>) -> Vec<(String, io::Result<()>)> {
     let mut done = Vec::new();
     // Files the running ttyak holds (Windows): deleted once it has quit, with the folders they are in.
     let mut later: Vec<PathBuf> = Vec::new();
@@ -179,7 +184,9 @@ pub fn run(plan: &Plan) -> Vec<(String, io::Result<()>)> {
         }
         match std::fs::remove_file(path) {
             Ok(()) => done.push((format!("deleted {shown}"), Ok(()))),
-            Err(e) if cfg!(windows) && path.file_name().is_some_and(|n| n == "ttyak.exe") => {
+            // An old copy a self-update left that a ttyak still runs: deleted once it has quit.
+            Err(_) if windows && path.file_name().and_then(|n| n.to_str()).is_some_and(is_old_copy) => later.push(path.clone()),
+            Err(e) if windows && path.file_name().is_some_and(|n| n == "ttyak.exe") => {
                 // The running program: Windows lets it be renamed, not deleted.
                 let aside = path.with_file_name(format!("ttyak.old-{:08x}.exe", std::process::id() ^ std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0)));
                 match std::fs::rename(path, &aside) {
@@ -198,7 +205,7 @@ pub fn run(plan: &Plan) -> Vec<(String, io::Result<()>)> {
     }
     if !later.is_empty() {
         let shown = later.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ");
-        let result = cleanup_line(&later, &later_folders).ok_or_else(|| io::Error::other("its name has a \" or %: delete it yourself")).and_then(|line| spawn_cleanup(&line));
+        let result = cleanup_line(&later, &later_folders).ok_or_else(|| io::Error::other("its name has a \" or %: delete it yourself")).and_then(|line| spawn(&line));
         done.push(outcome(
             format!("{shown} goes once ttyak has quit (within 2 minutes; if a ttyak is still running then, delete {shown} yourself)"),
             format!("could not delete {shown}"),
@@ -738,6 +745,44 @@ mod tests {
         assert!(home.join(".bash_profile").is_symlink());
         assert_eq!(read(&dotfiles.join("elvish/rc.elv")), format!("{}\n", marked("set paths = [~/.local/bin $@paths]")));
         assert_eq!(read(&home.join(".xonshrc")), "$PATH.insert(0, '~/bin')\n");
+    }
+
+    /// Windows: an old copy a self-update left that a ttyak still runs goes once it has quit, as ttyak.exe does. (Here
+    /// a folder that cannot be written stands in for the copy in use.)
+    #[cfg(unix)]
+    #[test]
+    fn an_old_copy_in_use_goes_later() {
+        use std::os::unix::fs::PermissionsExt;
+        // SAFETY: getuid has no preconditions and cannot fail.
+        if unsafe { libc::getuid() } == 0 {
+            return;
+        }
+        let t = Temp::new("old-in-use");
+        let dir = t.0.join("ttyak");
+        let old = dir.join("ttyak.old.exe");
+        write(&old, "running");
+        /// Writable again at the end, so the folder can go.
+        struct Writable<'a>(&'a Path);
+        impl Drop for Writable<'_> {
+            fn drop(&mut self) {
+                let _ = std::fs::set_permissions(self.0, std::fs::Permissions::from_mode(0o700));
+            }
+        }
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let _writable = Writable(&dir);
+        let plan = Plan { remove: vec![old.clone(), dir.clone()], ..Plan::default() };
+        let line = std::cell::RefCell::new(String::new());
+        let done = run_in(&plan, true, |l| {
+            *line.borrow_mut() = l.to_string();
+            Ok(())
+        });
+        assert_eq!(done.len(), 1, "{done:?}");
+        assert!(done[0].0.starts_with(&format!("{} goes once ttyak has quit", old.display())) && done[0].1.is_ok(), "{done:?}");
+        let line = line.into_inner();
+        assert!(line.contains(&format!("del /f /q \"{}\"", old.display())) && line.contains(&format!("rmdir \"{}\"", dir.display())), "{line}");
+        // Elsewhere: said as it is.
+        let done = run_in(&plan, false, |_| panic!("no cleanup"));
+        assert!(done[0].0 == format!("could not delete {}", old.display()) && done[0].1.is_err(), "{done:?}");
     }
 
     #[test]

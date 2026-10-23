@@ -76,7 +76,8 @@ impl Method {
     /// command (a .deb, an .rpm, the Arch package: rebuilt from the release's PKGBUILD, ttyak-bin is not in the AUR yet).
     pub fn update_command(self) -> Option<&'static str> {
         match self {
-            Method::Homebrew => Some("brew upgrade ttyak"),
+            // The full name: it works whether or not Homebrew trusts the tap.
+            Method::Homebrew => Some("brew upgrade dmytrobsp/ttyak/ttyak"),
             Method::Scoop => Some("scoop update ttyak"),
             Method::Winget => Some(concat!("winget upgrade ", winget_id!())),
             Method::Chocolatey => Some("choco upgrade ttyak"),
@@ -437,6 +438,15 @@ mod tests {
         assert_eq!(Method::Winget.uninstall_command(), Some(format!("winget uninstall {WINGET_ID}").as_str()));
         assert_eq!((Method::Aur.update_command(), Method::Deb.update_command()), (None, None), "the Arch package is rebuilt from the release's PKGBUILD");
         assert_eq!((Method::Script.uninstall_command(), Method::Rpm.uninstall_command()), (None, Some("sudo dnf remove ttyak")));
+        // The full name: it works whether or not Homebrew trusts the tap.
+        assert_eq!(Method::Homebrew.update_command(), Some("brew upgrade dmytrobsp/ttyak/ttyak"));
+        // The README says the same.
+        let readme = include_str!("../../../README.md");
+        for m in Method::ALL {
+            for command in [m.update_command(), m.uninstall_command()].into_iter().flatten() {
+                assert!(readme.contains(&format!("`{command}`")), "{m:?}: {command}");
+            }
+        }
     }
 
     #[test]

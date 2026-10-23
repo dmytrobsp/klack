@@ -104,6 +104,8 @@ pub enum Field {
     UpdateCheck,
     /// Updates: how often it checks at most.
     UpdateEvery,
+    /// Updates: the check gives up after this long without an answer.
+    UpdateCheckTimeout,
     /// Updates: the update screen's download gives up after this long without data.
     UpdateTimeout,
     /// Updates: check at once.
@@ -132,6 +134,8 @@ const HIDE_INACTIVE: &[u32] = &[0, 1, 7, 14, 30, 60, 90];
 
 /// How often the update check may run, in seconds.
 const UPDATE_EVERY: &[u64] = &[3600, 21_600, 43_200, 86_400, 259_200, 604_800];
+/// Seconds without an answer before the update check gives up.
+const CHECK_TIMEOUTS: &[u64] = &[5, 10, 15, 30, 60, 120];
 /// Seconds without data before the update screen's download gives up.
 const DOWNLOAD_TIMEOUTS: &[u64] = &[10, 15, 30, 60, 120, 300];
 
@@ -153,7 +157,7 @@ pub const CATEGORIES: &[(&str, &[Field])] = &[
     ("Audio & video", &[Field::Input, Field::Output, Field::HuddleVolume, Field::SoundVolume, Field::MicGain, Field::SpeakingThreshold, Field::NoiseSuppression, Field::EchoCancellation, Field::Camera]),
     ("Huddles", &[Field::JoinSound, Field::SomeoneJoined, Field::SomeoneLeft, Field::RingSound, Field::RingTimeout, Field::AutoDecline, Field::AloneSound, Field::AloneSecs]),
     // The Update row only while a newer version is known (see `Prefs::fields`).
-    ("Updates", &[Field::UpdateVersion, Field::UpdateCheck, Field::UpdateEvery, Field::UpdateTimeout, Field::UpdateCheckNow, Field::UpdateCommand, Field::UpdateOpen]),
+    ("Updates", &[Field::UpdateVersion, Field::UpdateCheck, Field::UpdateEvery, Field::UpdateCheckTimeout, Field::UpdateTimeout, Field::UpdateCheckNow, Field::UpdateCommand, Field::UpdateOpen]),
 ];
 
 /// The Keys category's settings above the bindings.
@@ -253,6 +257,7 @@ impl Field {
             Field::UpdateVersion => "Version",
             Field::UpdateCheck => "Check for updates",
             Field::UpdateEvery => "Check at most every",
+            Field::UpdateCheckTimeout => "Check timeout",
             Field::UpdateTimeout => "Download timeout",
             Field::UpdateCheckNow => "Check now",
             Field::UpdateCommand => "To update it",
@@ -391,14 +396,18 @@ impl Field {
             Field::UpdateEvery => {
                 let (n, used) = (s.updates.check_every_secs, crate::update::sane(s.updates.clone()).check_every_secs);
                 match in_words(n) {
-                    _ if n != used => format!("{n} s (taken as {used} s)"),
-                    Some(words) => format!("{n} s ({words})"),
-                    None => format!("{n} s"),
+                    _ if n != used => seconds(TAKEN_AS, n, used),
+                    Some(words) => seconds(SECS_IN_WORDS, n, 0).replace("{words}", &words),
+                    None => seconds(SECS, n, 0),
                 }
             }
+            Field::UpdateCheckTimeout => match (s.updates.check_timeout_secs, crate::update::sane(s.updates.clone()).check_timeout_secs) {
+                (n, used) if n != used => seconds(NO_ANSWER_TAKEN_AS, n, used),
+                (n, _) => seconds(NO_ANSWER, n, 0),
+            },
             Field::UpdateTimeout => match (s.updates.download_timeout_secs, crate::update::sane(s.updates.clone()).download_timeout_secs) {
-                (n, used) if n != used => format!("{n} s without data (taken as {used} s)"),
-                (n, _) => format!("{n} s without data"),
+                (n, used) if n != used => seconds(NO_DATA_TAKEN_AS, n, used),
+                (n, _) => seconds(NO_DATA, n, 0),
             },
             // Drawn from the page (see `Prefs::update_value`).
             Field::UpdateVersion | Field::UpdateCheckNow | Field::UpdateCommand | Field::UpdateOpen => String::new(),
@@ -419,6 +428,7 @@ impl Field {
             Field::ThreadRead => s.threads.read_after_secs = step(THREAD_READ, s.threads.read_after_secs, up, wrap),
             Field::HideInactive => s.appearance.hide_inactive_days = step(HIDE_INACTIVE, s.appearance.hide_inactive_days, up, wrap),
             Field::UpdateEvery => s.updates.check_every_secs = step(UPDATE_EVERY, s.updates.check_every_secs, up, wrap),
+            Field::UpdateCheckTimeout => s.updates.check_timeout_secs = step(CHECK_TIMEOUTS, s.updates.check_timeout_secs, up, wrap),
             Field::UpdateTimeout => s.updates.download_timeout_secs = step(DOWNLOAD_TIMEOUTS, s.updates.download_timeout_secs, up, wrap),
             Field::MicGain => a.mic_gain = step(GAINS, a.mic_gain, up, wrap),
             Field::SpeakingThreshold => a.speaking_threshold_db = step(THRESHOLDS, a.speaking_threshold_db, up, wrap),
@@ -530,7 +540,7 @@ impl Field {
                 self.adjust(s, true, true);
             }
             Field::UpdateCheck => s.updates.check ^= true,
-            Field::UpdateEvery | Field::UpdateTimeout => {
+            Field::UpdateEvery | Field::UpdateCheckTimeout | Field::UpdateTimeout => {
                 self.adjust(s, true, true);
             }
             // Not settings: see `Prefs::update_action`.
@@ -541,15 +551,35 @@ impl Field {
 
 /// `secs` in days, hours or minutes when it is a whole number of them.
 fn in_words(secs: u64) -> Option<String> {
+    use super::i18n::tr;
+    let n = |words: &str, n: u64| tr(words).replace("{n}", &n.to_string());
     match secs {
         0 => None,
-        86_400 => Some("1 day".into()),
-        s if s % 86_400 == 0 => Some(format!("{} days", s / 86_400)),
-        s if s % 3600 == 0 => Some(format!("{} h", s / 3600)),
-        s if s % 60 == 0 => Some(format!("{} min", s / 60)),
+        86_400 => Some(tr(ONE_DAY).into_owned()),
+        s if s % 86_400 == 0 => Some(n(DAYS, s / 86_400)),
+        s if s % 3600 == 0 => Some(n(HOURS, s / 3600)),
+        s if s % 60 == 0 => Some(n(MINUTES, s / 60)),
         _ => None,
     }
 }
+
+/// `words` with `{n}` and `{used}` (a number of seconds each), in the current language.
+fn seconds(words: &str, n: u64, used: u64) -> String {
+    super::i18n::tr(words).replace("{n}", &n.to_string()).replace("{used}", &used.to_string())
+}
+
+/// F6 → Updates' seconds.
+const ONE_DAY: &str = "1 day";
+const DAYS: &str = "{n} days";
+const HOURS: &str = "{n} h";
+const MINUTES: &str = "{n} min";
+const SECS: &str = "{n} s";
+const SECS_IN_WORDS: &str = "{n} s ({words})";
+const TAKEN_AS: &str = "{n} s (taken as {used} s)";
+const NO_ANSWER: &str = "{n} s without an answer";
+const NO_ANSWER_TAKEN_AS: &str = "{n} s without an answer (taken as {used} s)";
+const NO_DATA: &str = "{n} s without data";
+const NO_DATA_TAKEN_AS: &str = "{n} s without data (taken as {used} s)";
 
 /// F6 → Updates' words beyond the labels.
 const VERSION_ROW: &str = "{version} · {how}";
@@ -578,7 +608,7 @@ const VERSION_ONLY: &str = "this is ttyak's version: nothing to change here";
 const NOTHING_TO_RUN_BELOW: &str = "nothing to run: use Update below";
 const NOTHING_TO_RUN: &str = "nothing to run: ttyak updates itself once a new version is out";
 const UNDER_WAY: &str = "a check is under way";
-const UPDATE_WORDS: &[&str] = &[VERSION_ROW, BY_SCRIPT, BY_HOMEBREW, BY_SCOOP, BY_WINGET, BY_CHOCOLATEY, BY_PACMAN, BY_DEB, BY_RPM, BY_HAND, UPDATE_BELOW, UPDATE_ITSELF, CHECK_IDLE, CHECKING, UP_TO_DATE, IS_OUT, NOT_CHECKED, NOT_RUNNING, OPEN_UPDATE, VERSION_ONLY, NOTHING_TO_RUN_BELOW, NOTHING_TO_RUN, UNDER_WAY];
+const UPDATE_WORDS: &[&str] = &[ONE_DAY, DAYS, HOURS, MINUTES, SECS, SECS_IN_WORDS, TAKEN_AS, NO_ANSWER, NO_ANSWER_TAKEN_AS, NO_DATA, NO_DATA_TAKEN_AS, VERSION_ROW, BY_SCRIPT, BY_HOMEBREW, BY_SCOOP, BY_WINGET, BY_CHOCOLATEY, BY_PACMAN, BY_DEB, BY_RPM, BY_HAND, UPDATE_BELOW, UPDATE_ITSELF, CHECK_IDLE, CHECKING, UP_TO_DATE, IS_OUT, NOT_CHECKED, NOT_RUNNING, OPEN_UPDATE, VERSION_ONLY, NOTHING_TO_RUN_BELOW, NOTHING_TO_RUN, UNDER_WAY];
 
 /// The Version row: `version` and how this copy got here.
 fn version_row(version: &str, method: Method) -> String {
@@ -759,7 +789,7 @@ pub fn translatable() -> Vec<String> {
         Field::Theme, Field::WorkspaceTheme, Field::Compact, Field::HideInactive, Field::InlineImages, Field::Avatars, Field::LargeAvatars, Field::PreviewRefresh, Field::StatusRefresh, Field::ThreadRead, Field::Graphics, Field::EmojiAsNames, Field::CustomEmojiPictures, Field::SaveDir, Field::Clock24, Field::DateFormat, Field::TimeZone, Field::Language, Field::Desktop, Field::Sound,
         Field::ConversationLevel, Field::ChannelDefault, Field::Keywords, Field::Vips, Field::Status, Field::Away, Field::Notifications, Field::Schedule, Field::ScheduleHours, Field::Input, Field::Output,
         Field::HuddleVolume, Field::SoundVolume, Field::MicGain, Field::SpeakingThreshold, Field::NoiseSuppression, Field::EchoCancellation, Field::Camera, Field::JoinSound, Field::SomeoneJoined, Field::SomeoneLeft, Field::RingSound, Field::RingTimeout, Field::AutoDecline, Field::AloneSound, Field::AloneSecs,
-        Field::UpdateVersion, Field::UpdateCheck, Field::UpdateEvery, Field::UpdateTimeout, Field::UpdateCheckNow, Field::UpdateCommand, Field::UpdateOpen,
+        Field::UpdateVersion, Field::UpdateCheck, Field::UpdateEvery, Field::UpdateCheckTimeout, Field::UpdateTimeout, Field::UpdateCheckNow, Field::UpdateCommand, Field::UpdateOpen,
     ];
     let all = [&all[..], &(0..7).map(Field::ScheduleDay).collect::<Vec<_>>()].concat();
     CATEGORIES.iter().map(|c| c.0).chain(["Keys", LEADER_LABEL, INSERT_LEADER_LABEL, RECORD_START, RECORD_DONE, "filter", "to filter", "to change", "Enter keep · Esc clear"]).chain(UPDATE_WORDS.iter().copied()).chain(all.iter().chain(KEYS_SETTINGS).map(|f| f.fixed_label())).chain(super::prefs_help::strings()).map(String::from).collect()
@@ -878,9 +908,9 @@ impl Prefs {
         use super::i18n::tr;
         let u = &self.update;
         let install = u.install.clone().unwrap_or(Install { method: Method::Unknown, exe: Default::default(), writable: false });
-        let page = u.available.as_ref().map_or(RELEASES_PAGE, |l| l.notes.as_str());
+        let page = u.available.as_ref().map_or_else(|| RELEASES_PAGE.to_string(), Latest::page);
         let note = |s: &str| UpdateAction::Note(tr(s).into_owned());
-        match super::update_view::offer_with(&install, page) {
+        match super::update_view::offer_with(&install, &page) {
             Offer::UpdateNow if u.available.is_some() => (tr(UPDATE_BELOW).into_owned(), note(NOTHING_TO_RUN_BELOW)),
             Offer::UpdateNow => (tr(UPDATE_ITSELF).into_owned(), note(NOTHING_TO_RUN)),
             Offer::Command(text) | Offer::Download { url: text, .. } | Offer::Rebuild { url: text } => (text.clone(), UpdateAction::Copy(text)),
@@ -2171,7 +2201,7 @@ mod tests {
     }
 
     fn new_version() -> crate::update::Latest {
-        crate::update::Latest { version: semver::Version::new(9, 9, 9), date: "2026-11-01".into(), notes: "https://github.com/dmytrobsp/ttyak/releases/tag/v9.9.9".into(), asset: crate::update::Asset { url: "u".into(), sha256: "s".into() } }
+        crate::update::Latest { version: semver::Version::new(9, 9, 9), date: "2026-11-01".into(), asset: crate::update::Asset { url: "u".into(), sha256: "s".into() } }
     }
 
     fn installed(method: crate::install::Method, writable: bool) -> Option<crate::install::Install> {
@@ -2183,7 +2213,7 @@ mod tests {
         let keys = Keymap::default();
         let p = updates_prefs();
         assert_eq!(p.category_name(), "Updates");
-        assert_eq!(p.fields(&keys), [Field::UpdateVersion, Field::UpdateCheck, Field::UpdateEvery, Field::UpdateTimeout, Field::UpdateCheckNow, Field::UpdateCommand]);
+        assert_eq!(p.fields(&keys), [Field::UpdateVersion, Field::UpdateCheck, Field::UpdateEvery, Field::UpdateCheckTimeout, Field::UpdateTimeout, Field::UpdateCheckNow, Field::UpdateCommand]);
         assert_eq!(p.category + 1, CATEGORIES.len(), "the last before Keys");
         let words = translatable();
         for want in ["Updates", Field::UpdateCheckNow.fixed_label(), Field::UpdateOpen.fixed_label(), UPDATE_ITSELF] {
@@ -2206,15 +2236,15 @@ mod tests {
         let keys = Keymap::default();
         p.selected = p.fields(&keys).iter().position(|f| *f == Field::UpdateCommand).unwrap();
         p.update.install = installed(Method::Homebrew, false);
-        assert_eq!(p.update_value(Field::UpdateCommand).as_deref(), Some("brew upgrade ttyak"));
-        assert_eq!(p.update_action(&keys), Some(UpdateAction::Copy("brew upgrade ttyak".into())));
+        assert_eq!(p.update_value(Field::UpdateCommand).as_deref(), Some("brew upgrade dmytrobsp/ttyak/ttyak"));
+        assert_eq!(p.update_action(&keys), Some(UpdateAction::Copy("brew upgrade dmytrobsp/ttyak/ttyak".into())));
         p.update.install = installed(Method::Aur, false);
         assert_eq!(p.update_value(Field::UpdateCommand).as_deref(), Some(RELEASES_PAGE), "the Arch package: the page with the recipes zip");
         assert_eq!(p.update_action(&keys), Some(UpdateAction::Copy(RELEASES_PAGE.into())));
         p.update.install = installed(Method::Deb, false);
         assert_eq!(p.update_value(Field::UpdateCommand).as_deref(), Some(RELEASES_PAGE), "no version known: the latest release's page");
         p.sync_update(Some(&new_version()));
-        assert_eq!(p.update_value(Field::UpdateCommand), Some(new_version().notes), "the new release's page");
+        assert_eq!(p.update_value(Field::UpdateCommand).as_deref(), Some("https://github.com/dmytrobsp/ttyak/releases/tag/v9.9.9"), "the new release's page");
         p.update.install = installed(Method::Script, true);
         assert_eq!(p.update_value(Field::UpdateCommand).as_deref(), Some(UPDATE_BELOW), "it updates itself");
         assert_eq!(p.update_action(&keys), Some(UpdateAction::Note(NOTHING_TO_RUN_BELOW.into())), "nothing to copy: said");
@@ -2230,7 +2260,7 @@ mod tests {
         let keys = Keymap::default();
         let mut p = updates_prefs();
         assert_eq!(p.update_action(&keys), Some(UpdateAction::Note(VERSION_ONLY.into())), "the version row");
-        p.selected = 4;
+        p.selected = 5;
         p.update.check = CheckNow::Running;
         assert_eq!(p.update_action(&keys), Some(UpdateAction::Note(UNDER_WAY.into())), "Check now while one runs");
         p.update.check = CheckNow::Done(Checked::UpToDate);
@@ -2291,11 +2321,42 @@ mod tests {
     }
 
     #[test]
-    fn timeout_row_writes_settings() {
+    fn check_timeout_row_writes_settings() {
         let keys = Keymap::default();
         let mut ws = Workspace::default();
         let mut p = updates_prefs();
         p.selected = 3;
+        assert_eq!((p.selected_field(&keys), Field::UpdateCheckTimeout.value(&ws, None, &keys).as_str()), (Some(Field::UpdateCheckTimeout), "10 s without an answer"));
+        p.change(&mut ws, None, &keys);
+        assert_eq!(ws.settings.updates.check_timeout_secs, 15);
+        assert!(!p.on_slack(&keys));
+        Field::UpdateCheckTimeout.adjust(&mut ws.settings, false, false);
+        Field::UpdateCheckTimeout.adjust(&mut ws.settings, false, false);
+        assert_eq!(ws.settings.updates.check_timeout_secs, 5);
+        assert!(toml::to_string(&ws.settings).unwrap().contains("check_timeout_secs = 5\n"));
+        ws.settings.updates.check_timeout_secs = 1;
+        assert_eq!(Field::UpdateCheckTimeout.value(&ws, None, &keys), "1 s without an answer (taken as 5 s)", "below the least: said what counts");
+        assert_eq!(CHECK_TIMEOUTS[0], crate::update::MIN_CHECK_TIMEOUT_SECS, "the least offered is the least used");
+        assert!(CHECK_TIMEOUTS.iter().all(|t| *t <= crate::update::MAX_CHECK_TIMEOUT_SECS));
+        ws.settings.updates.check_timeout_secs = 120;
+        Field::UpdateCheckTimeout.change(&mut ws.settings, &Default::default());
+        assert_eq!(ws.settings.updates.check_timeout_secs, 5, "Enter wraps around");
+    }
+
+    #[test]
+    fn update_values_are_translatable() {
+        let words = super::super::i18n::translatable();
+        for want in ["1 day", "{n} days", "{n} h", "{n} min", "{n} s ({words})", "{n} s (taken as {used} s)", "{n} s without data", "{n} s without data (taken as {used} s)", "no newer ttyak is known"] {
+            assert!(words.iter().any(|t| t == want), "{want}");
+        }
+    }
+
+    #[test]
+    fn timeout_row_writes_settings() {
+        let keys = Keymap::default();
+        let mut ws = Workspace::default();
+        let mut p = updates_prefs();
+        p.selected = 4;
         assert_eq!((p.selected_field(&keys), Field::UpdateTimeout.value(&ws, None, &keys).as_str()), (Some(Field::UpdateTimeout), "30 s without data"));
         p.change(&mut ws, None, &keys);
         assert_eq!(ws.settings.updates.download_timeout_secs, 60);

@@ -26,13 +26,15 @@ pub struct Updates {
     pub check: bool,
     /// At most this often, in seconds.
     pub check_every_secs: u64,
+    /// The check gives up after this many seconds without an answer.
+    pub check_timeout_secs: u64,
     /// The update screen's download gives up after this many seconds without data.
     pub download_timeout_secs: u64,
 }
 
 impl Default for Updates {
     fn default() -> Self {
-        Updates { check: true, check_every_secs: 86400, download_timeout_secs: 30 }
+        Updates { check: true, check_every_secs: 86400, check_timeout_secs: 10, download_timeout_secs: 30 }
     }
 }
 
@@ -302,10 +304,10 @@ mod tests {
     #[test]
     fn updates_default_without_the_section() {
         let s = Settings::parse("[region]\nclock_24h = false\n").unwrap();
-        assert_eq!(s.updates, Updates { check: true, check_every_secs: 86400, download_timeout_secs: 30 });
+        assert_eq!(s.updates, Updates { check: true, check_every_secs: 86400, check_timeout_secs: 10, download_timeout_secs: 30 });
         let s = Settings::parse("[updates]\ncheck = false\n").unwrap();
-        assert_eq!((s.updates.check, s.updates.check_every_secs, s.updates.download_timeout_secs), (false, 86400, 30));
-        assert!(Settings::default().to_toml().contains("[updates]\ncheck = true\ncheck_every_secs = 86400\ndownload_timeout_secs = 30\n"), "{}", Settings::default().to_toml());
+        assert_eq!((s.updates.check, s.updates.check_every_secs, s.updates.check_timeout_secs, s.updates.download_timeout_secs), (false, 86400, 10, 30));
+        assert!(Settings::default().to_toml().contains("[updates]\ncheck = true\ncheck_every_secs = 86400\ncheck_timeout_secs = 10\ndownload_timeout_secs = 30\n"), "{}", Settings::default().to_toml());
     }
 
     #[test]

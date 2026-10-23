@@ -2787,16 +2787,16 @@ impl App {
     }
 
     /// The update check found a newer ttyak: known from now on (for the update screen) and, when not
-    /// notified before, a silent desktop notification (when they are on; quiet hours and keywords
-    /// are about messages, so it never sounds; a click opens the update screen) and, for this run,
-    /// the status line's pill. One this run has put in place is offered no more.
+    /// notified before, for this run the status line's pill and, once updates.json says so, a silent
+    /// desktop notification (when they are on; quiet hours and keywords are about messages, so it
+    /// never sounds; a click opens the update screen). One this run has put in place is offered no more.
     fn update_found(&mut self, found: crate::update::Found) {
-        let crate::update::Found { latest, notify } = found;
+        let crate::update::Found { latest, notify, desktop } = found;
         if self.update_installed.as_ref().is_some_and(|v| latest.version.cmp_precedence(v).is_le()) {
             return;
         }
         if notify {
-            if self.ws.settings.notifications.desktop {
+            if desktop && self.ws.settings.notifications.desktop {
                 let (title, body) = super::notify::update_notification(&latest, env!("CARGO_PKG_VERSION"));
                 let events = self.update_events.clone();
                 super::notify::show_silent(title, body, Some(Box::new(move || drop(events.send(super::update_view::UpdateEvent::Clicked)))));
@@ -2811,7 +2811,7 @@ impl App {
     /// pill and F6 lead here); the pill goes. One already open (a download going on) stays as it is.
     fn open_update_screen(&mut self) {
         let Some(latest) = self.update_available.clone() else {
-            self.status = "no newer ttyak is known".into();
+            self.status = super::i18n::tr(super::update_view::NOTHING_KNOWN).into_owned();
             return;
         };
         self.update_pill = false;
@@ -8470,7 +8470,7 @@ mod tests {
         };
         assert!(!status(&mut app).contains('⬆'));
         let latest = new_version();
-        super::handle_net(&mut app, super::Net::UpdateKnown(crate::update::Found { latest: latest.clone(), notify: true }));
+        super::handle_net(&mut app, super::Net::UpdateKnown(crate::update::Found { latest: latest.clone(), notify: true, desktop: true }));
         assert!(status(&mut app).ends_with("⬆ 9.9.9 "), "{}", status(&mut app));
         app.status = "copied a link to the message".into();
         let with_note = status(&mut app);
@@ -8483,16 +8483,25 @@ mod tests {
         assert_eq!(app.update_available, Some(latest));
     }
 
+    #[tokio::test]
+    async fn an_unsaved_notice_still_shows_the_pill() {
+        let (mut app, _net) = test_app();
+        // (No real notification from a test: none is shown here anyway.)
+        app.ws.settings.notifications.desktop = false;
+        super::handle_net(&mut app, super::Net::UpdateKnown(crate::update::Found { latest: new_version(), notify: true, desktop: false }));
+        assert_eq!((app.update_available.as_ref(), app.update_pill), (Some(&new_version()), true));
+    }
+
     /// The release the update tests find.
     fn new_version() -> crate::update::Latest {
-        crate::update::Latest { version: semver::Version::new(9, 9, 9), date: "2026-11-01".into(), notes: "https://example.invalid/notes".into(), asset: crate::update::Asset { url: "u".into(), sha256: "s".into() } }
+        crate::update::Latest { version: semver::Version::new(9, 9, 9), date: "2026-11-01".into(), asset: crate::update::Asset { url: "u".into(), sha256: "s".into() } }
     }
 
     #[tokio::test]
     async fn a_version_notified_before_is_known_without_a_pill() {
         let (mut app, _net) = test_app();
         app.ws.settings.notifications.desktop = false;
-        super::handle_net(&mut app, super::Net::UpdateKnown(crate::update::Found { latest: new_version(), notify: false }));
+        super::handle_net(&mut app, super::Net::UpdateKnown(crate::update::Found { latest: new_version(), notify: false, desktop: false }));
         assert_eq!((app.update_available.as_ref(), app.update_pill), (Some(&new_version()), false), "known for F6 → Updates");
         app.open_update_screen();
         assert!(app.update_view.is_some());
@@ -8503,7 +8512,7 @@ mod tests {
         let (mut app, _net) = test_app();
         app.ws.settings.notifications.desktop = false;
         let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 24)).unwrap();
-        super::handle_net(&mut app, super::Net::UpdateKnown(crate::update::Found { latest: new_version(), notify: true }));
+        super::handle_net(&mut app, super::Net::UpdateKnown(crate::update::Found { latest: new_version(), notify: true, desktop: true }));
         terminal.draw(|f| super::draw(f, &mut app)).unwrap();
         let pill = app.update_pill_area;
         assert_eq!((pill.y, pill.right(), pill.width), (23, 120, 9), "{pill:?}");
@@ -8526,8 +8535,12 @@ mod tests {
         let (mut app, _net) = test_app();
         app.ws.settings.notifications.desktop = false;
         let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40)).unwrap();
-        super::handle_net(&mut app, super::Net::UpdateKnown(crate::update::Found { latest: new_version(), notify: true }));
-        app.prefs = Some(super::super::prefs::Prefs::new());
+        super::handle_net(&mut app, super::Net::UpdateKnown(crate::update::Found { latest: new_version(), notify: true, desktop: true }));
+        // (Not `Prefs::new`, which lists the real audio devices and cameras.)
+        let update = super::super::prefs::UpdatePage { install: Some(crate::install::Install { method: crate::install::Method::Unknown, exe: "/home/u/ttyak".into(), writable: false }), version: env!("CARGO_PKG_VERSION").into(), ..Default::default() };
+        let mut prefs = super::super::prefs::Prefs::default();
+        prefs.update = update;
+        app.prefs = Some(prefs);
         app.open_update_screen();
         assert_eq!(app.overlay(), Some(crate::tui::keymap::Context::Update));
         terminal.draw(|f| super::draw(f, &mut app)).unwrap();
@@ -8564,7 +8577,7 @@ mod tests {
         app.change_preference();
         assert!(asks.try_recv().is_err(), "a press while one runs is ignored");
         // The answer: a newer version found (never notified: no pill), then what the check says, on its row.
-        super::handle_net(&mut app, super::Net::UpdateKnown(crate::update::Found { latest: new_version(), notify: false }));
+        super::handle_net(&mut app, super::Net::UpdateKnown(crate::update::Found { latest: new_version(), notify: false, desktop: false }));
         app.update_checked(Checked::Out(semver::Version::new(9, 9, 9)));
         assert_eq!(app.prefs.as_ref().unwrap().update_value(Field::UpdateCheckNow).as_deref(), Some("ttyak 9.9.9 is out"));
         assert!(!app.update_pill);
@@ -8603,7 +8616,7 @@ mod tests {
         app.ws.settings.notifications.desktop = false;
         app.update_event(super::super::update_view::UpdateEvent::Clicked);
         assert!(app.update_view.is_none(), "nothing known yet");
-        super::handle_net(&mut app, super::Net::UpdateKnown(crate::update::Found { latest: new_version(), notify: true }));
+        super::handle_net(&mut app, super::Net::UpdateKnown(crate::update::Found { latest: new_version(), notify: true, desktop: true }));
         app.update_event(super::super::update_view::UpdateEvent::Clicked);
         assert!(app.update_view.is_some() && !app.update_pill);
     }
@@ -8613,13 +8626,13 @@ mod tests {
         use super::super::update_view::{Stage, UpdateEvent};
         let (mut app, _net) = test_app();
         app.ws.settings.notifications.desktop = false;
-        super::handle_net(&mut app, super::Net::UpdateKnown(crate::update::Found { latest: new_version(), notify: true }));
+        super::handle_net(&mut app, super::Net::UpdateKnown(crate::update::Found { latest: new_version(), notify: true, desktop: true }));
         app.open_update_screen();
         app.update_event(UpdateEvent::Finished { version: semver::Version::new(9, 9, 9), result: Ok(()) });
         assert!(matches!(app.update_view.as_ref().map(|v| &v.stage), Some(Stage::Done)));
         assert_eq!((app.update_available.as_ref(), app.update_pill), (None, false));
         // The next check finds the same version: this run has put it in place.
-        super::handle_net(&mut app, super::Net::UpdateKnown(crate::update::Found { latest: new_version(), notify: true }));
+        super::handle_net(&mut app, super::Net::UpdateKnown(crate::update::Found { latest: new_version(), notify: true, desktop: true }));
         assert_eq!((app.update_available.as_ref(), app.update_pill), (None, false));
         // Closed meanwhile: the status line says it.
         app.update_view = None;

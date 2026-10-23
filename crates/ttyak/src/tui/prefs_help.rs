@@ -358,6 +358,10 @@ fn build(field: Field, _ws: &Workspace, keys: &Keymap, tr: &dyn Fn(&'static str)
             b.text("How often the check runs at most, in seconds; a check that got no answer counts too. Less than an hour (written by hand in settings.toml) counts as an hour.").blank();
             b.step("1, 6 or 12 hours, or 1, 3 or 7 days");
         }
+        Field::UpdateCheckTimeout => {
+            b.text("The check (and Check now) gives up when latest.json has not come for this long; it counts as a check that got no answer. Written by hand in settings.toml, it counts as at least 5 seconds and at most 10 minutes.").blank();
+            b.step("5, 10, 15, 30, 60 or 120 seconds");
+        }
         Field::UpdateTimeout => {
             b.text("The update screen's download gives up when no data has come for this long; the old ttyak stays as it was. Written by hand in settings.toml, it counts as at least 10 seconds and at most a day.").blank();
             b.step("10, 15, 30, 60, 120 or 300 seconds");

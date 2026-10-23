@@ -41,6 +41,8 @@ const RELEASE_NOTES: &str = "Release notes";
 const DOWNLOAD_PAGE: &str = "Open the download page";
 const CANCEL: &str = "Cancel";
 const CLOSE: &str = "Close";
+/// The update screen asked for with no newer version known.
+pub const NOTHING_KNOWN: &str = "no newer ttyak is known";
 /// The update screen's words, for the locale template.
 pub const WORDS: &[&str] = &[
     OUT,
@@ -68,6 +70,7 @@ pub const WORDS: &[&str] = &[
     DOWNLOAD_PAGE,
     CANCEL,
     CLOSE,
+    NOTHING_KNOWN,
     "with Homebrew",
     "with Scoop",
     "with winget",
@@ -98,7 +101,7 @@ pub const RELEASES_PAGE: &str = "https://github.com/dmytrobsp/ttyak/releases/lat
 /// What `install` can do about `latest`: update itself only when the install script put it in a
 /// folder it can write.
 pub fn offer(install: &Install, latest: &Latest) -> Offer {
-    offer_with(install, &latest.notes)
+    offer_with(install, &latest.page())
 }
 
 /// [`offer`] for a release whose page is `page` (also where F6 → Updates sends a download, with
@@ -230,7 +233,7 @@ impl UpdateView {
                 Offer::Download { url, .. } | Offer::Rebuild { url } => Do::Copy(url.clone()),
                 Offer::UpdateNow => Do::Nothing,
             },
-            Button::Notes => Do::Open(self.latest.notes.clone()),
+            Button::Notes => Do::Open(self.latest.page()),
             Button::Cancel => {
                 self.cancel();
                 Do::Nothing
@@ -305,11 +308,11 @@ impl UpdateView {
         let how = tr(self.install.method.how());
         match &self.offer {
             Offer::UpdateNow => {
-                out.push(tr(NOTES).replace("{url}", &self.latest.notes));
+                out.push(tr(NOTES).replace("{url}", &self.latest.page()));
                 out.push(tr(WHAT_HAPPENS).replace("{exe}", &shown(&self.install.exe)));
             }
             Offer::Command(command) => {
-                out.push(tr(NOTES).replace("{url}", &self.latest.notes));
+                out.push(tr(NOTES).replace("{url}", &self.latest.page()));
                 let dir = self.install.exe.parent().map(shown).unwrap_or_default();
                 let script = if self.install.exe.parent().is_some_and(yours) { UNWRITABLE_YOURS } else { UNWRITABLE };
                 out.push(if self.install.method == Method::Script { tr(script).replace("{dir}", &dir) } else { tr(MANAGED).replace("{how}", &how) });
@@ -451,7 +454,6 @@ mod tests {
         Latest {
             version: semver::Version::new(9, 9, 9),
             date: "2026-11-01".into(),
-            notes: "https://github.com/dmytrobsp/ttyak/releases/tag/v9.9.9".into(),
             asset: crate::update::Asset { url: "https://github.com/dmytrobsp/ttyak/releases/download/v9.9.9/ttyak-9.9.9-x86_64-linux.zip".into(), sha256: "ab".repeat(32) },
         }
     }
@@ -539,7 +541,7 @@ mod tests {
     #[test]
     fn package_install_shows_its_command() {
         for (method, command, how) in [
-            (Method::Homebrew, "brew upgrade ttyak", "with Homebrew"),
+            (Method::Homebrew, "brew upgrade dmytrobsp/ttyak/ttyak", "with Homebrew"),
             (Method::Scoop, "scoop update ttyak", "with Scoop"),
             (Method::Winget, "winget upgrade dmytrobsp.ttyak", "with winget"),
             (Method::Chocolatey, "choco upgrade ttyak", "with Chocolatey"),
@@ -555,7 +557,7 @@ mod tests {
     #[test]
     fn arch_package_says_rebuild_from_the_pkgbuild() {
         // ttyak-bin is not in the AUR yet: the release's recipes zip has its PKGBUILD
-        let notes = latest().notes;
+        let notes = latest().page();
         let mut v = view(Method::Aur, false);
         assert_eq!(v.offer, Offer::Rebuild { url: notes.clone() });
         assert_eq!(v.buttons(), [Button::Notes, Button::Copy, Button::Close]);
@@ -570,7 +572,7 @@ mod tests {
 
     #[test]
     fn deb_rpm_show_the_download_link() {
-        let notes = latest().notes;
+        let notes = latest().page();
         for (method, package, says) in [(Method::Deb, Some(".deb"), "ttyak was installed from a .deb package: download the new .deb from"), (Method::Rpm, Some(".rpm"), "ttyak was installed from an .rpm package: download the new .rpm from"), (Method::Unknown, None, "ttyak cannot tell how it was installed: download it from")] {
             let mut v = view(method, false);
             assert_eq!(v.offer, Offer::Download { package, url: notes.clone() }, "{method:?}");
@@ -627,6 +629,22 @@ mod tests {
     }
 
     #[test]
+    fn the_release_page_comes_from_the_version() {
+        // (Never the feed's `notes` link: render.py writes this same page there.)
+        let other = Latest { version: semver::Version::new(10, 0, 1), ..latest() };
+        let page = "https://github.com/dmytrobsp/ttyak/releases/tag/v10.0.1";
+        for method in [Method::Script, Method::Homebrew, Method::Deb, Method::Aur, Method::Unknown] {
+            let mut v = UpdateView::new(other.clone(), install(method, method == Method::Script));
+            assert_eq!(v.key(Action::ReleaseNotes), Do::Open(page.into()), "{method:?}");
+            let says = v.lines().join("\n");
+            assert!(says.contains(page), "{method:?}: {says}");
+            if let Offer::Download { url, .. } | Offer::Rebuild { url } = &v.offer {
+                assert_eq!(url, page, "{method:?}");
+            }
+        }
+    }
+
+    #[test]
     fn buttons_take_clicks_and_hover() {
         let mut v = view(Method::Homebrew, false);
         screen(&mut v);
@@ -634,7 +652,7 @@ mod tests {
         assert_eq!(b, Button::Notes);
         v.hover_at(r.x + 1, r.y);
         assert_eq!((v.button_at(r.x, r.y), v.hover), (Some(Button::Notes), Some(Button::Notes)));
-        assert_eq!(v.press(Button::Notes), Do::Open(latest().notes));
+        assert_eq!(v.press(Button::Notes), Do::Open(latest().page()));
         v.hover_at(r.x, r.y + 1);
         assert_eq!(v.hover, None);
     }
