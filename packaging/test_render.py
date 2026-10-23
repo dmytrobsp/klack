@@ -123,7 +123,7 @@ class AllPlatforms(unittest.TestCase):
         self.assertIn("brew uninstall ttyak", caveats)
         # Linux only: the system's ALSA library first, Homebrew's a fallback that needs a newer glibc.
         linux_note = block(caveats, "if OS.linux?")
-        for words in ["libasound2", "alsa-lib", "glibc 2.38"]:
+        for words in ["libasound2 (libasound2t64 on Ubuntu 24.04, Debian 13 and later)", "alsa-lib", "glibc 2.38"]:
             self.assertIn(words, linux_note)
         self.assertIn("brew linkage", block(rb, "def install"), "why brew linkage misses libasound.so.2")
         self.assertNotIn("install.json", rb)
@@ -158,7 +158,7 @@ class AllPlatforms(unittest.TestCase):
             ("ldconfig knows only a 32-bit one", False, "\tlibasound.so.2 (libc6) => /usr/lib/libasound.so.2\n", False),
             ("none", False, None, False),
         ]:
-            for old_path in [None, "/mine"]:
+            for old_path in [None, "", "/mine"]:
                 with self.subTest(case=case, LD_LIBRARY_PATH=old_path), tempfile.TemporaryDirectory() as tmp:
                     os.makedirs(tmp + "/lib")
                     os.makedirs(tmp + "/libexec")
@@ -177,12 +177,13 @@ class AllPlatforms(unittest.TestCase):
                     with open(tmp + "/launcher", "w") as f:
                         f.write(self.launcher(tmp))
                     env = {"PATH": "/usr/bin:/bin", "ALSA_CONFIG_PATH": "/etc/mine.conf"}
-                    if old_path:
+                    if old_path is not None:
                         env["LD_LIBRARY_PATH"] = old_path
                     out = subprocess.run(["sh", tmp + "/launcher"] + args, input="typed\n", env=env,
                                          capture_output=True, text=True, check=True).stdout
-                    want_ld = old_path or "unset"
+                    want_ld = "unset" if old_path is None else old_path
                     if not direct:
+                        # Set but empty gets no stray ":" (an empty entry is the current folder).
                         want_ld = (old_path + ":" if old_path else "") + "/brew/alsa/lib"
                     want_conf = "/etc/mine.conf" if direct else "unset"
                     self.assertEqual(out, "\n".join(args + ["LD=" + want_ld, "CONF=" + want_conf, "typed"]) + "\n")

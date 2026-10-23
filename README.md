@@ -47,8 +47,9 @@ Or with a package manager:
 | Fedora, RHEL | the release's `.rpm`: `sudo dnf install ./ttyak-<version>-1.x86_64.rpm` (arm: `.aarch64.rpm`) |
 | Arch | not in the AUR yet (its sign-up is closed for now): unzip the release's `ttyak-<version>-recipes.zip` and run `makepkg -si` in its `aur` folder |
 
-Homebrew on Linux uses the system's ALSA library (`libasound2` on Debian/Ubuntu, `alsa-lib` on Fedora/Arch); Homebrew's
-own alsa-lib is only a fallback for systems without one and needs glibc 2.38 or newer.
+Homebrew on Linux uses the system's ALSA library: `libasound2` (`libasound2t64` on Ubuntu 24.04, Debian 13 and later) on
+Debian/Ubuntu, `alsa-lib` on Fedora/Arch. Homebrew's own alsa-lib is only a fallback for systems without one, and it needs
+glibc 2.38 or newer.
 
 Or by hand: each release has one zip per system with `ttyak` (`ttyak.exe`), the README and the licences at its top.
 Unzip it and put `ttyak` somewhere on your PATH. (Releases before 0.11.0 are not signed: on macOS run

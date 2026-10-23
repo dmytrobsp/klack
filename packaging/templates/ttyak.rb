@@ -67,6 +67,7 @@ class Ttyak < Formula
         fi
       done
       unset ALSA_CONFIG_PATH
+      # The programs ttyak starts get this too; only alsa-lib's own folder is added.
       LD_LIBRARY_PATH="${LD_LIBRARY_PATH:+$LD_LIBRARY_PATH:}#{formula_opt_lib("alsa-lib")}"
       export LD_LIBRARY_PATH
       exec "$exe" "$@"
@@ -82,8 +83,9 @@ class Ttyak < Formula
     EOS
     if OS.linux?
       text += <<~EOS
-        ttyak uses your system's ALSA library (libasound2 on Debian/Ubuntu, alsa-lib on Fedora/Arch).
-        Homebrew's alsa-lib is only a fallback for systems without one, and it needs glibc 2.38 or newer.
+        ttyak uses your system's ALSA library: libasound2 (libasound2t64 on Ubuntu 24.04, Debian 13 and later) on
+        Debian/Ubuntu, alsa-lib on Fedora/Arch. Homebrew's alsa-lib is only a fallback for systems without one, and it
+        needs glibc 2.38 or newer.
       EOS
     end
     text
