@@ -33,6 +33,8 @@ pub struct Plan {
     pub by_hand: Vec<(PathBuf, Vec<String>)>,
     /// Whether everything ttyak wrote goes too (as `ttyak purge`).
     pub purge: bool,
+    /// Said after the steps.
+    pub notes: Vec<String>,
 }
 
 /// `ttyak uninstall`.
@@ -64,6 +66,7 @@ fn plan_in(install: &Install, keep_data: bool, home: &Path, zdotdir: Option<&Pat
     let mut remove = vec![exe.clone(), dir.join(install::RECORD_FILE)];
     let mut path_edits = Vec::new();
     let mut by_hand = Vec::new();
+    let mut notes = Vec::new();
     if windows {
         // What install.ps1 can leave: old copies that were running during an update, files of a run cut short.
         let mut names: Vec<String> = std::fs::read_dir(&dir).into_iter().flatten().flatten().filter_map(|e| e.file_name().into_string().ok()).filter(|n| is_old_copy(n)).collect();
@@ -75,7 +78,9 @@ fn plan_in(install: &Install, keep_data: bool, home: &Path, zdotdir: Option<&Pat
         if dir.file_name().is_some_and(|n| n.eq_ignore_ascii_case("ttyak")) {
             remove.push(dir.clone());
         }
-        let on_path = Record::read(&dir, &install::System).map(|r| plain(&r.dir)).unwrap_or(dir);
+        // install.json's spelling of the folder, as install.ps1 put it on PATH; only when it is this folder.
+        let key = |p: &Path| p.to_string_lossy().trim_end_matches(['\\', '/']).to_lowercase();
+        let on_path = Record::read(&dir, &install::System).map(|r| plain(&r.dir)).filter(|d| key(d) == key(&dir)).unwrap_or(dir);
         path_edits.push(PathEdit::WindowsUserPath(on_path));
     } else {
         // The folder stays: ~/.local/bin is shared.
@@ -94,8 +99,17 @@ fn plan_in(install: &Install, keep_data: bool, home: &Path, zdotdir: Option<&Pat
                 path_edits.push(PathEdit::ProfileLine(file));
             }
         }
+        // zsh's own folder, when only its startup files set it, is not known here.
+        let zshenv = home.join(".zshenv");
+        if zdotdir.is_none() && std::fs::read(&zshenv).is_ok_and(|t| t.windows(7).any(|w| w == b"ZDOTDIR")) {
+            notes.push(format!(
+                "{} sets ZDOTDIR, which is not set here, so for zsh only {} was looked at: a ttyak PATH line may remain in the .zshrc in your zsh folder (the line ending with {MARKER})",
+                zshenv.display(),
+                home.join(".zshrc").display()
+            ));
+        }
     }
-    Plan { remove, path_edits, by_hand, purge: !keep_data }
+    Plan { remove, path_edits, by_hand, purge: !keep_data, notes }
 }
 
 /// Whether `name` is an old copy install.ps1 renamed aside during an update: `ttyak.old.exe`,
@@ -136,7 +150,10 @@ pub fn run(plan: &Plan) -> Vec<(String, io::Result<()>)> {
     // Files the running ttyak holds (Windows): deleted once it has quit, with the folders they are in.
     let mut later: Vec<PathBuf> = Vec::new();
     let mut later_folders: Vec<PathBuf> = Vec::new();
+    // While the program stays, its folder stays on PATH: ttyak can still be run (and uninstalled again).
+    let mut program_left = false;
     for path in &plan.remove {
+        let program = path.file_name().is_some_and(|n| n == "ttyak" || n == "ttyak.exe");
         let shown = path.display();
         if path.symlink_metadata().is_ok_and(|m| m.is_dir()) {
             if later.iter().any(|f| f.starts_with(path)) {
@@ -155,19 +172,31 @@ pub fn run(plan: &Plan) -> Vec<(String, io::Result<()>)> {
                 let aside = path.with_file_name(format!("ttyak.old-{:08x}.exe", std::process::id() ^ std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0)));
                 match std::fs::rename(path, &aside) {
                     Ok(()) => later.push(aside),
-                    Err(_) => done.push((format!("could not delete {shown}"), Err(e))),
+                    Err(_) => {
+                        program_left = true;
+                        done.push((format!("could not delete {shown}"), Err(e)));
+                    }
                 }
             }
-            Err(e) => done.push((format!("could not delete {shown}"), Err(e))),
+            Err(e) => {
+                program_left |= program;
+                done.push((format!("could not delete {shown}"), Err(e)));
+            }
         }
     }
     if !later.is_empty() {
         let shown = later.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ");
         let result = cleanup_line(&later, &later_folders).ok_or_else(|| io::Error::other("its name has a \" or %: delete it yourself")).and_then(|line| spawn_cleanup(&line));
-        done.push(outcome(format!("{shown} goes once ttyak has quit"), format!("could not delete {shown}"), result));
+        done.push(outcome(
+            format!("{shown} goes once ttyak has quit (within 2 minutes; if a ttyak is still running then, delete {shown} yourself)"),
+            format!("could not delete {shown}"),
+            result,
+        ));
     }
     for edit in &plan.path_edits {
         done.push(match edit {
+            PathEdit::ProfileLine(file) if program_left => (format!("left the ttyak PATH line in {}, as ttyak itself is still there", file.display()), Ok(())),
+            PathEdit::WindowsUserPath(dir) if program_left => (format!("left {} on your user PATH, as ttyak itself is still there", dir.display()), Ok(())),
             PathEdit::ProfileLine(file) => edit_profile(file),
             PathEdit::WindowsUserPath(dir) => user_path::remove(dir),
         });
@@ -183,17 +212,28 @@ fn outcome(ok: String, failed: String, result: io::Result<()>) -> (String, io::R
     }
 }
 
+/// Writes `new` over `file` with `write`, in place (its mode, owner and links stay); when that fails, writes `old`
+/// back.
+fn rewrite(file: &Path, new: &[u8], old: &[u8], write: &dyn Fn(&Path, &[u8]) -> io::Result<()>) -> io::Result<()> {
+    let Err(e) = write(file, new) else { return Ok(()) };
+    match write(file, old) {
+        Ok(()) => Err(io::Error::new(e.kind(), format!("{e} (the file is as it was)"))),
+        Err(again) => Err(io::Error::new(e.kind(), format!("{e}, and its old text could not be written back ({again}): restore {} from a backup", file.display()))),
+    }
+}
+
 /// Takes the installer's lines out of the startup file `file`, written in place (its mode, owner and links stay);
 /// the fish file the installer made goes when nothing else is in it.
 fn edit_profile(file: &Path) -> (String, io::Result<()>) {
     let shown = file.display();
     let edit = || -> io::Result<bool> {
-        let Some(kept) = without_marked_lines(&std::fs::read(file)?) else { return Ok(false) };
+        let old = std::fs::read(file)?;
+        let Some(kept) = without_marked_lines(&old) else { return Ok(false) };
         if kept.is_empty() && file.file_name().is_some_and(|n| n == FISH_FILE) {
             std::fs::remove_file(file)?;
             return Ok(true);
         }
-        std::fs::write(file, kept)?;
+        rewrite(file, &kept, &old, &|p, bytes| std::fs::write(p, bytes))?;
         Ok(false)
     };
     match edit() {
@@ -245,10 +285,10 @@ fn uninstall(install: &Install, mut plan: Plan, dirs: &Dirs, data: &[PathBuf], y
             data_note();
             crate::refuse_while_running(dirs)?;
         }
-        let question = match (data.is_empty(), plan.purge) {
-            (true, _) => "Remove ttyak?",
-            (false, true) => "Remove ttyak and all of this?",
-            (false, false) => "Remove ttyak? Your settings, sign-ins and drafts stay.",
+        let question = match (plan.purge, data.is_empty()) {
+            (false, _) => "Remove ttyak? Your settings, sign-ins and drafts stay.",
+            (true, true) => "Remove ttyak?",
+            (true, false) => "Remove ttyak and all of this?",
         };
         if !ask(question)? {
             println!("nothing removed");
@@ -283,6 +323,9 @@ fn uninstall(install: &Install, mut plan: Plan, dirs: &Dirs, data: &[PathBuf], y
         println!("ttyak is uninstalled, but for the lines named above");
     } else {
         println!("ttyak is uninstalled");
+    }
+    for note in &plan.notes {
+        println!("{note}");
     }
     if !plan.purge {
         let kept: Vec<String> = [&dirs.config, &dirs.data, &dirs.cache].into_iter().filter(|d| d.exists()).map(|d| d.display().to_string()).collect();
@@ -350,9 +393,15 @@ fn lines(text: &[u8]) -> impl Iterator<Item = (&[u8], &[u8])> {
     })
 }
 
+/// Whether `line` ends with [`MARKER`] (spaces and tabs after it allowed).
+fn is_marked(line: &[u8]) -> bool {
+    let end = line.iter().rposition(|b| !matches!(b, b' ' | b'\t')).map_or(0, |i| i + 1);
+    line[..end].ends_with(MARKER.as_bytes())
+}
+
 /// The lines of `text` that end with [`MARKER`].
 fn marked_lines(text: &[u8]) -> Vec<String> {
-    lines(text).filter(|(_, bare)| bare.ends_with(MARKER.as_bytes())).map(|(_, bare)| String::from_utf8_lossy(bare).into_owned()).collect()
+    lines(text).filter(|(_, bare)| is_marked(bare)).map(|(_, bare)| String::from_utf8_lossy(bare).into_owned()).collect()
 }
 
 /// `text` without its lines that end with [`MARKER`], every other byte kept; None when no line does.
@@ -360,7 +409,7 @@ fn without_marked_lines(text: &[u8]) -> Option<Vec<u8>> {
     let mut kept = Vec::with_capacity(text.len());
     let mut found = false;
     for (line, bare) in lines(text) {
-        if bare.ends_with(MARKER.as_bytes()) {
+        if is_marked(bare) {
             found = true;
         } else {
             kept.extend_from_slice(line);
@@ -411,7 +460,8 @@ fn spawn_cleanup(line: &str) -> io::Result<()> {
     let cmd = std::env::var_os("SystemRoot").map(|r| PathBuf::from(r).join(r"System32\cmd.exe")).unwrap_or_else(|| PathBuf::from("cmd.exe"));
     let start = |flags: u32| {
         Command::new(&cmd)
-            .raw_arg(format!("/d /s /c \"{line}\""))
+            // No AutoRun commands, no delayed expansion (a `!` in a path stays a `!`).
+            .raw_arg(format!("/d /v:off /s /c \"{line}\""))
             .current_dir(std::env::temp_dir())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -532,7 +582,8 @@ mod tests {
             let base = std::env::temp_dir().join(format!("ttyak-uninstall-{test}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&base);
             std::fs::create_dir_all(base.join("home")).unwrap();
-            Temp(base)
+            // Without links on the way (macOS's /var is one), which the link checks would see.
+            Temp(base.canonicalize().unwrap())
         }
 
         fn home(&self) -> PathBuf {
@@ -671,6 +722,53 @@ mod tests {
         write(&z.join(".zshrc"), &format!("{}\n", marked("x")));
         let plan = plan_in(&install, false, &t.home(), Some(&z), None, false);
         assert_eq!(plan.path_edits, [PathEdit::ProfileLine(z.join(".zshrc"))]);
+        assert!(plan.notes.is_empty(), "{:?}", plan.notes);
+        // ZDOTDIR set in ~/.zshenv but not here: the .zshrc there is not known, and the note says so.
+        assert!(plan_in(&install, false, &t.home(), None, None, false).notes.is_empty(), "no .zshenv");
+        write(&t.home().join(".zshenv"), "export ZDOTDIR=$HOME/.config/zsh\n");
+        let plan = plan_in(&install, false, &t.home(), None, None, false);
+        assert_eq!(plan.notes.len(), 1, "{:?}", plan.notes);
+        let note = &plan.notes[0];
+        assert!(note.contains(".zshenv") && note.contains(&t.home().join(".zshrc").display().to_string()) && note.contains("may remain"), "{note}");
+        assert!(plan_in(&install, false, &t.home(), Some(&z), None, false).notes.is_empty(), "ZDOTDIR known");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_path_lines_stay_while_ttyak_does() {
+        use std::os::unix::fs::PermissionsExt;
+        let t = Temp::new("binary-stays");
+        let install = t.script("bin", "ttyak");
+        let rc = t.home().join(".bashrc");
+        let text = format!("a\n{}\n", marked("x"));
+        write(&rc, &text);
+        let plan = plan_in(&install, true, &t.home(), None, None, false);
+        let bin = t.0.join("bin");
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let done = run(&plan);
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(install.exe.exists());
+        assert_eq!(read(&rc), text, "ttyak is still there: still on PATH");
+        let line = done.iter().find(|(what, _)| what.contains(&rc.display().to_string())).unwrap();
+        assert!(line.0.contains("left") && line.1.is_ok(), "{done:?}");
+    }
+
+    #[test]
+    fn a_failed_rewrite_puts_the_old_bytes_back() {
+        let file = Path::new("/x/.bashrc");
+        let calls = std::cell::RefCell::new(Vec::new());
+        // The new text fails half-way; the old one goes back.
+        let write = |p: &Path, bytes: &[u8]| {
+            calls.borrow_mut().push((p.to_path_buf(), bytes.to_vec()));
+            if bytes == b"new" { Err(io::Error::other("disk full")) } else { Ok(()) }
+        };
+        let e = rewrite(file, b"new", b"old", &write).unwrap_err().to_string();
+        assert!(e.contains("disk full") && e.contains("as it was"), "{e}");
+        assert_eq!(calls.borrow().iter().map(|(_, b)| b.clone()).collect::<Vec<_>>(), [b"new".to_vec(), b"old".to_vec()]);
+        // Both fail: said.
+        let e = rewrite(file, b"new", b"old", &|_: &Path, _: &[u8]| Err(io::Error::other("disk full"))).unwrap_err().to_string();
+        assert!(e.contains("could not be written back"), "{e}");
+        assert!(rewrite(file, b"new", b"old", &|_: &Path, _: &[u8]| Ok(())).is_ok());
     }
 
     #[test]
@@ -684,6 +782,7 @@ mod tests {
             ("a\nb\n".into(), None),
             (format!("{m} trailing\n"), None),
             (format!("a\r\n{m}\r\n"), Some("a\r\n".into())),
+            (format!("a\n{m} \t\nb\n"), Some("a\nb\n".into())),
         ] {
             assert_eq!(without_marked_lines(text.as_bytes()).map(|b| String::from_utf8(b).unwrap()), want, "{text:?}");
         }
@@ -748,8 +847,9 @@ mod tests {
             asked.push(q.to_string());
             Ok(true)
         };
-        uninstall(&install, plan_in(&install, true, &t.home(), None, None, false), &t.dirs(), &data, false, Some(&mut ask)).unwrap();
-        assert_eq!(asked.len(), 1, "{asked:?}");
+        // (`command` lists no data then.)
+        uninstall(&install, plan_in(&install, true, &t.home(), None, None, false), &t.dirs(), &[], false, Some(&mut ask)).unwrap();
+        assert_eq!(asked, ["Remove ttyak? Your settings, sign-ins and drafts stay."]);
         assert!(!install.exe.exists() && data[0].exists());
     }
 
@@ -843,7 +943,13 @@ mod tests {
         let plan = plan_in(&install, false, &t.home(), None, None, true);
         let names: Vec<String> = plan.remove.iter().map(|p| p.strip_prefix(&t.0).unwrap().display().to_string()).collect();
         assert_eq!(names, ["Programs/ttyak/ttyak.exe", "Programs/ttyak/install.json", "Programs/ttyak/ttyak.old-0123abcd.exe", "Programs/ttyak/ttyak.old.exe", "Programs/ttyak/.ttyak.exe.new", "Programs/ttyak/.install.json.new", "Programs/ttyak"]);
-        assert_eq!(plan.path_edits, [PathEdit::WindowsUserPath(dir.clone())], "the folder install.json names; no shell files on Windows");
+        assert_eq!(plan.path_edits, [PathEdit::WindowsUserPath(dir.clone())], "no shell files on Windows");
+        // install.json's own spelling of the folder, but only when it is the exe's folder.
+        let spelled = dir.to_string_lossy().to_uppercase();
+        write(&dir.join("install.json"), &format!(r#"{{"method":"script","version":"0.11.0","dir":"{spelled}"}}"#));
+        assert_eq!(plan_in(&install, false, &t.home(), None, None, true).path_edits, [PathEdit::WindowsUserPath(PathBuf::from(&spelled))]);
+        write(&dir.join("install.json"), r#"{"method":"script","version":"0.11.0","dir":"C:\\Windows\\System32"}"#);
+        assert_eq!(plan_in(&install, false, &t.home(), None, None, true).path_edits, [PathEdit::WindowsUserPath(dir.clone())], "another folder is not taken off PATH");
         // Another folder than one named ttyak stays.
         let other = t.script("tools", "ttyak.exe");
         let plan = plan_in(&other, false, &t.home(), None, None, true);
